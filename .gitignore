@@ -1,0 +1,18 @@
+**/*logs
+**/*.log
+**/nacos-data/
+**/*__pycache__
+**/*.pyc
+/venv/
+/output/
+**/*.vscode/
+**/__pycache__/
+**/.claude/settings.local.json
+CLAUDE.local.md
+.venv/
+.idea/
+.pytest_cache/
+.ruff_cache/
+# 运行时目录（app/config.py 默认 root/.ai-repair）：记录、工作区、报告都在这里
+.ai-repair/
+reports/

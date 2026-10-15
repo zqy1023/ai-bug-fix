@@ -1,0 +1,14 @@
+{
+  "description": "分析异常并执行最小修改",
+  "enabled": true,
+  "provider": "claude_session",
+  "writable": true,
+  "tools": ["Read", "Glob", "Grep", "Write", "Edit"],
+  "max_turns": 30,
+  "max_tool_calls": 32,
+  "max_context_chars": 24000,
+  "max_candidate_files": 8,
+  "max_diff_chars": 16000,
+  "timeout_seconds": 1800,
+  "options": {}
+}

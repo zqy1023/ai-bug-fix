@@ -1,0 +1,7 @@
+elasticsearch7~=7.17.13
+python-dotenv~=1.2.1
+gitpython~=3.1.50
+claude-agent-sdk==0.2.117
+langgraph>=0.2,<1
+pytest>=8,<9
+yq_common @ http://n.17track.net:8081/repository/pypi-hosted/packages/yq-common/0.0.77/yq_common-0.0.77-py3-none-any.whl

@@ -1,0 +1,36 @@
+"""03 创建任务的输入输出契约。"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from app.workflow.spec import FrozenModel
+from pydantic import Field
+
+
+class TaskRef(FrozenModel):
+    """03 交给后续图的任务引用，不是整份任务状态。"""
+
+    task_id: str
+    biztype: str
+    carrier: str
+    service_name: str
+    problem_key: str
+    problem: dict[str, Any] = Field(default_factory=dict)
+
+
+class IdentifyCarrierInput(FrozenModel):
+    """按原始服务、业务类型和 carrier 识别本轮任务。"""
+
+    run_id: str
+
+
+class IdentifyCarrierOutput(FrozenModel):
+    """单个 ``(biztype, carrier)`` 任务及被排除记录的数量。"""
+
+    tasks: list[TaskRef] = Field(default_factory=list)
+    created: int = 0
+    manual: int = 0
+
+
+__all__ = ["IdentifyCarrierInput", "IdentifyCarrierOutput", "TaskRef"]

@@ -1,0 +1,11 @@
+**/log/
+venv
+nacos-data
+node_modules
+codes
+.claude
+.vscode
+__pycache__
+output/
+.ai-repair/
+*.log

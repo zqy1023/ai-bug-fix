@@ -1,0 +1,18 @@
+{
+  "customRules": [
+    "所有公开模块、类、函数和方法必须使用 Google 风格 docstring。",
+    "所有函数参数和返回值必须有类型注解；允许使用 TypedDict 和 Protocol 表达工作流契约。",
+    "LangGraph 节点只能通过注入的 StepContext 和 WorkflowServices 访问 ES、Git、文件系统和 Claude，禁止读取全局单例。",
+    "插件契约只有一个来源：目录名 = 插件名 = 记录名 = 图节点名；新增/改名不得再引入别名或兼容映射。",
+    "修复智能体输出 passed / analysis / changed_files / summary / change_plan；代码审查智能体只读，输出 verdict / passed / summary / findings / required_changes。",
+    "回归验证必须先于代码审查；禁止由 AI 选择或拼接 shell 命令。",
+    "同一 execution_id 内，同一 biztype + carrier 最多处理一个问题；不同 execution_id 可重新获得资格。",
+    "交付层只允许创建修复分支、提交和推送，不允许创建合并请求或自动合并。",
+    "复杂逻辑的注释必须说明设计原因和安全边界，不重复描述代码本身。"
+  ],
+  "ignore": [
+    ".venv/**/*",
+    ".idea/**/*",
+    "logs/**/*"
+  ]
+}
