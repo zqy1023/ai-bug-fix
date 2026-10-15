@@ -20,6 +20,7 @@ def run(ctx: StepContext, data: VerifyInput) -> VerifyOutput:
             "problem_key": data.problem_key,
             "ai_workspace_path": data.ai_workspace_path,
             "changed_files": list(data.changed_files),
+            "normalized_log": dict(data.normalized_log),
         }
     )
     if not isinstance(verified, dict) or verified.get("passed") is not True:

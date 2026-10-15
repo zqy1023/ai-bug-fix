@@ -15,6 +15,7 @@ class ClaimInput(FrozenModel):
     biztype: str
     carrier: str
     source_repo_path: str
+    problem_key: str
 
 
 class ClaimOutput(FrozenModel):

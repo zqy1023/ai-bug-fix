@@ -17,6 +17,7 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         "biztype": str(task.get("biztype") or ""),
         "carrier": str(task.get("carrier") or ""),
         "source_repo_path": str(state.get("source_repo_path") or ""),
+        "problem_key": str(task.get("problem_key") or ""),
     }
 
 

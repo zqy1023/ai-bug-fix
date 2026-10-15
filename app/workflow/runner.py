@@ -44,27 +44,16 @@ def run_stage(
     services: WorkflowServices,
     state: dict[str, Any],
 ) -> StepResult:
-    """执行一个功能阶段并写入 steps.json。已通过则沿用原记录，不覆盖。"""
+    """执行一个功能阶段并写入 steps.json；显式重跑时重新执行节点。"""
     run_id = str(state.get("run_id") or "")
     if not run_id:
         raise StepFailed(f"{spec.name} 缺少真实 run_id，拒绝生成调试身份")
     task_id = str(state.get("task_id") or "") if spec.task_level else ""
     if spec.task_level and not task_id:
         raise StepFailed(f"{spec.name} 缺少真实 task_id，拒绝生成调试身份")
-    existing = store.load(run_id, spec.name, task_id)
-    if existing is not None and existing.status == "succeeded":
-        checked = parse_output(spec.name, existing.output)
-        output = dump_model(checked)
-        return StepResult(
-            status="passed",
-            output=output,
-            next_action=spec.next_step or None,
-            audit=StepAudit(
-                input_summary=brief_value(existing.input),
-                output_summary=brief_value(output),
-                elapsed_ms=existing.duration_ms,
-            ),
-        )
+    # 不按步骤名复用历史成功输出。LangGraph checkpoint 负责恢复已完成节点；
+    # 重新显式调用节点（尤其单步调试、重试和验证链）时必须重新执行，
+    # 否则工作区或上游证据变化后可能拿到过期的验证/回归结果。
     started = time.perf_counter()
     record = StepRecord(
         name=spec.name,
@@ -154,7 +143,7 @@ def bind(
     *,
     next_step: str | None = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
-    """单步调试入口。已通过的记录不覆盖。默认沿用它声明的下一步。"""
+    """单步调试入口。每次显式调用都会执行步骤；默认沿用声明的下一步。"""
 
     def node(state: dict[str, Any]) -> dict[str, Any]:
         result = run_stage(spec, store, services, state)

@@ -44,13 +44,27 @@ def run(ctx: StepContext, data: ApplyPlanInput) -> ApplyPlanOutput:
     if not workspace.is_dir():
         raise StepFailed("方案落盘失败：AI 工作区不存在", {"applied": False, "reason": "工作区不存在"})
 
-    written: list[str] = []
-    skipped: list[str] = []
+    # 先验证整个计划，再进行任何写入。非法路径不能被静默跳过，
+    # 否则会出现“部分落盘但报告成功”的不一致状态。
+    resolved: list[tuple[FileEdit, Path]] = []
+    seen: set[str] = set()
     for edit in plan.edits:
         target = _resolve(workspace, edit.path)
-        if target is None:
-            skipped.append(edit.path)
+        key = target.as_posix().casefold()
+        if key in seen:
+            raise StepFailed(f"方案包含重复目标路径: {edit.path}", {"applied": False, "reason": "duplicate_path"})
+        seen.add(key)
+        if edit.action == "create" and target.exists():
+            raise StepFailed(f"方案要求新建但文件已存在: {edit.path}", {"applied": False, "reason": "target_exists"})
+        if edit.action == "update" and not target.exists():
+            raise StepFailed(f"方案要求更新但文件不存在: {edit.path}", {"applied": False, "reason": "target_missing"})
+        if edit.action == "delete" and not target.exists():
+            # 删除已不存在的文件是幂等操作，无需写入。
             continue
+        resolved.append((edit, target))
+
+    written: list[str] = []
+    for edit, target in resolved:
         if edit.action == "delete":
             target.unlink(missing_ok=True)
         else:
@@ -61,7 +75,7 @@ def run(ctx: StepContext, data: ApplyPlanInput) -> ApplyPlanOutput:
     return ApplyPlanOutput(
         applied=bool(written),
         written_files=written,
-        skipped=skipped,
+        skipped=[],
         authorized_files=sorted(written) if decision.tier == "project" else [],
         scope=decision.tier,
         reason=decision.reason,
@@ -74,15 +88,19 @@ def _decide(ctx: StepContext, data: ApplyPlanInput, plan: ApplyPlan) -> ScopeDec
     return policy.decide(plan=plan, decision=data.decision, carrier=data.carrier)
 
 
-def _resolve(workspace: Path, relative: str) -> Path | None:
-    """把方案里的相对路径解析到工作区内；越界或指向目录的路径直接拒掉。"""
-    candidate = (workspace / str(relative)).resolve(strict=False)
+def _resolve(workspace: Path, relative: str) -> Path:
+    """把方案里的相对路径解析到工作区内；非法路径直接拒绝整个方案。"""
+    raw = str(relative or "").strip()
+    relative_path = Path(raw)
+    if not raw or relative_path.is_absolute() or any(part == ".." for part in relative_path.parts):
+        raise StepFailed(f"方案路径必须是工作区内的相对路径: {relative!r}", {"applied": False, "reason": "invalid_path"})
+    candidate = (workspace / relative_path).resolve(strict=False)
     try:
-        candidate.relative_to(workspace)
-    except ValueError:
-        return None
-    if candidate.is_dir():
-        return None
+        candidate.relative_to(workspace.resolve())
+    except ValueError as error:
+        raise StepFailed(f"方案路径越出工作区: {relative!r}", {"applied": False, "reason": "path_escape"}) from error
+    if candidate.exists() and candidate.is_dir():
+        raise StepFailed(f"方案目标不能是目录: {relative!r}", {"applied": False, "reason": "target_is_directory"})
     return candidate
 
 
