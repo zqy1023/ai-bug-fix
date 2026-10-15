@@ -1,121 +1,120 @@
-"""跨进程安全的执行轮次修复资格登记。"""
+"""跨进程安全的单轮修复资格登记。"""
 
 from __future__ import annotations
 
 import json
-import os
-import tempfile
-from contextlib import contextmanager
+import sqlite3
 from pathlib import Path
-from threading import Lock
-from typing import Iterator
+from threading import RLock
 
 
 class ExecutionEligibility:
-    """同一 run、biztype、carrier 只允许领取一次资格。"""
+    """保证同一 run 内同一 biztype/carrier 只领取一次修复资格。
+
+    SQLite 主键约束负责跨进程原子性；JSON 文件只作为旧版本的一次性迁移来源。
+    """
 
     def __init__(self, root: str | Path | None = None) -> None:
-        self._lock = Lock()
-        self._path = Path(root).resolve() / "eligibility.json" if root else None
-        self._claimed: dict[str, str] = {}
-        if self._path:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            with self._file_lock():
-                self._claimed = self._read()
+        self._lock = RLock()
+        self._legacy_path: Path | None = None
+        if root is None:
+            self._connection = sqlite3.connect(":memory:", check_same_thread=False, timeout=30)
+        else:
+            directory = Path(root).resolve()
+            directory.mkdir(parents=True, exist_ok=True)
+            self._legacy_path = directory / "eligibility.json"
+            self._connection = sqlite3.connect(
+                str(directory / "eligibility.sqlite3"),
+                check_same_thread=False,
+                timeout=30,
+                isolation_level=None,
+            )
+        self._connection.row_factory = sqlite3.Row
+        self._connection.execute("PRAGMA busy_timeout=30000")
+        if root is not None:
+            self._connection.execute("PRAGMA journal_mode=WAL")
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS repair_eligibility (
+                claim_key TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                biztype TEXT NOT NULL,
+                carrier TEXT NOT NULL,
+                problem_key TEXT NOT NULL,
+                claimed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            )
+            """
+        )
+        self._migrate_legacy_json()
 
     def claim(self, run_id: str, biztype: str, carrier: str, problem_key: str) -> bool:
-        if not run_id or not biztype or not carrier:
-            raise ValueError("领取修复资格必须提供 run_id、biztype 和 carrier")
-        key = "|".join((run_id, biztype, carrier))
+        """原子领取资格；只有第一次插入成功返回 True。"""
+        key = f"{run_id}|{biztype}|{carrier}"
         with self._lock:
-            if self._path is None:
-                if key in self._claimed:
-                    return False
-                self._claimed[key] = problem_key
-                return True
-            with self._file_lock():
-                claimed = self._read()
-                if key in claimed:
-                    self._claimed = claimed
-                    return False
-                claimed[key] = problem_key
-                self._write(claimed)
-                self._claimed = claimed
-                return True
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                cursor = self._connection.execute(
+                    """
+                    INSERT OR IGNORE INTO repair_eligibility
+                        (claim_key, run_id, biztype, carrier, problem_key)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (key, run_id, biztype, carrier, problem_key),
+                )
+                claimed = cursor.rowcount == 1
+                self._connection.execute("COMMIT")
+                return claimed
+            except Exception:
+                if self._connection.in_transaction:
+                    self._connection.execute("ROLLBACK")
+                raise
 
     def claimed(self) -> dict[str, str]:
+        """返回登记快照，兼容原有调用约定。"""
         with self._lock:
-            if self._path is None:
-                return dict(self._claimed)
-            with self._file_lock():
-                self._claimed = self._read()
-                return dict(self._claimed)
+            rows = self._connection.execute(
+                "SELECT claim_key, problem_key FROM repair_eligibility ORDER BY claimed_at, claim_key"
+            ).fetchall()
+            return {str(row["claim_key"]): str(row["problem_key"]) for row in rows}
 
     def clear(self) -> None:
-        """仅供测试夹具清理；生产运行不得调用。"""
+        """清空登记；供明确调用的测试夹具使用。"""
         with self._lock:
-            if self._path is None:
-                self._claimed.clear()
-                return
-            with self._file_lock():
-                self._write({})
-                self._claimed = {}
+            self._connection.execute("DELETE FROM repair_eligibility")
 
-    @contextmanager
-    def _file_lock(self) -> Iterator[None]:
-        """使用 OS 文件锁实现跨进程互斥，兼容 Windows 与 POSIX。"""
-        assert self._path is not None
-        lock_path = self._path.with_suffix(".lock")
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with lock_path.open("a+b") as lock_file:
-            if os.name == "nt":
-                import msvcrt
-                lock_file.seek(0, os.SEEK_END)
-                if lock_file.tell() == 0:
-                    lock_file.write(b"0")
-                    lock_file.flush()
-                lock_file.seek(0)
-                msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
-                try:
-                    yield
-                finally:
-                    lock_file.seek(0)
-                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-                try:
-                    yield
-                finally:
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    def close(self) -> None:
+        """释放 SQLite 连接。"""
+        with self._lock:
+            self._connection.close()
 
-    def _read(self) -> dict[str, str]:
-        assert self._path is not None
-        if not self._path.exists():
-            return {}
+    def _migrate_legacy_json(self) -> None:
+        path = self._legacy_path
+        if path is None or not path.is_file():
+            return
         try:
-            payload = json.loads(self._path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as error:
-            raise RuntimeError(f"修复资格登记文件损坏: {self._path}") from error
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            # 保留损坏的旧文件供运维检查，不静默删除或覆盖。
+            return
         if not isinstance(payload, dict):
-            raise RuntimeError(f"修复资格登记文件格式错误: {self._path}")
-        return {str(key): str(value) for key, value in payload.items()}
-
-    def _write(self, payload: dict[str, str]) -> None:
-        assert self._path is not None
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        fd, temporary_name = tempfile.mkstemp(
-            prefix=f".{self._path.name}.", suffix=".tmp", dir=self._path.parent
-        )
-        temporary = Path(temporary_name)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                json.dump(payload, stream, ensure_ascii=False, indent=2)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, self._path)
-        finally:
-            temporary.unlink(missing_ok=True)
-
-
-__all__ = ["ExecutionEligibility"]
+            return
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                for key, problem_key in payload.items():
+                    parts = str(key).split("|", 2)
+                    if len(parts) != 3:
+                        continue
+                    self._connection.execute(
+                        """
+                        INSERT OR IGNORE INTO repair_eligibility
+                            (claim_key, run_id, biztype, carrier, problem_key)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (str(key), parts[0], parts[1], parts[2], str(problem_key)),
+                    )
+                self._connection.execute("COMMIT")
+            except Exception:
+                if self._connection.in_transaction:
+                    self._connection.execute("ROLLBACK")
+                raise

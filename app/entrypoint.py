@@ -16,7 +16,7 @@ from app.workflow.wiring import build_graph
 
 
 def run_workflow(run_id: str | None = None) -> dict[str, Any]:
-    """执行一次完整工作流。所有 carrier 任务复用同一个 AI 隔离工作区。"""
+    """执行一次完整工作流；每个 carrier 任务使用自己的隔离工作区。"""
     config = load_config()
     if config.source_repo is None:
         raise RuntimeError("AI_REPAIR_SOURCE_REPO 未配置，禁止启动完整修复工作流")
@@ -43,7 +43,7 @@ def run_workflow(run_id: str | None = None) -> dict[str, Any]:
                 "run_id": resolved,
                 "source_repo_path": str(config.source_repo),
                 "log_service_name": config.log_service_name,
-            "log_service_prefix": config.log_service_prefix,
+                "log_service_prefix": config.log_service_prefix,
                 "log_excluded_messages": list(config.ignore_errors),
                 "log_excluded_biztypes": list(config.excluded_biztypes),
                 "log_days": config.log_days,
@@ -60,11 +60,11 @@ def run_workflow(run_id: str | None = None) -> dict[str, Any]:
 
 
 def main() -> None:
-    """主入口下方的调试入口：跑整张图，打印本次执行的步骤记录名。"""
+    """命令行执行整张工作流。"""
     import argparse
     import json
 
-    parser = argparse.ArgumentParser(description="调试完整工作流")
+    parser = argparse.ArgumentParser(description="执行完整修复工作流")
     parser.add_argument("--run-id", default="", help="指定执行号；缺省自动生成")
     args = parser.parse_args()
     print(json.dumps(run_workflow(args.run_id or None), ensure_ascii=False, indent=2))
