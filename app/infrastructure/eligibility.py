@@ -1,61 +1,121 @@
-"""任务资格的文件持久化。
-
-资格键是 ``run_id + biztype + carrier``：同一轮执行里，一个运输商只自动修复
-一个问题。任务按运输商串行处理，进程内锁只防止同一进程内的重复登记；
-登记表落在本轮运行目录里，中断后恢复同一轮次时沿用这份记录，而不是重新领取。
-"""
+"""跨进程安全的执行轮次修复资格登记。"""
 
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from threading import Lock
+from typing import Iterator
+
+
 class ExecutionEligibility:
-    """保证一次执行中同一运输商只自动修复一次。"""
+    """同一 run、biztype、carrier 只允许领取一次资格。"""
 
     def __init__(self, root: str | Path | None = None) -> None:
-        """创建或打开资格登记文件。"""
-        self._claimed: dict[str, str] = {}
         self._lock = Lock()
         self._path = Path(root).resolve() / "eligibility.json" if root else None
-        if self._path and self._path.is_file():
-            payload = json.loads(self._path.read_text(encoding="utf-8"))
-            if isinstance(payload, dict):
-                self._claimed = {str(key): str(value) for key, value in payload.items()}
+        self._claimed: dict[str, str] = {}
+        if self._path:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            with self._file_lock():
+                self._claimed = self._read()
 
     def claim(self, run_id: str, biztype: str, carrier: str, problem_key: str) -> bool:
-        """领取本轮该运输商的唯一自动修复资格，首次领取返回 ``True``。
-
-        键不含问题指纹：同一运输商本轮已经修过一个问题后，后续问题不再领取。
-        登记值保留首次领取的问题指纹，便于中断后排查跳过原因。
-        """
-        key = f"{run_id}|{biztype}|{carrier}"
+        if not run_id or not biztype or not carrier:
+            raise ValueError("领取修复资格必须提供 run_id、biztype 和 carrier")
+        key = "|".join((run_id, biztype, carrier))
         with self._lock:
-            if key in self._claimed:
-                return False
-            self._claimed[key] = problem_key
-            self._persist()
-            return True
+            if self._path is None:
+                if key in self._claimed:
+                    return False
+                self._claimed[key] = problem_key
+                return True
+            with self._file_lock():
+                claimed = self._read()
+                if key in claimed:
+                    self._claimed = claimed
+                    return False
+                claimed[key] = problem_key
+                self._write(claimed)
+                self._claimed = claimed
+                return True
 
     def claimed(self) -> dict[str, str]:
-        """返回当前登记表的只读副本。"""
         with self._lock:
-            return dict(self._claimed)
+            if self._path is None:
+                return dict(self._claimed)
+            with self._file_lock():
+                self._claimed = self._read()
+                return dict(self._claimed)
 
     def clear(self) -> None:
-        """清空登记表，供测试夹具使用。"""
+        """仅供测试夹具清理；生产运行不得调用。"""
         with self._lock:
-            self._claimed.clear()
-            self._persist()
+            if self._path is None:
+                self._claimed.clear()
+                return
+            with self._file_lock():
+                self._write({})
+                self._claimed = {}
 
-    def _persist(self) -> None:
-        """把资格登记写入文件；内存模式只用于显式测试夹具。"""
-        if self._path is None:
-            return
+    @contextmanager
+    def _file_lock(self) -> Iterator[None]:
+        """使用 OS 文件锁实现跨进程互斥，兼容 Windows 与 POSIX。"""
+        assert self._path is not None
+        lock_path = self._path.with_suffix(".lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+b") as lock_file:
+            if os.name == "nt":
+                import msvcrt
+                lock_file.seek(0, os.SEEK_END)
+                if lock_file.tell() == 0:
+                    lock_file.write(b"0")
+                    lock_file.flush()
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+                try:
+                    yield
+                finally:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    def _read(self) -> dict[str, str]:
+        assert self._path is not None
+        if not self._path.exists():
+            return {}
+        try:
+            payload = json.loads(self._path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as error:
+            raise RuntimeError(f"修复资格登记文件损坏: {self._path}") from error
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"修复资格登记文件格式错误: {self._path}")
+        return {str(key): str(value) for key, value in payload.items()}
+
+    def _write(self, payload: dict[str, str]) -> None:
+        assert self._path is not None
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self._path.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps(self._claimed, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{self._path.name}.", suffix=".tmp", dir=self._path.parent
         )
-        temporary.replace(self._path)
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(payload, stream, ensure_ascii=False, indent=2)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self._path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+__all__ = ["ExecutionEligibility"]

@@ -1,13 +1,12 @@
-"""准生产回归适配器：在独立的 Git 工作区执行。
+"""准生产回归适配器：在独立 Git 工作区执行。
 
 回归环境从源仓库本地克隆，带完整 Git 历史，再只覆盖本轮声明改过的文件。
-命令在这个工作区里跑，跑完比对 HEAD：回归命令不得产生提交。
-该工作区与 AI 隔离区、开发人员正在使用的源仓库都不是同一个目录，
-命令失败或违规时整体删除，不留残留。
+命令只允许测试：不能提交、修改本轮代码或留下新的工作区文件。
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import stat
@@ -22,13 +21,12 @@ from git import Repo
 
 
 def _force_remove(func: Any, path: str, _exc_info: Any) -> None:
-    """Windows 上 .git 目录的只读文件需要先改权限才能删。"""
     os.chmod(path, stat.S_IWRITE)
     func(path)
 
 
 class RegressionRunner:
-    """在独立 Git 工作区跑固定命令，并校验命令没有提交代码。"""
+    """在独立 Git 工作区跑固定命令，并确认测试没有产生副作用。"""
 
     def __init__(
         self,
@@ -36,19 +34,16 @@ class RegressionRunner:
         commands: Sequence[Sequence[str]],
         source_repo: str | Path | None = None,
     ) -> None:
-        """注入工作区管理器、固定验证命令和回归基线所在的源仓库。"""
         self._workspaces = workspace_manager
         self._commands = [list(command) for command in commands]
         self._source_repo = source_repo
 
     def run(self, state: Mapping[str, Any]) -> dict[str, Any]:
-        """克隆回归工作区、执行固定命令，并确认 HEAD 没有前进。"""
         ai_workspace = state.get("ai_workspace_path")
         carrier = state.get("carrier")
         source_repo = state.get("source_repo_path") or self._source_repo
         if not ai_workspace or not carrier:
             return {"passed": False, "reason": "缺少 AI 工作区或 carrier"}
-        # 命令缺失比源仓库缺失更先报：没有命令时根本不该去建回归环境。
         if not self._commands:
             return {"passed": False, "reason": "未配置固定准生产回归命令", "regression": {}}
         if not source_repo:
@@ -59,8 +54,10 @@ class RegressionRunner:
         workspace: Path | None = None
         repo: Repo | None = None
         result: dict[str, Any] = {}
-        before = ""
-        after = ""
+        before = after = ""
+        status_before = status_after = ""
+        hashes_before: dict[str, str] = {}
+        hashes_after: dict[str, str] = {}
         failure: dict[str, Any] | None = None
         try:
             workspace = self._workspaces.create_regression_workspace(
@@ -69,45 +66,62 @@ class RegressionRunner:
             project = self._workspaces.project_root(workspace)
             repo = Repo(workspace)
             before = str(repo.head.commit.hexsha)
+            status_before = repo.git.status("--porcelain", "--untracked-files=all")
+            hashes_before = _changed_hashes(project, changed)
             result = run_fixed_commands(project, _commands_for(self._commands, changed))
             after = str(repo.head.commit.hexsha)
+            status_after = repo.git.status("--porcelain", "--untracked-files=all")
+            hashes_after = _changed_hashes(project, changed)
         except WorkspaceError as error:
             failure = {"passed": False, "reason": f"回归环境建立失败: {error}"}
         except Exception as error:
             failure = {"passed": False, "reason": f"回归环境执行失败: {error}"}
         finally:
-            # 先关 GitPython 的句柄，否则 Windows 上删不掉 .git 目录。
             if repo is not None:
                 repo.close()
-            # 无论命令成功、失败还是违规，回归克隆都要删掉，不能留在运行目录里。
             if workspace is not None:
                 try:
                     shutil.rmtree(workspace)
                 except OSError:
-                    # Windows 上 .git 内的只读文件可能需要权限回调才能删掉。
                     shutil.rmtree(workspace, onerror=_force_remove)
         if failure is not None:
             return failure
-
         if not result.get("passed"):
-            return {
-                "passed": False,
-                "regression": result,
-                "reason": "准生产回归命令执行失败",
-            }
+            return {"passed": False, "regression": result, "reason": "准生产回归命令执行失败"}
         if before != after:
             return {
                 "passed": False,
                 "regression": {
-                    **result,
-                    "passed": False,
-                    "reason": "准生产回归命令产生了提交",
-                    "head_before": before,
-                    "head_after": after,
+                    **result, "passed": False, "reason": "准生产回归命令产生了提交",
+                    "head_before": before, "head_after": after,
                 },
                 "reason": "准生产回归命令违反约束，产生了提交",
             }
+        if status_before != status_after or hashes_before != hashes_after:
+            return {
+                "passed": False,
+                "regression": {**result, "passed": False, "reason": "准生产回归命令修改了工作区文件"},
+                "reason": "准生产回归命令必须只测试，不得改变代码或生成未跟踪文件",
+            }
         return {"passed": True, "regression": result, "reason": ""}
+
+
+def _changed_hashes(project: Path, changed_files: list[str]) -> dict[str, str]:
+    """记录本轮修改文件的哈希，发现测试命令偷偷改写代码。"""
+    result: dict[str, str] = {}
+    root = project.resolve()
+    for relative in changed_files:
+        target = (root / relative).resolve(strict=False)
+        try:
+            target.relative_to(root)
+        except ValueError:
+            result[relative] = "PATH_ESCAPE"
+            continue
+        if target.is_file() and not target.is_symlink():
+            result[relative] = hashlib.sha256(target.read_bytes()).hexdigest()
+        else:
+            result[relative] = "MISSING"
+    return result
 
 
 def _commands_for(commands: Sequence[Sequence[str]], changed_files: list[str]) -> list[list[str]]:

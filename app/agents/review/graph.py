@@ -160,7 +160,7 @@ def _evidence_block(state: dict[str, Any]) -> str:
         suffix = f"（AST={ast_state}）" if ast_state != "n/a" else ""
         lines.append(f"- {relative}：status={status}，新增 {added} 行，删除 {removed} 行{suffix}")
 
-        # 添加敏感信息检测结果（已降级为警告，不阻断流程）
+        # 敏感信息属于确定性安全门禁：命中时不允许仅靠 Agent 语义判断放行。
         secret_hits = int(item.get("secret_hits") or 0)
         if secret_hits > 0:
             secret_warnings += secret_hits
@@ -195,9 +195,7 @@ def _evidence_block(state: dict[str, Any]) -> str:
 
     if secret_warnings > 0:
         lines.append(
-            f"- 敏感信息提示：检测到 {secret_warnings} 处疑似敏感信息。"
-            "请结合上下文判断：区分硬编码 vs 环境变量、真实凭据 vs 测试 mock、注释和示例代码。"
-            "只有生产代码中的硬编码真实凭据才属于违规。"
+            f"- 安全门禁失败：检测到 {secret_warnings} 处疑似硬编码敏感信息；必须先移除或替换为安全配置，不能通过语义解释绕过。"
         )
 
     if declared and not changes:
@@ -267,6 +265,15 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
         workspace=workspace,
         model=model_name(runtime),
     )
+    if "安全门禁失败" in evidence_text:
+        return {
+            "verdict": "FAIL", "passed": False,
+            "summary": "确定性安全门禁阻断：检测到疑似硬编码敏感信息",
+            "findings": ["检测到疑似敏感信息，需移除硬编码凭据或替换为安全配置"],
+            "required_changes": ["修复敏感信息命中后重新执行确定性检查"],
+            "change_plan": {}, "raw_result": "", "_usage": {},
+            "_audit": {"tool_call_count": 0, "blocked_by": "secret_gate"},
+        }
     raw = runtime.run(request)
     raw = raw if isinstance(raw, dict) else {}
     payload = parse_result(raw, "review")

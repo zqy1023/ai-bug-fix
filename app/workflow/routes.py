@@ -26,6 +26,7 @@ APPROVE = "request_approval"
 APPLY = "apply_plan"
 DELIVER = "prepare_delivery"
 FINALIZE = "finalize_execution"
+RETRY = "retry_prepare"
 
 
 def after_deduplicate(state: WorkflowState) -> str:
@@ -43,7 +44,7 @@ def _result(state: WorkflowState) -> str:
 
 
 def _retry_or_finalize(state: WorkflowState) -> str:
-    return FINALIZE if int(state.get("attempt") or 1) >= int(state.get("max_attempts") or 3) else REPAIR
+    return FINALIZE if int(state.get("attempt") or 1) >= int(state.get("max_attempts") or 3) else RETRY
 
 
 def _needs_human_authorization(state: WorkflowState) -> bool:
@@ -163,8 +164,8 @@ def after_approval(state: WorkflowState) -> str:
     """审批后路由：根据 scope 决定是 apply 共享层还是直接交付"""
     approval_result = _result(state)
 
-    # 拒绝：重试或终止
-    if approval_result == "rejected":
+    # 人工明确拒绝后进入有上限的回修循环，不得继续 apply 或交付。
+    if str(state.get("decision") or "").upper() == "REJECT" or approval_result == "rejected":
         return _retry_or_finalize(state)
 
     # 其他非通过状态：终止
@@ -193,7 +194,7 @@ def after_apply(state: WorkflowState) -> str:
 __all__ = [
     "APPLY", "APPROVE", "CHECK", "CLAIM", "DEDUPLICATE", "DELIVER", "DISCOVER",
     "EVIDENCE", "FINALIZE", "IDENTIFY", "LOCATE", "NORMALIZE", "REGRESSION", "REPAIR",
-    "REVIEW", "SNAPSHOT", "TASK_DISPATCH", "VERIFY", "WORKSPACE",
+    "REVIEW", "RETRY", "SNAPSHOT", "TASK_DISPATCH", "VERIFY", "WORKSPACE",
     "after_apply", "after_approval", "after_check_changes", "after_claim",
     "after_deduplicate", "after_evidence", "after_identify", "after_locate",
     "after_regression", "after_repair", "after_review", "after_source_snapshot",

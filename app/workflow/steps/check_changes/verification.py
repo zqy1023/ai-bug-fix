@@ -299,12 +299,11 @@ def _inspect_file(
         samples = _secret_samples(text, stats)
         entry["secret_samples"] = samples
         entry["secret_hits"] = len(samples)
-        # 敏感信息检测降级为警告：不阻塞流程，由 review_agent 结合上下文做语义判断
-        # （区分硬编码 vs 环境变量、真实凭据 vs 测试 mock、注释和示例代码）
-        # for sample in samples:
-        #     problems.append(
-        #         f"疑似敏感信息: 第{sample['line']}行 {sample['snippet']}"
-        #     )
+        # 安全门禁不可降级为 Agent 警告：疑似凭据命中必须先移除或替换。
+        for sample in samples:
+            problems.append(
+                f"疑似硬编码敏感信息: 第{sample['line']}行（{sample['source']}）"
+            )
         if candidate.suffix == ".py":
             tree = ast.parse(text, filename=str(candidate))
             visitor = _DangerousNodeVisitor()

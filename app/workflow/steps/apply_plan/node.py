@@ -8,6 +8,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
+import tempfile
+
+from app.application.plans import ChangePlan, FileEdit
 
 from app.infrastructure.filesystem.scope import CarrierScopePolicy
 from app.domain.errors import StepFailed
@@ -63,14 +67,58 @@ def run(ctx: StepContext, data: ApplyPlanInput) -> ApplyPlanOutput:
             continue
         resolved.append((edit, target))
 
+    # 先把所有新内容写入同目录临时文件，再统一替换；中途失败时恢复备份。
+    staged: list[tuple[FileEdit, Path, Path | None]] = []
+    backups: dict[Path, bytes | None] = {}
     written: list[str] = []
-    for edit, target in resolved:
-        if edit.action == "delete":
-            target.unlink(missing_ok=True)
-        else:
+    try:
+        for edit, target in resolved:
+            backups[target] = target.read_bytes() if target.exists() else None
+            if edit.action == "delete":
+                staged.append((edit, target, None))
+                continue
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(edit.content, encoding="utf-8")
-        written.append(edit.path)
+            fd, name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".stage", dir=target.parent)
+            temporary = Path(name)
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+                stream.write(edit.content)
+                stream.flush()
+                os.fsync(stream.fileno())
+            staged.append((edit, target, temporary))
+
+        for edit, target, temporary in staged:
+            if edit.action == "delete":
+                target.unlink(missing_ok=True)
+            else:
+                assert temporary is not None
+                os.replace(temporary, target)
+            written.append(edit.path)
+    except Exception as error:
+        for target, content in reversed(list(backups.items())):
+            try:
+                if content is None:
+                    target.unlink(missing_ok=True)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    fd, name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".rollback", dir=target.parent)
+                    with os.fdopen(fd, "wb") as stream:
+                        stream.write(content)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    os.replace(name, target)
+            except OSError:
+                raise StepFailed(
+                    f"方案写入失败且回滚失败，工作区需要人工恢复: {target}",
+                    {"applied": False, "reason": "rollback_failed"},
+                ) from error
+        raise StepFailed(
+            f"方案写入失败，已尝试回滚: {error}",
+            {"applied": False, "reason": "write_failed"},
+        ) from error
+    finally:
+        for _, _, temporary in staged:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     return ApplyPlanOutput(
         applied=bool(written),
@@ -94,7 +142,18 @@ def _resolve(workspace: Path, relative: str) -> Path:
     relative_path = Path(raw)
     if not raw or relative_path.is_absolute() or any(part == ".." for part in relative_path.parts):
         raise StepFailed(f"方案路径必须是工作区内的相对路径: {relative!r}", {"applied": False, "reason": "invalid_path"})
-    candidate = (workspace / relative_path).resolve(strict=False)
+    unresolved = workspace / relative_path
+    current = workspace.resolve()
+    for part in relative_path.parts:
+        if part in {"", "."}:
+            continue
+        current = current / part
+        if current.is_symlink():
+            raise StepFailed(
+                f"方案路径不得经过符号链接: {relative!r}",
+                {"applied": False, "reason": "symlink_path"},
+            )
+    candidate = unresolved.resolve(strict=False)
     try:
         candidate.relative_to(workspace.resolve())
     except ValueError as error:

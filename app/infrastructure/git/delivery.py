@@ -123,9 +123,12 @@ class GitBranchDelivery:
             # 顺序反过来的话，未提交的新文件会让 checkout 因冲突失败。
             base = self._base_branch(repo, self._config.remote_name)
             if str(branch) in {head.name for head in delivery_repo.heads}:
-                delivery_repo.git.checkout(str(branch))
-            else:
-                delivery_repo.git.checkout("-b", str(branch), base)
+                raise DeliveryError(
+                    f"修复分支已存在，拒绝在旧分支上叠加新任务: {branch}",
+                    status="GIT_BRANCH_EXISTS",
+                    branch_workspace_path=str(workspace),
+                )
+            delivery_repo.git.checkout("-b", str(branch), base)
 
             changed_files = self._copy_changed_files(
                 source_root,

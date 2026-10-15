@@ -27,7 +27,8 @@ from app.workflow.plugin_loader import load_all
 from app.workflow.registry import PluginError
 from app.workflow.spec import AgentSpec
 from config.settings import settings
-from langgraph.checkpoint.memory import MemorySaver
+import sqlite3
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph.state import CompiledStateGraph
 
 def _agent_builder(kind: str) -> Callable[[Any | None], CompiledStateGraph]:
@@ -407,7 +408,7 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
             "last_result": "failed" if failed else "passed",
             "next_step": spec.next_step,
             "retry_reason": reason if failed else "",
-            "attempt": int(state.get("attempt") or 1) + (1 if failed else 0),
+            "attempt": int(state.get("attempt") or 1),
             "terminal_status": (
                 "manual"
                 if kind == "locate" and (failed or bool((state.get("evidence") or {}).get("legacy_only")))
@@ -451,7 +452,20 @@ def build_graph(
     先编译任务子图，再把它作为节点嵌套进 run 级主图。
     """
     resolved_store = store or RecordStore(load_config().runtime_dir)
-    saver = MemorySaver() if checkpointer is None else checkpointer
+    if checkpointer is None:
+        runtime_dir = load_config().runtime_dir
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(
+            str(runtime_dir / "workflow-checkpoints.sqlite3"),
+            check_same_thread=False,
+            timeout=30,
+        )
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA busy_timeout=30000")
+        saver = SqliteSaver(connection)
+        saver.setup()
+    else:
+        saver = checkpointer
     nodes = build_nodes(resolved_store, services or build_services(), runtimes)
     task_graph = build_task_graph(nodes)
     return build_state_graph(nodes, task_graph, checkpointer=saver)

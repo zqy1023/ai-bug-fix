@@ -1,8 +1,9 @@
-"""Response 重放执行器：在隔离环境中执行 gather main.py 并验证解析结果。"""
+"""Response 重放执行器：通过 JSON 文件传参，避免把日志内容拼接进 Python 源码。"""
 
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -11,16 +12,7 @@ from typing import Any
 
 
 class ReplayResult:
-    """重放执行结果。"""
-
-    def __init__(
-        self,
-        success: bool,
-        output: str = "",
-        error: str = "",
-        exception_type: str = "",
-        traceback: str = "",
-    ) -> None:
+    def __init__(self, success: bool, output: str = "", error: str = "", exception_type: str = "", traceback: str = "") -> None:
         self.success = success
         self.output = output
         self.error = error
@@ -33,6 +25,55 @@ class ReplayResult:
         return f"ReplayResult(success=False, error={self.error}, exception_type={self.exception_type})"
 
 
+_REPLAY_SCRIPT = r'''
+import json
+import sys
+import traceback
+from pathlib import Path
+
+try:
+    payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+    gather_main_path = Path(payload["gather_main_path"]).resolve()
+    sys.path.insert(0, str(gather_main_path.parent.parent))
+    from server_dev import main
+    from framework.model.track_model import TrackRequestItemModel, TrackModel, TrackRequestConfigModel
+
+    req_data = payload["req"]
+    response_data = payload["response"]
+    track_config_data = payload["track_config"]
+    reqs = [TrackRequestItemModel(
+        number=req_data.get("number", ""),
+        param=req_data.get("param", ""),
+        language=req_data.get("language", ""),
+        gather_channel=req_data.get("gather_channel", "api"),
+        user_token=req_data.get("user_token", "{\"app\":false}"),
+    )]
+    track_config = TrackRequestConfigModel(
+        proxy=track_config_data.get("proxy", ""),
+        timeout=track_config_data.get("timeout", 60000),
+    )
+    model = TrackModel(
+        carrier=payload["carrier"],
+        requests=reqs,
+        track_config=track_config,
+        response=response_data,
+    )
+    result = main(model)
+    print(json.dumps({
+        "success": True,
+        "result": result.model_dump() if hasattr(result, "model_dump") else str(result),
+    }, ensure_ascii=False))
+except Exception as error:
+    print(json.dumps({
+        "success": False,
+        "exception_type": type(error).__name__,
+        "error": str(error),
+        "traceback": traceback.format_exc(),
+    }, ensure_ascii=False), file=sys.stderr)
+    sys.exit(1)
+'''
+
+
 def run_replay(
     *,
     carrier: str,
@@ -42,180 +83,76 @@ def run_replay(
     gathers_root: Path,
     timeout_seconds: int = 30,
 ) -> ReplayResult:
-    """执行 response 重放验证。
-
-    参数:
-        carrier: 运输商代码 (如 "GLS")
-        req_json: 请求 JSON 字符串
-        response_json: 响应 JSON 字符串
-        track_config_json: track_config JSON 字符串
-        gathers_root: gathers 代码根目录
-        timeout_seconds: 执行超时时间 (秒)
-
-    返回:
-        ReplayResult: 重放执行结果
-
-    工作原理:
-        1. 生成临时重放脚本 (注入 response)
-        2. 在独立 subprocess 中执行
-        3. 捕获标准输出、异常和 traceback
-        4. 解析结果判断是否成功
-    """
-    gather_path = gathers_root / carrier / "main.py"
-    if not gather_path.exists():
-        return ReplayResult(
-            success=False,
-            error=f"Gather 文件不存在: {gather_path}",
-        )
-
-    # 生成临时重放脚本
-    script_content = _generate_replay_script(
-        carrier=carrier,
-        req_json=req_json,
-        response_json=response_json,
-        track_config_json=track_config_json,
-        gather_main_path=str(gather_path),
-    )
-
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as tmp:
-        tmp.write(script_content)
-        tmp_path = Path(tmp.name)
+    """执行 response 重放；carrier 路径和 JSON 输入均按数据处理，不插入源码。"""
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", carrier) or carrier in {".", ".."}:
+        return ReplayResult(False, error="carrier 名称包含非法路径字符")
+    root = gathers_root.resolve()
+    gather_path = (root / carrier / "main.py").resolve()
+    try:
+        gather_path.relative_to(root)
+    except ValueError:
+        return ReplayResult(False, error="carrier 路径越出 gathers 根目录")
+    if not gather_path.is_file():
+        return ReplayResult(False, error=f"Gather 文件不存在: {gather_path}")
 
     try:
-        result = subprocess.run(
-            [sys.executable, str(tmp_path)],
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            cwd=str(gathers_root.parent),  # 在 gathers 的父目录执行
-        )
+        payload: dict[str, Any] = {
+            "carrier": carrier,
+            "req": json.loads(req_json),
+            "response": response_json,
+            "track_config": json.loads(track_config_json),
+            "gather_main_path": str(gather_path),
+        }
+    except (json.JSONDecodeError, TypeError) as error:
+        return ReplayResult(False, error=f"重放输入 JSON 无效: {error}")
 
-        # 解析输出
-        stdout = result.stdout.strip()
-        stderr = result.stderr.strip()
-
-        if result.returncode == 0:
-            # 成功执行，解析输出
-            try:
-                output_data = json.loads(stdout)
-                return ReplayResult(
-                    success=True,
-                    output=json.dumps(output_data, ensure_ascii=False, indent=2),
-                )
-            except json.JSONDecodeError:
-                return ReplayResult(
-                    success=False,
-                    error="重放脚本输出不是有效的 JSON",
-                    output=stdout,
-                )
-        else:
-            # 执行失败，解析错误
-            error_info = _parse_error_from_stderr(stderr)
-            return ReplayResult(
-                success=False,
-                error=error_info.get("error", stderr),
-                exception_type=error_info.get("exception_type", ""),
-                traceback=error_info.get("traceback", stderr),
-            )
-
-    except subprocess.TimeoutExpired:
-        return ReplayResult(
-            success=False,
-            error=f"重放执行超时 ({timeout_seconds}s)",
-        )
-    except Exception as e:
-        return ReplayResult(
-            success=False,
-            error=f"重放执行异常: {e}",
-        )
-    finally:
-        # 清理临时文件
+    with tempfile.TemporaryDirectory(prefix="ai-replay-") as directory:
+        input_path = Path(directory) / "input.json"
+        input_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         try:
-            tmp_path.unlink()
-        except Exception:
-            pass
+            result = subprocess.run(
+                [sys.executable, "-c", _REPLAY_SCRIPT, str(input_path)],
+                capture_output=True,
+                text=True,
+                timeout=max(1, int(timeout_seconds)),
+                cwd=str(root.parent),
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return ReplayResult(False, error=f"重放执行超时 ({timeout_seconds}s)")
+        except OSError as error:
+            return ReplayResult(False, error=f"无法启动重放子进程: {error}")
+
+    stdout = result.stdout.strip()
+    stderr = result.stderr.strip()
+    if result.returncode != 0:
+        try:
+            error_data = json.loads(stderr)
+        except json.JSONDecodeError:
+            error_data = {"error": stderr or f"子进程退出码 {result.returncode}", "traceback": stderr}
+        return ReplayResult(
+            False,
+            error=str(error_data.get("error") or "重放执行失败"),
+            exception_type=str(error_data.get("exception_type") or ""),
+            traceback=str(error_data.get("traceback") or stderr),
+        )
+
+    # 允许被测代码向 stdout 打日志，读取最后一行结构化结果。
+    for line in reversed(stdout.splitlines()):
+        try:
+            output_data = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(output_data, dict) and output_data.get("success") is True:
+            return ReplayResult(True, output=json.dumps(output_data, ensure_ascii=False, indent=2))
+        if isinstance(output_data, dict) and output_data.get("success") is False:
+            return ReplayResult(
+                False,
+                error=str(output_data.get("error") or "重放执行失败"),
+                exception_type=str(output_data.get("exception_type") or ""),
+                traceback=str(output_data.get("traceback") or ""),
+            )
+    return ReplayResult(False, error="重放脚本未输出有效的成功 JSON", output=stdout[-4000:])
 
 
-def _generate_replay_script(
-    *,
-    carrier: str,
-    req_json: str,
-    response_json: str,
-    track_config_json: str,
-    gather_main_path: str,
-) -> str:
-    """生成重放脚本，注入 response 并执行 main。"""
-    # 转义 JSON 字符串中的引号和反斜杠
-    req_escaped = req_json.replace("\\", "\\\\").replace('"', '\\"')
-    response_escaped = response_json.replace("\\", "\\\\").replace('"', '\\"')
-    track_config_escaped = track_config_json.replace("\\", "\\\\").replace('"', '\\"')
-
-    return f'''"""自动生成的 Response 重放脚本"""
-import json
-import sys
-import traceback
-from pathlib import Path
-
-# 动态导入 gather main
-sys.path.insert(0, str(Path("{gather_main_path}").parent.parent))
-
-try:
-    from server_dev import main
-    from framework.model.track_model import TrackRequestItemModel, TrackModel, TrackRequestConfigModel
-
-    # 解析输入数据
-    req_data = json.loads("""{req_escaped}""")
-    response_data = """{response_escaped}"""
-    track_config_data = json.loads("""{track_config_escaped}""")
-
-    # 构造请求
-    reqs = [TrackRequestItemModel(
-        number=req_data.get("number", ""),
-        param=req_data.get("param", ""),
-        language=req_data.get("language", ""),
-        gather_channel=req_data.get("gather_channel", "api"),
-        user_token=req_data.get("user_token", "{{\\"app\\":false}}"),
-    )]
-
-    track_config = TrackRequestConfigModel(
-        proxy=track_config_data.get("proxy", ""),
-        timeout=track_config_data.get("timeout", 60000),
-    )
-
-    model = TrackModel(
-        carrier="{carrier}",
-        requests=reqs,
-        track_config=track_config,
-        response=response_data,
-    )
-
-    # 执行 main
-    result = main(model)
-
-    # 输出结果 (JSON 格式)
-    print(json.dumps({{
-        "success": True,
-        "result": result.model_dump() if hasattr(result, "model_dump") else str(result),
-    }}, ensure_ascii=False))
-
-except Exception as e:
-    # 输出错误 (JSON 格式)
-    print(json.dumps({{
-        "success": False,
-        "exception_type": type(e).__name__,
-        "error": str(e),
-        "traceback": traceback.format_exc(),
-    }}, ensure_ascii=False), file=sys.stderr)
-    sys.exit(1)
-'''
-
-
-def _parse_error_from_stderr(stderr: str) -> dict[str, str]:
-    """从 stderr 解析错误信息。"""
-    try:
-        error_data = json.loads(stderr)
-        return error_data
-    except json.JSONDecodeError:
-        # stderr 不是 JSON，直接返回原始错误
-        return {"error": stderr, "exception_type": "", "traceback": stderr}
-
+__all__ = ["ReplayResult", "run_replay"]

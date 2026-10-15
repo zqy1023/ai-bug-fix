@@ -19,6 +19,7 @@ class ApprovalInput(FrozenModel):
     baseline_manifest: dict[str, str] = Field(default_factory=dict)
     baseline_dir: str
     authorized_files: list[str] = Field(default_factory=list)
+    approval_fingerprint: str = ""
 
 
 class ApprovalOutput(FrozenModel):

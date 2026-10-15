@@ -148,7 +148,13 @@ def bind(
     def node(state: dict[str, Any]) -> dict[str, Any]:
         result = run_stage(spec, store, services, state)
         action = result.next_action if next_step is None else next_step
-        patch = spec.patch(result.output) if result.status == "passed" else {}
+        # 审批拒绝是业务决定而非节点崩溃；保留 REJECT 决定供路由进入有上限的回修循环。
+        if result.status == "passed" or (
+            spec.name == "request_approval" and str(result.output.get("decision") or "").upper() == "REJECT"
+        ):
+            patch = spec.patch(result.output)
+        else:
+            patch = {}
         return {
             **patch,
             "last_result": result.status,

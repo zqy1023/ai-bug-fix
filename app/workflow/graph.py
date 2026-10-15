@@ -30,6 +30,7 @@ from app.workflow.routes import (
     REGRESSION,
     REPAIR,
     REVIEW,
+    RETRY,
     SNAPSHOT,
     VERIFY,
     WORKSPACE,
@@ -76,6 +77,7 @@ _TASK_NODES = (
     APPLY,
     DELIVER,
     FINALIZE,
+    RETRY,
 )
 
 
@@ -94,9 +96,24 @@ def build_task_graph(nodes: dict[str, Callable[..., Any]]) -> CompiledStateGraph
     单独挂一份会让人工审批的 interrupt 落到两个不同的检查点上。
     """
     graph: StateGraph = StateGraph(WorkflowState)
-    retry = _transient_retry()
+    # 任务图含文件写入、审批和 Git 交付等副作用节点，不做通用自动重试。
+    # 业务重试通过 retry_prepare 统一计数，避免重复提交或推送。
     for name in _TASK_NODES:
-        graph.add_node(name, nodes[name], retry_policy=retry)
+        if name == RETRY:
+            graph.add_node(name, lambda state: {
+                "attempt": int(state.get("attempt") or 1) + 1,
+                "decision": "PENDING",
+                "approval_granted": False,
+                "review_decision": "",
+                "review": {},
+                "change_plan": {},
+                "scope_escalation_required": False,
+                "authorized_files": [],
+                "plan_applied": False,
+                "last_result": "passed",
+            })
+        else:
+            graph.add_node(name, nodes[name])
 
     graph.add_edge(START, CLAIM)
     graph.add_conditional_edges(CLAIM, after_claim, [SNAPSHOT, FINALIZE])
@@ -106,17 +123,19 @@ def build_task_graph(nodes: dict[str, Callable[..., Any]]) -> CompiledStateGraph
     graph.add_conditional_edges(WORKSPACE, after_workspace, [REPAIR, FINALIZE])
 
     # repair → check → verify → regression 链路（支持重试）
-    graph.add_conditional_edges(REPAIR, after_repair, [CHECK, REPAIR, APPROVE, FINALIZE])
-    graph.add_conditional_edges(CHECK, after_check_changes, [VERIFY, REPAIR, FINALIZE])
-    graph.add_conditional_edges(VERIFY, after_verify, [REGRESSION, REPAIR, FINALIZE])
-    graph.add_conditional_edges(REGRESSION, after_regression, [REVIEW, APPROVE, REPAIR, FINALIZE])
+    graph.add_conditional_edges(REPAIR, after_repair, [CHECK, RETRY, APPROVE, FINALIZE])
+    graph.add_conditional_edges(CHECK, after_check_changes, [VERIFY, RETRY, FINALIZE])
+    graph.add_conditional_edges(VERIFY, after_verify, [REGRESSION, RETRY, FINALIZE])
+    graph.add_conditional_edges(REGRESSION, after_regression, [REVIEW, APPROVE, RETRY, FINALIZE])
 
     # review 后的条件分支
-    graph.add_conditional_edges(REVIEW, after_review, [REPAIR, APPROVE, DELIVER, FINALIZE])
+    graph.add_conditional_edges(REVIEW, after_review, [REPAIR, APPROVE, DELIVER, RETRY, FINALIZE])
 
     # 审批和应用
-    graph.add_conditional_edges(APPROVE, after_approval, [REPAIR, APPLY, DELIVER, FINALIZE])
-    graph.add_conditional_edges(APPLY, after_apply, [CHECK, REPAIR, FINALIZE])
+    graph.add_conditional_edges(APPROVE, after_approval, [REPAIR, APPLY, DELIVER, RETRY, FINALIZE])
+    graph.add_conditional_edges(APPLY, after_apply, [CHECK, RETRY, FINALIZE])
+
+    graph.add_edge(RETRY, REPAIR)
 
     # 交付和终止
     graph.add_edge(DELIVER, FINALIZE)
@@ -177,9 +196,10 @@ def build_graph(
 ) -> CompiledStateGraph:
     """编译 run 级主图。``task_graph`` 作为 ``run_task`` 节点嵌套进来。"""
     graph: StateGraph = StateGraph(RunState)
+    # 只有日志拉取是无副作用的外部读取，允许瞬时故障自动重试。
     retry = _transient_retry()
     for name in _RUN_NODES:
-        graph.add_node(name, nodes[name], retry_policy=retry)
+        graph.add_node(name, nodes[name], retry_policy=retry if name == DISCOVER else None)
     graph.add_node(TASK_DISPATCH, dispatch)
     graph.add_node(RUN_TASK, task_graph)
     graph.add_node(TASK_COLLECT, collect)
@@ -212,6 +232,7 @@ __all__ = [
     "REGRESSION",
     "REPAIR",
     "REVIEW",
+    "RETRY",
     "RUN_TASK",
     "SNAPSHOT",
     "TASK_COLLECT",
