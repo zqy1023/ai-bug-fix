@@ -49,8 +49,9 @@ def _check_task_topology() -> list[str]:
 
     problems: list[str] = []
     declared = set(TASK_NODE_NAMES)
-    registered = {spec.name for spec in __import__("app.workflow.registry", fromlist=["steps"]).steps()}
-    registered |= {spec.name for spec in __import__("app.workflow.registry", fromlist=["agents"]).agents()}
+    from app.workflow import registry
+    registered = {spec.name for spec in registry.steps() if spec.task_level}
+    registered |= {spec.name for spec in registry.agents() if spec.task_level}
     # retry_prepare 是编排内置节点，不是业务插件。
     registered.add("retry_prepare")
     for name in sorted(registered - declared):
