@@ -40,14 +40,14 @@ TASK_STATIC_TRANSITIONS: tuple[tuple[str, str], ...] = (
 
 TASK_CONDITIONAL_TRANSITIONS = (
     (PREPARE_CONTEXT, after_prepare_context, (LOCATE, FINALIZE)),
-    # after_locate may route to APPROVE when manual intervention is required.
+    # 定位不确定或非 carrier 范围结论只产出报告，不进入中间审批。
     (LOCATE, after_locate, (CLAIM, APPROVE, FINALIZE)),
     (CLAIM, after_claim, (REPAIR, FINALIZE)),
     (REPAIR, after_repair, (VALIDATE, RETRY, APPROVE, FINALIZE)),
     (VALIDATE, after_validate_changes, (REGRESSION, RETRY, FINALIZE)),
     (REGRESSION, after_regression, (REVIEW, APPROVE, RETRY, FINALIZE)),
     (REVIEW, after_review, (REPAIR, APPROVE, DELIVER, RETRY, FINALIZE)),
-    # Manual-intervention approval can resume at LOCATE or CLAIM; normal approval uses the other targets.
+    # APPROVE 仅用于分支交付后的最终人工审批。
     (APPROVE, after_approval, (LOCATE, CLAIM, REPAIR, APPLY, DELIVER, RETRY, FINALIZE)),
     (DELIVER, after_delivery, (APPROVE, FINALIZE, END)),
     (FINALIZE, after_finalize, (DELIVER, END)),
