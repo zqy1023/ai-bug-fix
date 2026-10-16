@@ -28,7 +28,7 @@ DEFAULTS: dict[str, Any] = {
     "tools": list(WRITE_TOOLS),
     "max_turns": 30,
     "max_tool_calls": 32,
-    "max_context_chars": 24000,
+    "max_context_chars": 100000,
     "max_candidate_files": 8,
     "max_diff_chars": 16000,
     "timeout_seconds": 1800,
