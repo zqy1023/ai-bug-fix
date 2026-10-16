@@ -116,7 +116,10 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
             ]
             final_path = store.task_dir(run_id, task_id) / "reports" / "final.json"
             report = _read_json(final_path, {})
-            approval = next((s for s in task_steps if s.get("name") == "request_approval"), None)
+            # 同一任务可经历多轮回修与多次审批；必须以最后一次 request_approval 为准。
+            # 读取第一条会让旧的已完成审批遮蔽当前 running/PENDING 的 interrupt，
+            # API 随后把 MARK_DONE 当作历史登记，根本不恢复 LangGraph checkpoint。
+            approval = next((s for s in reversed(task_steps) if s.get("name") == "request_approval"), None)
             carrier = str((report or {}).get("carrier") or _task_identity(slot, "carrier"))
             biztype = str((report or {}).get("biztype") or _task_identity(slot, "biztype"))
             inferred_status = str((report or {}).get("result") or _task_status(task_steps, approval))
