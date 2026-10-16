@@ -43,6 +43,10 @@ class ApprovalInput(FrozenModel):
     authorized_files: list[str] = Field(default_factory=list)
     # approval_fingerprint：字段说明见该模型文档与工作流契约。
     approval_fingerprint: str = ""
+    # 最终审批拒绝时清理已经推送的修复分支。
+    source_repo_path: str = ""
+    repair_branch: str = ""
+    delivery_pushed: bool = False
 
 
 class ApprovalOutput(FrozenModel):
