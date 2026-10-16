@@ -72,3 +72,11 @@ docker compose build
 - 隐藏思考块、完整 SDK 消息对象、Prompt 正文不写入调试归档；终端输出保持摘要化，hook 调试文件限 5 MiB 并滚动一份。
 - 暂停请求持久化到 `workbench-control.sqlite3`，在下一节点边界调用 LangGraph interrupt；继续清除暂停标志并复用原 thread_id。取消请求在安全边界进入 FINALIZE，后续不得回修、审批、回归或 Git 交付，最终报告应为 CANCELLED。
 - 控制表升级必须为已有 SQLite 数据库补充 `pause_requested` 列，不能要求清空旧控制库。
+
+
+## 运行控制边界补充
+
+- 暂停请求在节点边界触发 LangGraph interrupt，暂停中的节点会记录 waiting 状态；恢复使用原 thread_id，并对 interrupt 使用 Command(resume=None)。
+- Agent 子图节点入口也检查暂停/取消标志，避免请求刚好发生在普通步骤与 Agent 节点之间时仍启动新的模型调用。
+- 取消一个已暂停的执行会先清除 pause_requested，再恢复检查点进入取消收尾；final.json 必须保留 CANCELLED，而不是根据前序节点结论误写成 SUCCESS。
+- 单个 run 的 API 后台启动与恢复持有进程内运行锁，避免同一进程内重复恢复同一个 thread_id。

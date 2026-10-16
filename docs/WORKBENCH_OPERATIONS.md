@@ -74,7 +74,10 @@ docker compose logs -f api frontend
 | `steps.json` | Run 级与任务级节点状态、业务结论、摘要、耗时、错误和产物引用 | 每个节点状态变化时原子更新；不存大段原始事件 |
 | `reports/final.json` | 单个任务的最终业务结论、耗时、token 汇总和完成步骤 | 每个任务收尾时生成；取消任务标记 CANCELLED |
 | `reports/run_failure.json` | 图外后台异常的安全摘要 | 仅后台发生未捕获异常时生成 |
-| `artifacts/**/*.json` | 日志、证据、diff、回归和交付等大体量结构化产物 | 由节点按需生成；steps.json 只存引用 |
+| `tasks/<task_id>/agents/*.json` | locate/repair/review Agent 的结果摘要和原始业务结论 | Agent 节点完成时生成；不包含隐藏思考流 |
+| `tasks/<task_id>/metrics/agent.jsonl` | 每次 Agent 调用的 token 用量、耗时、工具次数和业务状态 | 每次 Agent 调用追加一行 |
+| `tasks/<task_id>/audit/agent_events.jsonl` | 过滤后的工具调用、工具结果和最终公开输出，按调用 ID 关联 | 每次调用追加多行；不保存中间分析、Prompt 正文或编辑全文 |
+| `tasks/<task_id>/**` 下的其他 JSON | 证据、diff、验证、回归和交付报告等节点产物 | 由步骤按声明的相对路径生成；steps.json 只保存引用 |
 | `model_calls.jsonl` | 每次 Provider 调用的模型、角色、耗时、用量、输出摘要及事件索引 | 每次模型调用追加一行；旧记录缺失事件时不补造 |
 | `tasks/<task_id>/audit/agent_events.jsonl` | 按任务分拆的有效 Agent 对话/工具事件 | 每次调用逐事件追加，使用 model_call_id 关联 |
 | `workbench-control.sqlite3` | 启动幂等键、暂停/取消意图、控制操作审计 | 控制 API 首次调用时创建；必须持久化挂载 |

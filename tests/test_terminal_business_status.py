@@ -80,3 +80,7 @@ def test_business_conclusions_drive_routes_without_relabeling_step_execution():
     assert _route_status("FAIL") == "failed"
     assert _route_status("SUCCESS") == "passed"
     assert _route_status(None) == "passed"
+
+
+def test_cancelled_terminal_status_is_preserved_in_final_report():
+    assert _delivery_status([], "CANCELLED") == "CANCELLED"

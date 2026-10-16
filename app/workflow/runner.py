@@ -174,8 +174,11 @@ def bind(
     """单步调试入口。每次显式调用都会执行步骤；默认沿用声明的下一步。"""
 
     def node(state: dict[str, Any]) -> dict[str, Any]:
-        result = run_stage(spec, store, services, state)
         run_id = str(state.get("run_id") or "")
+        # 若取消发生在最终收尾前，必须让 final.json 也记录 CANCELLED，而不是覆盖成 SUCCESS。
+        if spec.name == "finalize_execution" and cancellation_requested(store.root, run_id):
+            state = {**state, "terminal_status": "CANCELLED"}
+        result = run_stage(spec, store, services, state)
         cancelled = spec.name != "finalize_execution" and cancellation_requested(store.root, run_id)
         action = result.next_action if next_step is None else next_step
         if cancelled:
