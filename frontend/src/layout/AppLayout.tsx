@@ -24,7 +24,7 @@ export function AppLayout() {
   const [collapsed, setCollapsed] = useState(false);
   const [tokenDraft, setTokenDraft] = useState('');
   const selected = location.pathname.startsWith('/runs/') ? '/runs' : location.pathname;
-  const current = routeMeta.find((item) => item.key === selected) ?? { title: '执行详情', eyebrow: 'RUN INSPECTOR' };
+  const current = location.pathname.startsWith('/runs/') ? { title: '执行详情', eyebrow: 'RUN INSPECTOR' } : routeMeta.find((item) => item.key === selected) ?? { title: '工作台', eyebrow: 'INCIDENT OPERATIONS' };
   const health = useQuery({ queryKey: ['workbench-health'], queryFn: api.health, refetchInterval: 30000, retry: 1 });
   const approvals = useQuery({ queryKey: ['approvals'], queryFn: api.approvals, refetchInterval: 15000, retry: 1 });
   const authRequired = health.error instanceof ApiError && health.error.status === 401;
