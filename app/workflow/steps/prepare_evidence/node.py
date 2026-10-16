@@ -6,6 +6,7 @@ import ast
 import re
 import sqlite3
 from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -156,10 +157,14 @@ def _published_knowledge(problem: dict[str, Any], carrier: str, biztype: str, ca
         return []
 
     query = _query_tokens(problem)
+    error_text = str(problem.get("error") or "")
+    fingerprint = sha256(error_text.encode("utf-8")).hexdigest() if error_text else ""
     ranked: list[tuple[int, dict[str, str]]] = []
     for row in rows:
         item = dict(row)
         score = 0
+        if fingerprint and item.get("fingerprint") == fingerprint:
+            score += 30
         if item.get("carrier") and item["carrier"] == carrier:
             score += 12
         if item.get("biztype") and item["biztype"] == biztype:
