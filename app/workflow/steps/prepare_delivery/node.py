@@ -50,6 +50,7 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
                 "analysis_only": data.analysis_only,
                 "report_paths": list(data.report_paths),
                 "delivery_status": "ANALYSIS_ONLY" if data.analysis_only else "REPAIR",
+                "require_push": True,
                 "error": data.error,
                 "repair_analysis": data.repair_analysis,
                 "repair_summary": data.repair_summary,
