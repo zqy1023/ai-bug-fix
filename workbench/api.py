@@ -513,14 +513,6 @@ def decide_approval(
         raise HTTPException(status_code=422, detail="变更审批 decision 只能是 APPROVE 或 REJECT")
 
     if not task.get("approval_pending"):
-        # 历史 MANUAL 任务已经结束，不存在可恢复的 interrupt；仍允许登记人工处理完毕。
-        if mode == "manual_intervention" and decision in {"MARK_DONE", "TERMINATE"}:
-            now = datetime.now(timezone.utc).isoformat()
-            store.write_artifact(run_id, "reports/manual_resolution.json", {
-                "status": "completed" if decision == "MARK_DONE" else "terminated",
-                "decision": decision, "reason": request.reason, "resolved_at": now,
-            }, task_id)
-            return {"run_id": run_id, "task_id": task_id, "decision": decision, "status": "resolved"}
         raise HTTPException(status_code=409, detail="该任务当前没有可恢复的人工决策中断；历史终态任务不能原地续跑")
 
     with _RUN_LOCKS_GUARD:
@@ -543,7 +535,7 @@ def decide_approval(
             now = datetime.now(timezone.utc).isoformat()
             store.write_artifact(run_id, "reports/manual_resolution.json", {
                 "status": "completed" if decision == "MARK_DONE" else "terminated",
-                "decision": decision, "reason": request.decision, "resolved_at": now,
+                "decision": decision, "reason": request.reason, "resolved_at": now,
             }, task_id)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"恢复工作流失败：{type(exc).__name__}: {exc}") from exc
@@ -1180,6 +1172,9 @@ def v1_list_approvals(
         if status != "pending":
             continue
         step = item.get("approval_step") or {}
+        approval_input = step.get("input") if isinstance(step.get("input"), dict) else {}
+        if str(approval_input.get("mode") or "") == "manual_intervention":
+            continue
         output = step.get("output") if isinstance(step.get("output"), dict) else {}
         plan = output.get("change_plan") if isinstance(output.get("change_plan"), dict) else {}
         files = plan.get("changed_files") or plan.get("files") or []
@@ -1275,6 +1270,8 @@ def v1_decide_manual_intervention(
     decision = request.decision.upper()
     if decision not in {"RETRY_LOCATE", "CONTINUE_REPAIR", "MARK_DONE", "TERMINATE"}:
         raise HTTPException(status_code=422, detail="人工介入动作无效")
+    if decision in {"CONTINUE_REPAIR", "MARK_DONE", "TERMINATE"} and not request.reason.strip():
+        raise HTTPException(status_code=422, detail="继续修复、人工完成或终止操作必须填写处置说明")
     actor = "bearer-token" if authorization else "local-user"
     _audit_control(run_id, task_id, "manual_intervention." + decision.lower(), actor, request.reason)
     return decide_approval(run_id, task_id, ApprovalRequest(decision=decision, reason=request.reason))
