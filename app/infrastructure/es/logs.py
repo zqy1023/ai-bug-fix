@@ -64,6 +64,9 @@ class ESLogAdapter:
                     "must_not": [
                         {"match_phrase": {"message": rule}} for rule in excluded_messages
                     ] + [
+                        # Redis 连接异常属于日志采集基础设施故障，不应被识别为 carrier 业务问题。
+                        {"match_phrase": {"message": "redis.exceptions.ConnectionError"}},
+                    ] + [
                         {"match_phrase": {"biztype": biztype}} for biztype in excluded_biztypes
                     ],
                 }
@@ -185,15 +188,9 @@ class ESLogAdapter:
         if error_index >= 0:
             error = message[error_index + len(error_marker):].strip()
         else:
-            # 没有 " error:" 标记，尝试从 message 前缀提取错误主题
-            # 格式如：2026-10-15 08:07:27 [0] ERROR gather.py.track - 时间格式错误:...
-            prefix = message[:req_index].strip()
-            # 提取最后一个 " - " 后面的部分作为错误描述
-            if " - " in prefix:
-                error = prefix.split(" - ")[-1].strip()
-            else:
-                # 无法提取错误信息，放弃此条日志
-                return None
+            # 没有显式 error: 字段时，保留完整原始 message。
+            # 日志主题后可能包含 model/key/req 等字段；按逗号或 req: 截断会丢失关键信息。
+            error = message.strip()
 
         if not error:
             return None
