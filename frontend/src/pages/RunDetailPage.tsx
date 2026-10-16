@@ -85,7 +85,7 @@ export function RunDetailPage() {
         { title: '运输商', dataIndex: 'carrier', key: 'carrier' },
         { title: '业务类型', dataIndex: 'biztype', key: 'biztype' },
         { title: '结论', dataIndex: 'result', key: 'result', render: (v: string) => <Tag color={['MANUAL', 'INSUFFICIENT_EVIDENCE'].includes(String(v).toUpperCase()) ? 'orange' : undefined}>{resultLabel(v)}</Tag> },
-        { title: '结束步骤', dataIndex: 'terminal_step', key: 'terminal_step', render: (v?: string) => v || '进行中' },
+        { title: '结束 / 当前步骤', dataIndex: 'terminal_step', key: 'terminal_step', render: (v?: string) => v || '进行中' },
         { title: '结束原因', dataIndex: 'terminal_reason', key: 'terminal_reason', render: (v?: string) => <Text ellipsis={{ tooltip: v }} style={{ maxWidth: 420, display: 'inline-block' }}>{v || '尚未结束'}</Text> },
         { title: '操作', key: 'action', render: (_: unknown, row: { task_id: string }) => <Button type="link" onClick={(event) => { event.stopPropagation(); selectTask(row.task_id); }}>查看任务详情</Button> }
       ]} /> : <Empty description="本轮尚无任务" />}
