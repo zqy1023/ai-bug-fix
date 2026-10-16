@@ -76,3 +76,57 @@ def test_locate_provider_detects_disconnect_from_sdk_events_even_when_error_says
 
     assert _is_transient_query_error(error) is True
 
+
+def test_shared_layer_candidate_is_escalated_to_project_scope_for_change_plan(tmp_path):
+    from app.agents.locate.graph import _validate_output_paths
+    from app.agents.locate.models import LocateOutput, SourceEvidence
+
+    root = tmp_path / "workspace"
+    carrier_root = root / "gathers" / "CarrierA"
+    shared_root = root / "common"
+    carrier_root.mkdir(parents=True)
+    shared_root.mkdir()
+    (carrier_root / "main.py").write_text("class CarrierA: pass", encoding="utf-8")
+    (shared_root / "redis_utils.py").write_text("def connect(): pass", encoding="utf-8")
+
+    output = LocateOutput(
+        status="LOCATED",
+        root_cause="共享 Redis 连接层异常",
+        category="shared",
+        facts=["连接失败发生在共享连接层"],
+        source_evidence=[SourceEvidence(path="common/redis_utils.py", symbol="connect", finding="连接异常")],
+        candidate_files=["common/redis_utils.py"],
+        recommended_scope="carrier",
+    )
+
+    _validate_output_paths(root, (str(carrier_root), str(shared_root)), carrier_root, output)
+
+    assert output.recommended_scope == "project"
+
+
+def test_shared_layer_candidate_outside_allowed_read_roots_is_rejected(tmp_path):
+    import pytest
+    from app.agents.locate.graph import _validate_output_paths
+    from app.agents.locate.models import LocateOutput, SourceEvidence
+
+    root = tmp_path / "workspace"
+    carrier_root = root / "gathers" / "CarrierA"
+    private_root = root / "secrets"
+    carrier_root.mkdir(parents=True)
+    private_root.mkdir()
+    (carrier_root / "main.py").write_text("class CarrierA: pass", encoding="utf-8")
+    (private_root / "credentials.py").write_text("TOKEN = 'not-a-real-secret'", encoding="utf-8")
+
+    output = LocateOutput(
+        status="LOCATED",
+        root_cause="疑似共享层问题",
+        category="shared",
+        facts=["候选路径必须经过只读范围校验"],
+        source_evidence=[SourceEvidence(path="secrets/credentials.py", symbol="TOKEN", finding="路径测试")],
+        candidate_files=["secrets/credentials.py"],
+        recommended_scope="project",
+    )
+
+    with pytest.raises(ValueError, match="超出只读证据范围"):
+        _validate_output_paths(root, (str(carrier_root),), carrier_root, output)
+
