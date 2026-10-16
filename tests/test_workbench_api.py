@@ -210,3 +210,50 @@ def test_v1_start_persists_run_before_scheduling_background_task(tmp_path, monke
     workbench_api._RUN_LOCKS[result["run_id"]].release()
     with workbench_api._RUN_LOCKS_GUARD:
         workbench_api._STARTED_RUNS.discard(result["run_id"])
+
+
+def test_v1_approval_projection_uses_real_repair_plan_and_hides_file_contents(monkeypatch):
+    monkeypatch.setattr(workbench_api, "_store", lambda: object())
+    monkeypatch.setattr(workbench_api, "list_approvals", lambda: {
+        "items": [{
+            "run_id": "run-plan",
+            "task_id": "task-plan",
+            "carrier": "ExampleCarrier",
+            "biztype": "track_server",
+            "updated_at": "2026-10-16T00:00:00+00:00",
+            "approval_step": {"input": {"mode": "change_approval", "recommended_scope": "project"}, "output": {}},
+        }],
+    })
+    monkeypatch.setattr(workbench_api, "_run_payload", lambda _store, _run_id: {
+        "tasks": [{
+            "task_id": "task-plan",
+            "steps": [{
+                "name": "repair_agent",
+                "output": {
+                    "summary": "共享层响应解析需要调整",
+                    "changed_files": [],
+                    "change_plan": {
+                        "scope": "project",
+                        "rationale": "统一处理上游空响应",
+                        "requires_human_authorization": True,
+                        "edits": [{
+                            "path": "common/redis_utils.py",
+                            "action": "update",
+                            "note": "增加空响应保护",
+                            "content": "SENSITIVE_FULL_FILE_CONTENT",
+                        }],
+                    },
+                },
+            }],
+        }],
+    })
+
+    result = workbench_api.v1_list_approvals("pending", None)
+
+    assert result["total"] == 1
+    item = result["items"][0]
+    assert item["scope"] == "project"
+    assert item["changed_files"] == ["common/redis_utils.py"]
+    assert item["change_plan"]["edits"][0]["path"] == "common/redis_utils.py"
+    assert "content" not in item["change_plan"]["edits"][0]
+    assert "SENSITIVE_FULL_FILE_CONTENT" not in str(item)
