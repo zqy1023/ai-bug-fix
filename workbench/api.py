@@ -1078,6 +1078,13 @@ def v1_create_knowledge_case(
     case_id = uuid.uuid4().hex
     connection = _control_db()
     try:
+        if source_run_id and source_task_id:
+            existing = connection.execute(
+                "SELECT case_id FROM repair_knowledge_cases WHERE source_run_id=? AND source_task_id=? LIMIT 1",
+                (source_run_id, source_task_id),
+            ).fetchone()
+            if existing is not None:
+                raise HTTPException(status_code=409, detail="该执行任务已存在知识案例，请直接查看已有案例")
         connection.execute(
             """INSERT INTO repair_knowledge_cases
             (case_id,title,fingerprint,carrier,biztype,root_cause,evidence,change_summary,
