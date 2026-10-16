@@ -26,26 +26,37 @@ _FAILED_RESULTS = frozenset({"FAIL", "FAILED", "MANUAL", "REJECTED", "INSUFFICIE
 
 
 def run(ctx: StepContext, data: FinalizeInput) -> FinalizeOutput:
-    """写精简 final.json。步骤全文在 steps.json，这里不再复制。"""
+    """写入可直接用于处置的终态报告；原始步骤记录仍以 steps.json 为准。"""
     records = [record for record in ctx.store.list_steps(ctx.run.run_id, data.task_id) if record.name != _SELF]
     terminal_status = "CANCELLED" if cancellation_requested(ctx.store.root, ctx.run.run_id) else data.terminal_status
     result = _delivery_status(records, terminal_status)
+    terminal_step, terminal_reason, next_action = _terminal_details(records, terminal_status, result)
+    finished_at = datetime.now(timezone.utc).isoformat()
+    locate = _output(records, "locate_agent")
+    repair = _output(records, "repair_agent")
     report = {
-        "task_id": data.task_id,
-        "carrier": data.carrier,
-        "biztype": data.biztype,
-        "problem": _problem(ctx, data.task_id),
-        "result": result,
-        "status": result,
+        "report_version": 2, "report_kind": "task_final",
+        "task_id": data.task_id, "carrier": data.carrier, "biztype": data.biztype,
+        "problem": _problem(ctx, data.task_id), "result": result, "status": result,
+        "terminal_status": result, "terminal_step": terminal_step,
+        "terminal_reason": terminal_reason, "next_action": next_action, "finished_at": finished_at,
         "elapsed_ms": round(sum(record.duration_ms for record in records), 2),
         "tokens": _tokens(ctx, data.task_id),
+        "root_cause": str(locate.get("root_cause") or locate.get("analysis") or ""),
+        "change_summary": str(repair.get("summary") or repair.get("analysis") or ""),
         "completed_steps": [record.name for record in records if record.status in {"succeeded", "skipped"}],
     }
     knowledge_case_id = _capture_knowledge_candidate(ctx, data, records, report)
     if knowledge_case_id:
         report["knowledge_case_id"] = knowledge_case_id
     path = ctx.store.write_artifact(ctx.run.run_id, FINAL_REPORT, report, data.task_id)
-    return FinalizeOutput(report_path=path, delivery_status=result)
+    return FinalizeOutput(report_path=path, delivery_status=result, terminal_step=terminal_step,
+                          terminal_reason=terminal_reason, next_action=next_action, finished_at=finished_at)
+
+
+def _output(records: list[StepRecord], name: str) -> dict[str, Any]:
+    record = next((item for item in records if item.name == name), None)
+    return record.output if record is not None and isinstance(record.output, dict) else {}
 
 
 
