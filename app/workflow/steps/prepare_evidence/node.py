@@ -248,11 +248,11 @@ def run(ctx: StepContext, data: EvidenceInput) -> EvidenceOutput:
     """定位唯一 carrier 目录并返回有限候选文件。旧框架任务不进入修复。"""
     if not is_registered_service(data.service_name):
         raise StepFailed(f"service_name 未注册，禁止准备修复证据: {data.service_name}")
-    if not data.source_project_path:
-        raise StepFailed("缺少 prepare_source_snapshot 提供的源项目路径")
+    if not data.workspace_path:
+        raise StepFailed("缺少 prepare_workspace 提供的隔离工作区路径")
     root = Path(data.source_project_path).resolve()
     if not root.is_dir():
-        raise StepFailed(f"源项目路径不存在: {root}")
+        raise StepFailed(f"隔离工作区路径不存在: {root}")
     safe_carrier = WorkspaceManager.safe_carrier_name(data.carrier)
     new_entry = root / "gathers" / safe_carrier / "main.py"
     legacy_dir = root / "spiders" / safe_carrier
