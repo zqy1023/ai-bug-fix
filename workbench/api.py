@@ -1203,8 +1203,8 @@ def v1_capture_knowledge_from_task(
         biztype = str(task.get("biztype") or "")
         title = f"{carrier or '未知运输商'} / {biztype or '未知业务类型'}：{root_cause[:120]}"
         problem_value = task.get("problem") or {}
-        problem_serialized = json.dumps(problem_value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        fingerprint = sha256(problem_serialized.encode("utf-8")).hexdigest()
+        problem_error = str(problem_value.get("error") or "") if isinstance(problem_value, dict) else str(problem_value)
+        fingerprint = sha256(problem_error.encode("utf-8")).hexdigest() if problem_error else ""
         now = datetime.now(timezone.utc).isoformat()
         case_id = uuid.uuid4().hex
         cursor = connection.execute(
