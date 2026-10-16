@@ -59,6 +59,7 @@ def _patch(output: dict[str, Any]) -> dict[str, Any]:
         # 只有实际的方案批准才算共享层升级授权。
         "approval_granted": decision == "APPROVE",
         "escalation_used": decision == "APPROVE",
+        "approval_cleanup_failed": bool(output.get("approval_cleanup_failed")),
     }
     if decision == "RETRY_LOCATE":
         patch.update({
