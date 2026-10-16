@@ -26,7 +26,7 @@ export function DashboardPage() {
   const columns = [
     { title: '执行 ID', dataIndex: 'run_id', key: 'run_id', render: (v: string) => <a onClick={() => navigate('/runs/' + encodeURIComponent(v))}>{v}</a> },
     { title: '状态', dataIndex: 'status', key: 'status', render: (v: RunSummary['status']) => <StatusTag status={v} /> },
-    { title: '任务进度', key: 'progress', render: (_: unknown, row: RunSummary) => <span>{row.succeeded_tasks}/{row.task_count} 完成{row.waiting_tasks ? ' · ' + row.waiting_tasks + ' 等待' : ''}</span> },
+    { title: '任务进度', key: 'progress', render: (_: unknown, row: RunSummary) => <span>{row.succeeded_tasks}/{row.task_count} 成功{row.failed_tasks ? ' · ' + row.failed_tasks + ' 失败' : ''}{row.manual_tasks ? ' · ' + row.manual_tasks + ' 人工介入' : ''}{row.waiting_tasks ? ' · ' + row.waiting_tasks + ' 待审批' : ''}</span> },
     { title: '开始时间', dataIndex: 'started_at', key: 'started_at', render: formatDate },
     { title: '发起人', dataIndex: 'operator', key: 'operator', render: (v?: string) => v || '系统' },
   ];

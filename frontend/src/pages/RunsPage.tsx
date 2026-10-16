@@ -21,7 +21,7 @@ export function RunsPage() {
   const columns = [
     { title: '执行 ID', dataIndex: 'run_id', key: 'run_id', render: (v: string) => <a onClick={() => navigate('/runs/' + encodeURIComponent(v))}>{v}</a> },
     { title: '状态', dataIndex: 'status', key: 'status', render: (v: RunSummary['status']) => <StatusTag status={v} /> },
-    { title: '任务进度', key: 'progress', render: (_: unknown, row: RunSummary) => <span>{row.succeeded_tasks}/{row.task_count} 完成 · {row.failed_tasks} 失败</span> },
+    { title: '任务进度', key: 'progress', render: (_: unknown, row: RunSummary) => <span>{row.succeeded_tasks}/{row.task_count} 完成 · {row.failed_tasks} 失败 · {row.manual_tasks ?? 0} 人工介入</span> },
     { title: '开始时间', dataIndex: 'started_at', key: 'started_at', render: (v: string) => dayjs(v).isValid() ? dayjs(v).format('YYYY-MM-DD HH:mm:ss') : '—' },
     { title: '结束时间', dataIndex: 'finished_at', key: 'finished_at', render: (v?: string | null) => v && dayjs(v).isValid() ? dayjs(v).format('YYYY-MM-DD HH:mm:ss') : '—' },
     { title: '发起人', dataIndex: 'operator', key: 'operator', render: (v?: string) => v || '系统' },

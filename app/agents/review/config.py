@@ -47,17 +47,29 @@ class ReviewConfigError(ValueError):
 class ReviewConfig:
     """审查 agent 的运行配置。"""
 
+    # description：配置用途说明。
     description: str = ""
+    # enabled：是否启用审查 Agent。
     enabled: bool = True
+    # provider：模型调用适配器。
     provider: str = "claude_session"
+    # tools：只读工具白名单。
     tools: tuple[str, ...] = READ_ONLY_TOOLS
+    # max_turns：模型交互回合上限。
     max_turns: int = 20
+    # max_tool_calls：工具调用总数上限。
     max_tool_calls: int = 24
+    # max_context_chars：上下文字符上限。
     max_context_chars: int = 24000
+    # max_candidate_files：候选文件数量上限。
     max_candidate_files: int = 8
+    # max_diff_chars：差异证据字符上限。
     max_diff_chars: int = 16000
+    # timeout_seconds：单次审查超时秒数。
     timeout_seconds: int = 900
+    # options：Provider 扩展参数。
     options: Mapping[str, Any] = field(default_factory=dict)
+    # source：当前配置来源。
     source: str = "defaults"
 
     @property

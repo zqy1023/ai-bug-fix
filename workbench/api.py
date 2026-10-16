@@ -127,10 +127,12 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
     results = [str(task["status"]).upper() for task in tasks]
     created = datetime.fromtimestamp(directory.stat().st_ctime, tz=timezone.utc).isoformat()
     updated = datetime.fromtimestamp(directory.stat().st_mtime, tz=timezone.utc).isoformat()
-    status = "waiting_approval" if pending else _derive_run_status(run_steps, tasks)
+    run_failure = _read_json(directory / "reports" / "run_failure.json", {})
+    status = "failed" if isinstance(run_failure, dict) and run_failure else ("waiting_approval" if pending else _derive_run_status(run_steps, tasks))
     return {
         "run_id": run_id,
         "status": status,
+        "run_error": run_failure if isinstance(run_failure, dict) else {},
         "created_at": created,
         "updated_at": updated,
         "steps": run_steps,
@@ -193,9 +195,16 @@ def _derive_run_status(steps: list[dict[str, Any]], tasks: list[dict[str, Any]])
         return "pending"
     if any(step.get("status") == "failed" for step in steps):
         return "failed"
-    if tasks and all(task["status"] not in {"RUNNING", "PENDING", "WAITING_APPROVAL"} for task in tasks):
-        if any(str(task["status"]).upper() in {"FAILED", "FAIL"} for task in tasks):
-            return "failed"
+    if tasks and all(str(task["status"]).upper() not in {"RUNNING", "PENDING", "WAITING_APPROVAL", "QUEUED"} for task in tasks):
+        task_results = [str(task["status"]).upper() for task in tasks]
+        failed = any(result in {"FAILED", "FAIL", "REJECTED"} for result in task_results)
+        manual = any(result in {"MANUAL", "MANUAL_REVIEW_REQUIRED", "INSUFFICIENT_EVIDENCE"} for result in task_results)
+        succeeded = any(result in {"SUCCESS", "SUCCEEDED", "COMPLETED"} for result in task_results)
+        if manual:
+            # 人工介入不是成功；避免把包含 MANUAL 任务的整轮执行误标为已完成。
+            return "partial_failed"
+        if failed:
+            return "partial_failed" if succeeded else "failed"
         return "completed"
     if not tasks and any(step.get("name") == "identify_carrier" and step.get("status") in {"succeeded", "skipped"} for step in steps):
         return "completed"
@@ -475,6 +484,7 @@ def _v1_run_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "task_count": int(summary.get("tasks_total") or len(payload.get("tasks") or [])),
         "succeeded_tasks": int(summary.get("tasks_success") or 0),
         "failed_tasks": int(summary.get("tasks_failed") or 0),
+        "manual_tasks": int(summary.get("tasks_manual") or 0),
         "waiting_tasks": int(summary.get("tasks_waiting_approval") or 0),
         "operator": payload.get("operator") or "系统", "created_at": created, "updated_at": payload.get("updated_at") or created,
     }
@@ -543,6 +553,7 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
             "review_mode": run_meta.get("review_mode", "agent"), "max_attempts": run_meta.get("max_attempts", 3),
         },
         "steps": steps, "tasks": tasks, "artifacts": artifacts,
+        "run_error": payload.get("run_error") or {},
         "checkpoint": {"resumable": resumable, "next_nodes": next_nodes},
     }
 
@@ -657,12 +668,35 @@ def v1_start_run(
     return {"run_id": run_id, "status": "accepted", "idempotent_replay": False}
 
 
+def _record_background_failure(run_id: str, error: Exception) -> None:
+    """将图外异常写成可查询的终态产物，避免后台任务失败后 Run 永久显示运行中。"""
+    try:
+        directory = _store().run_dir(_safe_id(run_id))
+        if not directory.is_dir():
+            return
+        report_dir = directory / "reports"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        target = report_dir / "run_failure.json"
+        temporary = report_dir / "run_failure.json.tmp"
+        payload = {
+            "status": "FAILED",
+            "error_type": type(error).__name__,
+            "message": "后台工作流异常，请检查服务端日志并按 run_id 查询完整堆栈。",
+            "failed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(target)
+    except Exception:
+        logger.exception("无法写入后台失败报告 run_id=%s", run_id)
+
+
 def _run_workflow_background_v1(run_id: str, overrides: dict[str, Any]) -> None:
     from app.entrypoint import run_workflow
     try:
         run_workflow(run_id, overrides=overrides)
-    except Exception:
+    except Exception as exc:
         logger.exception("工作流后台执行失败 run_id=%s", run_id)
+        _record_background_failure(run_id, exc)
 
 
 @app.get("/api/v1/runs/{run_id}")
@@ -691,8 +725,9 @@ def _resume_workflow_background(run_id: str) -> None:
         from app.workflow.wiring import build_graph
         graph = build_graph(store=_store())
         graph.invoke(None, config={"configurable": {"thread_id": run_id}, "recursion_limit": 40})
-    except Exception:
+    except Exception as exc:
         logger.exception("恢复工作流失败 run_id=%s", run_id)
+        _record_background_failure(run_id, exc)
 
 
 @app.post("/api/v1/runs/{run_id}/cancel", status_code=202)

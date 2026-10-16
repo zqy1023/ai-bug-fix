@@ -29,6 +29,7 @@ def _merge(current: dict[str, Any] | None, update: dict[str, Any] | None) -> dic
 
 def _union(current: list[str] | None, update: list[str] | None) -> list[str]:
     """路径清单按出现顺序去重合并，后写入的清单不能抹掉先写入的。"""
+    # seen：该状态字段供工作流节点传递结构化执行数据。
     seen: dict[str, None] = {}
     for item in [*(current or []), *(update or [])]:
         text = str(item).replace("\\", "/").strip()
@@ -42,50 +43,82 @@ class WorkflowState(TypedDict, total=False):
 
     # 身份与执行参数：由父图分发任务时注入
     run_id: str
+    # task_id：当前任务标识。
     task_id: str
+    # task：当前运输商任务的结构化输入。
     task: dict[str, Any]
+    # problem：本任务的规范化异常问题。
     problem: dict[str, Any]
+    # source_repo_path：源 Git 仓库路径。
     source_repo_path: str
+    # attempt：当前修复尝试序号。
     attempt: int
+    # max_attempts：单任务最大尝试次数。
     max_attempts: int
+    # review_mode：审查模式。
     review_mode: str
+    # retry_reason：上一轮失败或驳回原因。
     retry_reason: str
 
     # 任务局部产物
     source_project_path: str
+    # framework：目标 carrier 的框架类型。
     framework: str
+    # ai_workspace_path：隔离 AI 工作区路径。
     ai_workspace_path: str
     baseline_manifest: Annotated[dict[str, str], _merge]
+    # baseline_dir：只读基线目录。
     baseline_dir: str
     changed_files: Annotated[list[str], _union]
     # 两类改动分开记账：repair_changed_files 是修复 Agent 在 carrier 内的改动，
     # plan_changed_files 是获批共享层方案实际落盘的文件。changed_files 始终是
     # 两者去重后的并集，供门禁、回归和交付使用；任一类落盘都不能覆盖另一类。
     repair_changed_files: list[str]
+    # plan_changed_files：获批方案实际落盘的文件。
     plan_changed_files: list[str]
+    # repair：修复 Agent 的结构化结论。
     repair: dict[str, Any]
+    # locate：根因定位 Agent 的结构化结论。
     locate: dict[str, Any]
+    # review：审查 Agent 的结构化结论。
     review: dict[str, Any]
+    # evidence：确定性预检与源码证据。
     evidence: dict[str, Any]
+    # check_passed：变更安全门禁是否通过。
     check_passed: bool
+    # verify_passed：问题修复验证是否通过。
     verify_passed: bool
+    # regression_passed：准生产回归是否通过。
     regression_passed: bool
+    # decision：当前审批决定。
     decision: str
+    # last_result：最近节点的内部路由结论。
     last_result: str
+    # next_step：下一节点标识。
     next_step: str
+    # gate_result：逐文件门禁结果。
     gate_result: dict[str, Any]
+    # verify_result：问题验证详情。
     verify_result: dict[str, Any]
+    # regression_result：回归执行详情。
     regression_result: dict[str, Any]
+    # terminal_status：任务收尾前的业务终态。
     terminal_status: str
     # apply_plan 通道：方案契约、人工授权后的放行范围与落盘结果。
     change_plan: dict[str, Any]
+    # blocked_reason：阻断或范围拒绝原因。
     blocked_reason: str
+    # scope_escalation_required：是否需要共享层范围升级。
     scope_escalation_required: bool
+    # escalation_used：本任务是否已使用范围升级。
     escalation_used: bool
+    # authorized_files：人工授权的额外文件范围。
     authorized_files: list[str]
+    # plan_applied：授权变更方案是否已落盘。
     plan_applied: bool
     # 审查结论与审批状态，交付门禁只认这两个字段，不从步骤记录里回读。
     review_decision: str
+    # approval_granted：人工审批是否通过。
     approval_granted: bool
     # 收尾摘要：finalize_execution 写入，父图收集后累加进 task_results。
     task_summary: dict[str, Any]
@@ -99,27 +132,48 @@ class RunState(TypedDict, total=False):
     合并语义会让上一个任务的值残留下来。
     """
 
+    # schema_version：状态结构版本号。
     schema_version: int
+    # run_id：当前工作流执行标识。
     run_id: str
+    # source_repo_path：源 Git 仓库路径。
     source_repo_path: str
+    # log_service_name：ES 日志精确服务名称。
     log_service_name: str
+    # log_service_prefix：ES 日志服务名前缀。
     log_service_prefix: str
+    # log_excluded_messages：需要排除的日志错误消息。
     log_excluded_messages: list[str]
+    # log_excluded_biztypes：需要排除的业务类型。
     log_excluded_biztypes: list[str]
+    # log_days：日志回溯天数。
     log_days: int
+    # log_limit：日志查询条数上限。
     log_limit: int
+    # attempt：当前修复尝试序号。
     attempt: int
+    # max_attempts：单任务最大尝试次数。
     max_attempts: int
+    # review_mode：审查模式。
     review_mode: str
+    # tasks：本轮串行处理的任务清单。
     tasks: list[dict[str, Any]]
+    # task_cursor：当前任务在清单中的游标。
     task_cursor: int
+    # task：当前运输商任务的结构化输入。
     task: dict[str, Any]
+    # task_id：当前任务标识。
     task_id: str
+    # problem：本任务的规范化异常问题。
     problem: dict[str, Any]
+    # terminal_status：任务收尾前的业务终态。
     terminal_status: str
+    # task_summary：收尾后写入父图的任务汇总。
     task_summary: dict[str, Any]
     task_results: Annotated[list[dict[str, Any]], operator.add]
+    # last_result：最近节点的内部路由结论。
     last_result: str
+    # next_step：下一节点标识。
     next_step: str
 
 

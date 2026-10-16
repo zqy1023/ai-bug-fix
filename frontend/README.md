@@ -9,8 +9,8 @@
 - 运行控制台：展示真实运行统计、近 7 天趋势、最近执行；显示源仓库未配置等启动前置条件。
 - 执行详情：点击工作流节点打开检查器，查看服务端持久化的输入、输出、耗时、尝试次数与错误；产物可通过受控 API 按需预览。
 - 执行控制：支持刷新、服务端允许时恢复执行、提交停止请求；停止操作明确展示为请求，不冒充即时中断。
-- 人工审批：查看方案、变更范围和文件列表，显式批准或拒绝；拒绝必须填写原因。
-- 模型调用审计和控制操作审计；运行详情通过 SSE 快照更新，并保留轮询兜底。
+- 人工审批与人工介入队列分离：有明确方案的审批可以批准/拒绝；MANUAL 任务进入人工介入队列，不伪装成待审批方案。
+- 模型调用审计按根因定位、代码修复、变更审查 Agent 筛选；按任务过滤公开事件时间线、工具调用、调用耗时、Token 与最终输出。隐藏推理链不被持久化。运行详情通过 SSE 快照更新，并保留轮询兜底。
 - 导航栏显示实时待审批数量与后端健康状态；后端启用 Bearer Token 时可在界面输入令牌，令牌只保存在当前页面内存，不写入构建产物或浏览器持久化存储。
 
 ## 本地开发
@@ -57,3 +57,14 @@ npm run dev
 - 实时事件：优先 SSE 推送节点状态、心跳、重连游标；断线后以服务端快照恢复。
 - API 与 E2E 测试：覆盖重复提交、刷新/断线、并发审批、过期审批、无权限、执行中取消、checkpoint 恢复和交付失败。
 - 部署：Nginx/Ingress 同源代理、CSP、安全响应头、访问日志、健康检查和版本标识。
+## Docker 生产构建
+
+项目根目录提供后端 `Dockerfile`、`docker-compose.yml`，前端使用 `frontend/Dockerfile` 与 `frontend/nginx.conf`。复制并填写根目录 `.env.example`，特别设置 `WORKBENCH_API_TOKEN`、`AI_REPAIR_SOURCE_REPO_HOST_PATH` 和 `AI_REPAIR_RUNTIME_HOST_PATH`，再执行：
+
+```bash
+docker compose config
+docker compose up -d --build
+docker compose logs -f api frontend
+```
+
+构建机必须能够访问 requirements 中的内部 `yq_common` 包仓库。远程访问应在外部 HTTPS 反向代理后进行，不要直接向公网暴露 API 端口。

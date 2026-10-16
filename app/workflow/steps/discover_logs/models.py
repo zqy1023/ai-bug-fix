@@ -9,19 +9,28 @@ from pydantic import Field
 class DiscoverInput(FrozenModel):
     """实际 ES 查询口径；不支持注入样本日志。"""
 
+    # service_name：字段说明见该模型文档与工作流契约。
     service_name: str = Field(min_length=1)
+    # service_prefix：字段说明见该模型文档与工作流契约。
     service_prefix: str = Field(min_length=1)
+    # excluded_messages：字段说明见该模型文档与工作流契约。
     excluded_messages: list[str] = Field(default_factory=list)
+    # excluded_biztypes：字段说明见该模型文档与工作流契约。
     excluded_biztypes: list[str] = Field(default_factory=list)
+    # days：字段说明见该模型文档与工作流契约。
     days: int = Field(ge=1)
+    # limit：字段说明见该模型文档与工作流契约。
     limit: int = Field(ge=0)
 
 
 class DiscoverOutput(FrozenModel):
     """从真实 ES 查询得到的原始日志数量与记录产物路径。"""
 
+    # raw_count：字段说明见该模型文档与工作流契约。
     raw_count: int = 0
+    # es_hits：字段说明见该模型文档与工作流契约。
     es_hits: int = 0
+    # unparseable：字段说明见该模型文档与工作流契约。
     unparseable: int = 0
 
 

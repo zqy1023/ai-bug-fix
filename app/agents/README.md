@@ -23,3 +23,7 @@ provider 仅提供 `claude_session`、`claude_query` 与显式转人工的 `manu
 所有 Agent 只通过 `app.prompts.PromptRenderer` 组装提示词。Prompt 文件固定为公共 `common.md`
 以及每个职责一份角色文件（`locate.md`、`repair.md`、`review.md`）；服务名、carrier、证据、预算
 和权限范围通过强类型上下文传递，不按项目或 carrier 复制提示词。
+
+## 性能预算与调用审计
+
+每个 Agent 独立配置 `max_turns`、`max_tool_calls`、`max_context_chars`、`max_candidate_files` 与 `timeout_seconds`。定位阶段应优先使用确定性候选文件与符号证据；修复阶段只处理目标 carrier；审查阶段只读取真实 diff、门禁、验证和回归结果。重复的同参数工具调用会被 hook 拦截。审计只保留公开助手文本、工具调用/结果与耗时，不记录隐藏推理链。字段定义见 `docs/MODEL_AND_CONFIG_REFERENCE.md`。

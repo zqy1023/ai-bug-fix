@@ -18,11 +18,17 @@ from config.settings import settings
 class ClaudeConfig:
     """Claude Agent SDK 网关和模型配置。"""
 
+    # auth_token：模型服务认证令牌。
     auth_token: str
+    # base_url：模型服务 API 基础地址。
     base_url: str
+    # model：默认模型标识。
     model: str
+    # default_haiku_model：快速任务模型标识。
     default_haiku_model: str
+    # default_opus_model：复杂任务模型标识。
     default_opus_model: str
+    # default_sonnet_model：标准任务模型标识。
     default_sonnet_model: str
 
     def as_env(self) -> dict[str, str]:
@@ -42,24 +48,43 @@ class ClaudeConfig:
 class RuntimeConfig:
     """ES 发现、执行记录和输出所需的显式配置。"""
 
+    # log_es：ES 连接地址。
     log_es: str
+    # output_dir：输出目录。
     output_dir: Path
+    # runtime_dir：运行数据与审计目录。
     runtime_dir: Path
+    # ignore_errors：忽略错误清单。
     ignore_errors: list[str]
+    # limit：日志条数上限。
     limit: int
+    # log_service_name：日志服务精确匹配名称。
     log_service_name: str
+    # log_service_prefix：日志服务前缀筛选。
     log_service_prefix: str
+    # excluded_biztypes：排除的业务类型。
     excluded_biztypes: list[str]
+    # log_days：日志回溯天数。
     log_days: int
+    # log_tz_offset：日志时区偏移。
     log_tz_offset: int
+    # source_repo：源 Git 仓库路径。
     source_repo: Path | None
+    # project_subdir：仓库内项目子目录。
     project_subdir: Path | None
+    # verify_commands：验证命令数组。
     verify_commands: list[list[str]]
+    # git_remote：Git 远程名。
     git_remote: str
+    # git_push：是否自动推送。
     git_push: bool
+    # autorun：是否自动执行。
     autorun: bool
+    # review_mode：审查模式。
     review_mode: str
+    # max_attempts：单任务最大修复尝试次数。
     max_attempts: int
+    # claude：模型网关配置。
     claude: ClaudeConfig
 
     @property
@@ -157,8 +182,11 @@ def _text_list(raw: str, fallback: tuple[str, ...]) -> list[str]:
 
 
 def index_days(
+    # prefix：配置项用途见所属配置类及部署文档。
     prefix: str,
+    # days：配置项用途见所属配置类及部署文档。
     days: int = settings.default_index_days,
+    # tz_offset：配置项用途见所属配置类及部署文档。
     tz_offset: int = settings.default_index_tz_offset,
 ) -> list[str]:
     """返回最近的 ES 日志索引名；日期按业务时区取，避免 UTC 与本地日切错位。"""

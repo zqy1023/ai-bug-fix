@@ -11,12 +11,19 @@ from pydantic import Field
 class EvidenceInput(FrozenModel):
     """模型调用前的确定性任务与源码证据输入。"""
 
+    # task_id：字段说明见该模型文档与工作流契约。
     task_id: str
+    # carrier：字段说明见该模型文档与工作流契约。
     carrier: str
+    # biztype：字段说明见该模型文档与工作流契约。
     biztype: str
+    # service_name：字段说明见该模型文档与工作流契约。
     service_name: str
+    # problem：字段说明见该模型文档与工作流契约。
     problem: dict[str, Any] = Field(default_factory=dict)
+    # source_project_path：字段说明见该模型文档与工作流契约。
     source_project_path: str
+    # framework：字段说明见该模型文档与工作流契约。
     framework: Literal["gathers", "spiders"]
 
 
@@ -28,15 +35,25 @@ class EvidenceOutput(FrozenModel):
     只读分析，分析后转人工，不进入 AI 修复。
     """
 
+    # carrier_dir：字段说明见该模型文档与工作流契约。
     carrier_dir: str = ""
+    # framework：字段说明见该模型文档与工作流契约。
     framework: Literal["gathers", "spiders"] = "gathers"
+    # candidates：字段说明见该模型文档与工作流契约。
     candidates: list[str] = Field(default_factory=list)
+    # symbols：字段说明见该模型文档与工作流契约。
     symbols: dict[str, list[str]] = Field(default_factory=dict)
+    # skipped_large_files：字段说明见该模型文档与工作流契约。
     skipped_large_files: list[str] = Field(default_factory=list)
+    # syntax_errors：字段说明见该模型文档与工作流契约。
     syntax_errors: dict[str, str] = Field(default_factory=dict)
+    # category：字段说明见该模型文档与工作流契约。
     category: str = "unknown"
+    # extracted：字段说明见该模型文档与工作流契约。
     extracted: dict[str, str] = Field(default_factory=dict)
+    # legacy_only：字段说明见该模型文档与工作流契约。
     legacy_only: bool = False
+    # legacy_reason：字段说明见该模型文档与工作流契约。
     legacy_reason: str = ""
 
 

@@ -23,12 +23,19 @@ class LocateConfigError(ValueError):
 class LocateConfig:
     """定位模型预算；工具与读写权限不可由配置放宽。"""
 
+    # provider：Agent 模型调用适配器。
     provider: str
+    # max_turns：模型交互回合上限。
     max_turns: int
+    # max_tool_calls：工具调用总数上限。
     max_tool_calls: int
+    # max_context_chars：模型上下文字符上限。
     max_context_chars: int
+    # max_candidate_files：候选文件数量上限。
     max_candidate_files: int
+    # timeout_seconds：单次 Agent 超时秒数。
     timeout_seconds: int
+    # source：当前配置来源。
     source: str
 
     @classmethod

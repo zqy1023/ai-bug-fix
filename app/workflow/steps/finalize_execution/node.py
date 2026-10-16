@@ -13,7 +13,7 @@ FINAL_REPORT = "reports/final.json"
 _SELF = "finalize_execution"
 
 # 阻断交付的业务结论。执行成功但结论是这几个的步骤不能算通过。
-_FAILED_RESULTS = frozenset({"FAIL", "MANUAL", "REJECTED"})
+_FAILED_RESULTS = frozenset({"FAIL", "FAILED", "MANUAL", "REJECTED", "INSUFFICIENT_EVIDENCE"})
 
 
 def run(ctx: StepContext, data: FinalizeInput) -> FinalizeOutput:
@@ -65,11 +65,19 @@ def _tokens(ctx: StepContext, task_id: str) -> int:
 
 
 def _delivery_status(records: list[StepRecord], terminal_status: str) -> str:
-    if _legacy_only(records) or terminal_status == "manual":
+    # MANUAL 是业务终态，不是节点异常。定位/审查给出 MANUAL 时，节点本身可能是
+    # succeeded；必须先检查业务结论，否则 final.json 会把转人工错误记成 FAILED。
+    results = {str(record.result or "").upper() for record in records}
+    if (
+        _legacy_only(records)
+        or str(terminal_status or "").upper() == "MANUAL"
+        or bool(results & {"MANUAL", "INSUFFICIENT_EVIDENCE"})
+    ):
         return "MANUAL"
-    # 业务判定失败在新词汇下是 succeeded + FAIL，只看 status 会报出假 SUCCESS。
+    # 业务失败可能记录为 succeeded + FAIL；不能只看节点执行状态判断成功。
     if records and all(
-        record.status in {"succeeded", "skipped"} and record.result not in _FAILED_RESULTS
+        record.status in {"succeeded", "skipped"}
+        and str(record.result or "").upper() not in _FAILED_RESULTS
         for record in records
     ):
         return "SUCCESS"

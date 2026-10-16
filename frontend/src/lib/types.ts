@@ -20,6 +20,7 @@ export interface RunSummary {
   task_count: number;
   succeeded_tasks: number;
   failed_tasks: number;
+  manual_tasks: number;
   waiting_tasks: number;
   operator?: string | null;
 }
@@ -59,6 +60,7 @@ export interface TaskSummary {
 }
 
 export interface RunDetail extends RunSummary {
+  run_error?: { status?: string; error_type?: string; message?: string; failed_at?: string };
   config: Record<string, unknown>;
   steps: StepRecord[];
   tasks: TaskSummary[];

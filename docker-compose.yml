@@ -1,0 +1,62 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      AI_REPAIR_SOURCE_REPO: /workspace/source
+      AI_REPAIR_RUNTIME_DIR: /app/runtime/.ai-repair
+      WORKBENCH_API_TOKEN: ${WORKBENCH_API_TOKEN:?Set WORKBENCH_API_TOKEN in .env}
+      PYTHONUNBUFFERED: "1"
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    volumes:
+      - ${AI_REPAIR_SOURCE_REPO_HOST_PATH:?Set AI_REPAIR_SOURCE_REPO_HOST_PATH to the host Git repository}:/workspace/source:rw
+      - ${AI_REPAIR_RUNTIME_HOST_PATH:?Set AI_REPAIR_RUNTIME_HOST_PATH to a persistent host directory}:/app/runtime:rw
+    expose:
+      - "8000"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,urllib.request; req=urllib.request.Request('http://127.0.0.1:8000/api/health',headers={'Authorization':'Bearer '+os.environ['WORKBENCH_API_TOKEN']}); urllib.request.urlopen(req,timeout=4).read()"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=128m,noexec,nosuid
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WORKBENCH_PORT:-8080}:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    entrypoint: ["nginx"]
+    command: ["-g", "daemon off;"]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:size=16m
+      - /var/run:size=2m
+      - /tmp:size=8m

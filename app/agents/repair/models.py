@@ -15,11 +15,17 @@ from pydantic import Field
 class RepairInput(FrozenModel):
     """05 的输入：定位 + 上一轮驳回原因，不含提示词全文。"""
 
+    # task_id：字段说明见该模型文档与工作流契约。
     task_id: str
+    # ai_workspace_path：字段说明见该模型文档与工作流契约。
     ai_workspace_path: str
+    # attempt：字段说明见该模型文档与工作流契约。
     attempt: int = 1
+    # retry_reason：字段说明见该模型文档与工作流契约。
     retry_reason: str = ""
+    # evidence：字段说明见该模型文档与工作流契约。
     evidence: EvidenceOutput = Field(default_factory=EvidenceOutput)
+    # locate：字段说明见该模型文档与工作流契约。
     locate: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -36,13 +42,21 @@ class RepairView(FrozenModel):
     落在目标 carrier 内时它为空是正常的**，它只在需要人工授权时才非空。
     """
 
+    # passed：字段说明见该模型文档与工作流契约。
     passed: bool = False
+    # result：字段说明见该模型文档与工作流契约。
     result: Literal["passed", "failed"] = "failed"
+    # analysis：字段说明见该模型文档与工作流契约。
     analysis: str = ""
+    # summary：字段说明见该模型文档与工作流契约。
     summary: str = ""
+    # changed_files：字段说明见该模型文档与工作流契约。
     changed_files: list[str] = Field(default_factory=list)
+    # change_plan：字段说明见该模型文档与工作流契约。
     change_plan: dict[str, Any] = Field(default_factory=dict)
+    # blocked_reason：字段说明见该模型文档与工作流契约。
     blocked_reason: str = ""
+    # scope_escalation_required：字段说明见该模型文档与工作流契约。
     scope_escalation_required: bool = False
 
 

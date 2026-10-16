@@ -42,6 +42,21 @@ app/
 └── entrypoint.py           整图入口
 ```
 
+
+## 工作台与容器部署
+
+前端位于 `frontend/`，后端 API 位于 `workbench/api.py`。生产容器入口是根目录 `docker-compose.yml`，前端由 Nginx 同源代理到 FastAPI。
+
+填写根目录 `.env` 中的真实连接参数，并配置 `WORKBENCH_API_TOKEN`、`AI_REPAIR_SOURCE_REPO_HOST_PATH`、`AI_REPAIR_RUNTIME_HOST_PATH`。容器内源仓库路径固定为 `/workspace/source`，运行数据位于 `/app/runtime`。
+
+```bash
+docker compose config
+docker compose up -d --build
+docker compose logs -f api frontend
+```
+
+详细说明：[工作台运行手册](docs/WORKBENCH_OPERATIONS.md)、[工作流逻辑审计](docs/WORKFLOW_AUDIT.md)、[模型与配置字段参考](docs/MODEL_AND_CONFIG_REFERENCE.md)。
+
 ## 真实数据单步调试
 
 单步命令必须使用整图执行产生的真实 `run_id` 和任务 `task_id`。步骤从 `.ai-repair/runs/<run_id>/steps.json` 与 artifact 重建输入，不接收 fixture、stub 或手写问题数据；缺少通过的前置记录时直接拒绝。

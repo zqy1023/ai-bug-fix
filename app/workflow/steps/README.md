@@ -24,3 +24,9 @@
 | `finalize_execution`      | task | 该任务全部步骤记录                        | 生成终态报告                                      |
 
 单步入口：`python -m app.workflow.steps.<step> --run-id <real-run-id> [--task-id <task-id>]`。只读取真实记录和 artifact；不存在样例输入或替代数据路径。
+
+## 终态语义
+
+`status` 记录节点执行状态，`result` 记录业务结论。定位/审查返回 `MANUAL` 或证据不足时，`finalize_execution` 必须将最终报告写为 `MANUAL`，不能因节点自身 succeeded 而误记为 FAILED 或 SUCCESS。人工介入不等于审批；审批只处理存在明确方案且处于 interrupt 的任务。
+
+模型字段约定见 `docs/MODEL_AND_CONFIG_REFERENCE.md`，分支与终态审计见 `docs/WORKFLOW_AUDIT.md`。
