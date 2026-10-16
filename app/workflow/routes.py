@@ -115,7 +115,10 @@ def after_locate(state: WorkflowState) -> str:
     if evidence.get("legacy_only") or evidence.get("legacy_dependency"):
         return FINALIZE
     locate = state.get("locate") or {}
-    if str(locate.get("recommended_scope") or "") != "carrier":
+    if (
+        str(locate.get("recommended_scope") or "") != "carrier"
+        or str(locate.get("category") or "") != "carrier"
+    ):
         return FINALIZE
     disposition = locate_disposition(str(locate.get("status") or ""))
     if disposition == "repair" and _result(state) == "passed":
@@ -241,6 +244,7 @@ def after_delivery(state: WorkflowState) -> str:
         or str((state.get("review") or {}).get("verdict") or "").upper() == "MANUAL"
         or str(locate.get("status") or "") != "LOCATED"
         or str(locate.get("recommended_scope") or "") != "carrier"
+        or str(locate.get("category") or "") != "carrier"
     )
     if analysis_only:
         # 报告交付失败也结束当前任务，不能回到 FINALIZE 再次进入报告交付形成死循环。
