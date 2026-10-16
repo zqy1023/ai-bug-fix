@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, App, Button, Card, Descriptions, Drawer, Empty, Input, Modal, Space, Spin, Table, Tag, Typography } from 'antd';
 import { ArrowLeftOutlined, ReloadOutlined } from '@ant-design/icons';
@@ -36,10 +36,11 @@ export function TaskDetailPage() {
   const [artifactPath, setArtifactPath] = useState<{ path: string; name: string } | null>(null);
   const [manualAction, setManualAction] = useState<'retry_locate' | 'continue_repair' | 'mark_done' | 'terminate' | null>(null);
   const [manualReason, setManualReason] = useState('');
+  const [resumePending, setResumePending] = useState(false);
   const detail = useQuery({
     queryKey: ['task', runId, taskId],
     queryFn: () => api.task(runId, taskId),
-    refetchInterval: (q) => active.includes(q.state.data?.run_status ?? '') ? 3000 : false,
+    refetchInterval: (q) => resumePending || active.includes(q.state.data?.run_status ?? '') ? 3000 : false,
   });
   const manualQueue = useQuery({
     queryKey: ['manual-interventions'],
@@ -56,6 +57,7 @@ export function TaskDetailPage() {
     },
     onSuccess: async (result) => {
       message.success(result.status === 'resolved' ? '人工处置结果已登记' : '决定已接收，工作流正在后台恢复并继续后续任务');
+      setResumePending(result.status !== 'resolved');
       setManualAction(null);
       setManualReason('');
       await Promise.all([
@@ -69,6 +71,18 @@ export function TaskDetailPage() {
     },
     onError: (error) => message.error('人工处置失败：' + (error as Error).message),
   });
+  useEffect(() => {
+    if (!resumePending || !detail.data) return;
+    const response = detail.data;
+    const taskSteps = response.task?.steps ?? [];
+    const latestApproval = [...taskSteps].reverse().find((item) => item.name === 'request_approval');
+    const approvalStillPending = Boolean(latestApproval && (
+      latestApproval.status === 'running' ||
+      (latestApproval.output as Record<string, unknown> | undefined)?.decision === 'PENDING'
+    ));
+    const terminalRun = ['succeeded', 'failed', 'cancelled', 'partial_failed', 'completed'].includes(response.run_status);
+    if (terminalRun && !approvalStillPending) setResumePending(false);
+  }, [resumePending, detail.data]);
   const report = task?.report;
   const steps = task?.steps ?? [];
   const captureKnowledge = useMutation({
