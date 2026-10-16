@@ -121,6 +121,7 @@ def run_stage(
                     f"{spec.name} 执行异常: {error}",
                     result="failed",
                     code="AGENT_EXECUTION_ERROR",
+                    output={"retry_target": spec.name, "failure_reason": str(error)},
                 ),
                 **_views(spec),
             )
