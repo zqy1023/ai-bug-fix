@@ -25,7 +25,7 @@ const layout = [
   { id: 'finalize_execution', label: '收尾与汇总', x: 1660, y: 150 },
 ] as const;
 
-const transitions: Array<[string, string, string?]> = [
+const transitions = [
   ['discover_logs', 'normalize_error'], ['normalize_error', 'deduplicate_error'], ['deduplicate_error', 'identify_carrier'],
   ['identify_carrier', 'prepare_source_snapshot'], ['prepare_source_snapshot', 'prepare_evidence', '通过'],
   ['prepare_source_snapshot', 'finalize_execution', '失败'], ['prepare_evidence', 'locate_agent', '通过'],
@@ -44,7 +44,7 @@ const transitions: Array<[string, string, string?]> = [
   ['request_approval', 'prepare_delivery', '批准运输商修复'], ['request_approval', 'retry_prepare', '拒绝/重试'],
   ['request_approval', 'finalize_execution', '终止'], ['apply_plan', 'check_changes', '重新验证'],
   ['prepare_delivery', 'finalize_execution'], ['retry_prepare', 'repair_agent', '未超过重试上限'],
-];
+] as const;
 
 function nodeStyle(status?: StepStatus): CSSProperties {
   const palettes: Record<string, { background: string; border: string; color: string }> = {
