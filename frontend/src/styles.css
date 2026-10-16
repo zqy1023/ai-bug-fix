@@ -297,3 +297,12 @@ body, .app-shell, .main-layout { background: var(--wb-canvas) !important; }
 .change-plan-detail .ant-table-wrapper { margin-top: 2px; }
 .change-plan-detail .ant-table { background: transparent; }
 .change-plan-detail .ant-table-tbody > tr > td { overflow-wrap: anywhere; }
+
+
+.attention-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; }
+.attention-grid .attention-card { min-width: 0; }
+.attention-grid .attention-card .ant-card-body { min-height: 150px; }
+.attention-grid .attention-card .ant-typography-secondary { display: block; line-height: 1.6; }
+@media (max-width: 1280px) { .attention-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .attention-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; } }
+@media (max-width: 480px) { .attention-grid { grid-template-columns: minmax(0, 1fr); } .attention-grid .attention-card .ant-card-body { min-height: 0; } }
