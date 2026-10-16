@@ -102,7 +102,7 @@ def _capture_knowledge_candidate(
                  datetime.now(timezone.utc).isoformat(), ctx.run.run_id, data.task_id),
             )
             connection.commit()
-            connection.execute(
+            cursor = connection.execute(
                 """INSERT OR IGNORE INTO repair_knowledge_cases
                 (case_id,title,fingerprint,carrier,biztype,root_cause,evidence,change_summary,
                  regression_passed,review_passed,status,source_run_id,source_task_id,created_at,updated_at)
@@ -115,6 +115,14 @@ def _capture_knowledge_candidate(
                 ),
             )
             connection.commit()
+            if cursor.rowcount:
+                connection.execute(
+                    """INSERT INTO control_audit(run_id,task_id,action,actor,reason,created_at)
+                       VALUES(?,?,?,?,?,?)""",
+                    (ctx.run.run_id, data.task_id, "knowledge.case.auto_capture", "workflow",
+                     "candidate captured from finalized task", datetime.now(timezone.utc).isoformat()),
+                )
+                connection.commit()
             row = connection.execute(
                 "SELECT case_id FROM repair_knowledge_cases WHERE source_run_id=? AND source_task_id=?",
                 (ctx.run.run_id, data.task_id),
