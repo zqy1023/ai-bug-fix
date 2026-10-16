@@ -58,12 +58,21 @@ def _patch(output: dict[str, Any]) -> dict[str, Any]:
         "escalation_used": decision == "APPROVE",
     }
     if decision == "RETRY_LOCATE":
-        patch.update({"manual_intervention_required": False, "manual_continue_allowed": False, "manual_intervention_reason": "", "manual_intervention_step": "", "manual_resume_step": "", "terminal_status": "", "last_result": "passed"})
-    elif decision == "CONTINUE_REPAIR":
-        # Consume the one-shot capability so it cannot leak into later approval cycles.
         patch.update({
             "manual_intervention_required": False,
             "manual_continue_allowed": False,
+            "manual_continue_authorized": False,
+            "manual_intervention_reason": "",
+            "manual_intervention_step": "",
+            "manual_resume_step": "",
+            "terminal_status": "",
+            "last_result": "passed",
+        })
+    elif decision == "CONTINUE_REPAIR":
+        # 仅在本次人工决定后开启一次授权；修复节点完成后会立即清除。
+        patch.update({
+            "manual_intervention_required": False,
+            "manual_continue_authorized": True,
             "terminal_status": "",
             "last_result": "passed",
         })
