@@ -110,6 +110,12 @@ class WorkflowState(TypedDict, total=False):
     blocked_reason: str
     # scope_escalation_required：是否需要共享层范围升级。
     scope_escalation_required: bool
+    # manual_intervention_required：定位安全门禁要求人工决定，工作流应挂起而不是直接收尾。
+    manual_intervention_required: bool
+    # manual_continue_allowed：只有保留了有效根因、源码证据与合法候选路径时才允许批准继续修复。
+    manual_continue_allowed: bool
+    # approval_mode：当前 request_approval 中断的类型。
+    approval_mode: str
     # escalation_used：本任务是否已使用范围升级。
     escalation_used: bool
     # authorized_files：人工授权的额外文件范围。
