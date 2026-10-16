@@ -75,6 +75,9 @@ export function RunDetailPage() {
         { title: "失败原因", dataIndex: "error_type", key: "error_type", render: (v?: string) => v || "—" },
       ]} />
     </Card>
+    <Modal title={selectedArtifact ? '产物预览 · ' + selectedArtifact.name : '产物预览'} open={Boolean(selectedArtifact)} onCancel={() => setSelectedArtifact(null)} footer={<Button onClick={() => setSelectedArtifact(null)}>关闭</Button>} width={900} destroyOnClose>
+      {artifactContent.isLoading ? <Spin /> : artifactContent.isError ? <Alert type="error" showIcon message="产物读取失败" description={(artifactContent.error as Error).message} /> : <pre className="json-panel">{JSON.stringify(artifactContent.data?.content ?? null, null, 2)}</pre>}
+    </Modal>
     <Card title={"控制操作审计（" + (controlAudit.data?.total ?? 0) + "）"} className="content-card">
       <Table rowKey="id" dataSource={controlAudit.data?.items ?? []} loading={controlAudit.isLoading} pagination={{ pageSize: 10 }} locale={{ emptyText: "暂无控制操作记录" }} columns={[
         { title: "时间", dataIndex: "created_at", key: "created_at", render: (v: string) => dayjs(v).isValid() ? dayjs(v).format("YYYY-MM-DD HH:mm:ss") : "—" },
