@@ -60,6 +60,7 @@ export function KnowledgePage() {
     { title: '运输商 / 业务类型', key: 'scope', render: (_: unknown, row: KnowledgeCase) => <div>{row.carrier || '通用'}<div className="secondary-small">{row.biztype || '未指定 biztype'}</div></div> },
     { title: '验证门禁', key: 'gates', render: (_: unknown, row: KnowledgeCase) => <Space wrap><Tag color={row.regression_passed ? 'success' : 'default'}>回归{row.regression_passed ? '通过' : '未确认'}</Tag><Tag color={row.review_passed ? 'success' : 'default'}>审查{row.review_passed ? '通过' : '未确认'}</Tag></Space> },
     { title: '状态', dataIndex: 'status', key: 'status', render: (value: KnowledgeCaseStatus) => <Tag color={statusView(value).color}>{statusView(value).label}</Tag> },
+    { title: '被检索', dataIndex: 'usage_count', key: 'usage_count', sorter: (a: KnowledgeCase, b: KnowledgeCase) => a.usage_count - b.usage_count, render: (value: number) => value ?? 0 },
     { title: '更新时间', dataIndex: 'updated_at', key: 'updated_at', render: (value: string) => dayjs(value).isValid() ? dayjs(value).format('YYYY-MM-DD HH:mm') : '—' },
     { title: '操作', key: 'actions', render: (_: unknown, row: KnowledgeCase) => <Space>
       <Button type="link" size="small" onClick={() => setSelected(row)}>详情</Button>
@@ -80,6 +81,7 @@ export function KnowledgePage() {
       <Card className="metric-card"><Statistic title="已发布知识" value={cases.data?.summary.published ?? 0} prefix={<CheckCircleOutlined />} loading={cases.isLoading} /></Card>
       <Card className="metric-card"><Statistic title="待验证候选" value={cases.data?.summary.candidate ?? 0} loading={cases.isLoading} /></Card>
       <Card className="metric-card"><Statistic title="已停用" value={cases.data?.summary.disabled ?? 0} prefix={<StopOutlined />} loading={cases.isLoading} /></Card>
+      <Card className="metric-card"><Statistic title="历史检索次数" value={cases.data?.summary.retrievals ?? 0} prefix={<SearchOutlined />} loading={cases.isLoading} /></Card>
     </div>
     <Card className="content-card">
       <div className="filter-row">
