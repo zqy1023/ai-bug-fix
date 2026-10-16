@@ -44,8 +44,15 @@ def _call(
     task = str(state["task_id"])
     carrier = str(state["carrier"])
     locate = dict(state.get("locate") or {})
-    if locate.get("status") != "LOCATED":
-        return {"passed": False, "reason": "缺少 locate_agent 的 LOCATED 结论", "changed_files": []}, {}, {}, ""
+    manual_continue_authorized = bool(state.get("manual_continue_authorized"))
+    manual_evidence_complete = bool(
+        str(locate.get("root_cause") or "").strip()
+        and isinstance(locate.get("source_evidence"), list) and locate.get("source_evidence")
+        and isinstance(locate.get("candidate_files"), list) and locate.get("candidate_files")
+        and str(locate.get("recommended_scope") or "") in {"carrier", "project"}
+    )
+    if locate.get("status") != "LOCATED" and not (manual_continue_authorized and manual_evidence_complete):
+        return {"passed": False, "reason": "缺少 locate_agent 的 LOCATED 结论，且没有证据完整的人工继续授权", "changed_files": []}, {}, {}, ""
     try:
         evidence = dict(state["evidence"])
         if evidence.get("legacy_only") or evidence.get("framework") != "gathers":
