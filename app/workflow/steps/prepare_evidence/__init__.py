@@ -17,7 +17,7 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         "biztype": str(task.get("biztype") or ""),
         "service_name": str(task.get("service_name") or ""),
         "problem": dict(state.get("problem") or task.get("problem") or {}),
-        "source_project_path": str(state.get("source_project_path") or ""),
+        "source_project_path": str(state.get("ai_workspace_path") or ""),
         "framework": str(state.get("framework") or ""),
     }
 
@@ -38,7 +38,7 @@ SPEC = StepSpec(
     output_model=EvidenceOutput,
     input_builder=_input,
     output_patch=_patch,
-    depends_on=(Dependency("identify_carrier", "run"), Dependency("prepare_source_snapshot", "task")),
+    depends_on=(Dependency("identify_carrier", "run"), Dependency("prepare_source_snapshot", "task"), Dependency("prepare_workspace", "task")),
     next_step="locate_agent",
     # 原始请求保存在去重日志产物中，记录中仅保留分类与错误证据。
     input_record=RecordView(
