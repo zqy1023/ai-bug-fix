@@ -793,7 +793,11 @@ def v1_resume_run(run_id: str, background: BackgroundTasks, _: None = Depends(_a
         lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
     if not lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="该执行正在进行其他控制操作")
-    connection = _control_db()
+    try:
+        connection = _control_db()
+    except Exception:
+        lock.release()
+        raise
     try:
         connection.execute(
             "INSERT INTO run_control(run_id,pause_requested,cancel_requested,updated_at) VALUES(?,0,0,?) "
@@ -848,7 +852,12 @@ def v1_cancel_run(
             paused_lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
         if not paused_lock.acquire(blocking=False):
             raise HTTPException(status_code=409, detail="执行正在恢复或仍未完全暂停，请稍后重试")
-    connection = _control_db()
+    try:
+        connection = _control_db()
+    except Exception:
+        if paused_lock is not None:
+            paused_lock.release()
+        raise
     try:
         connection.execute(
             "INSERT INTO run_control(run_id,pause_requested,cancel_requested,updated_at) VALUES(?,0,1,?) "

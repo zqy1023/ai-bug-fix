@@ -19,6 +19,7 @@ from app.workflow.graph import build_graph as build_state_graph
 from app.workflow.graph import build_task_graph
 from app.domain.errors import StepFailed
 from app.workflow.runner import bind
+from app.workflow.routes import FINALIZE
 from app.infrastructure.records.store import RecordStore
 from app.application.services import WorkflowServices
 from app.workflow import registry

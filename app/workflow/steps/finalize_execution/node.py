@@ -8,6 +8,7 @@ from typing import Any
 from app.application.audit import StepRecord
 from app.application.context import StepContext
 from app.workflow.steps.finalize_execution.models import FinalizeInput, FinalizeOutput
+from app.infrastructure.run_control import cancellation_requested
 
 FINAL_REPORT = "reports/final.json"
 _SELF = "finalize_execution"
@@ -19,7 +20,8 @@ _FAILED_RESULTS = frozenset({"FAIL", "FAILED", "MANUAL", "REJECTED", "INSUFFICIE
 def run(ctx: StepContext, data: FinalizeInput) -> FinalizeOutput:
     """写精简 final.json。步骤全文在 steps.json，这里不再复制。"""
     records = [record for record in ctx.store.list_steps(ctx.run.run_id, data.task_id) if record.name != _SELF]
-    result = _delivery_status(records, data.terminal_status)
+    terminal_status = "CANCELLED" if cancellation_requested(ctx.store.root, ctx.run.run_id) else data.terminal_status
+    result = _delivery_status(records, terminal_status)
     report = {
         "task_id": data.task_id,
         "carrier": data.carrier,
