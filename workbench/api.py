@@ -115,15 +115,19 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
             final_path = store.task_dir(run_id, task_id) / "reports" / "final.json"
             report = _read_json(final_path, {})
             approval = next((s for s in task_steps if s.get("name") == "request_approval"), None)
+            carrier = str((report or {}).get("carrier") or _task_identity(slot, "carrier"))
+            biztype = str((report or {}).get("biztype") or _task_identity(slot, "biztype"))
+            inferred_status = str((report or {}).get("result") or _task_status(task_steps, approval))
+            if not isinstance(report, dict) or not report:
+                report = _report_from_steps(
+                    task_id=task_id, carrier=carrier, biztype=biztype,
+                    steps=task_steps, status=inferred_status,
+                )
             tasks.append({
-                "task_id": task_id,
-                "carrier": str((report or {}).get("carrier") or _task_identity(slot, "carrier")),
-                "biztype": str((report or {}).get("biztype") or _task_identity(slot, "biztype")),
-                "status": str((report or {}).get("result") or _task_status(task_steps, approval)),
-                "problem": _task_problem(slot),
-                "steps": task_steps,
-                "report": report if isinstance(report, dict) else {},
-                "approval_pending": _approval_pending(approval),
+                "task_id": task_id, "carrier": carrier, "biztype": biztype,
+                "status": str(report.get("result") or inferred_status),
+                "problem": _task_problem(slot), "steps": task_steps,
+                "report": report, "approval_pending": _approval_pending(approval),
             })
     pending = sum(1 for task in tasks if task["approval_pending"])
     results = [str(task["status"]).upper() for task in tasks]
@@ -171,6 +175,75 @@ def _task_problem(slot: dict[str, Any]) -> dict[str, Any]:
             if isinstance(problem, dict) and problem:
                 return problem
     return {}
+
+
+def _report_from_steps(
+    *, task_id: str, carrier: str, biztype: str,
+    steps: list[dict[str, Any]], status: str,
+) -> dict[str, Any]:
+    """兼容旧运行：从已有持久化事实恢复报告，绝不把人工转派伪装成普通完成。"""
+    ordered = sorted(steps, key=lambda item: str(item.get("finished_at") or item.get("started_at") or ""))
+    final = next((item for item in reversed(ordered) if item.get("name") == "finalize_execution"), None)
+    final_output = final.get("output") if isinstance(final, dict) and isinstance(final.get("output"), dict) else {}
+    result = str(final_output.get("delivery_status") or status or "INCOMPLETE").upper()
+    terminal = ordered[-1] if ordered else {}
+    terminal_name = str(final_output.get("terminal_step") or terminal.get("name") or "workflow")
+    reason = str(final_output.get("terminal_reason") or "").strip()
+    next_action = str(final_output.get("next_action") or "").strip()
+
+    if not reason:
+        evidence = next((item for item in reversed(ordered) if item.get("name") == "prepare_evidence"), None)
+        evidence_output = evidence.get("output") if isinstance(evidence, dict) and isinstance(evidence.get("output"), dict) else {}
+        if evidence_output.get("legacy_only"):
+            terminal_name = "prepare_evidence"
+            reason = str(evidence_output.get("legacy_reason") or evidence.get("summary") or
+                         "证据准备确认该运输商只有旧框架实现，不能进入自动修复。")
+            result = "MANUAL"
+            next_action = "人工核对实际采集入口和调用链，确定迁移或兼容方案。"
+
+    if not reason and result in {"MANUAL", "INSUFFICIENT_EVIDENCE"}:
+        manual = next((item for item in reversed(ordered) if
+                       str(item.get("result") or "").upper() in {"MANUAL", "INSUFFICIENT_EVIDENCE"}
+                       or str((item.get("output") or {}).get("status") or "").upper() in {"MANUAL", "INSUFFICIENT_EVIDENCE"}), None)
+        if manual:
+            output = manual.get("output") if isinstance(manual.get("output"), dict) else {}
+            terminal_name = str(manual.get("name") or terminal_name)
+            gaps = output.get("evidence_gaps")
+            reason = str(output.get("legacy_reason") or output.get("reason") or output.get("summary") or
+                         manual.get("summary") or (("证据缺口：" + "；".join(map(str, gaps[:8]))) if isinstance(gaps, list) and gaps else "")).strip()
+        reason = reason or "安全门禁要求人工介入，但历史步骤没有保存明确原因。"
+        next_action = next_action or "补齐缺失证据并由人工确认处理范围；证据充分前不要自动修改代码。"
+
+    if not reason and result in {"FAILED", "FAIL", "REJECTED"}:
+        failure = next((item for item in reversed(ordered) if item.get("status") == "failed"
+                        or str(item.get("result") or "").upper() in {"FAIL", "FAILED", "REJECTED"}), terminal)
+        error = failure.get("error") if isinstance(failure, dict) and isinstance(failure.get("error"), dict) else {}
+        terminal_name = str((failure or {}).get("name") or terminal_name)
+        reason = str(error.get("message") or (failure or {}).get("summary") or
+                     "历史任务未通过自动修复门禁，但没有保存更具体的失败原因。")
+        next_action = next_action or "检查失败节点的错误详情和产物，修复原因后再重试或转人工。"
+
+    if not reason:
+        if result in {"RUNNING", "PENDING", "WAITING_APPROVAL"}:
+            reason = "任务仍在执行或等待人工决策，尚未形成终态。"
+            next_action = next_action or "继续观察任务步骤；若等待审批，请进入审批页面处理。"
+        elif result in {"SUCCESS", "SUCCEEDED", "COMPLETED"}:
+            reason = "历史任务已结束，但没有保存终态报告；此结论仅基于已有步骤记录推导。"
+            next_action = next_action or "查看交付记录并按团队流程完成人工评审和合并。"
+        else:
+            reason = "历史任务缺少正式终态报告；现有步骤记录未提供更具体的结束原因。"
+            next_action = next_action or "检查最后一个已执行步骤的输入、输出和错误后确定处置方案。"
+
+    return {
+        "report_version": 0, "report_kind": "task_final", "legacy_report": True,
+        "task_id": task_id, "carrier": carrier, "biztype": biztype,
+        "result": result, "status": result, "terminal_status": result,
+        "terminal_step": terminal_name, "terminal_reason": reason,
+        "next_action": next_action or "检查终态步骤及关联产物，确认后续处置动作。",
+        "finished_at": final_output.get("finished_at") or terminal.get("finished_at") or "",
+        "elapsed_ms": round(sum(float(item.get("duration_ms") or 0) for item in ordered), 2),
+        "completed_steps": [str(item.get("name")) for item in ordered if item.get("status") in {"succeeded", "skipped"}],
+    }
 
 
 def _task_status(steps: list[dict[str, Any]], approval: dict[str, Any] | None) -> str:
