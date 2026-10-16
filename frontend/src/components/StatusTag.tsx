@@ -3,6 +3,7 @@ import type { RunStatus, StepStatus } from '../lib/types';
 
 const labels: Record<string, string> = {
   queued: '排队中', accepted: '已受理', running: '执行中', waiting: '等待中',
+  paused: '已暂停', pause_requested: '等待暂停',
   waiting_approval: '待审批', succeeded: '已完成', success: '成功', SUCCESS: '成功',
   completed: '已结束', COMPLETED: '已结束', partial_failed: '部分失败 / 需关注',
   failed: '失败', FAILED: '失败', cancelled: '已取消', cancel_requested: '等待停止',
@@ -18,6 +19,7 @@ const labels: Record<string, string> = {
 };
 const colors: Record<string, string> = {
   queued: 'default', accepted: 'default', running: 'processing', waiting: 'warning',
+  paused: 'warning', pause_requested: 'warning',
   waiting_approval: 'warning', succeeded: 'success', success: 'success', SUCCESS: 'success',
   completed: 'success', COMPLETED: 'success', partial_failed: 'orange', failed: 'error',
   FAILED: 'error', cancelled: 'default', cancel_requested: 'warning', pending: 'default',

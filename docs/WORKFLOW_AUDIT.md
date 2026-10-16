@@ -65,3 +65,10 @@ docker compose build
 ```
 
 这些命令必须在实际部署环境执行并保存结果；未执行的项目不能标记为通过。
+
+## Agent 事件轨迹与运行控制补充
+
+- Provider 调用元数据写入 Run 级 `model_calls.jsonl`；有效公开事件同时追加到任务级 `tasks/<task_id>/audit/agent_events.jsonl`，每条记录带有 `model_call_id`、Agent 角色、尝试序号和事件序号。旧记录没有事件时只显示调用元数据，不回填伪造轨迹。
+- 隐藏思考块、完整 SDK 消息对象、Prompt 正文不写入调试归档；终端输出保持摘要化，hook 调试文件限 5 MiB 并滚动一份。
+- 暂停请求持久化到 `workbench-control.sqlite3`，在下一节点边界调用 LangGraph interrupt；继续清除暂停标志并复用原 thread_id。取消请求在安全边界进入 FINALIZE，后续不得回修、审批、回归或 Git 交付，最终报告应为 CANCELLED。
+- 控制表升级必须为已有 SQLite 数据库补充 `pause_requested` 列，不能要求清空旧控制库。

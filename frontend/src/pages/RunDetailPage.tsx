@@ -17,7 +17,8 @@ export function RunDetailPage() {
   const [selectedTaskId, setSelectedTaskId] = useState<string>('');
   const [selectedAgent, setSelectedAgent] = useState<string>('all');
   const [selectedArtifact, setSelectedArtifact] = useState<{ path: string; task_id?: string; name: string } | null>(null);
-  const detail = useQuery({ queryKey: ['run', runId], queryFn: () => api.run(runId), refetchInterval: (q) => ['running', 'queued', 'waiting_approval'].includes(q.state.data?.status ?? '') ? 5000 : false });
+  const detail = useQuery({ queryKey: ['run', runId], queryFn: () => api.run(runId), refetchInterval: (q) => ['running', 'queued', 'waiting_approval', 'pause_requested'].includes(q.state.data?.status ?? '') ? 3000 : false });
+  const pause = useMutation({ mutationFn: () => api.pauseRun(runId), onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ['run', runId] }); }, });
   const resume = useMutation({ mutationFn: () => api.resumeRun(runId), onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ['run', runId] }); }, });
   const cancel = useMutation({ mutationFn: () => api.cancelRun(runId), onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ['run', runId] }); }, });
   useEffect(() => {
@@ -30,7 +31,7 @@ export function RunDetailPage() {
   const data = detail.data;
   const selectedTask = data?.tasks.find((task) => task.task_id === selectedTaskId);
   const graphSteps = selectedTask ? selectedTask.steps : (data?.steps ?? []);
-  const modelCalls = useQuery({ queryKey: ['model-calls', runId, selectedTaskId], queryFn: () => api.modelCalls(runId, selectedTaskId || undefined), refetchInterval: (q) => ['running', 'queued', 'waiting_approval', 'cancel_requested'].includes(detail.data?.status ?? '') ? 5000 : false });
+  const modelCalls = useQuery({ queryKey: ['model-calls', runId, selectedTaskId], queryFn: () => api.modelCalls(runId, selectedTaskId || undefined), refetchInterval: (q) => ['running', 'queued', 'waiting_approval', 'pause_requested', 'paused', 'cancel_requested'].includes(detail.data?.status ?? '') ? 5000 : false });
   const visibleModelCalls = (modelCalls.data?.items ?? []).filter((call) => selectedAgent === 'all' || call.agent_role === selectedAgent);
   const controlAudit = useQuery({ queryKey: ['control-audit', runId], queryFn: () => api.controlAudit(runId) });
   const artifactContent = useQuery({ queryKey: ['artifact-content', runId, selectedArtifact?.path, selectedArtifact?.task_id], queryFn: () => api.artifactContent(runId, selectedArtifact!.path, selectedArtifact?.task_id), enabled: Boolean(selectedArtifact) });
@@ -47,8 +48,9 @@ export function RunDetailPage() {
   if (detail.isError || !data) return <div className="page-stack"><Button type="text" icon={<ArrowLeftOutlined />} onClick={() => navigate('/runs')}>返回执行列表</Button><Alert type="error" showIcon message="无法加载执行详情" description={(detail.error as Error)?.message ?? '执行不存在或无权访问'} action={<Button onClick={() => detail.refetch()}>重试</Button>} /></div>;
   return <div className="page-stack">
     <div className="page-heading"><div><Space wrap><Button type="text" icon={<ArrowLeftOutlined />} onClick={() => navigate('/runs')}>返回</Button><Title level={3} className="run-detail-title">执行详情</Title><StatusTag status={data.status} /></Space><Text type="secondary" className="run-id">{data.run_id}</Text></div>
-      <Space wrap><Button icon={<ReloadOutlined />} onClick={() => detail.refetch()} loading={detail.isFetching}>刷新</Button>{data.checkpoint?.resumable && <Button type="primary" onClick={() => resume.mutate()} loading={resume.isPending}>恢复执行</Button>}{['running', 'queued'].includes(data.status) && <Button danger onClick={() => cancel.mutate()} loading={cancel.isPending}>请求停止</Button>}</Space>
+      <Space wrap><Button icon={<ReloadOutlined />} onClick={() => detail.refetch()} loading={detail.isFetching}>刷新</Button>{['running', 'queued'].includes(data.status) && <Button onClick={() => pause.mutate()} loading={pause.isPending}>暂停执行</Button>}{data.checkpoint?.resumable && ['paused', 'running', 'queued'].includes(data.status) && <Button type="primary" onClick={() => resume.mutate()} loading={resume.isPending}>继续执行</Button>}{['running', 'queued', 'paused', 'pause_requested'].includes(data.status) && <Button danger onClick={() => cancel.mutate()} loading={cancel.isPending}>取消执行</Button>}</Space>
     </div>
+    {pause.isError && <Alert type="error" showIcon message="暂停请求失败" description={(pause.error as Error).message} />}
     {resume.isError && <Alert type="error" showIcon message="恢复执行失败" description={(resume.error as Error).message} />}
     {cancel.isError && <Alert type="error" showIcon message="停止请求失败" description={(cancel.error as Error).message} />}
     {data.run_error?.status === 'FAILED' && <Alert type="error" showIcon message="工作流异常终止" description={(data.run_error.error_type || '后台异常') + '：' + (data.run_error.message || '请检查服务端日志并按执行 ID 查询完整堆栈。')} />}

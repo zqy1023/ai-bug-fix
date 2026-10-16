@@ -1,6 +1,6 @@
 export type StepStatus = 'pending' | 'running' | 'waiting' | 'succeeded' | 'failed' | 'skipped';
 export type BusinessResult = 'passed' | 'failed' | 'rejected' | 'manual' | 'pending' | 'LOCATED' | 'INSUFFICIENT_EVIDENCE' | 'MANUAL' | 'PASS' | 'FAIL' | 'REJECTED' | 'SKIPPED' | 'DELIVERED' | 'SUCCESS' | 'FAILED' | null;
-export type RunStatus = 'queued' | 'running' | 'waiting_approval' | 'succeeded' | 'partial_failed' | 'failed' | 'cancelled' | 'cancel_requested';
+export type RunStatus = 'queued' | 'running' | 'waiting_approval' | 'succeeded' | 'partial_failed' | 'failed' | 'paused' | 'pause_requested' | 'cancelled' | 'cancel_requested';
 
 export interface DashboardSummary {
   active_runs: number;

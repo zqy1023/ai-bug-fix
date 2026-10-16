@@ -451,7 +451,8 @@ def _control_db():
             key TEXT PRIMARY KEY, payload_hash TEXT NOT NULL, run_id TEXT NOT NULL, created_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS run_control (
-            run_id TEXT PRIMARY KEY, cancel_requested INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL
+            run_id TEXT PRIMARY KEY, pause_requested INTEGER NOT NULL DEFAULT 0,
+            cancel_requested INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS control_audit (
             id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, task_id TEXT NOT NULL DEFAULT '',
@@ -459,6 +460,11 @@ def _control_db():
             created_at TEXT NOT NULL
         );
     """)
+    # 旧版控制库原位升级；保留已有运行记录与取消请求。
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(run_control)")}
+    if "pause_requested" not in columns:
+        connection.execute("ALTER TABLE run_control ADD COLUMN pause_requested INTEGER NOT NULL DEFAULT 0")
+        connection.commit()
     return connection
 
 
@@ -478,16 +484,37 @@ def _v1_status(value: str) -> str:
     status = (value or "").lower()
     aliases = {"pending": "queued", "accepted": "queued", "completed": "succeeded", "success": "succeeded"}
     return aliases.get(status, status if status in {
-        "queued", "running", "waiting_approval", "succeeded", "partial_failed", "failed", "cancelled",
-        "cancel_requested",
+        "queued", "running", "waiting_approval", "succeeded", "partial_failed", "failed", "paused",
+        "pause_requested", "cancelled", "cancel_requested",
     } else "failed")
 
 
 def _v1_run_summary(payload: dict[str, Any]) -> dict[str, Any]:
     summary = payload.get("summary") or {}
     created = payload.get("created_at") or payload.get("updated_at")
+    run_id = str(payload["run_id"])
+    status = _v1_status(str(payload.get("status") or ""))
+    try:
+        connection = _control_db()
+        try:
+            control = connection.execute(
+                "SELECT pause_requested,cancel_requested FROM run_control WHERE run_id=?", (run_id,)
+            ).fetchone()
+        finally:
+            connection.close()
+        all_steps = list(payload.get("steps") or []) + [
+            step for task in (payload.get("tasks") or []) for step in (task.get("steps") or [])
+        ]
+        active = any(step.get("status") in {"running", "waiting"} for step in all_steps)
+        paused_step = any(step.get("status") == "waiting" for step in all_steps)
+        if control and control["cancel_requested"]:
+            status = "cancel_requested" if active else "cancelled"
+        elif control and control["pause_requested"]:
+            status = "paused" if paused_step else "pause_requested"
+    except Exception:
+        logger.debug("读取执行控制状态失败 run_id=%s", run_id, exc_info=True)
     return {
-        "run_id": str(payload["run_id"]), "status": _v1_status(str(payload.get("status") or "")),
+        "run_id": run_id, "status": status,
         "started_at": created, "finished_at": payload.get("finished_at"),
         "task_count": int(summary.get("tasks_total") or len(payload.get("tasks") or [])),
         "succeeded_tasks": int(summary.get("tasks_success") or 0),
@@ -549,9 +576,18 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
     status = _v1_status(str(payload.get("status") or ""))
     connection = _control_db()
     try:
-        row = connection.execute("SELECT cancel_requested FROM run_control WHERE run_id=?", (run_id,)).fetchone()
+        row = connection.execute(
+            "SELECT pause_requested,cancel_requested FROM run_control WHERE run_id=?", (run_id,)
+        ).fetchone()
         if row and row["cancel_requested"]:
-            status = "cancelled" if payload.get("status") in {"completed", "failed"} and not next_nodes else "cancel_requested"
+            status = "cancelled" if not next_nodes else "cancel_requested"
+        elif row and row["pause_requested"]:
+            has_waiting_step = any(step.get("status") == "waiting" for step in steps)
+            has_waiting_step = has_waiting_step or any(
+                step.get("status") == "waiting"
+                for task in tasks for step in (task.get("steps") or [])
+            )
+            status = "paused" if has_waiting_step else "pause_requested"
     finally:
         connection.close()
     return {
@@ -712,17 +748,48 @@ def v1_get_run(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
     return _v1_detail(run_id)
 
 
+@app.post("/api/v1/runs/{run_id}/pause", status_code=202)
+def v1_pause_run(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
+    """请求在下一个节点边界暂停；节点完成前返回 pause_requested，而非谎报已暂停。"""
+    run_id = _safe_id(run_id)
+    detail = _v1_detail(run_id)
+    if detail["status"] not in {"running", "queued", "pause_requested"}:
+        raise HTTPException(status_code=409, detail="执行当前不处于可暂停状态")
+    connection = _control_db()
+    try:
+        connection.execute(
+            "INSERT INTO run_control(run_id,pause_requested,cancel_requested,updated_at) VALUES(?,1,0,?) "
+            "ON CONFLICT(run_id) DO UPDATE SET pause_requested=1,updated_at=excluded.updated_at",
+            (run_id, datetime.now(timezone.utc).isoformat()),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    _audit_control(run_id, "", "run.pause_requested", "api")
+    return {"run_id": run_id, "status": "pause_requested", "message": "已请求暂停；当前节点完成或到达安全边界后生效"}
+
+
 @app.post("/api/v1/runs/{run_id}/resume", status_code=202)
 def v1_resume_run(run_id: str, background: BackgroundTasks, _: None = Depends(_authorize)) -> dict[str, Any]:
     run_id = _safe_id(run_id)
     detail = _v1_detail(run_id)
-    if detail["status"] not in {"running", "queued"} or not detail["checkpoint"]["resumable"]:
+    if detail["status"] not in {"running", "queued", "paused"} or not detail["checkpoint"]["resumable"]:
         raise HTTPException(status_code=409, detail="执行当前没有可恢复的 checkpoint")
     with _RUN_LOCKS_GUARD:
         lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
     if not lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="该执行正在进行其他控制操作")
     lock.release()
+    connection = _control_db()
+    try:
+        connection.execute(
+            "INSERT INTO run_control(run_id,pause_requested,cancel_requested,updated_at) VALUES(?,0,0,?) "
+            "ON CONFLICT(run_id) DO UPDATE SET pause_requested=0,updated_at=excluded.updated_at",
+            (run_id, datetime.now(timezone.utc).isoformat()),
+        )
+        connection.commit()
+    finally:
+        connection.close()
     background.add_task(_resume_workflow_background, run_id)
     _audit_control(run_id, "", "run.resume_requested", "api")
     return {"run_id": run_id, "status": "resume_requested"}
@@ -742,13 +809,13 @@ def _resume_workflow_background(run_id: str) -> None:
 def v1_cancel_run(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
     run_id = _safe_id(run_id)
     detail = _v1_detail(run_id)
-    if detail["status"] not in {"running", "queued"}:
+    if detail["status"] not in {"running", "queued", "paused", "pause_requested"}:
         raise HTTPException(status_code=409, detail="执行当前不是可请求停止的状态")
     connection = _control_db()
     try:
         connection.execute(
-            "INSERT INTO run_control(run_id,cancel_requested,updated_at) VALUES(?,1,?) "
-            "ON CONFLICT(run_id) DO UPDATE SET cancel_requested=1,updated_at=excluded.updated_at",
+            "INSERT INTO run_control(run_id,pause_requested,cancel_requested,updated_at) VALUES(?,0,1,?) "
+            "ON CONFLICT(run_id) DO UPDATE SET pause_requested=0,cancel_requested=1,updated_at=excluded.updated_at",
             (run_id, datetime.now(timezone.utc).isoformat()),
         )
         connection.commit()
@@ -888,6 +955,19 @@ def v1_model_calls(
                     continue
                 if task_id and str(item.get("task_id") or "") != task_id:
                     continue
+                if not item.get("events") and item.get("task_id"):
+                    event_path = run_dir / "tasks" / str(item["task_id"]) / "audit" / "agent_events.jsonl"
+                    if event_path.is_file():
+                        hydrated = []
+                        for event_line in event_path.read_text(encoding="utf-8").splitlines():
+                            try:
+                                event_record = json.loads(event_line)
+                            except json.JSONDecodeError:
+                                continue
+                            if isinstance(event_record, dict) and event_record.get("model_call_id") == item.get("model_call_id"):
+                                hydrated.append(event_record.get("event"))
+                        item["events"] = [event for event in hydrated if isinstance(event, dict)]
+                        item["events_path"] = f"tasks/{item['task_id']}/audit/agent_events.jsonl"
                 items.append(item)
         except OSError as exc:
             raise HTTPException(status_code=503, detail="模型调用审计暂时不可读取") from exc

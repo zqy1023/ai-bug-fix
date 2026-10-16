@@ -16,7 +16,9 @@ Browser -> Nginx (same-origin /api proxy) -> FastAPI Workbench API
 - Task：`steps.json` 的 `tasks` 槽位、任务级步骤、`reports/final.json`。
 - Step：执行状态 `status` 与业务结论 `result` 分开记录，另含耗时、尝试次数、输入/输出、错误和产物引用。
 - Artifact：只能从对应 run/task 记录目录读取；路径必须保持在目录根内，响应上限 2 MiB。
-- Checkpoint：以 `thread_id=run_id` 关联 LangGraph SQLite 检查点；审批恢复必须复用同一 thread_id。
+- Checkpoint：以 `thread_id=run_id` 关联 LangGraph SQLite 检查点；暂停/继续/审批恢复必须复用同一 thread_id。
+- Agent 调用：`model_calls.jsonl` 记录调用元数据、输出摘要与事件索引；`tasks/<task_id>/audit/agent_events.jsonl` 按任务追加过滤后的助手公开文本、工具调用和工具结果。隐藏思考块、完整 SDK 对象和 Prompt 不写入调试归档。
+- 调试 hook：`AI_REPAIR_DEBUG_HOOK_LOG` 仅写过滤后的事件摘要，单文件上限 5 MiB，超过后滚动保留一份。
 - Eligibility：SQLite 唯一键 `run_id|biztype|carrier` 保证同一轮同一运输商只领取一次资格。
 - MANUAL：人工介入终态，不是成功也不是待审批方案。待审批列表只包含实际挂起的审批；人工介入列表显示定位/审查的 MANUAL 结论。
 
@@ -63,3 +65,20 @@ docker compose logs -f api frontend
 - [ ] MANUAL 任务最终报告为 MANUAL，审批中心与人工介入队列区分正确。
 - [ ] CI、回归、故障注入和备份恢复验证有可追溯结果。
 
+
+## 每次执行的 JSON 与 SQLite 文件说明
+
+| 文件 | 作用 | 生成时机 / 保留原则 |
+|---|---|---|
+| `run.json` | 本轮启动参数与配置快照，用于真实输入重建 | 启动时创建，不覆盖 |
+| `steps.json` | Run 级与任务级节点状态、业务结论、摘要、耗时、错误和产物引用 | 每个节点状态变化时原子更新；不存大段原始事件 |
+| `reports/final.json` | 单个任务的最终业务结论、耗时、token 汇总和完成步骤 | 每个任务收尾时生成；取消任务标记 CANCELLED |
+| `reports/run_failure.json` | 图外后台异常的安全摘要 | 仅后台发生未捕获异常时生成 |
+| `artifacts/**/*.json` | 日志、证据、diff、回归和交付等大体量结构化产物 | 由节点按需生成；steps.json 只存引用 |
+| `model_calls.jsonl` | 每次 Provider 调用的模型、角色、耗时、用量、输出摘要及事件索引 | 每次模型调用追加一行；旧记录缺失事件时不补造 |
+| `tasks/<task_id>/audit/agent_events.jsonl` | 按任务分拆的有效 Agent 对话/工具事件 | 每次调用逐事件追加，使用 model_call_id 关联 |
+| `workbench-control.sqlite3` | 启动幂等键、暂停/取消意图、控制操作审计 | 控制 API 首次调用时创建；必须持久化挂载 |
+| `eligibility.sqlite3` | 同一 run 中 carrier 修复资格的唯一性约束 | 领取修复资格时使用 |
+| `checkpoints.sqlite`（实际文件名以配置为准） | LangGraph 状态检查点，支持审批/暂停后继续 | 节点提交状态时更新；不能与 run 记录分开备份 |
+
+运行根目录下的 JSON 是可读审计记录，SQLite 用于控制状态、资格唯一性和图检查点；二者不是互相替代关系。备份时应整体备份同一 runtime 目录，恢复后再验证 checkpoint 与 JSON 记录的 run_id 一致。
