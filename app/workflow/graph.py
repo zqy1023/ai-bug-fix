@@ -16,6 +16,8 @@ from typing import Any
 from app.workflow.state import RunState, WorkflowState
 from app.workflow.definitions import TASK_CONDITIONAL_TRANSITIONS, TASK_NODE_NAMES, TASK_STATIC_TRANSITIONS
 from app.workflow.routes import (
+    RUN_PREPARE,
+    after_run_prepare,
     APPLY,
     APPROVE,
     CHECK,
@@ -39,7 +41,6 @@ from app.workflow.routes import (
     after_approval,
     after_check_changes,
     after_claim,
-    after_deduplicate,
     after_evidence,
     after_identify,
     after_locate,
@@ -61,7 +62,7 @@ RUN_TASK = "run_task"
 TASK_DISPATCH = "task_dispatch"
 TASK_COLLECT = "task_collect"
 
-_RUN_NODES = (DISCOVER, NORMALIZE, DEDUPLICATE, IDENTIFY)
+_RUN_NODES = (RUN_PREPARE, IDENTIFY)
 
 
 
@@ -168,10 +169,8 @@ def build_graph(
     graph.add_node(RUN_TASK, task_graph)
     graph.add_node(TASK_COLLECT, collect)
 
-    graph.add_edge(START, DISCOVER)
-    graph.add_edge(DISCOVER, NORMALIZE)
-    graph.add_edge(NORMALIZE, DEDUPLICATE)
-    graph.add_conditional_edges(DEDUPLICATE, after_deduplicate, [IDENTIFY, END])
+    graph.add_edge(START, RUN_PREPARE)
+    graph.add_conditional_edges(RUN_PREPARE, after_run_prepare, [IDENTIFY, END])
     graph.add_conditional_edges(IDENTIFY, after_identify, [TASK_DISPATCH, END])
     graph.add_conditional_edges(TASK_DISPATCH, after_dispatch, [RUN_TASK, END])
     graph.add_edge(RUN_TASK, TASK_COLLECT)
@@ -197,6 +196,7 @@ __all__ = [
     "REPAIR",
     "REVIEW",
     "RETRY",
+    "RUN_PREPARE",
     "RUN_TASK",
     "SNAPSHOT",
     "TASK_COLLECT",
