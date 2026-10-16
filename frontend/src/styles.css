@@ -1,7 +1,7 @@
 :root {
   font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale; color: #182230; background: #f3f5f8;
+  -moz-osx-font-smoothing: grayscale; color: #182230; background: #f5f7fb;
   font-optical-sizing: auto;
 }
 * { box-sizing: border-box; }
