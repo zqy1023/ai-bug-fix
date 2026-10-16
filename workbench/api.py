@@ -245,7 +245,8 @@ def _report_from_steps(
             next_action = next_action or "检查最后一个已执行步骤的输入、输出和错误后确定处置方案。"
 
     return {
-        "report_version": 0, "report_kind": "task_final", "legacy_report": True,
+        "report_version": 0, "report_kind": "task_final",
+        "legacy_report": result not in {"RUNNING", "PENDING", "WAITING_APPROVAL"},
         "task_id": task_id, "carrier": carrier, "biztype": biztype,
         "result": result, "status": result, "terminal_status": result,
         "terminal_step": terminal_name, "terminal_reason": reason,
