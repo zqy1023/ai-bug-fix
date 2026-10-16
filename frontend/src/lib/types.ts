@@ -46,6 +46,7 @@ export interface ArtifactRef {
   media_type?: string;
   size_bytes?: number;
   description?: string;
+  task_id?: string;
 }
 
 export interface TaskSummary {
