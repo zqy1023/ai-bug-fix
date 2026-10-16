@@ -4,6 +4,15 @@ from app.agents.common import _prompt_metrics
 from app.agents.locate.graph import _locate_contract_summary, _snapshot_prompt_context
 
 
+
+def test_locate_default_context_budget_supports_fifty_thousand_characters():
+    import json
+    from pathlib import Path
+
+    config_path = Path(__file__).resolve().parents[1] / "app" / "agents" / "locate" / "config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert config["max_context_chars"] == 50000
+
 def test_locate_prompt_snapshot_excludes_full_hash_manifest():
     manifest = {f"gathers/X/module_{index}.py": f"sha-{index}" for index in range(1000)}
 
