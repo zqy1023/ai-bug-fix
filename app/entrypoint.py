@@ -365,6 +365,21 @@ def _write_run_report(
         logger.exception("写入 Run 级终态报告失败 run_id=%s", run_id)
 
 
+def _read_json(path) -> dict[str, Any]:
+    """读取 JSON 对象；文件缺失、损坏或根值类型不符时返回空对象。"""
+    if not path.is_file():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("读取 JSON 文件失败 path=%s", path, exc_info=True)
+        return {}
+    if not isinstance(value, dict):
+        logger.warning("JSON 文件根值不是对象 path=%s", path)
+        return {}
+    return value
+
+
 def _atomic_json(path, value: dict[str, Any]) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
