@@ -33,7 +33,7 @@ SPEC = StepSpec(
     input_builder=_input,
     output_patch=_patch,
     depends_on=(Dependency("identify_carrier", "run"),),
-    next_step="prepare_source_snapshot",
+    next_step="repair_agent",
 )
 
 __all__ = ["SPEC"]
