@@ -40,6 +40,9 @@ def test_manual_continue_resumes_the_correct_stage_without_duplicate_claim():
     state["manual_resume_step"] = ""
     assert after_approval(state) == CLAIM
 
+    state["repair_slot_claimed"] = True
+    assert after_approval(state) == REPAIR
+
     state["decision"] = "RETRY_LOCATE"
     assert after_approval(state) == LOCATE
 
