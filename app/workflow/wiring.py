@@ -481,11 +481,49 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
             patch["review_decision"] = str(view.verdict or "")
         if kind == "repair":
             repair_files = [str(item) for item in (final.get("changed_files") or [])]
+            change_plan = dict(final.get("change_plan") or {})
+            locate = dict(state.get("locate") or {})
             patch["repair_changed_files"] = repair_files
             patch["changed_files"] = repair_files
-            patch["change_plan"] = dict(final.get("change_plan") or {})
+            patch["change_plan"] = change_plan
             patch["blocked_reason"] = str(final.get("blocked_reason") or "")
-            patch["scope_escalation_required"] = bool(final.get("scope_escalation_required"))
+            # 修复 Agent 的输出不能抹掉定位阶段已经确定的共享层升级信号。
+            scope_escalation = bool(
+                final.get("scope_escalation_required")
+                or state.get("scope_escalation_required")
+                or str(locate.get("recommended_scope") or "") == "project"
+            )
+            patch["scope_escalation_required"] = scope_escalation
+            if scope_escalation and not change_plan:
+                # 不允许共享层改动在没有可审方案时被重试/收尾悄悄吞掉。
+                source_evidence = locate.get("source_evidence")
+                candidate_files = locate.get("candidate_files")
+                can_retry_repair = bool(
+                    str(locate.get("status") or "") == "LOCATED"
+                    and str(locate.get("root_cause") or "").strip()
+                    and isinstance(source_evidence, list) and source_evidence
+                    and isinstance(candidate_files, list) and candidate_files
+                )
+                patch.update({
+                    "manual_intervention_required": True,
+                    "manual_continue_allowed": can_retry_repair,
+                    "manual_intervention_reason": (
+                        "定位已确认需要修改目标 carrier 之外的共享代码，但修复 Agent 没有生成完整的变更方案。"
+                        "请重新尝试生成方案，或结束自动修复后人工处理；系统不会直接写入共享层。"
+                    ),
+                    "manual_intervention_step": "repair_agent",
+                    "manual_resume_step": "repair_agent",
+                    "last_result": "manual",
+                    "terminal_status": "manual",
+                })
+            else:
+                patch.update({
+                    "manual_intervention_required": False,
+                    "manual_continue_allowed": False,
+                    "manual_intervention_reason": "",
+                    "manual_intervention_step": "",
+                    "manual_resume_step": "",
+                })
             baseline = final.get("baseline_manifest")
             if isinstance(baseline, dict):
                 patch["baseline_manifest"] = {str(key): str(value) for key, value in baseline.items()}
