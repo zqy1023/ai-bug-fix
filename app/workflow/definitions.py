@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from app.workflow.routes import (
     APPLY, APPROVE, CLAIM, DELIVER, FINALIZE, LOCATE, PREPARE_CONTEXT,
-    REGRESSION, REPAIR, REVIEW, RETRY, RUN_PREPARE, VALIDATE, WORKSPACE,
+    REGRESSION, REPAIR, REVIEW, RETRY, RUN_PREPARE, VALIDATE,
     after_apply, after_approval, after_claim, after_prepare_context,
     after_regression, after_repair, after_review, after_run_prepare,
     after_validate_changes, after_locate,
