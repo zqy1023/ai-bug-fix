@@ -173,3 +173,15 @@ a { cursor: pointer; }
   .dashboard-refresh-note { display: none; }
   .section-heading { align-items: flex-start; }
 }
+
+
+/* Run lifecycle controls: one valid primary action for the current server state. */
+.run-heading { align-items: center; }
+.run-control-toolbar { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.run-control-hint { margin-top: -12px; padding: 0 2px; font-size: 12px; line-height: 1.6; }
+.run-control-hint .ant-typography { color: #667085; }
+@media (max-width: 760px) {
+  .run-heading { align-items: stretch; flex-direction: column; }
+  .run-control-toolbar { justify-content: flex-start; }
+  .run-control-toolbar .ant-btn { flex: 0 0 auto; }
+}
