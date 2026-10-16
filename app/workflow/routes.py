@@ -265,6 +265,7 @@ def after_delivery(state: WorkflowState) -> str:
         or str(locate.get("status") or "") != "LOCATED"
         or str(locate.get("recommended_scope") or "") != "carrier"
         or str(locate.get("category") or "") != "carrier"
+        or _locate_references_legacy(locate)
     )
     if analysis_only:
         # 报告交付失败也结束当前任务，不能回到 FINALIZE 再次进入报告交付形成死循环。
