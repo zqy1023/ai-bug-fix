@@ -136,7 +136,6 @@ def after_locate(state: WorkflowState) -> str:
     if (
         str(locate.get("recommended_scope") or "") != "carrier"
         or str(locate.get("category") or "") != "carrier"
-        or _locate_references_legacy(locate)
     ):
         return FINALIZE
     disposition = locate_disposition(str(locate.get("status") or ""))
@@ -154,11 +153,10 @@ def after_workspace(state: WorkflowState) -> str:
 
 
 def after_repair(state: WorkflowState) -> str:
-    """修复后路由：共享层方案先升级一次，否则通过的修复进入验证链。"""
+    """修复后路由：共享层或范围升级只留分析报告，局部修复才进入验证链。"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
         return FINALIZE
-    # 失败也要先看升级：修复被共享层挡住时结果是 failed，但仍带 project 方案。
-    # 共享层范围已升级但 Agent 没有产出可审批方案时，转入人工介入；不能悄悄重试或假装审批方案存在。
+    # 共享层范围升级即使带有 change_plan，也不能进入自动修改或中间审批。
     if state.get("manual_intervention_required") or state.get("scope_escalation_required"):
         # 共享层/范围升级不属于允许自动修改的 carrier 局部问题。
         return FINALIZE
@@ -220,7 +218,7 @@ def after_review(state: WorkflowState) -> str:
 
 
 def after_approval(state: WorkflowState) -> str:
-    """审批后路由：根据 scope 决定是 apply 共享层还是直接交付"""
+    """审批后路由：最终审批只保留或拒绝已交付分支，不自动合并。"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
         return FINALIZE
     # 定位阶段的人工处置与变更方案审批共用 interrupt，但决策语义完全分开。
