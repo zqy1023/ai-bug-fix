@@ -1,6 +1,10 @@
 import type { ApprovalItem, DashboardSummary, ModelCall, PageResult, RunDetail, RunQuery, RunSummary, ControlAuditItem } from './types';
 
 const API_BASE = '/api/v1';
+let apiToken = '';
+
+export function setApiToken(token: string) { apiToken = token.trim(); }
+function authorizationHeaders(): Record<string, string> { return apiToken ? { Authorization: 'Bearer ' + apiToken } : {}; }
 
 export class ApiError extends Error {
   constructor(message: string, public readonly status: number, public readonly code = 'API_ERROR') {
@@ -11,7 +15,7 @@ export class ApiError extends Error {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init, credentials: 'same-origin',
-    headers: { Accept: 'application/json', ...(init?.body ? { 'Content-Type': 'application/json' } : {}), ...init?.headers },
+    headers: { Accept: 'application/json', ...authorizationHeaders(), ...(init?.body ? { 'Content-Type': 'application/json' } : {}), ...init?.headers },
   });
   if (!response.ok) {
     const body = await response.json().catch(() => null) as { detail?: string; message?: string; code?: string } | null;
@@ -23,7 +27,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   health: async () => {
-    const response = await fetch('/api/health', { headers: { Accept: 'application/json' }, credentials: 'same-origin' });
+    const response = await fetch('/api/health', { headers: { Accept: 'application/json', ...authorizationHeaders() }, credentials: 'same-origin' });
     if (!response.ok) throw new ApiError(`健康检查失败（HTTP ${response.status}）`, response.status);
     return response.json() as Promise<{
       status: string; service: string; version: string; runtime_dir_configured: boolean;
