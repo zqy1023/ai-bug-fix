@@ -32,7 +32,7 @@ const transitions: Array<[string, string, string?]> = [
   ['prepare_evidence', 'finalize_execution', '人工处理/失败'], ['locate_agent', 'claim_repair_slot', '可修复'],
   ['locate_agent', 'finalize_execution', '转人工/失败'], ['claim_repair_slot', 'prepare_workspace', '通过'],
   ['claim_repair_slot', 'finalize_execution', '拒绝资格'],
-  ['locate_agent', 'finalize_execution', '转人工/失败'], ['prepare_workspace', 'repair_agent', '通过'],
+  ['prepare_workspace', 'repair_agent', '通过'],
   ['prepare_workspace', 'finalize_execution', '失败'], ['repair_agent', 'check_changes', '修复通过'],
   ['repair_agent', 'request_approval', '共享层授权'], ['repair_agent', 'retry_prepare', '修复失败'],
   ['check_changes', 'verify_issue', '通过'], ['check_changes', 'retry_prepare', '失败'],
