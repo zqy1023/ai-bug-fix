@@ -34,6 +34,8 @@ class RepairState(TypedDict, total=False):
     evidence: dict[str, Any]
     # locate：该模型字段用于承载对应契约中的结构化数据。
     locate: dict[str, Any]
+    # manual_continue_authorized：人工明确授权后允许使用已保留的 MANUAL 定位证据。
+    manual_continue_authorized: bool
     analysis: str        # 模型给出的完整诊断结论
     summary: str         # 一句话标题式总结
     # changed_files：该模型字段用于承载对应契约中的结构化数据。
