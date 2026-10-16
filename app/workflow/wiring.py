@@ -219,6 +219,8 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
 
     from app.agents.repair.models import RepairView
     from app.domain.models import utc_now
+    from app.infrastructure.run_control import cancellation_requested, pause_requested
+    from langgraph.types import interrupt
     from app.application.audit import (
         ArtifactRef,
         StepError,
@@ -234,6 +236,22 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
     input_model = spec.input_model
 
     def node(state: dict[str, Any]) -> dict[str, Any]:
+        run_id = str(state.get("run_id") or "")
+        task_id = str(state.get("task_id") or "")
+        if pause_requested(store.root, run_id):
+            waiting = StepRecord(
+                name=spec.name, title=spec.title, status="waiting",
+                started_at=utc_now(), attempt=int(state.get("attempt") or 1),
+                input={"control": "pause_requested"},
+            )
+            store.save(run_id, waiting, task_id)
+            interrupt({"control": "pause", "run_id": run_id, "step": spec.name})
+        if cancellation_requested(store.root, run_id):
+            return {
+                "last_result": "cancelled",
+                "terminal_status": "CANCELLED",
+                "next_step": FINALIZE,
+            }
         task = dict(state.get("task") or {})
         started = time.perf_counter()
         if kind == "locate":
@@ -302,8 +320,6 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
                 "framework": str(state.get("framework") or ""),
             }
         record = StepRecord(name=spec.name, title=spec.title, status="running", started_at=utc_now(), attempt=int(state.get("attempt") or 1), input=dump_model(incoming))
-        run_id = str(state.get("run_id") or "")
-        task_id = str(state.get("task_id") or "")
         refs: list[ArtifactRef] = []
         try:
             final = graph.invoke(graph_input)
@@ -435,6 +451,12 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
                 patch["baseline_manifest"] = {str(key): str(value) for key, value in baseline.items()}
             if final.get("baseline_dir"):
                 patch["baseline_dir"] = str(final.get("baseline_dir"))
+        if cancellation_requested(store.root, run_id):
+            patch.update({
+                "last_result": "cancelled",
+                "terminal_status": "CANCELLED",
+                "next_step": FINALIZE,
+            })
         return patch
 
     node.__name__ = spec.name

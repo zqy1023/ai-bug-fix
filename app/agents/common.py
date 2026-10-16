@@ -127,6 +127,55 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
         raise
 
 
+def _persist_agent_events(
+    record: dict[str, Any], events: list[dict[str, Any]]
+) -> tuple[str, int]:
+    """将有效公开事件按任务、调用拆分持久化；不写隐藏思考或原始 SDK 对象。"""
+    run_id = str(record.get("run_id") or "")
+    task_id = str(record.get("task_id") or "")
+    call_id = str(record.get("model_call_id") or "")
+    role = str(record.get("agent_role") or "")
+    if (
+        not run_id or not task_id or not call_id
+        or "/" in run_id or "/" in task_id
+        or chr(92) in run_id + task_id or ".." in run_id or ".." in task_id
+    ):
+        return "", 0
+    try:
+        from app.infrastructure.config import load_config
+        runtime_root = Path(load_config().runtime_dir).resolve()
+        run_root = runtime_root / "runs" / run_id
+        target = run_root / "tasks" / task_id / "audit" / "agent_events.jsonl"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+        count = 0
+        with _AUDIT_LOCK:
+            with target.open("a", encoding="utf-8") as stream:
+                for index, event in enumerate(events):
+                    if not isinstance(event, dict):
+                        continue
+                    payload = {
+                        "model_call_id": call_id,
+                        "run_id": run_id,
+                        "task_id": task_id,
+                        "agent_role": role,
+                        "attempt": int(record.get("attempt") or 1),
+                        "event_index": index,
+                        "recorded_at": now,
+                        "event": event,
+                    }
+                    stream.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + chr(10))
+                    count += 1
+        return target.relative_to(run_root).as_posix(), count
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception(
+            "Agent 事件轨迹持久化失败 run_id=%s task_id=%s call_id=%s",
+            run_id, task_id, call_id,
+        )
+        return "", 0
+
+
 def _audit_events(value: Any) -> list[dict[str, Any]]:
     """保留可审计的公开对话事件；不记录系统提示词或隐藏思考链。"""
     if not isinstance(value, list):

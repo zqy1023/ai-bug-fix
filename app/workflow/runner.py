@@ -67,17 +67,16 @@ def run_stage(
     # 本次节点执行的产物收集范围；重试不会带上一次尝试的引用。
     artifacts: list[ArtifactRef] = []
     try:
-        # 控制信号只在节点边界处理；FINALIZE 必须允许执行，才能持久化取消终态。
-        if spec.name != "finalize_execution":
-            if pause_requested(store.root, run_id):
-                interrupt({"control": "pause", "run_id": run_id, "step": spec.name})
-            if cancellation_requested(store.root, run_id):
-                raise StepFailed(
-                    "收到取消请求，已在安全节点边界停止后续执行",
-                    result="manual",
-                    code="RUN_CANCEL_REQUESTED",
-                    output={"control_cancelled": True},
-                )
+        # 暂停包括 FINALIZE 在内的节点边界；取消则必须放行 FINALIZE 生成终态报告。
+        if pause_requested(store.root, run_id):
+            interrupt({"control": "pause", "run_id": run_id, "step": spec.name})
+        if spec.name != "finalize_execution" and cancellation_requested(store.root, run_id):
+            raise StepFailed(
+                "收到取消请求，已在安全节点边界停止后续执行",
+                result="manual",
+                code="RUN_CANCEL_REQUESTED",
+                output={"control_cancelled": True},
+            )
         parsed = parse_input(spec.name, spec.input_builder(state))
         record.input = dump_model(parsed)
         run_context = RunContext(

@@ -411,11 +411,9 @@ def _debug_hook_event(event: dict[str, Any]) -> None:
         else:
             detail = ""
         line = f"[agent] {time.strftime('%H:%M:%S')} {event_type} {detail}"
-        if thinking:
-            print(f"\\r{line}", end="", file=sys.stderr, flush=True)
-        else:
-            print(f"\\n{line}" if _THINKING_OPEN else line, file=sys.stderr, flush=True)
-        _set_thinking(thinking)
+        # 终端仅输出事件摘要，不打印模型中间分析文本。
+        print(line, file=sys.stderr, flush=True)
+        _set_thinking(False)
     if not _flag("AI_REPAIR_DEBUG_HOOKS", settings.agent_archive):
         return
     path_value = os.getenv("AI_REPAIR_DEBUG_HOOK_LOG", "").strip()
@@ -437,7 +435,7 @@ def _debug_hook_event(event: dict[str, Any]) -> None:
             if type(event.get("message")).__name__ == "ResultMessage" else ""
         )
     path.parent.mkdir(parents=True, exist_ok=True)
-    encoded = json.dumps(safe_event, ensure_ascii=False, separators=(",", ":")) + "\\n"
+    encoded = json.dumps(safe_event, ensure_ascii=False, separators=(",", ":")) + chr(10)
     max_bytes = 5 * 1024 * 1024
     try:
         if path.exists() and path.stat().st_size + len(encoded.encode("utf-8")) > max_bytes:
