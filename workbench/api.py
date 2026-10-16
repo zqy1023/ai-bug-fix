@@ -53,8 +53,10 @@ class StartRunRequest(BaseModel):
 
 
 class ApprovalRequest(BaseModel):
-    # decision：人工审批决定，只允许 APPROVE 或 REJECT。
+    # decision：人工审批决定或人工处置动作。
     decision: str
+    # reason：人工操作说明，用于审计与终态报告。
+    reason: str = ""
 
 
 def _authorize(authorization: str | None = Header(default=None)) -> None:
@@ -488,6 +490,17 @@ def decide_approval(
     approval_step = next((item for item in reversed(steps) if item.get("name") == "request_approval"), None)
     approval_input = approval_step.get("input") if isinstance(approval_step, dict) and isinstance(approval_step.get("input"), dict) else {}
     mode = str(approval_input.get("mode") or "change_approval")
+    if not task.get("approval_pending") and decision in {"MARK_DONE", "TERMINATE"}:
+        report = task.get("report") if isinstance(task.get("report"), dict) else {}
+        terminal = str(report.get("result") or task.get("status") or "").upper()
+        if terminal not in {"MANUAL", "INSUFFICIENT_EVIDENCE"}:
+            raise HTTPException(status_code=409, detail="该任务不是待处置的人工介入任务")
+        now = datetime.now(timezone.utc).isoformat()
+        store.write_artifact(run_id, "reports/manual_resolution.json", {
+            "status": "completed" if decision == "MARK_DONE" else "terminated",
+            "decision": decision, "reason": request.reason, "resolved_at": now,
+        }, task_id)
+        return {"run_id": run_id, "task_id": task_id, "decision": decision, "status": "resolved"}
     manual_actions = {"RETRY_LOCATE", "CONTINUE_REPAIR", "MARK_DONE", "TERMINATE"}
 
     if mode == "manual_intervention":
@@ -505,7 +518,7 @@ def decide_approval(
             now = datetime.now(timezone.utc).isoformat()
             store.write_artifact(run_id, "reports/manual_resolution.json", {
                 "status": "completed" if decision == "MARK_DONE" else "terminated",
-                "decision": decision, "reason": request.decision, "resolved_at": now,
+                "decision": decision, "reason": request.reason, "resolved_at": now,
             }, task_id)
             return {"run_id": run_id, "task_id": task_id, "decision": decision, "status": "resolved"}
         raise HTTPException(status_code=409, detail="该任务当前没有可恢复的人工决策中断；历史终态任务不能原地续跑")
@@ -1187,7 +1200,7 @@ def v1_list_approvals(
 
 @app.get("/api/v1/manual-interventions")
 def v1_list_manual_interventions(_: None = Depends(_authorize)) -> dict[str, Any]:
-    """列出已终止自动流程、需要人工判断的任务；优先使用终态报告记载的真实阻断步骤。"""
+    """列出需要人工决定的任务，包括挂起中的定位处置，不只提供查看链接。"""
     store = _store()
     items: list[dict[str, Any]] = []
     for run_id in _all_run_ids(store):
@@ -1196,65 +1209,44 @@ def v1_list_manual_interventions(_: None = Depends(_authorize)) -> dict[str, Any
         except (HTTPException, OSError, ValueError):
             continue
         for task in payload.get("tasks") or []:
-            if task.get("approval_pending"):
+            task_id = str(task.get("task_id") or "")
+            resolution_path = store.task_dir(run_id, task_id) / "reports" / "manual_resolution.json"
+            resolution = _read_json(resolution_path, {})
+            if isinstance(resolution, dict) and resolution.get("status") in {"completed", "terminated"}:
                 continue
-            steps = task.get("steps") or []
+            steps = task.get("steps") if isinstance(task.get("steps"), list) else []
+            approval = next((step for step in reversed(steps) if step.get("name") == "request_approval"), None)
+            approval_input = approval.get("input") if isinstance(approval, dict) and isinstance(approval.get("input"), dict) else {}
+            manual_pending = bool(task.get("approval_pending")) and str(approval_input.get("mode") or "") == "manual_intervention"
+            if task.get("approval_pending") and not manual_pending:
+                continue
             report = task.get("report") if isinstance(task.get("report"), dict) else {}
             terminal = str(report.get("result") or task.get("status") or "").upper()
-            if terminal not in {"MANUAL", "INSUFFICIENT_EVIDENCE"}:
+            if not manual_pending and terminal not in {"MANUAL", "INSUFFICIENT_EVIDENCE"}:
                 continue
-
-            report_step = str(report.get("terminal_step") or "").strip()
-            reason = str(report.get("terminal_reason") or "").strip()
-            manual_step = next((step for step in reversed(steps) if report_step and step.get("name") == report_step), None)
-
-            # 终态报告是人工介入原因的权威来源。这样证据阶段打回时不会显示成“执行收尾 MANUAL”。
-            if not reason or not report_step:
-                for step in reversed(steps):
-                    output = step.get("output") if isinstance(step.get("output"), dict) else {}
-                    name = str(step.get("name") or "")
-                    verdict = str(output.get("status") or output.get("verdict") or step.get("result") or "").upper()
-                    is_manual = (
-                        verdict in {"MANUAL", "INSUFFICIENT_EVIDENCE"}
-                        or bool(output.get("legacy_only") and name == "prepare_evidence")
-                    )
-                    if not is_manual:
-                        continue
-                    manual_step = step
-                    report_step = name
-                    gaps = output.get("evidence_gaps")
-                    reason = str(
-                        output.get("legacy_reason") or output.get("reason") or output.get("summary")
-                        or step.get("summary") or
-                        (("证据缺口：" + "；".join(str(item) for item in gaps[:8])) if isinstance(gaps, list) and gaps else "")
-                    ).strip()
-                    generic_locate = {
-                        "定位输出不满足证据或路径契约，停止并转人工",
-                        "定位输出不满足证据或路径契约，停止并转人工。",
-                    }
-                    if name == "locate_agent" and reason in generic_locate and isinstance(gaps, list):
-                        detail = next((str(item).strip() for item in gaps if str(item).strip()), "")
-                        if detail:
-                            reason = "定位输出契约校验失败：" + detail[:1500]
-                    break
-
+            locate_step = next((step for step in reversed(steps) if step.get("name") == "locate_agent"), None)
+            locate_output = locate_step.get("output") if isinstance(locate_step, dict) and isinstance(locate_step.get("output"), dict) else {}
+            report_step = str(report.get("terminal_step") or ("locate_agent" if manual_pending else "")).strip()
+            reason = str(approval_input.get("intervention_reason") or report.get("terminal_reason") or locate_output.get("summary") or "").strip()
+            if not reason and isinstance(locate_output.get("evidence_gaps"), list):
+                reason = "；".join(str(item) for item in locate_output["evidence_gaps"][:8])
             if not reason:
                 reason = "自动流程因安全门禁无法继续，需要人工排查；历史记录没有保存更具体的原因。"
-            if not report_step:
-                report_step = str((manual_step or {}).get("name") or "finalize_execution")
+            continue_allowed = bool(approval_input.get("continue_allowed")) if manual_pending else False
+            decision_options = ["RETRY_LOCATE", "MARK_DONE", "TERMINATE"] if manual_pending else ["MARK_DONE", "TERMINATE"]
+            if manual_pending and continue_allowed:
+                decision_options.insert(1, "CONTINUE_REPAIR")
             items.append({
-                "intervention_id": f"{run_id}:{task.get('task_id', '')}",
-                "run_id": run_id,
-                "task_id": str(task.get("task_id") or ""),
-                "carrier": str(task.get("carrier") or ""),
-                "biztype": str(task.get("biztype") or ""),
-                "step": report_step,
-                "status": "open",
-                "summary": reason[:2000],
+                "intervention_id": f"{run_id}:{task_id}", "run_id": run_id, "task_id": task_id,
+                "carrier": str(task.get("carrier") or ""), "biztype": str(task.get("biztype") or ""),
+                "step": report_step or str((locate_step or {}).get("name") or "finalize_execution"),
+                "status": "waiting_decision" if manual_pending else "open", "summary": reason[:2000],
+                "root_cause": str(approval_input.get("root_cause") or locate_output.get("root_cause") or ""),
+                "candidate_files": [str(item) for item in (approval_input.get("candidate_files") or locate_output.get("candidate_files") or [])],
+                "continue_allowed": continue_allowed, "decision_options": decision_options,
                 "created_at": str(payload.get("updated_at") or payload.get("created_at") or ""),
             })
     return {"items": items, "total": len(items)}
-
 
 @app.post("/api/v1/approvals/{approval_id}/decision")
 def v1_decide_approval(
@@ -1267,8 +1259,25 @@ def v1_decide_approval(
     run_id, task_id = _safe_id(run_id), _safe_id(task_id)
     actor = "bearer-token" if authorization else "local-user"
     _audit_control(run_id, task_id, "approval." + request.decision, actor, request.reason)
-    return decide_approval(run_id, task_id, ApprovalRequest(decision=request.decision.upper()))
+    return decide_approval(run_id, task_id, ApprovalRequest(decision=request.decision.upper(), reason=request.reason))
 
+
+@app.post("/api/v1/manual-interventions/{intervention_id}/decision")
+def v1_decide_manual_intervention(
+    intervention_id: str, request: V1ApprovalDecision, authorization: str | None = Header(default=None),
+    _: None = Depends(_authorize),
+) -> dict[str, Any]:
+    """对人工介入任务执行安全处置；继续修复仅在当前 interrupt 证据允许时放行。"""
+    if ":" not in intervention_id:
+        raise HTTPException(status_code=400, detail="无效的人工介入 ID")
+    run_id, task_id = intervention_id.split(":", 1)
+    run_id, task_id = _safe_id(run_id), _safe_id(task_id)
+    decision = request.decision.upper()
+    if decision not in {"RETRY_LOCATE", "CONTINUE_REPAIR", "MARK_DONE", "TERMINATE"}:
+        raise HTTPException(status_code=422, detail="人工介入动作无效")
+    actor = "bearer-token" if authorization else "local-user"
+    _audit_control(run_id, task_id, "manual_intervention." + decision.lower(), actor, request.reason)
+    return decide_approval(run_id, task_id, ApprovalRequest(decision=decision, reason=request.reason))
 
 class KnowledgeCaseCreate(BaseModel):
     title: str = Field(min_length=3, max_length=200)
