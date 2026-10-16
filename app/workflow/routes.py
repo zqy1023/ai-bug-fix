@@ -40,12 +40,10 @@ def after_run_prepare(state: WorkflowState) -> str:
 
 
 def after_prepare_context(state: WorkflowState) -> str:
-    """快照与证据准备都成功且证据可用于自动定位时才进入 Locate Agent。"""
+    """证据准备成功后必须先做根因分析；旧框架限制后续修改，不跳过定位。"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
         return FINALIZE
-    if _result(state) != "passed" or (state.get("evidence") or {}).get("legacy_only"):
-        return FINALIZE
-    return LOCATE
+    return LOCATE if _result(state) == "passed" else FINALIZE
 
 
 def after_validate_changes(state: WorkflowState) -> str:
@@ -111,6 +109,9 @@ def after_claim(state: WorkflowState) -> str:
 def after_locate(state: WorkflowState) -> str:
     """仅在证据支持的根因定位成功后，才领取本轮修复资格。"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
+        return FINALIZE
+    # 旧框架任务只做根因分析；即使 Locate 返回 LOCATED，也不能进入自动修复。
+    if (state.get("evidence") or {}).get("legacy_only"):
         return FINALIZE
     disposition = locate_disposition(str((state.get("locate") or {}).get("status") or ""))
     if disposition == "repair" and _result(state) == "passed":
