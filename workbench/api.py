@@ -477,6 +477,7 @@ def decide_approval(
     run_id: str,
     task_id: str,
     request: ApprovalRequest,
+    background: BackgroundTasks | None = None,
     _: None = Depends(_authorize),
 ) -> dict[str, Any]:
     decision = request.decision.upper()
@@ -521,14 +522,26 @@ def decide_approval(
         lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
     if not lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="该 run 正在执行恢复操作")
+    fingerprint = str(approval_input.get("approval_fingerprint") or "")
+    resume_payload = {"decision": decision, "approval_fingerprint": fingerprint}
+    if background is not None:
+        # 审批 API 只负责校验决定并排入恢复任务。恢复过程可能继续执行多个 carrier，
+        # 不应占用 HTTP 请求；同一个 run 的锁交给后台恢复器持有，直至整张父图完成。
+        background.add_task(
+            _resume_workflow_background,
+            run_id,
+            lock,
+            resume_payload,
+            {"mode": mode, "task_id": task_id, "decision": decision, "reason": request.reason},
+        )
+        return {"run_id": run_id, "task_id": task_id, "decision": decision, "status": "resume_requested"}
     try:
         from langgraph.types import Command
         from app.workflow.wiring import build_graph
 
         graph = build_graph(store=store)
-        fingerprint = str(approval_input.get("approval_fingerprint") or "")
         final_state = graph.invoke(
-            Command(resume={"decision": decision, "approval_fingerprint": fingerprint}),
+            Command(resume=resume_payload),
             config={"configurable": {"thread_id": run_id}, "recursion_limit": 40},
         )
         from app.entrypoint import _write_run_report_if_terminal
@@ -1087,7 +1100,12 @@ def v1_resume_run(run_id: str, background: BackgroundTasks, _: None = Depends(_a
     return {"run_id": run_id, "status": "resume_requested"}
 
 
-def _resume_workflow_background(run_id: str, run_lock: Any = None) -> None:
+def _resume_workflow_background(
+    run_id: str,
+    run_lock: Any = None,
+    resume_payload: dict[str, Any] | None = None,
+    approval_meta: dict[str, Any] | None = None,
+) -> None:
     if run_lock is None:
         with _RUN_LOCKS_GUARD:
             run_lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
@@ -1103,7 +1121,10 @@ def _resume_workflow_background(run_id: str, run_lock: Any = None) -> None:
         has_interrupt = any(getattr(task, "interrupts", ()) for task in (getattr(snapshot, "tasks", ()) or ()))
         if has_interrupt:
             from langgraph.types import Command
-            final_state = graph.invoke(Command(resume=None), config=config)
+            # 审批恢复必须把用户已校验的决定传给 interrupt；普通暂停恢复才传 None。
+            final_state = graph.invoke(Command(resume=resume_payload), config=config)
+        elif resume_payload is not None:
+            raise RuntimeError("审批决定已收到，但 checkpoint 中不存在可恢复的 interrupt；拒绝从头重跑")
         else:
             final_state = graph.invoke(None, config=config)
         # 本次恢复已成功推进 checkpoint；清理之前后台异常写入的失败标记，避免 UI 继续把已恢复运行判为 FAILED。
@@ -1116,6 +1137,14 @@ def _resume_workflow_background(run_id: str, run_lock: Any = None) -> None:
             stale_run_report.unlink(missing_ok=True)
         from app.entrypoint import _write_run_report_if_terminal
         _write_run_report_if_terminal(store, run_id, graph, final_state=final_state)
+        if isinstance(approval_meta, dict) and approval_meta.get("mode") == "manual_intervention" and approval_meta.get("decision") in {"MARK_DONE", "TERMINATE"}:
+            task_id = str(approval_meta.get("task_id") or "")
+            store.write_artifact(run_id, "reports/manual_resolution.json", {
+                "status": "completed" if approval_meta.get("decision") == "MARK_DONE" else "terminated",
+                "decision": approval_meta.get("decision"),
+                "reason": str(approval_meta.get("reason") or ""),
+                "resolved_at": datetime.now(timezone.utc).isoformat(),
+            }, task_id)
     except Exception as exc:
         logger.exception("恢复工作流失败 run_id=%s", run_id)
         _record_background_failure(run_id, exc)
@@ -1292,7 +1321,8 @@ def v1_list_manual_interventions(_: None = Depends(_authorize)) -> dict[str, Any
 
 @app.post("/api/v1/approvals/{approval_id}/decision")
 def v1_decide_approval(
-    approval_id: str, request: V1ApprovalDecision, authorization: str | None = Header(default=None),
+    approval_id: str, request: V1ApprovalDecision, background: BackgroundTasks,
+    authorization: str | None = Header(default=None),
     _: None = Depends(_authorize),
 ) -> dict[str, Any]:
     if ":" not in approval_id:
@@ -1301,12 +1331,13 @@ def v1_decide_approval(
     run_id, task_id = _safe_id(run_id), _safe_id(task_id)
     actor = "bearer-token" if authorization else "local-user"
     _audit_control(run_id, task_id, "approval." + request.decision, actor, request.reason)
-    return decide_approval(run_id, task_id, ApprovalRequest(decision=request.decision.upper(), reason=request.reason))
+    return decide_approval(run_id, task_id, ApprovalRequest(decision=request.decision.upper(), reason=request.reason), background=background)
 
 
 @app.post("/api/v1/manual-interventions/{intervention_id}/decision")
 def v1_decide_manual_intervention(
-    intervention_id: str, request: V1ApprovalDecision, authorization: str | None = Header(default=None),
+    intervention_id: str, request: V1ApprovalDecision, background: BackgroundTasks,
+    authorization: str | None = Header(default=None),
     _: None = Depends(_authorize),
 ) -> dict[str, Any]:
     """对人工介入任务执行安全处置；继续修复仅在当前 interrupt 证据允许时放行。"""
