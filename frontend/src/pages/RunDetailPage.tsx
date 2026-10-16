@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, App, Button, Card, Descriptions, Drawer, Empty, Modal, Space, Spin, Table, Tabs, Tag, Typography } from 'antd';
+import { Alert, App, Button, Card, Collapse, Descriptions, Drawer, Empty, Modal, Space, Spin, Table, Tabs, Tag, Typography } from 'antd';
 import { ArrowLeftOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useNavigate, useParams } from 'react-router-dom';
 import dayjs from 'dayjs';
@@ -90,8 +90,8 @@ export function RunDetailPage() {
         { title: '操作', key: 'action', render: (_: unknown, row: { task_id: string }) => <Button type="link" onClick={(event) => { event.stopPropagation(); selectTask(row.task_id); }}>查看任务详情</Button> }
       ]} /> : <Empty description="本轮尚无任务" />}
     </Card>
-    <Card className="content-card" title="Run 级诊断与审计（按需展开）" collapsible="header" defaultCollapsed>
-    <Card title="Run 级工作流" className="content-card" collapsible="header" defaultCollapsed extra={<Text type="secondary">点击节点查看输入、输出、耗时与错误</Text>}><WorkflowGraph steps={graphSteps} selectedStep={selectedStepName} onSelectStep={setSelectedStepName} /></Card>
+    <Collapse className="content-card" items={[{ key: "audit", label: "Run 级诊断与审计（按需展开）", children: <>
+    <Card title="Run 级工作流" className="content-card" extra={<Text type="secondary">点击节点查看输入、输出、耗时与错误</Text>}><WorkflowGraph steps={graphSteps} selectedStep={selectedStepName} onSelectStep={setSelectedStepName} /></Card>
     <Drawer title="节点检查器" open={Boolean(selectedStepName)} onClose={() => setSelectedStepName(undefined)} width={680} destroyOnClose>
       {(() => { const step = graphSteps.find((item) => item.name === selectedStepName); if (!step) return <Empty description="该节点暂无持久化执行记录" />; return <div className="page-stack"><div><Title level={5}>{step.title || step.name}</Title><Text type="secondary">{step.name}</Text><div style={{ marginTop: 10 }}><StatusTag status={step.status} /> {step.result && <Tag>{resultLabel(step.result)}</Tag>}</div></div><Descriptions size="small" column={2} bordered><Descriptions.Item label="耗时">{duration(step.duration_ms)}</Descriptions.Item><Descriptions.Item label="尝试次数">{step.attempt ?? 1}</Descriptions.Item><Descriptions.Item label="开始时间">{step.started_at || "—"}</Descriptions.Item><Descriptions.Item label="结束时间">{step.finished_at || "—"}</Descriptions.Item></Descriptions>{step.summary && <Alert type={step.status === "failed" ? "error" : "info"} showIcon message="执行摘要" description={step.summary} />}{step.error && <Alert type="error" showIcon message={step.error.code || "节点错误"} description={step.error.message || "未提供错误详情"} />}<div><strong>节点输入</strong><pre className="json-panel">{JSON.stringify(step.input ?? {}, null, 2)}</pre></div><div><strong>节点输出</strong><pre className="json-panel">{JSON.stringify(step.output ?? {}, null, 2)}</pre></div></div>; })()}
     </Drawer>
@@ -110,6 +110,6 @@ export function RunDetailPage() {
         { title: "任务", dataIndex: "task_id", key: "task_id" }, { title: "原因/参数", dataIndex: "reason", key: "reason", render: (v: string) => v || "—" },
       ]} />
     </Card>
-    </Card>
+    </> }]} />
   </div>;
 }
