@@ -231,7 +231,7 @@ def after_approval(state: WorkflowState) -> str:
             return LOCATE
         if decision == "CONTINUE_REPAIR" and state.get("manual_continue_allowed"):
             # 定位阶段批准后首次领取修复资格；修复阶段缺少方案时直接重试 repair，不能二次 claim。
-            return REPAIR if str(state.get("manual_resume_step") or "") == "repair_agent" else CLAIM
+            return REPAIR if str(state.get("manual_resume_step") or "") == "repair_agent" or state.get("repair_slot_claimed") else CLAIM
         return FINALIZE
 
     approval_result = _result(state)
