@@ -15,7 +15,8 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
     task = dict(state.get("task") or {})
     return {
         "task_id": str(state.get("task_id") or ""),
-        "decision": str(state.get("decision") or "PENDING"),
+        # 人工处置决定只用于当前 interrupt 路由；到达下一次审批节点时必须重新等待新决定。
+        "decision": "PENDING" if str(state.get("decision") or "").upper() in {"RETRY_LOCATE", "CONTINUE_REPAIR", "MARK_DONE", "TERMINATE"} else str(state.get("decision") or "PENDING"),
         "mode": "manual_intervention" if state.get("manual_intervention_required") else "change_approval",
         "intervention_reason": str(state.get("manual_intervention_reason") or (state.get("locate") or {}).get("summary") or ""),
         "intervention_step": str(state.get("manual_intervention_step") or "locate_agent"),
