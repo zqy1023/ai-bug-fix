@@ -79,7 +79,6 @@ docker compose logs -f api frontend
 | `tasks/<task_id>/audit/agent_events.jsonl` | 过滤后的工具调用、工具结果和最终公开输出，按调用 ID 关联 | 每次调用追加多行；不保存中间分析、Prompt 正文或编辑全文 |
 | `tasks/<task_id>/**` 下的其他 JSON | 证据、diff、验证、回归和交付报告等节点产物 | 由步骤按声明的相对路径生成；steps.json 只保存引用 |
 | `model_calls.jsonl` | 每次 Provider 调用的模型、角色、耗时、用量、输出摘要及事件索引 | 每次模型调用追加一行；旧记录缺失事件时不补造 |
-
 | `workbench-control.sqlite3` | 启动幂等键、暂停/取消意图、控制操作审计 | 控制 API 首次调用时创建；必须持久化挂载 |
 | `eligibility.sqlite3` | 同一 run 中 carrier 修复资格的唯一性约束 | 领取修复资格时使用 |
 | `workflow-checkpoints.sqlite3` | runtime 根目录的 LangGraph 状态检查点，支持审批/暂停后继续 | 节点提交状态时更新；必须与同一 runtime 的 JSON/JSONL 一起备份 |
