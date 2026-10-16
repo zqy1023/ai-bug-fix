@@ -15,15 +15,7 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
     task = dict(state.get("task") or {})
     return {
         "task_id": str(state.get("task_id") or ""),
-        # 人工处置决定只用于当前 interrupt 路由；到达下一次审批节点时必须重新等待新决定。
-        "decision": "PENDING" if str(state.get("decision") or "").upper() in {"RETRY_LOCATE", "CONTINUE_REPAIR", "MARK_DONE", "TERMINATE"} else str(state.get("decision") or "PENDING"),
-        "mode": "manual_intervention" if state.get("manual_intervention_required") else "change_approval",
-        "intervention_reason": str(state.get("manual_intervention_reason") or (state.get("locate") or {}).get("summary") or ""),
-        "intervention_step": str(state.get("manual_intervention_step") or "locate_agent"),
-        "candidate_files": [str(item) for item in (state.get("locate") or {}).get("candidate_files") or []],
-        "root_cause": str((state.get("locate") or {}).get("root_cause") or ""),
-        "continue_allowed": bool(state.get("manual_continue_allowed")),
-        "recommended_scope": str((state.get("locate") or {}).get("recommended_scope") or "manual"),
+        "decision": str(state.get("decision") or "PENDING").upper(),
         "carrier": str(task.get("carrier") or ""),
         "source_repo_path": str(state.get("source_repo_path") or ""),
         "repair_branch": str(state.get("repair_branch") or ""),
@@ -52,37 +44,12 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
 
 def _patch(output: dict[str, Any]) -> dict[str, Any]:
     decision = str(output["decision"]).upper()
-    manual_actions = {"RETRY_LOCATE", "CONTINUE_REPAIR", "MARK_DONE", "TERMINATE"}
-    patch = {
+    return {
         "decision": decision,
-        "approval_mode": "manual_intervention" if decision in manual_actions else "change_approval",
-        # 只有实际的方案批准才算共享层升级授权。
+        "approval_mode": "change_approval",
         "approval_granted": decision == "APPROVE",
-        "escalation_used": decision == "APPROVE",
         "approval_cleanup_failed": bool(output.get("approval_cleanup_failed")),
     }
-    if decision == "RETRY_LOCATE":
-        patch.update({
-            "manual_intervention_required": False,
-            "manual_continue_allowed": False,
-            "manual_continue_authorized": False,
-            "manual_intervention_reason": "",
-            "manual_intervention_step": "",
-            "manual_resume_step": "",
-            "terminal_status": "",
-            "last_result": "passed",
-        })
-    elif decision == "CONTINUE_REPAIR":
-        # 仅在本次人工决定后开启一次授权；修复节点完成后会立即清除。
-        patch.update({
-            "manual_intervention_required": False,
-            "manual_continue_authorized": True,
-            "terminal_status": "",
-            "last_result": "passed",
-        })
-    elif decision in {"MARK_DONE", "TERMINATE"}:
-        patch.update({"manual_intervention_required": False, "terminal_status": "MANUAL", "last_result": "manual"})
-    return patch
 
 
 SPEC = StepSpec(
