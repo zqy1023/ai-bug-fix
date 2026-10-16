@@ -29,8 +29,8 @@ export function RunDetailPage() {
   const data = detail.data;
   const selectedTask = data?.tasks.find((task) => task.task_id === selectedTaskId);
   const graphSteps = selectedTask ? selectedTask.steps : (data?.steps ?? []);
-  const visibleModelCalls = (modelCalls.data?.items ?? []).filter((call) => selectedAgent === 'all' || call.agent_role === selectedAgent);
   const modelCalls = useQuery({ queryKey: ['model-calls', runId], queryFn: () => api.modelCalls(runId), refetchInterval: (q) => ['running', 'queued', 'waiting_approval', 'cancel_requested'].includes(detail.data?.status ?? '') ? 5000 : false });
+  const visibleModelCalls = (modelCalls.data?.items ?? []).filter((call) => selectedAgent === 'all' || call.agent_role === selectedAgent);
   const controlAudit = useQuery({ queryKey: ['control-audit', runId], queryFn: () => api.controlAudit(runId) });
   const artifactContent = useQuery({ queryKey: ['artifact-content', runId, selectedArtifact?.path, selectedArtifact?.task_id], queryFn: () => api.artifactContent(runId, selectedArtifact!.path, selectedArtifact?.task_id), enabled: Boolean(selectedArtifact) });
   const stepColumns = [
