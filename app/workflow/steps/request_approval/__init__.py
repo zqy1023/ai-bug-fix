@@ -16,6 +16,12 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
     return {
         "task_id": str(state.get("task_id") or ""),
         "decision": str(state.get("decision") or "PENDING"),
+        "mode": "manual_intervention" if state.get("manual_intervention_required") else "change_approval",
+        "intervention_reason": str((state.get("locate") or {}).get("summary") or ""),
+        "candidate_files": [str(item) for item in (state.get("locate") or {}).get("candidate_files") or []],
+        "root_cause": str((state.get("locate") or {}).get("root_cause") or ""),
+        "continue_allowed": bool(state.get("manual_continue_allowed")),
+        "recommended_scope": str((state.get("locate") or {}).get("recommended_scope") or "manual"),
         "carrier": str(task.get("carrier") or ""),
         "ai_workspace_path": str(state.get("ai_workspace_path") or ""),
         "changed_files": [str(item) for item in state.get("changed_files") or []],
@@ -40,14 +46,22 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _patch(output: dict[str, Any]) -> dict[str, Any]:
-    decision = str(output["decision"])
-    return {
+    decision = str(output["decision"]).upper()
+    manual_actions = {"RETRY_LOCATE", "CONTINUE_REPAIR", "MARK_DONE", "TERMINATE"}
+    patch = {
         "decision": decision,
-        # 批准即放行；拒绝或未决都不能让交付门禁误判为已批准。
+        "approval_mode": "manual_intervention" if decision in manual_actions else "change_approval",
+        # 只有实际的方案批准才算共享层升级授权。
         "approval_granted": decision == "APPROVE",
-        # 审批已经用掉本轮唯一的一次升级机会，后续失败不再反复申请授权。
         "escalation_used": decision == "APPROVE",
     }
+    if decision == "RETRY_LOCATE":
+        patch.update({"manual_intervention_required": False, "manual_continue_allowed": False, "terminal_status": "", "last_result": "passed"})
+    elif decision == "CONTINUE_REPAIR":
+        patch.update({"manual_intervention_required": False, "terminal_status": "", "last_result": "passed"})
+    elif decision in {"MARK_DONE", "TERMINATE"}:
+        patch.update({"manual_intervention_required": False, "terminal_status": "MANUAL", "last_result": "manual"})
+    return patch
 
 
 SPEC = StepSpec(
