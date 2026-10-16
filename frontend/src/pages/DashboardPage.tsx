@@ -46,7 +46,7 @@ export function DashboardPage() {
     {query.isError && <Alert type="error" showIcon message="无法加载工作台数据" description={(query.error as Error).message} action={<Button type="link" onClick={() => query.refetch()}>重试</Button>} />}
     <div className="workbench-welcome">
       <div><span className="welcome-eyebrow">异常修复工作流</span><h2>今天需要关注什么？</h2><p>从异常扫描开始，跟踪每个运输商任务，只有在需要你决策时才进入人工处理。</p></div>
-      <Button type="primary" size="large" icon={<PlusOutlined />} onClick={() => setLaunchOpen(true)}>开始异常扫描</Button>
+      <Button type="primary" size="large" icon={<PlusOutlined />} disabled={Boolean(health.data && !health.data.source_repo_configured)} onClick={() => setLaunchOpen(true)}>开始异常扫描</Button>
     </div>
     <section className="attention-section">
       <div className="section-heading"><div><Title level={5}>处理队列</Title><Text type="secondary">点击数字直接进入对应工作区</Text></div><Button type="text" icon={<ReloadOutlined />} loading={query.isFetching} onClick={() => query.refetch()}>刷新数据</Button></div>
