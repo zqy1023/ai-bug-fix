@@ -181,7 +181,6 @@ def _terminal_details(
             "verify_issue": "检查问题验证报告和原始异常证据。",
             "run_regression": "检查准生产回归报告及失败命令。",
             "review_agent": "按审查报告修正风险项后重新提交审查。",
-            "apply_plan": "核对获批方案与实际落盘结果，再重新验证。",
             "prepare_delivery": "检查分支创建、文件复制和交付记录。",
         }
         return (name, reason, followups.get(name, "检查失败节点的错误和产物，明确修复方案后重试或转人工。"))
