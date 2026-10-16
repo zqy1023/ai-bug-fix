@@ -14,6 +14,12 @@ export function RunsPage() {
   const initialStatus = searchParams.get('status');
   const [page, setPage] = useState(1); const [keyword, setKeyword] = useState(() => searchParams.get('keyword') ?? ''); const [status, setStatus] = useState<RunStatus | undefined>(initialStatus && ['queued', 'running', 'waiting_approval', 'succeeded', 'partial_failed', 'failed', 'cancelled', 'paused', 'pause_requested', 'cancel_requested'].includes(initialStatus) ? initialStatus as RunStatus : undefined); const [modalOpen, setModalOpen] = useState(false);
   useEffect(() => {
+    const queryKeyword = searchParams.get('keyword') ?? '';
+    setKeyword((current) => current === queryKeyword ? current : queryKeyword);
+    const queryStatus = searchParams.get('status');
+    const validStatuses: RunStatus[] = ['queued', 'running', 'waiting_approval', 'succeeded', 'partial_failed', 'failed', 'cancelled', 'paused', 'pause_requested', 'cancel_requested'];
+    const nextStatus = queryStatus && validStatuses.includes(queryStatus as RunStatus) ? queryStatus as RunStatus : undefined;
+    setStatus((current) => current === nextStatus ? current : nextStatus);
     if (searchParams.get('new') !== '1') return;
     setModalOpen(true);
     const next = new URLSearchParams(searchParams);
