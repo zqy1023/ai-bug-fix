@@ -469,6 +469,10 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
         }
         if kind == "locate":
             patch["last_result"] = "manual" if failed else "passed"
+            patch["manual_intervention_required"] = failed
+            patch["manual_continue_allowed"] = bool(final.get("manual_continue_allowed"))
+            patch["scope_escalation_required"] = bool(final.get("scope_escalation_required")) or bool(view.recommended_scope == "project")
+            patch["approval_mode"] = ""
         if kind == "review" and view.change_plan:
             patch["change_plan"] = dict(view.change_plan)
             patch["scope_escalation_required"] = str(view.change_plan.get("scope") or "") == "project"
