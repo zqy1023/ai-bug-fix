@@ -47,8 +47,12 @@ def run(ctx: StepContext, data: FinalizeInput) -> FinalizeOutput:
         if workspace.is_dir():
             report_path = (workspace / FINAL_REPORT).resolve()
             if report_path.is_relative_to(workspace):
-                report_path.parent.mkdir(parents=True, exist_ok=True)
-                report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+                try:
+                    report_path.parent.mkdir(parents=True, exist_ok=True)
+                    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+                except OSError:
+                    # 运行记录中的报告已经落盘；隔离区报告无法写入时，后续报告交付节点会明确失败。
+                    pass
     return FinalizeOutput(report_path=path, delivery_status=result, terminal_step=terminal_step,
                           terminal_reason=terminal_reason, next_action=next_action, finished_at=finished_at)
 
