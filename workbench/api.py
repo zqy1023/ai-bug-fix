@@ -1107,12 +1107,15 @@ def _resume_workflow_background(
         config = {"configurable": {"thread_id": run_id}, "recursion_limit": 40}
         snapshot = graph.get_state(config)
         has_interrupt = any(getattr(task, "interrupts", ()) for task in (getattr(snapshot, "tasks", ()) or ()))
-        if has_interrupt:
+        if resume_payload is not None:
             from langgraph.types import Command
-            # 审批恢复必须把用户已校验的决定传给 interrupt；普通暂停恢复才传 None。
+            # 嵌套任务子图的 interrupt 在部分 LangGraph 版本中不一定完整暴露在父快照的
+            # task.interrupts 上。审批接口已校验当前任务处于待决状态且持有 run 锁，因此
+            # 必须直接把决定交给 checkpoint；绝不能因快照未显示 interrupt 而重新 invoke(None)。
             final_state = graph.invoke(Command(resume=resume_payload), config=config)
-        elif resume_payload is not None:
-            raise RuntimeError("审批决定已收到，但 checkpoint 中不存在可恢复的 interrupt；拒绝从头重跑")
+        elif has_interrupt:
+            from langgraph.types import Command
+            final_state = graph.invoke(Command(resume=None), config=config)
         else:
             final_state = graph.invoke(None, config=config)
         # 本次恢复已成功推进 checkpoint；清理之前后台异常写入的失败标记，避免 UI 继续把已恢复运行判为 FAILED。
