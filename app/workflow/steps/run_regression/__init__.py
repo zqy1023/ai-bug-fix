@@ -31,7 +31,6 @@ SPEC = StepSpec(
     output_model=RegressionOutput,
     input_builder=_input,
     output_patch=_patch,
-    requires_confirmation=True,
     depends_on=(Dependency("verify_issue", "task"),),
     next_step="review_agent",
 )
