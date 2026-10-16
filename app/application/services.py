@@ -1,6 +1,6 @@
 """运行时服务契约。
 
-步骤通过 ``WorkflowServices`` 拿到配置化的外部协作者（工作区、交付、资格、日志源）。真实实现只在 ``app.workflow.wiring`` 中装配，步骤本身不创建任何外部客户端，
+步骤通过 ``WorkflowServices`` 拿到配置化的外部协作者（工作区、交付、日志源）。真实实现只在 ``app.workflow.wiring`` 中装配，步骤本身不创建任何外部客户端，
 缺少生产依赖时对应步骤必须失败。
 """
 
@@ -14,7 +14,6 @@ if TYPE_CHECKING:
     from app.infrastructure.filesystem.workspace import WorkspaceManager
     from app.infrastructure.git.delivery import GitBranchDelivery
     from app.infrastructure.es.logs import ESLogAdapter
-    from app.infrastructure.eligibility import ExecutionEligibility
     from app.application.ports import ScopePolicy
 
 
@@ -34,8 +33,6 @@ class WorkflowServices:
     workspaces: WorkspaceManager | None = None
     # delivery：创建修复分支、提交和可选推送的适配器。
     delivery: GitBranchDelivery | None = None
-    # eligibility：同一执行轮次的修复资格唯一性服务。
-    eligibility: ExecutionEligibility | None = None
     # log_source：读取真实 ES 异常日志的适配器。
     log_source: ESLogAdapter | None = None
     # ignore_errors：在归一化阶段排除的错误消息清单。
