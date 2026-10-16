@@ -10,8 +10,6 @@ from app.workflow.spec import FrozenModel
 class ClaimInput(FrozenModel):
     """04 的输入。"""
 
-    # run_id：本轮工作流执行标识。
-    run_id: str
     # task_id：本任务标识。
     task_id: str
     # biztype：业务类型。
