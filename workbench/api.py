@@ -478,14 +478,38 @@ def decide_approval(
     _: None = Depends(_authorize),
 ) -> dict[str, Any]:
     decision = request.decision.upper()
-    if decision not in {"APPROVE", "REJECT"}:
-        raise HTTPException(status_code=422, detail="decision 只能是 APPROVE 或 REJECT")
     run_id, task_id = _safe_id(run_id), _safe_id(task_id)
     store = _store()
     run = _run_payload(store, run_id)
     task = next((item for item in run["tasks"] if item["task_id"] == task_id), None)
-    if not task or not task["approval_pending"]:
-        raise HTTPException(status_code=409, detail="该任务当前没有待处理的人工审批")
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    steps = task.get("steps") if isinstance(task.get("steps"), list) else []
+    approval_step = next((item for item in reversed(steps) if item.get("name") == "request_approval"), None)
+    approval_input = approval_step.get("input") if isinstance(approval_step, dict) and isinstance(approval_step.get("input"), dict) else {}
+    mode = str(approval_input.get("mode") or "change_approval")
+    manual_actions = {"RETRY_LOCATE", "CONTINUE_REPAIR", "MARK_DONE", "TERMINATE"}
+
+    if mode == "manual_intervention":
+        allowed = {"RETRY_LOCATE", "MARK_DONE", "TERMINATE"}
+        if approval_input.get("continue_allowed") is True:
+            allowed.add("CONTINUE_REPAIR")
+        if decision not in allowed:
+            raise HTTPException(status_code=422, detail="人工处置动作无效，或当前证据不允许继续修复")
+    elif decision not in {"APPROVE", "REJECT"}:
+        raise HTTPException(status_code=422, detail="变更审批 decision 只能是 APPROVE 或 REJECT")
+
+    if not task.get("approval_pending"):
+        # 历史 MANUAL 任务已经结束，不存在可恢复的 interrupt；仍允许登记人工处理完毕。
+        if mode == "manual_intervention" and decision in {"MARK_DONE", "TERMINATE"}:
+            now = datetime.now(timezone.utc).isoformat()
+            store.write_artifact(run_id, "reports/manual_resolution.json", {
+                "status": "completed" if decision == "MARK_DONE" else "terminated",
+                "decision": decision, "reason": request.decision, "resolved_at": now,
+            }, task_id)
+            return {"run_id": run_id, "task_id": task_id, "decision": decision, "status": "resolved"}
+        raise HTTPException(status_code=409, detail="该任务当前没有可恢复的人工决策中断；历史终态任务不能原地续跑")
+
     with _RUN_LOCKS_GUARD:
         lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
     if not lock.acquire(blocking=False):
@@ -495,14 +519,21 @@ def decide_approval(
         from app.workflow.wiring import build_graph
 
         graph = build_graph(store=store)
+        fingerprint = str(approval_input.get("approval_fingerprint") or "")
         final_state = graph.invoke(
-            Command(resume=decision),
+            Command(resume={"decision": decision, "approval_fingerprint": fingerprint}),
             config={"configurable": {"thread_id": run_id}, "recursion_limit": 40},
         )
         from app.entrypoint import _write_run_report_if_terminal
         _write_run_report_if_terminal(store, run_id, graph, final_state=final_state)
+        if mode == "manual_intervention" and decision in {"MARK_DONE", "TERMINATE"}:
+            now = datetime.now(timezone.utc).isoformat()
+            store.write_artifact(run_id, "reports/manual_resolution.json", {
+                "status": "completed" if decision == "MARK_DONE" else "terminated",
+                "decision": decision, "reason": request.decision, "resolved_at": now,
+            }, task_id)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"恢复审批工作流失败：{type(exc).__name__}: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"恢复工作流失败：{type(exc).__name__}: {exc}") from exc
     finally:
         lock.release()
     return {"run_id": run_id, "task_id": task_id, "decision": decision, "status": "resumed"}
@@ -525,8 +556,8 @@ class V1StartRunRequest(BaseModel):
 
 
 class V1ApprovalDecision(BaseModel):
-    # decision：人工审批动作，仅允许 approve/reject。
-    decision: Literal["approve", "reject"]
+    # decision：普通审批仅使用 approve/reject；人工介入可选择重定位、继续修复、标记完成或终止。
+    decision: Literal["approve", "reject", "retry_locate", "continue_repair", "mark_done", "terminate"]
     # reason：审批说明或拒绝原因，最多 1000 字符。
     reason: str = Field(default="", max_length=1000)
 
@@ -1024,7 +1055,7 @@ def v1_pause_run(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
 def v1_resume_run(run_id: str, background: BackgroundTasks, _: None = Depends(_authorize)) -> dict[str, Any]:
     run_id = _safe_id(run_id)
     detail = _v1_detail(run_id)
-    if detail["status"] not in {"running", "queued", "paused"} or not detail["checkpoint"]["resumable"]:
+    if detail["status"] not in {"running", "queued", "paused", "failed"} or not detail["checkpoint"]["resumable"]:
         raise HTTPException(status_code=409, detail="执行当前没有可恢复的 checkpoint")
     with _RUN_LOCKS_GUARD:
         lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
@@ -1068,6 +1099,14 @@ def _resume_workflow_background(run_id: str, run_lock: Any = None) -> None:
             final_state = graph.invoke(Command(resume=None), config=config)
         else:
             final_state = graph.invoke(None, config=config)
+        # 本次恢复已成功推进 checkpoint；清理之前后台异常写入的失败标记，避免 UI 继续把已恢复运行判为 FAILED。
+        failure_path = store.run_dir(run_id) / "reports" / "run_failure.json"
+        if failure_path.is_file():
+            failure_path.unlink()
+        stale_run_report = store.run_dir(run_id) / "reports" / "final.json"
+        stale_payload = _read_json(stale_run_report, {})
+        if isinstance(stale_payload, dict) and stale_payload.get("terminal_step") == "workflow_startup" and stale_payload.get("result") == "FAILED":
+            stale_run_report.unlink(missing_ok=True)
         from app.entrypoint import _write_run_report_if_terminal
         _write_run_report_if_terminal(store, run_id, graph, final_state=final_state)
     except Exception as exc:
