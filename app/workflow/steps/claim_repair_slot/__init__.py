@@ -21,6 +21,10 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _patch(output: dict[str, Any]) -> dict[str, Any]:
+    return {"repair_slot_claimed": bool(output.get("claimed"))}
+
+
 SPEC = StepSpec(
     name="claim_repair_slot",
     title="领取资格",
@@ -28,6 +32,7 @@ SPEC = StepSpec(
     input_model=ClaimInput,
     output_model=ClaimOutput,
     input_builder=_input,
+    output_patch=_patch,
     depends_on=(Dependency("identify_carrier", "run"),),
     next_step="prepare_source_snapshot",
 )
