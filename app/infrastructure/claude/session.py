@@ -603,7 +603,7 @@ async def _run(
         if result.subtype == "error_max_turns":
             hint = f"（回合预算 {max_turns} 已耗尽：模型把预算花在探索上，没有输出结论）"
         # result.result 是真正的错误消息，subtype 只是类型标签（可能是 "success"）
-        error_msg = result.result or result.subtype or "未知错误"
+        error_msg = result.result or f"SDK 标记调用失败（is_error=true, subtype={result.subtype or 'unknown'}），但未提供错误正文"
         error = RuntimeError(f"Claude 智能体执行失败: {error_msg}{hint}")
         setattr(error, "agent_events", events)
         raise error
