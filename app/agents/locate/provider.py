@@ -19,7 +19,7 @@ def _is_max_turns_error(error: BaseException) -> bool:
     return "maximum number of turns" in message or "error_max_turns" in message
 
 
-def _max_turns_fallback(error: BaseException, max_turns: int) -> dict[str, Any]:
+def _max_turns_fallback(\n    error: BaseException, max_turns: int, *, prompt_chars: int = 0\n) -> dict[str, Any]:
     """将回合耗尽转为可审计的证据不足结论，而不是系统级崩溃。"""
     reason = (
         f"Claude 定位 Agent 已达到最大交互回合数 {max_turns}，"
@@ -51,7 +51,7 @@ def _max_turns_fallback(error: BaseException, max_turns: int) -> dict[str, Any]:
         "messages": messages,
         "usage": {
             "tool_calls": tool_calls,
-            "prompt_chars": 0,
+            "prompt_chars": max(0, int(prompt_chars)),
             "result_chars": len(result),
             "input_tokens": 0,
             "output_tokens": 0,
@@ -92,7 +92,7 @@ class ClaudeQueryLocateProvider:
                 )
             except Exception as error:
                 if _is_max_turns_error(error):
-                    return _max_turns_fallback(error, self.config.max_turns)
+                    return _max_turns_fallback(error, self.config.max_turns, prompt_chars=len(prompt))
                 raise
 
         return invoke_with_audit(request, invoke)
