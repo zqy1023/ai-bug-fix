@@ -63,23 +63,6 @@ TASK_COLLECT = "task_collect"
 
 _RUN_NODES = (DISCOVER, NORMALIZE, DEDUPLICATE, IDENTIFY)
 
-_TASK_NODES = (
-    SNAPSHOT,
-    EVIDENCE,
-    LOCATE,
-    CLAIM,
-    WORKSPACE,
-    REPAIR,
-    CHECK,
-    VERIFY,
-    REGRESSION,
-    REVIEW,
-    APPROVE,
-    APPLY,
-    DELIVER,
-    FINALIZE,
-    RETRY,
-)
 
 
 def _transient_retry() -> RetryPolicy:

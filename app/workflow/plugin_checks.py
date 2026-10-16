@@ -37,7 +37,6 @@ def _known(name: str) -> bool:
     return True
 
 
-
 def _check_task_topology() -> list[str]:
     """任务图拓扑必须引用已声明的节点，且所有任务插件必须在主流程中有位置。"""
     from app.workflow.definitions import (
@@ -50,6 +49,7 @@ def _check_task_topology() -> list[str]:
     problems: list[str] = []
     declared = set(TASK_NODE_NAMES)
     from app.workflow import registry
+
     registered = {spec.name for spec in registry.steps() if spec.task_level}
     registered |= {spec.name for spec in registry.agents() if spec.task_level}
     # retry_prepare 是编排内置节点，不是业务插件。
@@ -71,6 +71,7 @@ def _check_task_topology() -> list[str]:
     if len(conditional_sources) != len(set(conditional_sources)):
         problems.append("任务流程同一节点声明了多组条件路由")
     return problems
+
 
 def _check_models(spec: StepSpec | AgentSpec) -> list[str]:
     problems: list[str] = []
