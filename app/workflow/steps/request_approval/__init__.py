@@ -46,7 +46,6 @@ def _patch(output: dict[str, Any]) -> dict[str, Any]:
     decision = str(output["decision"]).upper()
     return {
         "decision": decision,
-        "approval_mode": "change_approval",
         "approval_granted": decision == "APPROVE",
         "approval_cleanup_failed": bool(output.get("approval_cleanup_failed")),
     }
