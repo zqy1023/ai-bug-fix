@@ -25,7 +25,6 @@ export function RunDetailPage() {
   const cancel = useMutation({ mutationFn: () => api.cancelRun(runId), onSuccess: async (result) => { message.warning(result.message || '已提交停止请求；后台任务可能需要时间响应'); await queryClient.invalidateQueries({ queryKey: ['run', runId] }); }, onError: (error) => message.error('停止请求失败：' + (error as Error).message) });
   // 同一时刻只允许一个控制动作，避免暂停/恢复/停止请求互相竞争。
   const controlPending = pause.isPending || resume.isPending || cancel.isPending;
-  const captureKnowledge = useMutation({ mutationFn: (taskId: string) => api.captureKnowledgeFromTask(runId, taskId), onSuccess: async () => { message.success('已从真实任务记录沉淀候选知识'); await queryClient.invalidateQueries({ queryKey: ['knowledge-cases'] }); }, onError: (error) => message.error('沉淀知识失败：' + (error as Error).message) });
   useEffect(() => {
     if (!runId) return;
     const source = new EventSource(`/api/v1/runs/${encodeURIComponent(runId)}/events`);
