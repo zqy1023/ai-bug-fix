@@ -22,6 +22,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  health: async () => {
+    const response = await fetch('/api/health', { headers: { Accept: 'application/json' }, credentials: 'same-origin' });
+    if (!response.ok) throw new ApiError(`健康检查失败（HTTP ${response.status}）`, response.status);
+    return response.json() as Promise<{
+      status: string; service: string; version: string; runtime_dir_configured: boolean;
+      source_repo_configured: boolean; api_token_required: boolean; timestamp: string;
+    }>;
+  },
   dashboard: () => request<DashboardSummary>('/dashboard/summary'),
   runs: (query: RunQuery) => {
     const params = new URLSearchParams();
