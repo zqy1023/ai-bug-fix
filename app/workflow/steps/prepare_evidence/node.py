@@ -190,23 +190,8 @@ def _published_knowledge(problem: dict[str, Any], carrier: str, biztype: str, ca
             "match_score": str(score),
         }))
     ranked.sort(key=lambda pair: (-pair[0], pair[1]["case_id"]))
+    # 知识检索保持只读；工作流不再自动记录使用轨迹或沉淀新案例。
     selected = ranked[:3]
-    if selected and run_id and task_id:
-        try:
-            runtime_dir = load_config().runtime_dir
-            connection = sqlite3.connect(str(runtime_dir / "workbench-control.sqlite3"), timeout=2)
-            try:
-                now = datetime.now(timezone.utc).isoformat()
-                connection.executemany(
-                    """INSERT OR IGNORE INTO knowledge_case_usage
-                       (run_id, task_id, case_id, match_score, created_at) VALUES(?,?,?,?,?)""",
-                    [(run_id, task_id, item["case_id"], int(score), now) for score, item in selected],
-                )
-                connection.commit()
-            finally:
-                connection.close()
-        except (OSError, sqlite3.Error, AttributeError, ValueError):
-            pass
     return [item for _, item in selected]
 
 def run(ctx: StepContext, data: EvidenceInput) -> EvidenceOutput:
