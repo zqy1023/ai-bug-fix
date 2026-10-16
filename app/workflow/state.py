@@ -102,7 +102,7 @@ class WorkflowState(TypedDict, total=False):
     regression_result: dict[str, Any]
     # terminal_status：任务收尾前的业务终态。
     terminal_status: str
-    # apply_plan 通道：方案契约、人工授权后的放行范围与落盘结果。
+    # change_plan：记录非 carrier 范围的分析结论，不进入自动落盘。
     change_plan: dict[str, Any]
     # blocked_reason：阻断或范围拒绝原因。
     blocked_reason: str
