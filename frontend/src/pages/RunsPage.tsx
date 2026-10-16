@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Alert, Button, Card, Input, Select, Table, Typography } from 'antd';
 import { CloseCircleOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
@@ -10,9 +10,16 @@ import { StatusTag } from '../components/StatusTag';
 import type { RunStatus, RunSummary } from '../lib/types';
 const { Title, Text } = Typography;
 export function RunsPage() {
-  const navigate = useNavigate(); const [searchParams] = useSearchParams();
+  const navigate = useNavigate(); const [searchParams, setSearchParams] = useSearchParams();
   const initialStatus = searchParams.get('status');
-  const [page, setPage] = useState(1); const [keyword, setKeyword] = useState(''); const [status, setStatus] = useState<RunStatus | undefined>(initialStatus && ['queued', 'running', 'waiting_approval', 'succeeded', 'partial_failed', 'failed', 'cancelled', 'paused', 'pause_requested', 'cancel_requested'].includes(initialStatus) ? initialStatus as RunStatus : undefined); const [modalOpen, setModalOpen] = useState(false);
+  const [page, setPage] = useState(1); const [keyword, setKeyword] = useState(() => searchParams.get('keyword') ?? ''); const [status, setStatus] = useState<RunStatus | undefined>(initialStatus && ['queued', 'running', 'waiting_approval', 'succeeded', 'partial_failed', 'failed', 'cancelled', 'paused', 'pause_requested', 'cancel_requested'].includes(initialStatus) ? initialStatus as RunStatus : undefined); const [modalOpen, setModalOpen] = useState(false);
+  useEffect(() => {
+    if (searchParams.get('new') !== '1') return;
+    setModalOpen(true);
+    const next = new URLSearchParams(searchParams);
+    next.delete('new');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
   const runs = useQuery({ queryKey: ['runs', page, keyword, status], queryFn: () => api.runs({ page, page_size: 20, keyword, status }), refetchInterval: 15000 });
   const health = useQuery({ queryKey: ['workbench-health'], queryFn: api.health, refetchInterval: 30000, retry: 1 });
   const columns = [
