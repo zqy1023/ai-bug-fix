@@ -290,71 +290,90 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
             }
         task = dict(state.get("task") or {})
         started = time.perf_counter()
-        if kind == "locate":
-            incoming = input_model(
-                run_id=str(state.get("run_id") or ""),
-                task_id=str(state.get("task_id") or ""),
-                attempt=int(state.get("attempt") or 1),
-                carrier=str(task.get("carrier") or ""),
-                biztype=str(task.get("biztype") or ""),
-                service_name=str(task.get("service_name") or ""),
-                problem=dict(state.get("problem") or task.get("problem") or {}),
-                evidence=dict(state.get("evidence") or {}),
-                source_project_path=str(state.get("ai_workspace_path") or state.get("source_project_path") or ""),
-                source_snapshot={
+        try:
+            if kind == "locate":
+                incoming = input_model(
+                    run_id=str(state.get("run_id") or ""),
+                    task_id=str(state.get("task_id") or ""),
+                    attempt=int(state.get("attempt") or 1),
+                    carrier=str(task.get("carrier") or ""),
+                    biztype=str(task.get("biztype") or ""),
+                    service_name=str(task.get("service_name") or ""),
+                    problem=dict(state.get("problem") or task.get("problem") or {}),
+                    evidence=dict(state.get("evidence") or {}),
+                    source_project_path=str(state.get("ai_workspace_path") or state.get("source_project_path") or ""),
+                    source_snapshot={
+                        "baseline_dir": str(state.get("baseline_dir") or ""),
+                        "baseline_manifest": dict(state.get("baseline_manifest") or {}),
+                    },
+                )
+                graph_input = dump_model(incoming)
+            elif kind == "repair":
+                evidence = dict(state.get("evidence") or {})
+                if not str(evidence.get("carrier_dir") or "") or not list(evidence.get("candidates") or []):
+                    raise StepFailed(f"{spec.name} 缺少已准备的源码证据：没有 carrier 目录或候选文件")
+                incoming = input_model(
+                    task_id=str(state.get("task_id") or ""),
+                    ai_workspace_path=str(state.get("ai_workspace_path") or ""),
+                    attempt=int(state.get("attempt") or 1),
+                    retry_reason=str(state.get("retry_reason") or ""),
+                    evidence=evidence,
+                    locate=dict(state.get("locate") or {}),
+                    manual_continue_authorized=bool(state.get("manual_continue_authorized")),
+                )
+                # 任务字典平铺回子图输入：子图按 carrier / service_name 取字段。
+                graph_input = {
+                    **task,
+                    **dump_model(incoming),
+                    "run_id": str(state["run_id"]),
+                    "baseline_manifest": dict(state.get("baseline_manifest") or {}),
+                    "baseline_dir": str(state.get("baseline_dir") or ""),
+                }
+            else:
+                repair = state.get("repair")
+                repair_payload = repair if isinstance(repair, dict) else {}
+                incoming = input_model(
+                    task_id=str(state.get("task_id") or ""),
+                    attempt=int(state.get("attempt") or 1),
+                    ai_workspace_path=str(state.get("ai_workspace_path") or ""),
+                    repair=RepairView.model_validate(repair_payload) if repair_payload else RepairView(),
+                    changed_files=[str(item) for item in (state.get("changed_files") or [])],
+                    # 复核/回归需要看到"模型到底改了哪几行"。原先这里只塞了 scope/totals
+                    # 这类统计数字（甚至取不到就退化成空串），审查环节无法判断改动合理性。
+                    diff_summary=_diff_summary(store, str(state["run_id"]), str(state.get("task_id") or ""), state.get("gate_result") or {}),
+                    gate_result=dict(state.get("gate_result") or {}),
+                    verify_result=dict(state.get("verify_result") or {}),
+                    regression_result=dict(state.get("regression_result") or {}),
+                    check_passed=bool(state.get("check_passed")),
+                    verify_passed=bool(state.get("verify_passed")),
+                    regression_passed=bool(state.get("regression_passed")),
+                )
+                graph_input = {
+                    **task,
+                    **dump_model(incoming),
+                    "repair": repair_payload,
+                    "run_id": str(state["run_id"]),
                     "baseline_dir": str(state.get("baseline_dir") or ""),
                     "baseline_manifest": dict(state.get("baseline_manifest") or {}),
-                },
+                    "framework": str(state.get("framework") or ""),
+                }
+    
+        except Exception as error:
+            record = StepRecord(
+                name=spec.name, title=spec.title, status="failed", started_at=utc_now(),
+                attempt=int(state.get("attempt") or 1), input={"failure_stage": "input_validation"},
             )
-            graph_input = dump_model(incoming)
-        elif kind == "repair":
-            evidence = dict(state.get("evidence") or {})
-            if not str(evidence.get("carrier_dir") or "") or not list(evidence.get("candidates") or []):
-                raise StepFailed(f"{spec.name} 缺少已准备的源码证据：没有 carrier 目录或候选文件")
-            incoming = input_model(
-                task_id=str(state.get("task_id") or ""),
-                ai_workspace_path=str(state.get("ai_workspace_path") or ""),
-                attempt=int(state.get("attempt") or 1),
-                retry_reason=str(state.get("retry_reason") or ""),
-                evidence=evidence,
-                locate=dict(state.get("locate") or {}),
-                manual_continue_authorized=bool(state.get("manual_continue_authorized")),
-            )
-            # 任务字典平铺回子图输入：子图按 carrier / service_name 取字段。
-            graph_input = {
-                **task,
-                **dump_model(incoming),
-                "run_id": str(state["run_id"]),
-                "baseline_manifest": dict(state.get("baseline_manifest") or {}),
-                "baseline_dir": str(state.get("baseline_dir") or ""),
-            }
-        else:
-            repair = state.get("repair")
-            repair_payload = repair if isinstance(repair, dict) else {}
-            incoming = input_model(
-                task_id=str(state.get("task_id") or ""),
-                attempt=int(state.get("attempt") or 1),
-                ai_workspace_path=str(state.get("ai_workspace_path") or ""),
-                repair=RepairView.model_validate(repair_payload) if repair_payload else RepairView(),
-                changed_files=[str(item) for item in (state.get("changed_files") or [])],
-                # 复核/回归需要看到"模型到底改了哪几行"。原先这里只塞了 scope/totals
-                # 这类统计数字（甚至取不到就退化成空串），审查环节无法判断改动合理性。
-                diff_summary=_diff_summary(store, str(state["run_id"]), str(state.get("task_id") or ""), state.get("gate_result") or {}),
-                gate_result=dict(state.get("gate_result") or {}),
-                verify_result=dict(state.get("verify_result") or {}),
-                regression_result=dict(state.get("regression_result") or {}),
-                check_passed=bool(state.get("check_passed")),
-                verify_passed=bool(state.get("verify_passed")),
-                regression_passed=bool(state.get("regression_passed")),
-            )
-            graph_input = {
-                **task,
-                **dump_model(incoming),
-                "repair": repair_payload,
-                "run_id": str(state["run_id"]),
-                "baseline_dir": str(state.get("baseline_dir") or ""),
-                "baseline_manifest": dict(state.get("baseline_manifest") or {}),
-                "framework": str(state.get("framework") or ""),
+            record.error = StepError(code=error_code_of("system_crash"), message=f"Agent 输入构造失败: {error}")
+            record.output = {"failure_reason": f"Agent 输入构造失败：{error}"}
+            record.finished_at = utc_now()
+            record.duration_ms = round((time.perf_counter() - started) * 1000, 2)
+            store.save(run_id, record, task_id)
+            return {
+                "last_result": "failed",
+                "retry_reason": f"{spec.name} 输入构造失败：{error}",
+                "retry_target": spec.name,
+                "terminal_status": "failed",
+                "attempt": int(state.get("attempt") or 1),
             }
         record = StepRecord(name=spec.name, title=spec.title, status="running", started_at=utc_now(), attempt=int(state.get("attempt") or 1), input=dump_model(incoming))
         refs: list[ArtifactRef] = []
