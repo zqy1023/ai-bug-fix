@@ -14,14 +14,23 @@ from app.infrastructure.claude.session import run_agent_once
 
 
 def _is_transient_query_error(error: BaseException) -> bool:
-    """识别只读定位请求可以安全重试的流中断错误。"""
+    """从异常与已收集的 SDK 事件中识别只读定位请求的传输中断。"""
     message = str(error).casefold()
+    events = getattr(error, "agent_events", [])
+    # Claude SDK 有时只把 ResultMessage.result 设为 "success"，真正的
+    # Connection closed mid-response 只出现在此前的 Assistant/Result 事件里。
+    # 只看异常字符串会漏掉这类错误，随后被误报成 Agent 系统级崩溃。
+    try:
+        event_text = json.dumps(events, ensure_ascii=False, default=str).casefold()
+    except Exception:
+        event_text = str(events).casefold()
+    diagnostic = message + "\\n" + event_text
     markers = (
         "connection closed mid-response", "connection reset", "server disconnected",
         "incomplete chunked read", "remoteprotocolerror", "readtimeout", "connecttimeout",
-        "broken pipe", "error result: success", "temporarily unavailable", "connection aborted",
+        "broken pipe", "temporarily unavailable", "connection aborted", "api error",
     )
-    return any(marker in message for marker in markers) or isinstance(error, (TimeoutError, ConnectionError, OSError))
+    return any(marker in diagnostic for marker in markers) or isinstance(error, (TimeoutError, ConnectionError, OSError))
 
 
 def _interrupted_call_fallback(error: BaseException, request: AgentRequest, attempts: int) -> dict[str, Any]:
