@@ -128,10 +128,14 @@ class WorkspaceManager:
             shutil.rmtree(temporary, ignore_errors=True)
         try:
             self._copy_source(source, temporary)
-            self.restore_carrier_snapshot(temporary, baseline_dir, carrier, "gathers")
-            # restore_carrier_snapshot 需要知道框架；同时尝试恢复旧框架快照。
+            baseline_root = Path(baseline_dir).resolve()
+            restored = False
             for framework in ("gathers", "spiders"):
-                self.restore_carrier_snapshot(temporary, baseline_dir, carrier, framework)
+                if (baseline_root / framework / self.safe_carrier_name(carrier)).is_dir():
+                    self.restore_carrier_snapshot(temporary, baseline_dir, carrier, framework)
+                    restored = True
+            if not restored:
+                raise WorkspaceError("重试时基线中没有可恢复的 carrier")
             self._write_ignore(temporary)
             shutil.rmtree(root, ignore_errors=True)
             temporary.replace(root)
