@@ -28,8 +28,8 @@ class LocateInput(FrozenModel):
     problem: dict[str, Any]
     # evidence：字段说明见该模型文档与工作流契约。
     evidence: dict[str, Any]
-    # source_project_path：字段说明见该模型文档与工作流契约。
-    source_project_path: str
+    # workspace_path：只读定位 Agent 唯一允许访问的隔离工作区。
+    workspace_path: str
     # source_snapshot：字段说明见该模型文档与工作流契约。
     source_snapshot: dict[str, Any]
 
@@ -41,8 +41,8 @@ class LocateInput(FrozenModel):
             value = self.problem.get(key)
             if not isinstance(value, str) or value != getattr(self, key):
                 raise ValueError(f"原始 problem.{key} 与定位任务字段不一致")
-        if not self.run_id or not self.task_id or not self.source_project_path:
-            raise ValueError("LocateInput 缺少 run_id、task_id 或 source_project_path")
+        if not self.run_id or not self.task_id or not self.workspace_path:
+            raise ValueError("LocateInput 缺少 run_id、task_id 或 workspace_path")
         return self
 
 
