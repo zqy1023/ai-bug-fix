@@ -113,7 +113,8 @@ def after_locate(state: WorkflowState) -> str:
         return FINALIZE
     disposition = locate_disposition(str((state.get("locate") or {}).get("status") or ""))
     if disposition == "repair" and _result(state) == "passed":
-        return CLAIM
+        # 重新定位发生在已领取修复资格之后时，直接回到 repair，避免重复 claim 导致资格冲突。
+        return REPAIR if state.get("repair_slot_claimed") else CLAIM
     # 对定位契约、证据或模型调用中断提供真正的人工中断点；不能直接 finalize 后只留下只读记录。
     if state.get("manual_intervention_required"):
         return APPROVE
