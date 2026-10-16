@@ -88,9 +88,6 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         "review_decision": review_decision,
         "analysis_only": analysis_only,
         "report_paths": [f"{report_framework}/{report_carrier}/final.json"] if analysis_only else [],
-        # 需要审批 = 本轮存在已获批或待审批的共享层方案；是否放行只看批准结果。
-        "requires_approval": bool(state.get("scope_escalation_required")),
-        "approval_granted": str(state.get("decision") or "") == "APPROVE",
     }
 
 
