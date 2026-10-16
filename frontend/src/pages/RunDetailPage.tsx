@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, App, Button, Card, Descriptions, Drawer, Empty, Modal, Select, Space, Spin, Table, Tabs, Tag, Typography } from 'antd';
 import { ArrowLeftOutlined, BookOutlined, ReloadOutlined } from '@ant-design/icons';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import dayjs from 'dayjs';
 import { api } from '../lib/api';
 import { StatusTag, statusLabel } from '../components/StatusTag';
@@ -13,13 +13,10 @@ function duration(value?: number | null) { if (value == null) return '—'; retu
 function resultLabel(value?: string | null) { if (!value) return '—'; const labels: Record<string, string> = { passed: '通过', failed: '失败', FAILED: '失败', rejected: '已拒绝', REJECTED: '已拒绝', manual: '需人工介入', MANUAL: '需人工介入', PASS: '审查通过', FAIL: '审查未通过', LOCATED: '已定位根因', INSUFFICIENT_EVIDENCE: '证据不足', PENDING: '待处理', COMPLETED: '已结束', SUCCESS: '成功', SUCCEEDED: '成功', FAILED_VALIDATION: '验证失败', NOT_RUN: '未运行', INCOMPLETE: '验证不完整', STALE: '验证已过期', DELIVERED: '已交付', RUNNING: '执行中', WAITING_APPROVAL: '待审批', CLAIMED: '已领取', REPAIRING: '修复中', VERIFYING: '验证中', REVIEWING: '审查中', DELIVERING: '交付中' }; return labels[value] ?? labels[value.toUpperCase()] ?? value; }
 export function RunDetailPage() {
   const { runId = '' } = useParams(); const navigate = useNavigate(); const queryClient = useQueryClient(); const { message } = App.useApp();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const selectedTaskId = searchParams.get('task_id') ?? '';
-  const selectTask = (taskId: string) => {
-    const next = new URLSearchParams(searchParams);
-    if (taskId) next.set('task_id', taskId); else next.delete('task_id');
-    setSearchParams(next, { replace: true });
-  };
+  const selectedTaskId = '';
+  const selectTask = (taskId: string) => navigate(taskId
+    ? `/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}`
+    : `/runs/${encodeURIComponent(runId)}`);
   const [selectedStepName, setSelectedStepName] = useState<string>();
   const [activeTab, setActiveTab] = useState('tasks');
   const [selectedAgent, setSelectedAgent] = useState<string>('all');
@@ -43,10 +40,8 @@ export function RunDetailPage() {
   }, [runId, queryClient]);
   const data = detail.data;
   const selectedTask = data?.tasks.find((task) => task.task_id === selectedTaskId);
-  const graphSteps = selectedTask ? selectedTask.steps : (data?.steps ?? []);
-  const visibleArtifacts = selectedTask
-    ? (data?.artifacts ?? []).filter((artifact) => artifact.task_id === selectedTask.task_id)
-    : (data?.artifacts ?? []);
+  const graphSteps = data?.steps ?? [];
+  const visibleArtifacts = data?.artifacts ?? [];
   const modelCalls = useQuery({ queryKey: ['model-calls', runId, selectedTaskId], queryFn: () => api.modelCalls(runId, selectedTaskId || undefined), refetchInterval: (q) => ['running', 'queued', 'waiting_approval', 'pause_requested', 'paused', 'cancel_requested'].includes(detail.data?.status ?? '') ? 5000 : false });
   const visibleModelCalls = (modelCalls.data?.items ?? []).filter((call) => selectedAgent === 'all' || call.agent_role === selectedAgent);
   const controlAudit = useQuery({ queryKey: ['control-audit', runId], queryFn: () => api.controlAudit(runId) });
@@ -83,6 +78,11 @@ export function RunDetailPage() {
     {resume.isError && <Alert type="error" showIcon message="恢复执行失败" description={(resume.error as Error).message} />}
     {cancel.isError && <Alert type="error" showIcon message="停止请求失败" description={(cancel.error as Error).message} />}
     {data.run_error?.status === 'FAILED' && <Alert type="error" showIcon message="工作流异常终止" description={(data.run_error.error_type || '后台异常') + '：' + (data.run_error.message || '请检查服务端日志并按执行 ID 查询完整堆栈。')} />}
+    {data.run_report?.terminal_reason && <Card className="content-card" title="本轮最终结果">
+      <Space wrap><Tag color={['FAILED', 'PARTIAL_FAILED', 'MANUAL', 'INCOMPLETE'].includes(String(data.run_report.result).toUpperCase()) ? 'orange' : 'green'}>{resultLabel(data.run_report.result)}</Tag><Text type="secondary">{data.run_report.terminal_step || 'workflow'} · {data.run_report.finished_at ? dayjs(data.run_report.finished_at).format('YYYY-MM-DD HH:mm:ss') : '—'}</Text></Space>
+      <Paragraph style={{ marginTop: 12, whiteSpace: 'pre-wrap' }}>{data.run_report.terminal_reason}</Paragraph>
+      <Text strong>建议下一步：</Text><Paragraph style={{ whiteSpace: 'pre-wrap' }}>{data.run_report.next_action || '打开对应任务查看终态报告。'}</Paragraph>
+    </Card>}
     <Alert showIcon type={data.status === 'failed' || data.status === 'partial_failed' ? 'error' : data.status === 'waiting_approval' ? 'warning' : data.status === 'succeeded' ? 'success' : 'info'} message={data.status === 'failed' || data.status === 'partial_failed' ? '优先检查失败任务与对应节点错误' : data.status === 'waiting_approval' ? '本轮正在等待人工决策' : data.status === 'succeeded' ? '本轮执行已结束，可检查结果并沉淀已验证知识' : data.status === 'cancel_requested' ? '停止请求已提交，等待服务端确认最终状态' : data.status === 'paused' || data.status === 'pause_requested' ? '本轮已暂停或正在暂停，可查看断点后再决定是否恢复' : '本轮仍在执行；可先查看任务进度，节点图和审计信息用于深入排查'} description={data.status === 'waiting_approval' ? '进入待审批与人工介入页面查看方案；批准不会跳过后续验证与交付门禁。' : data.status === 'failed' || data.status === 'partial_failed' ? '在任务详情中选择失败任务，再查看对应节点的输入、输出、错误信息和产物。' : data.status === 'succeeded' ? '确认根因、回归和审查结果后，再将有效经验沉淀到知识库。' : '运行状态以服务端持久化快照为准；页面自动刷新并通过事件流更新。'} />
     <Card title="Run 级执行概览" className="content-card"><Descriptions column={{ xs: 1, sm: 2, xl: 4 }} size="small">
       <Descriptions.Item label="开始时间">{dayjs(data.started_at).isValid() ? dayjs(data.started_at).format('YYYY-MM-DD HH:mm:ss') : '—'}</Descriptions.Item>
@@ -90,13 +90,20 @@ export function RunDetailPage() {
       <Descriptions.Item label={selectedTask ? "所属 Run 任务总数" : "任务总数"}>{data.task_count}</Descriptions.Item>
       <Descriptions.Item label="任务结果"><span className="text-success">{data.succeeded_tasks} 成功</span> / <span className="text-danger">{data.failed_tasks} 失败</span> / {data.manual_tasks ?? 0} 人工介入 / {data.waiting_tasks} 待审批</Descriptions.Item>
     </Descriptions></Card>
-    <Card title={selectedTask ? "任务执行图 · " + selectedTask.carrier + " / " + selectedTask.biztype : "工作流执行图 · Run 级"} className="content-card" collapsible="header" defaultCollapsed extra={<Space><Select style={{ minWidth: 240 }} value={selectedTaskId} onChange={(value) => { selectTask(value); setSelectedStepName(undefined); }} options={[{ value: "", label: "查看 Run 级流程" }, ...data.tasks.map((task) => ({ value: task.task_id, label: task.carrier + " · " + task.biztype + " · " + task.task_id.slice(0, 18) }))]} /><Text type="secondary">点击节点查看输入、输出、耗时与错误</Text></Space>}><WorkflowGraph steps={graphSteps} selectedStep={selectedStepName} onSelectStep={setSelectedStepName} /></Card>
+    <Card title="Run 级工作流" className="content-card" collapsible="header" defaultCollapsed extra={<Text type="secondary">点击节点查看输入、输出、耗时与错误</Text>}><WorkflowGraph steps={graphSteps} selectedStep={selectedStepName} onSelectStep={setSelectedStepName} /></Card>
     <Drawer title="节点检查器" open={Boolean(selectedStepName)} onClose={() => setSelectedStepName(undefined)} width={680} destroyOnClose>
       {(() => { const step = graphSteps.find((item) => item.name === selectedStepName); if (!step) return <Empty description="该节点暂无持久化执行记录" />; return <div className="page-stack"><div><Title level={5}>{step.title || step.name}</Title><Text type="secondary">{step.name}</Text><div style={{ marginTop: 10 }}><StatusTag status={step.status} /> {step.result && <Tag>{resultLabel(step.result)}</Tag>}</div></div><Descriptions size="small" column={2} bordered><Descriptions.Item label="耗时">{duration(step.duration_ms)}</Descriptions.Item><Descriptions.Item label="尝试次数">{step.attempt ?? 1}</Descriptions.Item><Descriptions.Item label="开始时间">{step.started_at || "—"}</Descriptions.Item><Descriptions.Item label="结束时间">{step.finished_at || "—"}</Descriptions.Item></Descriptions>{step.summary && <Alert type={step.status === "failed" ? "error" : "info"} showIcon message="执行摘要" description={step.summary} />}{step.error && <Alert type="error" showIcon message={step.error.code || "节点错误"} description={step.error.message || "未提供错误详情"} />}<div><strong>节点输入</strong><pre className="json-panel">{JSON.stringify(step.input ?? {}, null, 2)}</pre></div><div><strong>节点输出</strong><pre className="json-panel">{JSON.stringify(step.output ?? {}, null, 2)}</pre></div></div>; })()}
     </Drawer>
     <Card className="content-card"><Tabs activeKey={activeTab} onChange={setActiveTab} items={[
       { key: 'steps', label: selectedTask ? '当前任务节点记录' : 'Run 级节点记录', children: <Table rowKey="name" columns={stepColumns} dataSource={graphSteps} pagination={false} expandable={{ expandedRowRender: (row) => <div className="step-expanded"><div><strong>输入摘要</strong><pre>{JSON.stringify(row.input ?? {}, null, 2)}</pre></div><div><strong>输出摘要</strong><pre>{JSON.stringify(row.output ?? {}, null, 2)}</pre></div></div> }} locale={{ emptyText: '暂无节点记录' }} /> },
-      { key: 'tasks', label: '任务详情（' + data.tasks.length + '）', children: data.tasks.length ? <Table rowKey="task_id" dataSource={data.tasks} pagination={false} onRow={(row) => ({ onClick: () => { selectTask(row.task_id); setSelectedStepName(undefined); } })} rowClassName={(row) => row.task_id === selectedTaskId ? 'selected-task-row' : 'clickable-row'} expandable={{ expandedRowRender: (row) => <Table rowKey="name" size="small" pagination={false} dataSource={row.steps} columns={stepColumns} locale={{ emptyText: '该任务暂无节点记录' }} /> }} columns={[{ title: '任务 ID', dataIndex: 'task_id', key: 'task_id' }, { title: '运输商', dataIndex: 'carrier', key: 'carrier' }, { title: '业务类型', dataIndex: 'biztype', key: 'biztype' }, { title: '结论', dataIndex: 'result', key: 'result', render: (v: string) => <Tag color={String(v).toUpperCase() === 'MANUAL' ? 'orange' : undefined}>{resultLabel(v)}</Tag> }, { title: '节点数', key: 'steps', render: (_: unknown, row: { steps: StepRecord[] }) => row.steps?.length ?? 0 }, { title: '耗时', key: 'duration', render: (_: unknown, row: { steps: StepRecord[] }) => duration(row.steps.reduce((sum, step) => sum + (step.duration_ms ?? 0), 0)) }, { title: '操作', key: 'action', render: (_: unknown, row: { task_id: string; result: string }) => <Space><Button type="link" onClick={(event) => { event.stopPropagation(); selectTask(row.task_id); setSelectedStepName(undefined); }}>打开任务图</Button><Button type="link" icon={<BookOutlined />} disabled={['RUNNING', 'PENDING', 'REPAIRING', 'VERIFYING', 'REVIEWING', 'WAITING', 'WAITING_APPROVAL'].includes(String(row.result).toUpperCase())} loading={captureKnowledge.isPending} onClick={(event) => { event.stopPropagation(); captureKnowledge.mutate(row.task_id); }}>沉淀案例</Button></Space> }]} /> : <Empty description="本轮尚无任务" /> },
+      { key: 'tasks', label: '任务结果（' + data.tasks.length + '）', children: data.tasks.length ? <Table rowKey="task_id" dataSource={data.tasks} pagination={{ pageSize: 10, showSizeChanger: false }} onRow={(row) => ({ onClick: () => selectTask(row.task_id) })} rowClassName={() => 'clickable-row'} columns={[
+        { title: '运输商', dataIndex: 'carrier', key: 'carrier' },
+        { title: '业务类型', dataIndex: 'biztype', key: 'biztype' },
+        { title: '结论', dataIndex: 'result', key: 'result', render: (v: string) => <Tag color={['MANUAL', 'INSUFFICIENT_EVIDENCE'].includes(String(v).toUpperCase()) ? 'orange' : undefined}>{resultLabel(v)}</Tag> },
+        { title: '结束步骤', dataIndex: 'terminal_step', key: 'terminal_step', render: (v?: string) => v || '进行中' },
+        { title: '结束原因', dataIndex: 'terminal_reason', key: 'terminal_reason', render: (v?: string) => <Text ellipsis={{ tooltip: v }} style={{ maxWidth: 420, display: 'inline-block' }}>{v || '尚未结束'}</Text> },
+        { title: '操作', key: 'action', render: (_: unknown, row: { task_id: string }) => <Button type="link" onClick={(event) => { event.stopPropagation(); selectTask(row.task_id); }}>查看任务详情</Button> }
+      ]} /> : <Empty description="本轮尚无任务" /> },
       { key: 'artifacts', label: (selectedTask ? '当前任务产物（' : 'Run 级产物（') + visibleArtifacts.length + '）', children: visibleArtifacts.length ? <Table rowKey={(row) => (row.task_id ?? 'run') + ':' + row.path} dataSource={visibleArtifacts} pagination={{ pageSize: 10 }} columns={[{ title: '名称', dataIndex: 'name', key: 'name' }, { title: '所属步骤/任务', dataIndex: 'description', key: 'description' }, { title: '类型', dataIndex: 'media_type', key: 'media_type' }, { title: '大小', dataIndex: 'size_bytes', key: 'size_bytes', render: (v?: number) => v == null ? '按需读取' : (v / 1024).toFixed(1) + ' KB' }, { title: '操作', key: 'action', render: (_: unknown, row: { path: string; task_id?: string; name: string }) => <Button type="link" onClick={() => setSelectedArtifact(row)}>预览内容</Button> }]} /> : <Empty description="暂无产物" /> },
       { key: 'config', label: '执行配置', children: <pre className="json-panel">{JSON.stringify(data.config, null, 2)}</pre> },
     ]} /></Card>
