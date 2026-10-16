@@ -464,13 +464,17 @@ def _control_db():
             carrier TEXT NOT NULL DEFAULT '', biztype TEXT NOT NULL DEFAULT '', root_cause TEXT NOT NULL,
             evidence TEXT NOT NULL DEFAULT '', change_summary TEXT NOT NULL DEFAULT '',
             regression_passed INTEGER NOT NULL DEFAULT 0, review_passed INTEGER NOT NULL DEFAULT 0,
-            status TEXT NOT NULL DEFAULT 'candidate', source_run_id TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'candidate', source_run_id TEXT NOT NULL DEFAULT '', source_task_id TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL
         );
     """)
     # 旧版控制库原位升级；保留已有运行记录与取消请求。\n    columns = {row[1] for row in connection.execute("PRAGMA table_info(run_control)")}
     if "pause_requested" not in columns:
         connection.execute("ALTER TABLE run_control ADD COLUMN pause_requested INTEGER NOT NULL DEFAULT 0")
+        connection.commit()
+    knowledge_columns = {row[1] for row in connection.execute("PRAGMA table_info(repair_knowledge_cases)")}
+    if "source_task_id" not in knowledge_columns:
+        connection.execute("ALTER TABLE repair_knowledge_cases ADD COLUMN source_task_id TEXT NOT NULL DEFAULT ''")
         connection.commit()
     return connection
 
@@ -986,6 +990,7 @@ class KnowledgeCaseCreate(BaseModel):
     regression_passed: bool = False
     review_passed: bool = False
     source_run_id: str = Field(default="", max_length=160)
+    source_task_id: str = Field(default="", max_length=160)
 
 
 class KnowledgeCaseStatusUpdate(BaseModel):
@@ -1043,6 +1048,29 @@ def v1_create_knowledge_case(
     _: None = Depends(_authorize),
 ) -> dict[str, Any]:
     """Create a candidate case. Creation never publishes knowledge automatically."""
+    regression_passed = False
+    review_passed = False
+    source_run_id = request.source_run_id.strip()
+    source_task_id = request.source_task_id.strip()
+    if source_run_id and source_task_id:
+        detail = _v1_detail(_safe_id(source_run_id))
+        task = next((item for item in detail.get("tasks", []) if str(item.get("task_id") or "") == source_task_id), None)
+        if task is None:
+            raise HTTPException(status_code=404, detail="来源执行中不存在指定任务")
+        steps = task.get("steps") if isinstance(task.get("steps"), list) else []
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            name = str(step.get("name") or "")
+            output = step.get("output") if isinstance(step.get("output"), dict) else {}
+            if name == "run_regression":
+                regression_passed = (
+                    str(step.get("result") or "").lower() in {"passed", "succeeded"}
+                    or output.get("passed") is True
+                    or str(output.get("status") or "").upper() in {"PASS", "PASSED", "SUCCESS", "SUCCEEDED"}
+                )
+            if name == "review_agent":
+                review_passed = str(output.get("verdict") or output.get("status") or "").upper() == "PASS"
     now = datetime.now(timezone.utc).isoformat()
     case_id = uuid.uuid4().hex
     connection = _control_db()
@@ -1050,12 +1078,12 @@ def v1_create_knowledge_case(
         connection.execute(
             """INSERT INTO repair_knowledge_cases
             (case_id,title,fingerprint,carrier,biztype,root_cause,evidence,change_summary,
-             regression_passed,review_passed,status,source_run_id,created_at,updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,'candidate',?,?,?)""",
+             regression_passed,review_passed,status,source_run_id,source_task_id,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,'candidate',?,?,?,?)""",
             (case_id, request.title.strip(), request.fingerprint.strip(), request.carrier.strip(),
              request.biztype.strip(), request.root_cause.strip(), request.evidence.strip(),
-             request.change_summary.strip(), int(request.regression_passed), int(request.review_passed),
-             request.source_run_id.strip(), now, now),
+             request.change_summary.strip(), int(regression_passed), int(review_passed),
+             source_run_id, source_task_id, now, now),
         )
         connection.commit()
         row = connection.execute("SELECT * FROM repair_knowledge_cases WHERE case_id=?", (case_id,)).fetchone()
