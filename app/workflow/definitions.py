@@ -50,7 +50,8 @@ TASK_CONDITIONAL_TRANSITIONS = (
     (VALIDATE, after_validate_changes, (REGRESSION, RETRY, FINALIZE)),
     (REGRESSION, after_regression, (REVIEW, APPROVE, RETRY, FINALIZE)),
     (REVIEW, after_review, (REPAIR, APPROVE, DELIVER, RETRY, FINALIZE)),
-    (APPROVE, after_approval, (REPAIR, APPLY, DELIVER, RETRY, FINALIZE)),
+    # Manual-intervention approval can resume at LOCATE or CLAIM; normal approval uses the other targets.
+    (APPROVE, after_approval, (LOCATE, CLAIM, REPAIR, APPLY, DELIVER, RETRY, FINALIZE)),
     (APPLY, after_apply, (VALIDATE, RETRY, FINALIZE)),
 )
 
