@@ -64,3 +64,15 @@ def test_prompt_metrics_explain_sizes_without_persisting_prompt_content():
     assert metrics["source_snapshot_chars"] > 0
     assert metrics["evidence_chars"] > 0
     assert "timeout" not in str(metrics)
+
+
+def test_locate_provider_detects_disconnect_from_sdk_events_even_when_error_says_success():
+    from app.agents.locate.provider import _is_transient_query_error
+
+    error = RuntimeError("Claude 智能体执行失败: success")
+    error.agent_events = [
+        {"type": "message", "message_type": "AssistantMessage", "message": "API Error: Connection closed mid-response"}
+    ]
+
+    assert _is_transient_query_error(error) is True
+
