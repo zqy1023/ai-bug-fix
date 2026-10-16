@@ -12,6 +12,9 @@ DEDUPLICATE = "deduplicate_error"
 IDENTIFY = "identify_carrier"
 # 父图里的串行分发节点。任务子图本身是它的下游，不在这里按名引用。
 TASK_DISPATCH = "task_dispatch"
+RUN_PREPARE = "discover_and_normalize"
+PREPARE_CONTEXT = "prepare_context"
+VALIDATE = "validate_changes"
 CLAIM = "claim_repair_slot"
 SNAPSHOT = "prepare_source_snapshot"
 EVIDENCE = "prepare_evidence"
@@ -27,6 +30,31 @@ APPLY = "apply_plan"
 DELIVER = "prepare_delivery"
 FINALIZE = "finalize_execution"
 RETRY = "retry_prepare"
+
+
+def after_run_prepare(state: WorkflowState) -> str:
+    """日志发现、规范化和去重组合阶段完成后才识别运输商。"""
+    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
+        return END
+    return IDENTIFY if _result(state) == "passed" else END
+
+
+def after_prepare_context(state: WorkflowState) -> str:
+    """快照与证据准备都成功且证据可用于自动定位时才进入 Locate Agent。"""
+    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
+        return FINALIZE
+    if _result(state) != "passed" or (state.get("evidence") or {}).get("legacy_only"):
+        return FINALIZE
+    return LOCATE
+
+
+def after_validate_changes(state: WorkflowState) -> str:
+    """变更门禁和问题验证均通过后才执行回归。"""
+    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
+        return FINALIZE
+    if _result(state) != "passed":
+        return _retry_or_finalize(state)
+    return REGRESSION
 
 
 def after_deduplicate(state: WorkflowState) -> str:
@@ -216,14 +244,16 @@ def after_apply(state: WorkflowState) -> str:
         return FINALIZE
     if _result(state) != "passed":
         return _retry_or_finalize(state)
-    return CHECK
+    return VALIDATE
 
 
 __all__ = [
     "APPLY", "APPROVE", "CHECK", "CLAIM", "DEDUPLICATE", "DELIVER", "DISCOVER",
+    "PREPARE_CONTEXT", "RUN_PREPARE", "VALIDATE",
     "EVIDENCE", "FINALIZE", "IDENTIFY", "LOCATE", "NORMALIZE", "REGRESSION", "REPAIR",
     "REVIEW", "RETRY", "SNAPSHOT", "TASK_DISPATCH", "VERIFY", "WORKSPACE",
-    "after_apply", "after_approval", "after_check_changes", "after_claim",
+    "after_apply", "after_approval", "after_check_changes", "after_claim", "after_prepare_context",
+    "after_run_prepare", "after_validate_changes",
     "after_deduplicate", "after_evidence", "after_identify", "after_locate",
     "after_regression", "after_repair", "after_review", "after_source_snapshot",
     "after_verify", "after_workspace",
