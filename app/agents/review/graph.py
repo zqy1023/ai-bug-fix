@@ -209,6 +209,23 @@ def _evidence_block(state: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _bounded_evidence(text: str, max_chars: int) -> str:
+    """按行裁剪审查证据，保留明确截断标记，避免把超大 diff 重复塞进 Prompt。"""
+    if len(text) <= max_chars:
+        return text
+    marker = "\n- [证据预算限制] 后续差异未全部注入模型上下文；不得推断未展示内容。"
+    budget = max(256, max_chars - len(marker))
+    lines: list[str] = []
+    used = 0
+    for line in text.splitlines():
+        cost = len(line) + (1 if lines else 0)
+        if used + cost > budget:
+            break
+        lines.append(line)
+        used += cost
+    return "\n".join(lines) + marker
+
+
 def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
     """只读审查。"""
     workspace = str(state["ai_workspace_path"])
@@ -222,7 +239,14 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
     config = getattr(runtime, "config", None)
     config = config if isinstance(config, ReviewConfig) else ReviewConfig.load()
     changed_files = [str(item) for item in state.get("changed_files", [])]
-    evidence_text = _evidence_block({**state, "ai_workspace_path": workspace, "changed_files": changed_files})
+    evidence_text = _bounded_evidence(
+        _evidence_block({**state, "ai_workspace_path": workspace, "changed_files": changed_files}),
+        config.max_diff_chars,
+    )
+    full_diff_summary = str(state.get("diff_summary") or "")
+    compact_diff_summary = full_diff_summary
+    if len(compact_diff_summary) > 1200:
+        compact_diff_summary = compact_diff_summary[:1200] + "\n[摘要已裁剪；逐文件证据以 diff_and_gate_evidence 为准]"
     deterministic_context = build_context(
         dict(state["problem"]),
         changed_files,
@@ -251,7 +275,7 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
             "baseline_manifest": dict(state.get("baseline_manifest") or {}),
         },
         changed_files=tuple(changed_files),
-        diff_summary=str(state.get("diff_summary") or ""),
+        diff_summary=compact_diff_summary,
         gate_results=dict(state.get("gate_result") or {}),
         verification_results=dict(state.get("verify_result") or {}),
         regression_results=dict(state.get("regression_result") or {}),
