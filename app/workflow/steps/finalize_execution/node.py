@@ -90,11 +90,17 @@ def _terminal_details(
 
     evidence = next((item for item in ordered if item.name == "prepare_evidence"), None)
     evidence_output = evidence.output if evidence and isinstance(evidence.output, dict) else {}
-    if evidence_output.get("legacy_only"):
-        reason = str(evidence_output.get("legacy_reason") or _record_reason(evidence) or
-                     "证据准备确认目标运输商只有旧框架实现，不能进入当前自动修复路径。")
-        return ("prepare_evidence", reason,
-                "人工核对真实采集入口和调用链，确认迁移或兼容方案后再执行修复。")
+    if evidence_output.get("legacy_only") or evidence_output.get("legacy_dependency"):
+        reason = str(
+            evidence_output.get("legacy_reason")
+            or _record_reason(evidence)
+            or "目标 carrier 涉及旧框架实现，不能进入自动源码修改路径。"
+        )
+        return (
+            "prepare_evidence",
+            reason,
+            "查看已提交的 final.json 分析报告；该任务未自动修改任何源码。",
+        )
 
     manual_names = ("locate_agent", "review_agent", "prepare_evidence", "repair_agent")
     if outcome == "MANUAL" or status == "MANUAL":
@@ -220,7 +226,8 @@ def _delivery_status(records: list[StepRecord], terminal_status: str) -> str:
 
 def _legacy_only(records: list[StepRecord]) -> bool:
     return any(
-        record.name == "prepare_evidence" and bool(record.output.get("legacy_only"))
+        record.name == "prepare_evidence"
+        and bool(record.output.get("legacy_only") or record.output.get("legacy_dependency"))
         for record in records
     )
 
