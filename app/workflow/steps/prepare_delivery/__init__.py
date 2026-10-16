@@ -41,7 +41,11 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
                 str(task.get("biztype") or ""),
                 str(task.get("carrier") or ""),
                 settings.repair_branch_prefix,
-                str(task.get("problem_key") or ""),
+                str(
+                    task.get("problem_key")
+                    or problem_payload.get("fingerprint")
+                    or task_id.rsplit("__", 1)[-1]
+                ),
             )
         ),
         "source_repo_path": str(state.get("source_repo_path") or ""),
