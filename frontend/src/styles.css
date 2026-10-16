@@ -122,3 +122,11 @@ a { cursor: pointer; }
 .ant-table-wrapper .ant-table-tbody > tr > td { border-bottom-color: #f0f2f6; }
 .ant-card { background: #fff; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; scroll-behavior: auto !important; } }
+
+
+.knowledge-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+.knowledge-detail { display: flex; flex-direction: column; gap: 12px; overflow-wrap: anywhere; }
+.knowledge-detail .ant-typography { margin-bottom: 0; white-space: pre-wrap; }
+.knowledge-detail .ant-typography strong { color: #344054; }
+@media (max-width: 1000px) { .knowledge-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) { .page-content { padding: 18px 14px; } .app-header { padding: 0 14px; } .knowledge-metrics { grid-template-columns: 1fr; } .header-right .ant-tag { display: none; } }
