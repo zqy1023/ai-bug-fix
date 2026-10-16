@@ -44,7 +44,8 @@ a { cursor: pointer; }
 .page-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .page-heading h3.ant-typography { margin: 0 0 7px; font-size: 25px; font-weight: 730; letter-spacing: -.6px; color: #172235; }
 .page-heading .ant-typography-secondary { font-size: 13px; color: #778397; }
-.metric-card, .content-card { border: 1px solid #e6eaf1; box-shadow: 0 2px 8px rgba(24, 39, 75, .025); border-radius: 12px; overflow: hidden; transition: border-color .18s ease, box-shadow .18s ease; }\n.metric-card:hover, .content-card:hover { border-color: #d9e1f0; box-shadow: 0 6px 20px rgba(24, 39, 75, .045); }
+.metric-card, .content-card { border: 1px solid #e6eaf1; box-shadow: 0 2px 8px rgba(24, 39, 75, .025); border-radius: 12px; overflow: hidden; transition: border-color .18s ease, box-shadow .18s ease; }
+.metric-card:hover, .content-card:hover { border-color: #d9e1f0; box-shadow: 0 6px 20px rgba(24, 39, 75, .045); }
 .metric-card .ant-card-body { padding: 23px 24px; }
 .metric-card .ant-statistic-title { font-size: 12px; color: #7a8699; margin-bottom: 13px; }
 .metric-card .ant-statistic-content { font-size: 30px; font-weight: 720; letter-spacing: -.7px; color: #172235; }
