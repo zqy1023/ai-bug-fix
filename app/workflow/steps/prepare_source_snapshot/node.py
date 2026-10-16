@@ -69,7 +69,10 @@ def run(ctx: StepContext, data: SourceSnapshotInput) -> SourceSnapshotOutput:
                 if not source.is_file() or source.is_symlink():
                     continue
                 relative_parts = source.relative_to(source_dir).parts
-                if any(part in WorkspaceManager._SKIP_DIRS for part in relative_parts[:-1]):
+                if (
+                    any(WorkspaceManager._is_skipped_dir(part) for part in relative_parts[:-1])
+                    or WorkspaceManager._is_sensitive(source.name)
+                ):
                     continue
                 resolved = source.resolve()
                 try:
