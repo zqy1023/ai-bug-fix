@@ -6,9 +6,9 @@
 from __future__ import annotations
 
 from app.workflow.routes import (
-    APPLY, APPROVE, CLAIM, DELIVER, FINALIZE, LOCATE, PREPARE_CONTEXT,
+    APPROVE, CLAIM, DELIVER, FINALIZE, LOCATE, PREPARE_CONTEXT,
     REGRESSION, REPAIR, REVIEW, RETRY, RUN_PREPARE, VALIDATE,
-    after_apply, after_approval, after_delivery, after_finalize, after_retry, after_claim, after_prepare_context,
+    after_approval, after_delivery, after_finalize, after_retry, after_claim, after_prepare_context,
     after_regression, after_repair, after_review, after_run_prepare,
     after_validate_changes, after_locate,
 )
@@ -42,16 +42,15 @@ TASK_CONDITIONAL_TRANSITIONS = (
     # 定位不确定或非 carrier 范围结论只产出报告，不进入中间审批。
     (LOCATE, after_locate, (CLAIM, APPROVE, FINALIZE)),
     (CLAIM, after_claim, (REPAIR, FINALIZE)),
-    (REPAIR, after_repair, (VALIDATE, RETRY, APPROVE, FINALIZE)),
+    (REPAIR, after_repair, (VALIDATE, RETRY, FINALIZE)),
     (VALIDATE, after_validate_changes, (REGRESSION, RETRY, FINALIZE)),
-    (REGRESSION, after_regression, (REVIEW, APPROVE, RETRY, FINALIZE)),
-    (REVIEW, after_review, (REPAIR, APPROVE, DELIVER, RETRY, FINALIZE)),
+    (REGRESSION, after_regression, (REVIEW, RETRY, FINALIZE)),
+    (REVIEW, after_review, (DELIVER, RETRY, FINALIZE)),
     # APPROVE 仅用于分支交付后的最终人工审批。
-    (APPROVE, after_approval, (LOCATE, CLAIM, REPAIR, APPLY, DELIVER, RETRY, FINALIZE)),
+    (APPROVE, after_approval, (LOCATE, CLAIM, REPAIR, RETRY, FINALIZE)),
     (DELIVER, after_delivery, (APPROVE, FINALIZE, END)),
     (FINALIZE, after_finalize, (DELIVER, END)),
     (RETRY, after_retry, (LOCATE, REVIEW, REPAIR, FINALIZE)),
-    (APPLY, after_apply, (VALIDATE, RETRY, FINALIZE)),
 )
 
 __all__ = [
