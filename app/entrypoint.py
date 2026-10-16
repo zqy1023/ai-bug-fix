@@ -118,13 +118,37 @@ def run_workflow(
             },
             config={"configurable": {"thread_id": resolved}, "recursion_limit": 40},
         )
-        _write_run_report(store, resolved, final_state=final_state)
+        _write_run_report_if_terminal(store, resolved, graph, final_state=final_state)
     except Exception as exc:
         _write_run_report(store, resolved, error=exc)
         raise
     finally:
         close_sessions()
     return {"run_id": resolved, "steps": [item.name for item in store.list_steps(resolved)]}
+
+
+def _write_run_report_if_terminal(
+    store: RecordStore,
+    run_id: str,
+    graph: Any,
+    *,
+    final_state: dict[str, Any] | None = None,
+) -> None:
+    """只有图确实进入终态时才写 Run final.json；暂停和等待审批不是终态。"""
+    try:
+        snapshot = graph.get_state({"configurable": {"thread_id": run_id}})
+        interrupted = any(
+            bool(getattr(task, "interrupts", ()))
+            for task in (getattr(snapshot, "tasks", ()) or ())
+        )
+        if interrupted or (isinstance(final_state, dict) and final_state.get("__interrupt__")):
+            return
+    except Exception:
+        # 无法读取 checkpoint 时，只能依赖 invoke 返回值中是否含有 interrupt 标记。
+        if isinstance(final_state, dict) and final_state.get("__interrupt__"):
+            return
+        logger.debug("无法确认工作流 checkpoint 是否处于 interrupt 状态 run_id=%s", run_id, exc_info=True)
+    _write_run_report(store, run_id, final_state=final_state)
 
 
 def _write_run_report(
