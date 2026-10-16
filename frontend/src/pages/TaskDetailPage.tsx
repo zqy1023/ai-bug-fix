@@ -122,7 +122,7 @@ export function TaskDetailPage() {
         <StatusTag status={result} /></Space>
         <Text type="secondary" className="run-id">Run {runId} · Task {task.task_id}</Text>
       </div>
-      <Space>
+      <Space wrap>
         <Button icon={<ReloadOutlined />} onClick={() => detail.refetch()} loading={detail.isFetching}>刷新任务</Button>
         {intervention?.decision_options?.includes('RETRY_LOCATE') && <Button onClick={() => { setManualAction('retry_locate'); setManualReason(''); }}>重新定位</Button>}
         {intervention?.decision_options?.includes('CONTINUE_REPAIR') && <Button type="primary" onClick={() => { setManualAction('continue_repair'); setManualReason(''); }}>批准 AI 继续修复</Button>}
