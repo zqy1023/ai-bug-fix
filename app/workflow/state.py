@@ -114,6 +114,8 @@ class WorkflowState(TypedDict, total=False):
     manual_intervention_required: bool
     # manual_continue_allowed：只有保留了有效根因、源码证据与合法候选路径时才允许批准继续修复。
     manual_continue_allowed: bool
+    # manual_continue_authorized：人工明确批准后，允许修复 Agent 消费已保留的 MANUAL 定位证据一次。
+    manual_continue_authorized: bool
     # manual_intervention_reason：人工介入队列展示的具体阻断原因。
     manual_intervention_reason: str
     # manual_intervention_step：触发人工介入的真实工作流节点。
