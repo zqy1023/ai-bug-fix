@@ -115,22 +115,33 @@ class WorkspaceManager:
         carrier: str,
         framework: str,
     ) -> None:
-        """用不可变基线覆盖新工作区中的目标 carrier。"""
+        """恢复快照中存在的新旧框架 carrier，保证分析看到同一份基线。"""
         root = Path(workspace).resolve()
         baseline = Path(baseline_dir).resolve()
+        if framework not in {"gathers", "spiders"}:
+            raise WorkspaceError(f"无效的快照框架: {framework}")
         carrier_name = cls.safe_carrier_name(carrier)
-        source = baseline / framework / carrier_name
-        destination = root / framework / carrier_name
-        if framework not in {"gathers", "spiders"} or not source.is_dir():
+        required = baseline / framework / carrier_name
+        if not required.is_dir():
             raise WorkspaceError("快照中缺少已授权的目标 carrier")
-        if framework == "gathers" and not (source / "main.py").is_file():
+        if framework == "gathers" and not (required / "main.py").is_file():
             raise WorkspaceError("gathers 快照缺少 main.py")
-        if not destination.resolve().is_relative_to(root):
-            raise WorkspaceError("carrier 工作区路径越界")
-        if destination.exists():
-            shutil.rmtree(destination)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(source, destination, symlinks=False)
+
+        restored = 0
+        for candidate_framework in ("gathers", "spiders"):
+            source = baseline / candidate_framework / carrier_name
+            if not source.is_dir():
+                continue
+            destination = root / candidate_framework / carrier_name
+            if not destination.resolve().is_relative_to(root):
+                raise WorkspaceError("carrier 工作区路径越界")
+            if destination.exists():
+                shutil.rmtree(destination)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(source, destination, symlinks=False)
+            restored += 1
+        if not restored:
+            raise WorkspaceError("快照没有可恢复的 carrier 目录")
 
     def _write_ignore(self, workspace: Path) -> None:
         """限制模型默认可见目录。目标文件仍可按路径读取。"""
