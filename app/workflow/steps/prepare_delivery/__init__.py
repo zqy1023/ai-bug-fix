@@ -23,10 +23,8 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
     problem_payload = dict(problem) if isinstance(problem, dict) else {}
     # 审查结论以主图通道为准。review_agent 回写的是 verdict 而不是 result，
     # 且只有审查子图实际跑过才有结论；人工审查模式没有子图，结论记在 decision 上。
-    if state.get("review_mode") == "human":
-        review_decision = "PASS" if str(state.get("decision") or "") == "APPROVE" else ""
-    else:
-        review_decision = str(review_payload.get("verdict") or "")
+    # review_agent 现在始终先执行；人工审批统一放在分支交付之后。
+    review_decision = str(review_payload.get("verdict") or "")
     evidence = dict(state.get("evidence") or {})
     report_framework = (
         "spiders"
