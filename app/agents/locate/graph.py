@@ -172,6 +172,8 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
     original = raw_result(raw)
     usage = usage_of(raw)
     scope_escalation = prepared_scope_escalation
+    manual_continue_allowed = False
+    raw_scope = str(payload.get("recommended_scope") or "").strip().lower()
     try:
         output = LocateOutput.model_validate(payload)
         model_scope_escalation = _validate_output_paths(root, roots, carrier_root, output)
@@ -184,24 +186,40 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
                 "summary": output.summary or "根因候选涉及共享层，需生成变更方案并经人工授权后才能落盘。",
             })
     except Exception as error:
-        output = LocateOutput(
-            status="MANUAL",
-            root_cause="",
-            category="unknown",
-            facts=[],
-            source_evidence=[],
-            candidate_files=[],
-            evidence_gaps=[str(error)],
-            recommended_scope="manual",
-            summary=_locate_contract_summary(error),
-        )
-        # 契约错误不伪装成已定位；原始模型输出仍保留在 raw_result 供人工复核。
-        scope_escalation = False
+        # 尽量保留已返回且可验证的证据，便于人工复核；不把不完整结论伪装成 LOCATED。
+        safe_fields = {key: value for key, value in payload.items() if key in LocateOutput.model_fields}
+        safe_fields.update({
+            "status": "MANUAL", "category": safe_fields.get("category") or "unknown",
+            "recommended_scope": "manual", "passed": False,
+            "summary": _locate_contract_summary(error),
+            "evidence_gaps": [*(safe_fields.get("evidence_gaps") or []), str(error)],
+        })
+        try:
+            output = LocateOutput.model_validate(safe_fields)
+            model_scope_escalation = _validate_output_paths(root, roots, carrier_root, output)
+            scope_escalation = model_scope_escalation or prepared_scope_escalation or raw_scope == "project"
+            manual_continue_allowed = bool(
+                output.root_cause.strip() and output.source_evidence and output.candidate_files
+                and raw_scope in {"carrier", "project"}
+            )
+            if raw_scope in {"carrier", "project"}:
+                output = output.model_copy(update={"recommended_scope": raw_scope})
+            if scope_escalation:
+                output = output.model_copy(update={"category": "shared", "recommended_scope": "project"})
+        except Exception as path_error:
+            output = LocateOutput(
+                status="MANUAL", root_cause="", category="unknown", facts=[],
+                source_evidence=[], candidate_files=[],
+                evidence_gaps=[str(error), str(path_error)], recommended_scope="manual",
+                summary=_locate_contract_summary(error),
+            )
+            scope_escalation = False
+            manual_continue_allowed = False
     return {
         **output.model_dump(),
         "passed": output.status == "LOCATED",
         "scope_escalation_required": scope_escalation,
-        "manual_continue_allowed": False,
+        "manual_continue_allowed": manual_continue_allowed,
         "raw_result": original,
         "_usage": usage,
         "_audit": audit_metadata(request, usage),
