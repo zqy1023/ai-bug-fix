@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { AlertOutlined, AppstoreOutlined, CheckCircleOutlined, ClockCircleOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import { Badge, Button, Layout, Menu, Space, Tag, Tooltip, Typography } from 'antd';
-import { isDemoMode } from '../lib/api';
 const { Header, Sider, Content, Footer } = Layout;
 const { Text } = Typography;
 const titles: Record<string, string> = { '/dashboard': '运行总览', '/runs': '执行记录', '/approvals': '人工审批' };
@@ -23,7 +22,7 @@ export function AppLayout() {
     <Layout className="main-layout">
       <Header className="app-header">
         <Space size={14}><Button type="text" icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />} onClick={() => setCollapsed(!collapsed)} aria-label="折叠导航" /><div className="header-title">{titles[selected] ?? '执行详情'}</div><Text type="secondary" className="header-subtitle">异常发现 · AI 修复 · 验证交付</Text></Space>
-        <Space size={12}>{isDemoMode ? <Tag color="gold">演示模式</Tag> : <Tag color="blue">API 模式</Tag>}<Tooltip title="状态由后端健康检查确认"><Badge status="default" text={<span className="header-service">服务状态</span>} /></Tooltip><Button type="text" icon={<AlertOutlined />} aria-label="通知" onClick={() => navigate('/approvals')} /></Space>
+        <Space size={12}><Tag color="blue">API 模式</Tag><Tooltip title="状态由后端健康检查确认"><Badge status="default" text={<span className="header-service">服务状态</span>} /></Tooltip><Button type="text" icon={<AlertOutlined />} aria-label="通知" onClick={() => navigate('/approvals')} /></Space>
       </Header>
       <Content className="page-content"><Outlet /></Content>
       <Footer className="app-footer"><span>AI 异常日志自动修复工作流</span><span><CheckCircleOutlined /> 人工审批与 Git 交付保留显式门禁</span></Footer>
