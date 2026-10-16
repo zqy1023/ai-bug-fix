@@ -16,7 +16,11 @@ from app.infrastructure.runtime import close_sessions
 
 
 def prepare_run(
-    run_id: str | None = None, *, overrides: dict[str, Any] | None = None
+    run_id: str | None = None,
+    *,
+    overrides: dict[str, Any] | None = None,
+    queued: bool = False,
+    allow_prepared: bool = False,
 ) -> tuple[str, Any, RecordStore]:
     """同步创建可查询的 Run 元数据；供 API 接受请求前与后台执行共用。"""
     config = load_config()
@@ -48,27 +52,46 @@ def prepare_run(
         "log_limit": config.limit,
         "review_mode": config.review_mode,
         "max_attempts": config.max_attempts,
+        "startup_state": "queued" if queued else "started",
     }
     run_json = store.run_dir(resolved) / "run.json"
     if run_json.is_file():
-        # 预创建记录由 API 与后台共享；仅允许相同配置继续执行，绝不覆盖历史 Run。
+        if not allow_prepared:
+            raise RuntimeError(f"执行 {resolved} 已存在，禁止覆盖或重复启动")
         existing = store.load_run(resolved)
+        if existing.get("startup_state") != "queued":
+            raise RuntimeError(f"执行 {resolved} 不是待启动状态，拒绝重复启动")
         mismatches = [
             key for key, value in metadata.items()
-            if existing.get(key) != value
+            if key != "startup_state" and existing.get(key) != value
         ]
         if mismatches:
             raise RuntimeError(
                 f"执行 {resolved} 已存在，但配置不匹配：{', '.join(mismatches)}"
             )
+        existing["startup_state"] = "started"
+        temporary = run_json.with_suffix(".json.tmp")
+        import json
+
+        temporary.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(run_json)
     else:
+        if allow_prepared:
+            raise RuntimeError(f"执行 {resolved} 缺少 API 预创建的运行记录，拒绝后台启动")
         store.create_run(resolved, metadata)
     return resolved, config, store
 
 
-def run_workflow(run_id: str | None = None, *, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+def run_workflow(
+    run_id: str | None = None,
+    *,
+    overrides: dict[str, Any] | None = None,
+    prepared: bool = False,
+) -> dict[str, Any]:
     """执行一次完整工作流；每个 carrier 任务使用自己的隔离工作区。"""
-    resolved, config, store = prepare_run(run_id, overrides=overrides)
+    resolved, config, store = prepare_run(
+        run_id, overrides=overrides, allow_prepared=prepared
+    )
     from app.workflow.wiring import build_graph
 
     graph = build_graph(store=store)
