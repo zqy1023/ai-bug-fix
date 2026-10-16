@@ -153,13 +153,13 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
         workspace=str(root),
         model=model_name(runtime),
     )
-    # max_context_chars 限制原始问题；渲染后的 JSON 上下文还需要字段封装、证据摘要等固定开销。
-    # 额外预留 12k 字符用于这些结构，避免 36k-50k 的原始异常被重复包装后误判超限。
-    prompt_limit = config.max_context_chars + 12000
+    # max_context_chars 限制序列化后的原始异常；渲染后的 Prompt 还包含身份、候选源码证据、
+    # 快照摘要和输出契约。预留 30k 字符结构开销，避免 50k 原始异常被重复包装后误判超限。
+    prompt_limit = config.max_context_chars + 30000
     if len(request.prompt) > prompt_limit:
         return _manual(
             f"定位用户上下文长度 {len(request.prompt)} 字符，超过允许值 {prompt_limit} "
-            f"(locate.max_context_chars={config.max_context_chars} + 12000 字符结构开销)；"
+            f"(locate.max_context_chars={config.max_context_chars} + 30000 字符结构开销)；"
             "未截断原始异常，也未调用模型。请压缩重复证据后重试。"
         )
     raw = runtime.run(request)
