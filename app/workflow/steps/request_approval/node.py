@@ -13,10 +13,17 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
     """没有决定就挂起；审批内容绑定任务、文件清单与方案指纹。"""
     if data.decision == "PENDING":
         resumed = interrupt({
+            "kind": data.mode,
             "task_id": data.task_id,
             "approval_fingerprint": data.approval_fingerprint,
             "changed_files": list(data.changed_files),
             "authorized_files": list(data.authorized_files),
+            "intervention_reason": data.intervention_reason,
+            "candidate_files": list(data.candidate_files),
+            "root_cause": data.root_cause,
+            "recommended_scope": data.recommended_scope,
+            "continue_allowed": data.continue_allowed,
+            "actions": (["RETRY_LOCATE", "MARK_DONE", "TERMINATE"] + (["CONTINUE_REPAIR"] if data.continue_allowed else [])) if data.mode == "manual_intervention" else ["APPROVE", "REJECT"],
         })
         if isinstance(resumed, dict):
             decision = str(resumed.get("decision") or "PENDING").upper()
@@ -27,6 +34,20 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
             decision = str(resumed or "PENDING").upper()
     else:
         decision = data.decision
+
+    if data.mode == "manual_intervention":
+        allowed = {"RETRY_LOCATE", "MARK_DONE", "TERMINATE"}
+        if data.continue_allowed:
+            allowed.add("CONTINUE_REPAIR")
+        if decision not in allowed:
+            raise StepFailed("人工介入决定无效或超出当前证据允许范围", {"decision": "PENDING", "passed": False, "reason": "人工介入决定无效或超出当前证据允许范围"})
+        reasons = {
+            "RETRY_LOCATE": "人工要求重新执行根因定位。",
+            "CONTINUE_REPAIR": "人工批准继续进入修复流程；后续变更仍须通过范围门禁、验证和审查。",
+            "MARK_DONE": "人工确认已在线下处理完毕，工作流不再自动修改代码。",
+            "TERMINATE": "人工决定终止本任务的自动修复。",
+        }
+        return ApprovalOutput(decision=decision, passed=True, reason=reasons[decision])
 
     if decision == "REJECT":
         raise StepFailed("人工打回", {"decision": "REJECT", "passed": False, "reason": "人工打回"}, result="rejected")
