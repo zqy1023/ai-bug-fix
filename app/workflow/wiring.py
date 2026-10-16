@@ -421,17 +421,24 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
                     task_id=task_id,
                 ))
             record.artifacts = list(refs)
-        except StepFailed:
-            raise
         except Exception as error:
+            # Agent 的运行异常必须回写为任务局部失败状态，由 retry_prepare 有界重试；
+            # 不能把异常抛出 LangGraph 并中止整个 run 的后续 carrier 任务。
             record.status = "failed"
             record.result = None
+            record.output = {"failure_reason": f"Agent 执行异常：{error}"}
             record.artifacts = list(refs)
             record.error = StepError(code=error_code_of("system_crash"), message=f"Agent内部运行系统级崩溃: {error}")
             record.finished_at = utc_now()
             record.duration_ms = round((time.perf_counter() - started) * 1000, 2)
             store.save(run_id, record, task_id)
-            raise StepFailed(f"Agent系统级崩溃: {error}") from error
+            return {
+                "last_result": "failed",
+                "retry_reason": f"{spec.name} 执行异常：{error}",
+                "retry_target": spec.name,
+                "terminal_status": "failed",
+                "attempt": int(state.get("attempt") or 1),
+            }
         record.finished_at = utc_now()
         store.save(
             run_id,
@@ -461,6 +468,7 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
             "last_result": "failed" if failed else "passed",
             "next_step": spec.next_step,
             "retry_reason": reason if failed else "",
+            "retry_target": "",
             "attempt": int(state.get("attempt") or 1),
             "terminal_status": (
                 "manual"
