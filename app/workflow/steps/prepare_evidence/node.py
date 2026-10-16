@@ -232,17 +232,8 @@ def run(ctx: StepContext, data: EvidenceInput) -> EvidenceOutput:
             raise StepFailed("快照框架与源项目当前 carrier 入口不一致")
         carrier_root = legacy_dir
         carrier_dir = legacy_dir.relative_to(root).as_posix()
-    # 旧框架在确定性入口门禁处直接终止：不扫描文件、不排序候选、不做 AST
-    # 分析、不检索知识库，也不调用 Locate Agent。旧框架代码不能通过当前
-    # gathers 修复链路修改，后续统一由工作流路由到 finalize_execution。
-    if data.framework == "spiders":
-        return EvidenceOutput(
-            carrier_dir=carrier_dir,
-            framework="spiders",
-            legacy_only=True,
-            legacy_reason=_legacy_reason(safe_carrier, [carrier_dir]),
-        )
-
+    # 旧框架也必须生成真实候选源码证据供只读定位 Agent 分析。
+    # 是否允许修复由后续路由决定；这里不提前终止分析。
     all_files = [
         path.relative_to(root).as_posix()
         for path in sorted(carrier_root.rglob("*.py"))
