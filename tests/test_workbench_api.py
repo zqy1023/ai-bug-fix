@@ -270,3 +270,46 @@ def test_latest_approval_step_prefers_current_interrupt_over_historical_approval
     ]) is latest
     assert workbench_api._approval_pending(workbench_api._latest_approval_step([old, latest])) is True
 
+
+def test_approval_resume_passes_decision_even_when_parent_snapshot_hides_nested_interrupt(monkeypatch, tmp_path):
+    import threading
+    from types import SimpleNamespace
+
+    from langgraph.types import Command
+    import app.entrypoint
+    import app.workflow.wiring
+
+    run_dir = tmp_path / "run-1"
+    run_dir.mkdir()
+    store = SimpleNamespace(run_dir=lambda _run_id: run_dir)
+    invoked = {}
+
+    class FakeGraph:
+        def get_state(self, _config):
+            # Some LangGraph versions don't expose nested subgraph interrupts in parent task.interrupts.
+            return SimpleNamespace(tasks=[])
+
+        def invoke(self, command, config=None):
+            invoked["command"] = command
+            invoked["config"] = config
+            return {}
+
+    monkeypatch.setattr(workbench_api, "_store", lambda: store)
+    monkeypatch.setattr(app.workflow.wiring, "build_graph", lambda store=None: FakeGraph())
+    monkeypatch.setattr(app.entrypoint, "_write_run_report_if_terminal", lambda *args, **kwargs: None)
+    monkeypatch.setattr(workbench_api, "_record_background_failure", lambda *args, **kwargs: None)
+
+    lock = threading.Lock()
+    assert lock.acquire(blocking=False)
+    workbench_api._resume_workflow_background(
+        "run-1",
+        lock,
+        {"decision": "APPROVE", "approval_fingerprint": "fingerprint-1"},
+    )
+
+    command = invoked["command"]
+    assert isinstance(command, Command)
+    assert command.resume == {"decision": "APPROVE", "approval_fingerprint": "fingerprint-1"}
+    assert lock.acquire(blocking=False) is True
+    lock.release()
+
