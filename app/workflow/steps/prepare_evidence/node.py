@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import re
 import sqlite3
+from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -166,7 +167,9 @@ def _legacy_reason(carrier: str, chain: list[str]) -> str:
 
 
 
-def _published_knowledge(problem: dict[str, Any], carrier: str, biztype: str, category: str) -> list[dict[str, str]]:
+def _published_knowledge(
+    problem: dict[str, Any], carrier: str, biztype: str, category: str, run_id: str, task_id: str
+) -> list[dict[str, str]]:
     """读取已发布案例并做轻量确定性排序；知识检索失败不阻断主修复流程。"""
     try:
         runtime_dir = load_config().runtime_dir
@@ -221,8 +224,24 @@ def _published_knowledge(problem: dict[str, Any], carrier: str, biztype: str, ca
             "match_score": str(score),
         }))
     ranked.sort(key=lambda pair: (-pair[0], pair[1]["case_id"]))
-    # 知识检索保持只读；工作流不再自动记录使用轨迹或沉淀新案例。
     selected = ranked[:3]
+    # 仅记录已发布案例的检索使用量，不创建、修改或发布知识案例。
+    if selected and run_id and task_id:
+        try:
+            connection = sqlite3.connect(str(runtime_dir / "workbench-control.sqlite3"), timeout=2)
+            try:
+                now = datetime.now(timezone.utc).isoformat()
+                connection.executemany(
+                    """INSERT OR IGNORE INTO knowledge_case_usage
+                       (run_id, task_id, case_id, match_score, created_at) VALUES(?,?,?,?,?)""",
+                    [(run_id, task_id, item["case_id"], int(item["match_score"]), now) for item in selected],
+                )
+                connection.commit()
+            finally:
+                connection.close()
+        except (OSError, sqlite3.Error, AttributeError, ValueError):
+            # 知识使用统计故障不能阻断根因分析；案例内容仍保持只读。
+            pass
     return [item for _, item in selected]
 
 def run(ctx: StepContext, data: EvidenceInput) -> EvidenceOutput:
@@ -273,7 +292,7 @@ def run(ctx: StepContext, data: EvidenceInput) -> EvidenceOutput:
         :max_candidates
     ]
     category = _category(data.problem)
-    knowledge_cases = _published_knowledge(data.problem, data.carrier, data.biztype, category)
+    knowledge_cases = _published_knowledge(data.problem, data.carrier, data.biztype, category, ctx.run.run_id, data.task_id)
     symbols: dict[str, list[str]] = {}
     syntax_errors: dict[str, str] = {}
     for relative in candidates:
