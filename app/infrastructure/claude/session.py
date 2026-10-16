@@ -154,11 +154,16 @@ def _public_events(message: Any) -> list[dict[str, Any]]:
     return events
 
 
-def _collect_events(events: list[dict[str, Any]], message: Any) -> None:
-    """把一条 SDK 消息展开进事件列表，并按上限截断。"""
+def _collect_events(
+    events: list[dict[str, Any]], message: Any, started_at: float | None = None
+) -> None:
+    """记录公开 SDK 事件及其相对调用开始的时间。"""
+    elapsed_ms = round((time.perf_counter() - started_at) * 1000, 2) if started_at is not None else None
     for event in _public_events(message):
         if len(events) >= _MAX_EVENTS:
             return
+        if elapsed_ms is not None:
+            event["elapsed_ms"] = elapsed_ms
         events.append(event)
 
 
@@ -541,8 +546,9 @@ async def _run(
 
     result: Any = None
     events: list[dict[str, Any]] = []
+    started_at = time.perf_counter()
     async for message in query(prompt=prompt_stream(), options=options):
-        _collect_events(events, message)
+        _collect_events(events, message, started_at)
         _debug_hook_event(
             {
                 "event": "Message",
@@ -785,12 +791,13 @@ class ClaudeSession:
                     await client.query(context_prompt)
                     async for _ in client.receive_response():
                         pass
+                started_at = time.perf_counter()
                 await client.query(self._with_rules(prompt))
                 result: Any = None
                 events: list[dict[str, Any]] = []
                 async with asyncio.timeout(self._timeout_seconds):
                     async for message in client.receive_response():
-                        _collect_events(events, message)
+                        _collect_events(events, message, started_at)
                         _debug_hook_event(
                             {
                                 "event": "Message",

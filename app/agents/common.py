@@ -134,18 +134,20 @@ def _audit_events(value: Any) -> list[dict[str, Any]]:
         if kind == "assistant":
             text = str(item.get("text") or "").strip()
             if text:
-                result.append({"type": "assistant", "text": text[:2000]})
+                result.append({"type": "assistant", "text": text[:2000], "elapsed_ms": item.get("elapsed_ms")})
         elif kind == "tool_use":
             result.append({
                 "type": "tool_use",
                 "tool": str(item.get("tool") or "unknown")[:80],
                 "input": item.get("input") if isinstance(item.get("input"), dict) else {},
+                "elapsed_ms": item.get("elapsed_ms"),
             })
         elif kind == "tool_result":
             result.append({
                 "type": "tool_result",
                 "is_error": bool(item.get("is_error")),
                 "text": str(item.get("text") or "")[:800],
+                "elapsed_ms": item.get("elapsed_ms"),
             })
     return result
 
