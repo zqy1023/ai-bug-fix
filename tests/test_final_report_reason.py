@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+from app.entrypoint import _ensure_task_final_report
 from app.workflow.steps.finalize_execution.node import _terminal_details
 
 
@@ -56,3 +57,26 @@ def test_success_and_unknown_terminal_states_always_have_reason():
     assert success_action.strip()
     assert unknown_reason.strip()
     assert unknown_action.strip()
+
+
+def test_run_terminal_recovery_writes_specific_task_report_for_evidence_gate():
+    reason = "CouriersPlease only has a legacy spider and no supported gather entry point"
+    evidence = _record("prepare_evidence", output={"legacy_only": True, "legacy_reason": reason})
+    evidence.duration_ms = 31.0
+
+    class Store:
+        root = None
+
+        def list_steps(self, run_id: str, task_id: str):
+            return [evidence]
+
+    report = _ensure_task_final_report(
+        Store(), "run-1",
+        {"task_id": "task-1", "carrier": "CouriersPlease", "biztype": "framework.track_server"},
+        "task-1", {}, finished_at="2026-10-16T10:05:00+00:00", error=None,
+    )
+
+    assert report["result"] == "MANUAL"
+    assert report["terminal_step"] == "prepare_evidence"
+    assert reason in report["terminal_reason"]
+    assert report["next_action"].strip()
