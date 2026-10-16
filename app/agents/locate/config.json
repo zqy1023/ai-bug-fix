@@ -6,7 +6,7 @@
     "Glob",
     "Grep"
   ],
-  "max_turns": 8,
+  "max_turns": 14,
   "max_tool_calls": 12,
   "max_context_chars": 18000,
   "max_candidate_files": 6,
