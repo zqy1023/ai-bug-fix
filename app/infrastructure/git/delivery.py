@@ -378,7 +378,10 @@ class GitBranchDelivery:
                 relative = source.relative_to(source_root)
             except ValueError as error:
                 raise DeliveryError(f"报告不在 AI 工作区内: {raw_path}") from error
-            if source.suffix != ".md" or not source.is_file():
+            relative_text = relative.as_posix()
+            valid_markdown = source.suffix == ".md"
+            valid_final_json = source.suffix == ".json" and relative_text == "reports/final.json"
+            if not source.is_file() or not (valid_markdown or valid_final_json):
                 raise DeliveryError(f"非法审计报告: {raw_path}")
             destination = destination_root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
