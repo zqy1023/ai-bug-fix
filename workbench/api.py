@@ -962,6 +962,18 @@ def v1_list_manual_interventions(_: None = Depends(_authorize)) -> dict[str, Any
                 if is_manual:
                     manual_step = step
                     reason = str(output.get("summary") or output.get("reason") or step.get("summary") or "自动流程无法安全继续，需要人工排查")
+                    # 兼容历史记录：旧版 locate_agent 的 summary 是固定文案，
+                    # 真实契约错误已写入 evidence_gaps，应优先把具体原因展示给人工。
+                    generic_locate_summaries = {
+                        "定位输出不满足证据或路径契约，停止并转人工",
+                        "定位输出不满足证据或路径契约，停止并转人工。",
+                    }
+                    if name == "locate_agent" and reason.strip() in generic_locate_summaries:
+                        gaps = output.get("evidence_gaps")
+                        if isinstance(gaps, list):
+                            detail = next((str(item).strip() for item in gaps if str(item).strip()), "")
+                            if detail:
+                                reason = f"定位输出契约校验失败：{detail[:1500]}"
                     break
             terminal = str(task.get("status") or "").upper()
             if manual_step is None and terminal != "MANUAL":
