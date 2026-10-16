@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, App, Button, Card, Form, Input, InputNumber, Modal, Select, Table, Typography } from 'antd';
-import { PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import { CloseCircleOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
 import { api } from '../lib/api';
@@ -28,12 +28,12 @@ export function RunsPage() {
     { title: '操作', key: 'actions', render: (_: unknown, row: RunSummary) => <Button type="link" onClick={() => navigate('/runs/' + encodeURIComponent(row.run_id))}>查看详情</Button> },
   ];
   return <div className="page-stack">
-    <div className="page-heading"><div><Title level={3}>执行记录</Title><Text type="secondary">查询每一轮工作流、检查任务结果，并进入节点级执行审计。</Text></div><Button type="primary" icon={<PlusOutlined />} onClick={() => { form.setFieldsValue({ log_days: 1, log_limit: 0, review_mode: 'agent', max_attempts: 3 }); setModalOpen(true); }}>新建执行</Button></div>
+    <div className="page-heading"><div><Title level={3}>执行工作区</Title><Text type="secondary">按状态找到需要处理的轮次；打开后优先查看任务结论、根因证据与下一步操作。</Text></div><Button type="primary" icon={<PlusOutlined />} onClick={() => { form.setFieldsValue({ log_days: 1, log_limit: 0, review_mode: 'agent', max_attempts: 3 }); setModalOpen(true); }}>新建执行</Button></div>
     {runs.isError && <Alert type="error" showIcon message="执行记录加载失败" description={(runs.error as Error).message} action={<Button type="link" onClick={() => runs.refetch()}>重试</Button>} />}
     <Card className="content-card"><div className="filter-row">
       <Input allowClear prefix={<SearchOutlined />} placeholder="搜索执行 ID" value={keyword} onChange={(e) => { setKeyword(e.target.value); setPage(1); }} style={{ maxWidth: 300 }} />
       <Select allowClear placeholder="执行状态" value={status} onChange={(v) => { setStatus(v); setPage(1); }} style={{ width: 170 }} options={[{ value: 'queued', label: '排队中' }, { value: 'running', label: '执行中' }, { value: 'waiting_approval', label: '待审批' }, { value: 'succeeded', label: '已完成' }, { value: 'partial_failed', label: '部分失败' }, { value: 'failed', label: '失败' }, { value: 'cancelled', label: '已取消' }]} />
-      <Button icon={<ReloadOutlined />} onClick={() => runs.refetch()} loading={runs.isFetching}>刷新</Button><Text type="secondary">每 15 秒自动刷新</Text>
+      <Button icon={<CloseCircleOutlined />} disabled={!keyword && !status} onClick={() => { setKeyword(''); setStatus(undefined); setPage(1); }}>清除筛选</Button><Button icon={<ReloadOutlined />} onClick={() => runs.refetch()} loading={runs.isFetching}>刷新</Button><Text type="secondary">每 15 秒自动更新</Text>
     </div><Table rowKey="run_id" loading={runs.isLoading} columns={columns} dataSource={runs.data?.items ?? []} pagination={{ current: page, pageSize: 20, total: runs.data?.total ?? 0, showSizeChanger: false, onChange: setPage, showTotal: (total) => '共 ' + total + ' 条' }} locale={{ emptyText: '没有符合条件的执行记录' }} /></Card>
     <Modal title="创建工作流执行" open={modalOpen} onCancel={() => !start.isPending && setModalOpen(false)} onOk={() => form.submit()} confirmLoading={start.isPending} okText="创建执行" cancelText="取消" destroyOnClose>
       <Alert type="info" showIcon message="创建后由服务端执行完整工作流" description="任务按既定规则串行处理。创建执行不会直接提交或合并代码。" className="modal-alert" />
