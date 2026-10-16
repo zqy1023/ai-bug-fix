@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.workflow.routes import APPROVE, CLAIM, FINALIZE, LOCATE, REPAIR, RETRY, after_approval, after_check_changes, after_repair
+from app.workflow.routes import APPROVE, CLAIM, FINALIZE, LOCATE, REPAIR, RETRY, after_approval, after_check_changes, after_locate, after_repair
 
 
 def test_validation_failure_uses_bounded_retry_node() -> None:
@@ -69,3 +69,12 @@ def test_manual_continue_grants_only_the_explicit_repair_capability():
 
     assert continued["manual_continue_authorized"] is True
     assert retried["manual_continue_authorized"] is False
+
+
+
+def test_retry_locate_does_not_claim_the_same_repair_slot_twice():
+    state = {"locate": {"status": "LOCATED"}, "last_result": "passed"}
+    assert after_locate(state) == CLAIM
+
+    state["repair_slot_claimed"] = True
+    assert after_locate(state) == REPAIR
