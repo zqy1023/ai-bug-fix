@@ -77,7 +77,7 @@ def _capture_knowledge_candidate(
         change_summary = str(repair.get("summary") or repair.get("analysis") or "").strip()
         changed_files = repair.get("changed_files", [])
         if isinstance(changed_files, list) and changed_files:
-            change_summary += "\\n变更文件：" + ", ".join(str(item) for item in changed_files[:30])
+            change_summary += "\n变更文件：" + ", ".join(str(item) for item in changed_files[:30])
         error_text = str(report.get("problem") or "")
         fingerprint = sha256(error_text.encode("utf-8")).hexdigest() if error_text else ""
         regression_output = regression.output if regression is not None else {}
