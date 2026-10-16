@@ -128,6 +128,12 @@ export interface ApprovalItem {
   status: 'pending' | 'approved' | 'rejected' | 'expired';
   summary: string;
   changed_files: string[];
+  change_plan?: {
+    scope: 'carrier' | 'project';
+    rationale: string;
+    requires_human_authorization: boolean;
+    edits: Array<{ path: string; action: string; note: string }>;
+  };
   created_at: string;
   expires_at?: string | null;
 }
