@@ -45,7 +45,7 @@ def run(ctx: StepContext, data: FinalizeInput) -> FinalizeOutput:
     if data.ai_workspace_path:
         workspace = Path(data.ai_workspace_path).resolve()
         if workspace.is_dir():
-            report_path = (workspace / FINAL_REPORT).resolve()
+            report_path = (workspace / data.report_destination).resolve()
             if report_path.is_relative_to(workspace):
                 try:
                     report_path.parent.mkdir(parents=True, exist_ok=True)
