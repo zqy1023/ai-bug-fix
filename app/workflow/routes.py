@@ -100,10 +100,10 @@ def after_evidence(state: WorkflowState) -> str:
 
 
 def after_claim(state: WorkflowState) -> str:
-    """定位通过且成功领取本轮资格后，才创建隔离工作区。"""
+    """定位通过且成功领取修复资格后，才进入修复 Agent。隔离区已在定位前创建。"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
         return FINALIZE
-    return WORKSPACE if _result(state) == "passed" else FINALIZE
+    return REPAIR if _result(state) == "passed" else FINALIZE
 
 
 def after_locate(state: WorkflowState) -> str:
@@ -111,7 +111,8 @@ def after_locate(state: WorkflowState) -> str:
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
         return FINALIZE
     # 旧框架任务只做根因分析；即使 Locate 返回 LOCATED，也不能进入自动修复。
-    if (state.get("evidence") or {}).get("legacy_only"):
+    evidence = state.get("evidence") or {}
+    if evidence.get("legacy_only") or evidence.get("legacy_dependency"):
         return FINALIZE
     disposition = locate_disposition(str((state.get("locate") or {}).get("status") or ""))
     if disposition == "repair" and _result(state) == "passed":
