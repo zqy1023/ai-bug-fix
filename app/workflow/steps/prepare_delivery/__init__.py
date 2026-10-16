@@ -41,6 +41,26 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         else str(state.get("framework") or "gathers")
     )
     report_carrier = WorkspaceManager.safe_carrier_name(str(task.get("carrier") or ""))
+    analysis_only = bool(
+        (state.get("evidence") or {}).get("legacy_only")
+        or (state.get("evidence") or {}).get("legacy_dependency")
+        or state.get("scope_escalation_required")
+        or state.get("manual_intervention_required")
+        or str((state.get("review") or {}).get("verdict") or "").upper() == "MANUAL"
+        or str((state.get("task_summary") or {}).get("delivery_status") or "").upper() in {"FAILED", "MANUAL"}
+        or str((state.get("locate") or {}).get("status") or "") != "LOCATED"
+        or str((state.get("locate") or {}).get("recommended_scope") or "") != "carrier"
+        or str((state.get("locate") or {}).get("category") or "") != "carrier"
+        or any(
+            str(item.get("path") or "").replace("\\", "/").startswith("spiders/")
+            for item in locate_payload.get("source_evidence") or []
+            if isinstance(item, dict)
+        )
+        or any(
+            str(item).replace("\\", "/").startswith("spiders/")
+            for item in locate_payload.get("candidate_files") or []
+        )
+    )
     return {
         "task_id": task_id,
         "carrier": str(task.get("carrier") or ""),
@@ -66,27 +86,8 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         "repair_summary": str(repair_payload.get("summary") or ""),
         "review_summary": str(review_payload.get("summary") or ""),
         "review_decision": review_decision,
-        "analysis_only": bool(
-            (state.get("evidence") or {}).get("legacy_only")
-            or (state.get("evidence") or {}).get("legacy_dependency")
-            or state.get("scope_escalation_required")
-            or state.get("manual_intervention_required")
-            or str((state.get("review") or {}).get("verdict") or "").upper() == "MANUAL"
-            or str((state.get("task_summary") or {}).get("delivery_status") or "").upper() in {"FAILED", "MANUAL"}
-            or str((state.get("locate") or {}).get("status") or "") != "LOCATED"
-            or str((state.get("locate") or {}).get("recommended_scope") or "") != "carrier"
-            or str((state.get("locate") or {}).get("category") or "") != "carrier"
-            or any(
-                str(item.get("path") or "").replace("\\", "/").startswith("spiders/")
-                for item in ((state.get("locate") or {}).get("source_evidence") or [])
-                if isinstance(item, dict)
-            )
-            or any(
-                str(item).replace("\\", "/").startswith("spiders/")
-                for item in ((state.get("locate") or {}).get("candidate_files") or [])
-            )
-        ),
-        "report_paths": [f"{report_framework}/{report_carrier}/final.json"],
+        "analysis_only": analysis_only,
+        "report_paths": [f"{report_framework}/{report_carrier}/final.json"] if analysis_only else [],
         # 需要审批 = 本轮存在已获批或待审批的共享层方案；是否放行只看批准结果。
         "requires_approval": bool(state.get("scope_escalation_required")),
         "approval_granted": str(state.get("decision") or "") == "APPROVE",
