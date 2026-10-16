@@ -467,6 +467,11 @@ def _control_db():
             status TEXT NOT NULL DEFAULT 'candidate', source_run_id TEXT NOT NULL DEFAULT '', source_task_id TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS knowledge_case_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, task_id TEXT NOT NULL,
+            case_id TEXT NOT NULL, match_score INTEGER NOT NULL, created_at TEXT NOT NULL,
+            UNIQUE(run_id, task_id, case_id)
+        );
     """)
     # 旧版控制库原位升级；保留已有运行记录与取消请求。
     columns = {row[1] for row in connection.execute("PRAGMA table_info(run_control)")}
@@ -1024,7 +1029,16 @@ def v1_list_knowledge_cases(
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         total = int(connection.execute("SELECT COUNT(*) FROM repair_knowledge_cases" + where, values).fetchone()[0])
         rows = connection.execute(
-            "SELECT * FROM repair_knowledge_cases" + where + " ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+            """SELECT k.*,
+                      COALESCE(u.usage_count, 0) AS usage_count,
+                      u.last_used_at
+               FROM repair_knowledge_cases AS k
+               LEFT JOIN (
+                   SELECT case_id, COUNT(*) AS usage_count, MAX(created_at) AS last_used_at
+                   FROM knowledge_case_usage GROUP BY case_id
+               ) AS u ON u.case_id = k.case_id"""
+            + where.replace("status=", "k.status=").replace("title LIKE", "k.title LIKE").replace("fingerprint LIKE", "k.fingerprint LIKE").replace("carrier LIKE", "k.carrier LIKE").replace("biztype LIKE", "k.biztype LIKE").replace("root_cause LIKE", "k.root_cause LIKE")
+            + " ORDER BY k.updated_at DESC LIMIT ? OFFSET ?",
             [*values, page_size, (page - 1) * page_size],
         ).fetchall()
         items = []
@@ -1038,6 +1052,7 @@ def v1_list_knowledge_cases(
             "published": int(connection.execute("SELECT COUNT(*) FROM repair_knowledge_cases WHERE status='published'").fetchone()[0]),
             "candidate": int(connection.execute("SELECT COUNT(*) FROM repair_knowledge_cases WHERE status='candidate'").fetchone()[0]),
             "disabled": int(connection.execute("SELECT COUNT(*) FROM repair_knowledge_cases WHERE status='disabled'").fetchone()[0]),
+            "retrievals": int(connection.execute("SELECT COUNT(*) FROM knowledge_case_usage").fetchone()[0]),
         }
         return {"items": items, "total": total, "page": page, "page_size": page_size, "summary": summary}
     finally:
