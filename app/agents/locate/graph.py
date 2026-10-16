@@ -42,8 +42,10 @@ def _relative_file(root: Path, value: Any, *, must_exist: bool = True) -> str:
     return relative
 
 
-def _read_roots(root: Path, carrier_dir: str, rules: list[str]) -> tuple[str, ...]:
+def _read_roots(root: Path, carrier_dir: str, rules: list[str], legacy_carrier_dir: str = "") -> tuple[str, ...]:
     paths = [root / carrier_dir]
+    if legacy_carrier_dir and legacy_carrier_dir != carrier_dir and (root / legacy_carrier_dir).is_dir():
+        paths.append(root / legacy_carrier_dir)
     paths.extend(root / name for name in _SHARED_READ_DIRECTORIES if (root / name).is_dir())
     plugin_registry = root / "plugins.py"
     if plugin_registry.is_file():
@@ -117,10 +119,11 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
             f"{config.max_context_chars}；为避免丢失真实异常上下文，本次未截断输入，也未调用模型。"
         )
     rules = WorkspaceManager.readable_rule_paths(root)
-    roots = _read_roots(root, carrier_dir, rules)
+    legacy_carrier_dir = f"spiders/{WorkspaceManager.safe_carrier_name(incoming.carrier)}"
+    roots = _read_roots(root, carrier_dir, rules, legacy_carrier_dir)
     prepared_evidence = {
         key: evidence.get(key)
-        for key in ("carrier_dir", "candidates", "symbols", "category", "extracted", "legacy_only", "legacy_reason")
+        for key in ("carrier_dir", "candidates", "symbols", "category", "extracted", "legacy_only", "legacy_dependency", "legacy_reason")
         if key in evidence
     }
     historical_knowledge = evidence.get("knowledge_cases", [])
