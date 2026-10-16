@@ -12,7 +12,6 @@ from app.workflow.steps.claim_repair_slot.node import run
 def _input(state: dict[str, Any]) -> dict[str, Any]:
     task = dict(state.get("task") or {})
     return {
-        "run_id": str(state.get("run_id") or ""),
         "task_id": str(state.get("task_id") or task.get("task_id") or ""),
         "biztype": str(task.get("biztype") or ""),
         "carrier": str(task.get("carrier") or ""),
