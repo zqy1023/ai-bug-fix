@@ -53,6 +53,8 @@ class EvidenceOutput(FrozenModel):
     extracted: dict[str, str] = Field(default_factory=dict)
     # legacy_only：字段说明见该模型文档与工作流契约。
     legacy_only: bool = False
+    # 新框架 carrier 是否显式引用旧 spiders 实现；命中后只分析、不自动修改。
+    legacy_dependency: bool = False
     # legacy_reason：字段说明见该模型文档与工作流契约。
     legacy_reason: str = ""
     # 只注入已审核发布的历史案例；本次异常仍须独立验证。
