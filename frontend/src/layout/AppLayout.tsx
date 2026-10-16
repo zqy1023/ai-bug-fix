@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
-  AppstoreOutlined, CheckCircleOutlined, ClockCircleOutlined, CodeOutlined,
+  AppstoreOutlined, BookOutlined, CheckCircleOutlined, ClockCircleOutlined, CodeOutlined,
   MenuFoldOutlined, MenuUnfoldOutlined, SafetyCertificateOutlined,
 } from '@ant-design/icons';
 import { Badge, Button, Input, Layout, Menu, Modal, Space, Tag, Tooltip, Typography } from 'antd';
@@ -15,6 +15,7 @@ const routeMeta = [
   { key: '/dashboard', title: '运行控制台', eyebrow: 'CONTROL CENTER' },
   { key: '/runs', title: '执行记录', eyebrow: 'RUN HISTORY' },
   { key: '/approvals', title: '审批中心', eyebrow: 'HUMAN GATE' },
+  { key: '/knowledge', title: '修复知识中心', eyebrow: 'REPAIR KNOWLEDGE' },
 ];
 
 export function AppLayout() {
@@ -53,6 +54,7 @@ export function AppLayout() {
         { key: '/dashboard', icon: <AppstoreOutlined />, label: '运行控制台' },
         { key: '/runs', icon: <ClockCircleOutlined />, label: '执行与调试' },
         { key: '/approvals', icon: <SafetyCertificateOutlined />, label: <span className="menu-label">审批中心 <Badge size="small" count={approvals.data?.length ?? 0} overflowCount={99} /></span> },
+        { key: '/knowledge', icon: <BookOutlined />, label: '修复知识中心' },
       ]} onClick={({ key }) => navigate(key)} />
       <div className="sider-bottom">
         <div className="sider-runtime">
