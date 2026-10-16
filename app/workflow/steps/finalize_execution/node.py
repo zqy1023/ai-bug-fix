@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import uuid
+from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Any
 
@@ -13,6 +15,8 @@ from app.application.context import StepContext
 from app.workflow.steps.finalize_execution.models import FinalizeInput, FinalizeOutput
 from app.infrastructure.run_control import cancellation_requested
 from app.infrastructure.config import load_config
+
+logger = logging.getLogger(__name__)
 
 FINAL_REPORT = "reports/final.json"
 _SELF = "finalize_execution"
@@ -98,7 +102,7 @@ def _capture_knowledge_candidate(
                 (
                     case_id, title[:200], fingerprint, data.carrier, data.biztype, root_cause[:4000],
                     evidence, change_summary[:8000], int(regression_passed), int(review_passed),
-                    ctx.run.run_id, data.task_id, __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+                    ctx.run.run_id, data.task_id, datetime.now(timezone.utc).isoformat(),
                     __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
                 ),
             )
@@ -110,8 +114,8 @@ def _capture_knowledge_candidate(
             return str(row[0]) if row else ""
         finally:
             connection.close()
-    except (OSError, sqlite3.Error, ValueError, TypeError):
-        # 知识库不可用不应把本已完成的修复任务变成失败；日志/产物仍保留完整事实。
+    except Exception:  # noqa: BLE001 - 知识沉淀失败不能改变修复任务的业务终态
+        logger.exception("自动沉淀修复知识候选失败 run_id=%s task_id=%s", ctx.run.run_id, data.task_id)
         return ""
 
 def _problem(ctx: StepContext, task_id: str) -> str:
