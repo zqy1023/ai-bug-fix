@@ -49,3 +49,34 @@ def test_background_exception_is_persisted_as_a_safe_terminal_report(tmp_path, m
     assert report["status"] == "FAILED"
     assert report["error_type"] == "RuntimeError"
     assert "secret-token-should-not-leak" not in json.dumps(report)
+
+
+def test_persisted_business_result_uses_model_output_contract():
+    from app.agents.locate.models import LocateOutput
+    from app.agents.review.models import ReviewView
+    from app.application.audit import map_outcome
+
+    assert map_outcome(
+        kind="ok",
+        output={"status": "MANUAL", "passed": False},
+        output_model=LocateOutput,
+    ) == ("succeeded", "MANUAL")
+    assert map_outcome(
+        kind="ok",
+        output={"verdict": "PASS", "passed": True},
+        output_model=ReviewView,
+    ) == ("succeeded", "PASS")
+    assert map_outcome(
+        kind="ok",
+        output={"delivery_status": "SUCCESS"},
+    ) == ("succeeded", "SUCCESS")
+
+
+def test_business_conclusions_drive_routes_without_relabeling_step_execution():
+    from app.workflow.runner import _route_status
+
+    assert _route_status("MANUAL") == "manual"
+    assert _route_status("INSUFFICIENT_EVIDENCE") == "manual"
+    assert _route_status("FAIL") == "failed"
+    assert _route_status("SUCCESS") == "passed"
+    assert _route_status(None) == "passed"

@@ -109,7 +109,11 @@ def run_stage(
             **_views(spec),
         )
     output_payload = dump_model(checked)
-    status, business = map_outcome(kind="ok")
+    status, business = map_outcome(
+        kind="ok",
+        output=output_payload,
+        output_model=spec.output_model,
+    )
     record.status = status
     record.result = business
     record.summary = summary_of(output_payload)
@@ -122,8 +126,9 @@ def run_stage(
     except StepFailed as error:
         # 写不进去就是这一步失败，不能留下一条"执行成功"的记录。
         return _save_fail(spec, store, state, record, task_id, artifacts, started, error, **_views(spec))
+    route_status = _route_status(business)
     return StepResult(
-        status="passed",
+        status=route_status,
         output=output_payload,
         next_action=spec.next_step or None,
         audit=StepAudit(
@@ -139,6 +144,17 @@ def _views(spec: StepSpec) -> dict[str, Any]:
     return {"input_view": spec.input_record, "output_view": spec.output_record}
 
 
+def _route_status(business: str | None) -> str:
+    """将业务结论映射为图内路由状态；不改变持久化的节点执行状态。"""
+    if business in {"MANUAL", "INSUFFICIENT_EVIDENCE"}:
+        return "manual"
+    if business in {"FAIL", "FAILED", "REJECTED"}:
+        return "failed"
+    if business == "SKIPPED":
+        return "skipped"
+    return "passed"
+
+
 def bind(
     spec: StepSpec,
     store: RecordStore,
@@ -152,9 +168,10 @@ def bind(
         result = run_stage(spec, store, services, state)
         action = result.next_action if next_step is None else next_step
         # 审批拒绝是业务决定而非节点崩溃；保留 REJECT 决定供路由进入有上限的回修循环。
-        if result.status == "passed" or (
+        if result.failure is None or (
             spec.name == "request_approval" and str(result.output.get("decision") or "").upper() == "REJECT"
         ):
+            # 业务 FAIL/MANUAL 仍需把结构化结论回写路由状态；只有执行异常才丢弃普通输出。
             patch = spec.patch(result.output)
         else:
             patch = {}

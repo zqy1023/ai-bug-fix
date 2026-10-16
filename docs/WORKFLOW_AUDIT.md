@@ -12,6 +12,12 @@
 
 ## 本轮审计发现与修正
 
+### 严重：业务失败输出没有进入路由状态
+
+根因：步骤执行器原先调用 `map_outcome(kind="ok")` 时没有传入本步的结构化输出和输出模型，成功执行的节点记录因此丢失业务结论；内部 `StepResult.status` 又固定返回 passed，导致部分 `passed=false` 的检查/验证/回归结果可能沿成功分支继续执行。
+
+修正：执行器现在把实际输出和输出模型传给统一结论映射器。持久化记录仍区分节点执行状态与业务结论；图内路由状态则按 FAIL/FAILED、MANUAL/证据不足、SKIPPED 分别映射。即使业务结论是失败或人工介入，结构化输出仍回写状态，保证重试路由和共享层方案判断能读取到真实结论。
+
 ### 高优先级：人工介入被最终报告记成 FAILED
 
 根因：`finalize_execution._delivery_status` 只对小写 `terminal_status == "manual"` 或旧框架任务返回 MANUAL，而定位/审查的业务结论实际记录在步骤 `result` 中，且通常是大写 `MANUAL`。结果是节点成功执行但业务结论为人工介入，最终 `reports/final.json` 却记为 FAILED。

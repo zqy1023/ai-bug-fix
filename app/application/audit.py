@@ -33,6 +33,8 @@ StepResultValue = Literal[
     "REJECTED",
     "SKIPPED",
     "DELIVERED",
+    "SUCCESS",
+    "FAILED",
 ]
 
 # 产物与报告的固定错误码。与业务结论严格分开，不在各处散字符串。
@@ -168,13 +170,22 @@ def map_outcome(
     - ``kind`` 由 ``runner`` 的 except 通道给出（正常返回 / ``StepFailed`` / 中断）。
     - ``step_result`` 是 ``StepFailed.result`` 原值，``manual`` / ``rejected`` /
       ``skipped`` 优先于通用失败判定。
-    - 业务 FAIL 只认**输出模型声明了 ``passed`` 字段**且该字段为假这一条。单看
-      ``reason`` 会把"缺少工作区"这类执行故障误判成业务结论。
+    - MANUAL/INSUFFICIENT_EVIDENCE 优先保留为人工介入结论。
+    - 允许的业务结论从输出模型的 verdict/status/delivery_status 中提取。
+    - 业务 FAIL 只认输出模型声明了 ``passed`` 字段且该字段为假；单看 reason
+      会把"缺少工作区"这类执行故障误判成业务结论。
     """
     if kind == "interrupt":
         return "waiting", None
     if kind == "ok":
-        return "succeeded", business
+        declared = _business_result(output)
+        if declared in {"MANUAL", "INSUFFICIENT_EVIDENCE"}:
+            return "succeeded", declared
+        if declared in {"REJECTED", "SKIPPED"}:
+            return "succeeded", declared
+        if _declared_business_failure(output, output_model):
+            return "succeeded", "FAIL"
+        return "succeeded", business or declared
     if step_result == "skipped":
         return "skipped", "SKIPPED"
     if step_result == "manual":
@@ -189,6 +200,21 @@ def map_outcome(
 def error_code_of(code: str) -> StepErrorCode:
     """把节点声明的错误码收进固定词汇表；未知码归到通用执行失败。"""
     return code if code in get_args(StepErrorCode) else "STEP_EXECUTION_FAILED"
+
+
+def _business_result(output: dict[str, Any] | None) -> str | None:
+    """只提取契约允许的业务结论；不把普通 status 或 decision 值塞进 result。"""
+    if not isinstance(output, dict):
+        return None
+    allowed = {
+        "LOCATED", "INSUFFICIENT_EVIDENCE", "MANUAL", "PASS", "FAIL",
+        "REJECTED", "SKIPPED", "DELIVERED", "SUCCESS", "FAILED",
+    }
+    for key in ("verdict", "delivery_status", "status"):
+        value = output.get(key)
+        if isinstance(value, str) and value.upper() in allowed:
+            return value.upper()
+    return None
 
 
 def _declared_business_failure(
