@@ -114,6 +114,9 @@ def after_locate(state: WorkflowState) -> str:
     disposition = locate_disposition(str((state.get("locate") or {}).get("status") or ""))
     if disposition == "repair" and _result(state) == "passed":
         return CLAIM
+    # 对定位契约、证据或模型调用中断提供真正的人工中断点；不能直接 finalize 后只留下只读记录。
+    if state.get("manual_intervention_required"):
+        return APPROVE
     return FINALIZE
 
 
@@ -216,8 +219,16 @@ def after_approval(state: WorkflowState) -> str:
     """审批后路由：根据 scope 决定是 apply 共享层还是直接交付"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
         return FINALIZE
-    approval_result = _result(state)
+    # 定位阶段的人工处置与变更方案审批共用 interrupt，但决策语义完全分开。
+    if str(state.get("approval_mode") or "") == "manual_intervention":
+        decision = str(state.get("decision") or "").upper()
+        if decision == "RETRY_LOCATE":
+            return LOCATE
+        if decision == "CONTINUE_REPAIR" and state.get("manual_continue_allowed"):
+            return CLAIM
+        return FINALIZE
 
+    approval_result = _result(state)
     # 人工明确拒绝后进入有上限的回修循环，不得继续 apply 或交付。
     if str(state.get("decision") or "").upper() == "REJECT" or approval_result == "rejected":
         return _retry_or_finalize(state)
