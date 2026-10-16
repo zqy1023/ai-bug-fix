@@ -82,6 +82,7 @@ export function KnowledgePage() {
       <Card className="metric-card"><Statistic title="待验证候选" value={cases.data?.summary.candidate ?? 0} loading={cases.isLoading} /></Card>
       <Card className="metric-card"><Statistic title="已停用" value={cases.data?.summary.disabled ?? 0} prefix={<StopOutlined />} loading={cases.isLoading} /></Card>
       <Card className="metric-card"><Statistic title="历史检索次数" value={cases.data?.summary.retrievals ?? 0} prefix={<SearchOutlined />} loading={cases.isLoading} /></Card>
+      <Card className="metric-card"><Statistic title="命中后成功任务" value={cases.data?.summary.successful_reuses ?? 0} prefix={<CheckCircleOutlined />} loading={cases.isLoading} /></Card>
     </div>
     <Card className="content-card">
       <div className="filter-row">
