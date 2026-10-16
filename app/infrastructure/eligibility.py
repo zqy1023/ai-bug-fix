@@ -4,8 +4,27 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from pathlib import Path
 from threading import RLock
+
+
+def _enable_wal(connection: sqlite3.Connection, database_path: Path) -> None:
+    """并发进程首次打开同一数据库时，重试 WAL 模式切换的瞬时锁冲突。"""
+    delays = (0.05, 0.1, 0.2, 0.4, 0.8)
+    for attempt, delay in enumerate((*delays, None)):
+        try:
+            connection.execute("PRAGMA journal_mode=WAL")
+            return
+        except sqlite3.OperationalError as error:
+            message = str(error).lower()
+            if "locked" not in message and "busy" not in message:
+                raise
+            if delay is None:
+                raise sqlite3.OperationalError(
+                    f"初始化 SQLite WAL 模式失败，数据库仍被其他连接占用: {database_path}"
+                ) from error
+            time.sleep(delay)
 
 
 class ExecutionEligibility:
@@ -32,7 +51,7 @@ class ExecutionEligibility:
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA busy_timeout=30000")
         if root is not None:
-            self._connection.execute("PRAGMA journal_mode=WAL")
+            _enable_wal(self._connection, directory / "eligibility.sqlite3")
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS repair_eligibility (
