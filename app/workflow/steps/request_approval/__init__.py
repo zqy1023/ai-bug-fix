@@ -58,7 +58,13 @@ def _patch(output: dict[str, Any]) -> dict[str, Any]:
     if decision == "RETRY_LOCATE":
         patch.update({"manual_intervention_required": False, "manual_continue_allowed": False, "terminal_status": "", "last_result": "passed"})
     elif decision == "CONTINUE_REPAIR":
-        patch.update({"manual_intervention_required": False, "terminal_status": "", "last_result": "passed"})
+        # Consume the one-shot capability so it cannot leak into later approval cycles.
+        patch.update({
+            "manual_intervention_required": False,
+            "manual_continue_allowed": False,
+            "terminal_status": "",
+            "last_result": "passed",
+        })
     elif decision in {"MARK_DONE", "TERMINATE"}:
         patch.update({"manual_intervention_required": False, "terminal_status": "MANUAL", "last_result": "manual"})
     return patch
