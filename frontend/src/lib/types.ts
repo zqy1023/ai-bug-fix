@@ -50,17 +50,67 @@ export interface ArtifactRef {
   task_id?: string;
 }
 
+export interface WorkflowReport {
+  report_version?: number;
+  report_kind?: 'run_final' | 'task_final' | string;
+  run_id?: string;
+  task_id?: string;
+  carrier?: string;
+  biztype?: string;
+  result?: string;
+  status?: string;
+  terminal_status?: string;
+  terminal_step?: string;
+  terminal_reason?: string;
+  next_action?: string;
+  finished_at?: string;
+  elapsed_ms?: number;
+  tokens?: number;
+  problem?: string | Record<string, unknown>;
+  root_cause?: string;
+  change_summary?: string;
+  completed_steps?: string[];
+  task_count?: number;
+  task_results?: Array<{
+    task_id: string;
+    carrier: string;
+    biztype: string;
+    result: string;
+    terminal_step?: string;
+    terminal_reason?: string;
+    next_action?: string;
+  }>;
+  legacy_report?: boolean;
+}
+
 export interface TaskSummary {
   task_id: string;
   carrier: string;
   biztype: string;
   result: string;
   terminal_status?: string;
-  steps: StepRecord[];
+  terminal_step?: string;
+  terminal_reason?: string;
+  next_action?: string;
+  steps_count?: number;
+  duration_ms?: number | null;
+  approval_pending?: boolean;
+  problem?: Record<string, unknown>;
+  report?: WorkflowReport;
+  steps?: StepRecord[];
+}
+
+export interface TaskDetailResponse {
+  run_id: string;
+  run_status: RunStatus;
+  config: Record<string, unknown>;
+  task: TaskSummary & { steps: StepRecord[]; report: WorkflowReport };
+  artifacts: ArtifactRef[];
 }
 
 export interface RunDetail extends RunSummary {
-  run_error?: { status?: string; error_type?: string; message?: string; failed_at?: string };
+  run_error?: { status?: string; error_type?: string; message?: string; failed_at?: string; terminal_step?: string; terminal_reason?: string };
+  run_report?: WorkflowReport;
   config: Record<string, unknown>;
   steps: StepRecord[];
   tasks: TaskSummary[];
