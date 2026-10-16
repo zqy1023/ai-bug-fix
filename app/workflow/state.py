@@ -59,6 +59,8 @@ class WorkflowState(TypedDict, total=False):
     review_mode: str
     # retry_reason：上一轮失败或驳回原因。
     retry_reason: str
+    # retry_target：Agent 执行异常后重试的 Agent 名称；普通验证失败默认回到 repair_agent。
+    retry_target: str
 
     # 任务局部产物
     source_project_path: str
@@ -136,6 +138,12 @@ class WorkflowState(TypedDict, total=False):
     review_decision: str
     # approval_granted：人工审批是否通过。
     approval_granted: bool
+    # 最终交付与审批清理状态。
+    delivery: dict[str, Any]
+    delivery_pushed: bool
+    delivery_commit: str
+    repair_branch: str
+    approval_cleanup_failed: bool
     # 收尾摘要：finalize_execution 写入，父图收集后累加进 task_results。
     task_summary: dict[str, Any]
 
