@@ -41,6 +41,14 @@ def task_id(biztype: str, carrier: str, fingerprint: str) -> str:
     return f"{safe_name(carrier)}__{safe_name(biztype)}__{short}"
 
 
-def repair_branch(biztype: str, carrier: str, prefix: str = "ai-repair") -> str:
-    """同一 ``biztype + carrier`` 只对应一条修复分支。"""
-    return f"{prefix}/{safe_name(biztype)}/{safe_name(carrier)}"
+def repair_branch(
+    biztype: str,
+    carrier: str,
+    prefix: str = "ai-repair",
+    fingerprint: str = "",
+) -> str:
+    """按业务类型、carrier 与问题指纹生成稳定分支名，避免不同异常互相覆盖。"""
+    carrier_name = safe_name(carrier)
+    if fingerprint:
+        carrier_name = f"{carrier_name}-{safe_name(fingerprint)[:8]}"
+    return f"{prefix}/{safe_name(biztype)}/{carrier_name}"
