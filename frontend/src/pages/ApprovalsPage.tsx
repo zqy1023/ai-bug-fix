@@ -46,13 +46,15 @@ export function ApprovalsPage() {
       queryClient.invalidateQueries({ queryKey: ['manual-interventions'] }),
       queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
       queryClient.invalidateQueries({ queryKey: ['runs'] }),
+      queryClient.invalidateQueries({ queryKey: ['run'] }),
+      queryClient.invalidateQueries({ queryKey: ['task'] }),
     ]);
   };
 
   const mutation = useMutation({
     mutationFn: () => api.decideApproval(selected!.approval_id, decision, reason.trim()),
     onSuccess: async () => {
-      message.success(decision === 'approve' ? '审批已提交' : '已提交拒绝决定');
+      message.success(decision === 'approve' ? '审批已接收，工作流正在后台继续执行' : '拒绝决定已接收，工作流正在后台处理');
       setSelected(null);
       setReason('');
       await refreshQueues();
@@ -63,7 +65,7 @@ export function ApprovalsPage() {
   const manualMutation = useMutation({
     mutationFn: () => api.decideManualIntervention(manualSelected!.intervention_id, manualDecision, manualReason.trim()),
     onSuccess: async (result) => {
-      message.success(result.status === 'resolved' ? '人工处置结果已记录' : '人工处置决定已提交，工作流正在恢复');
+      message.success(result.status === 'resolved' ? '人工处置结果已记录' : '人工决定已接收，工作流正在后台恢复并继续后续任务');
       setManualSelected(null);
       setManualReason('');
       await refreshQueues();
