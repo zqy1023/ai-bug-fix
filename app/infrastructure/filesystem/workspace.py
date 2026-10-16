@@ -26,8 +26,11 @@ class WorkspaceError(RuntimeError):
 class WorkspaceConfig:
     """工作区目录和生命周期配置。"""
 
+    # root_dir：隔离工作区和快照的根目录。
     root_dir: Path | None = None
+    # project_subdir：源仓库内项目代码所在的相对目录。
     project_subdir: Path | None = None
+    # keep：是否保留本轮工作区用于排查与审计。
     keep: bool = True
 
 

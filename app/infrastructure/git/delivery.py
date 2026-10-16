@@ -54,9 +54,13 @@ def _one_line(value: Any, limit: int = _MAX_COMMENT_CHARS) -> str:
 class GitDeliveryConfig:
     """Git 交付的显式运行配置。"""
 
+    # remote_name：用于比较分支和推送的 Git 远程名称。
     remote_name: str = settings.default_git_remote
+    # push：是否将已提交的修复分支推送到远端。
     push: bool = True
+    # source_repo：包含 Git 元数据的源仓库路径。
     source_repo: Path | None = None
+    # workspace_manager：负责隔离工作区路径与文件同步的管理器。
     workspace_manager: WorkspaceManager | None = None
 
 

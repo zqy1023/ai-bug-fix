@@ -22,16 +22,27 @@ if TYPE_CHECKING:
 class WorkflowServices:
     """一次执行的外部依赖集合。"""
 
+    # source_repo：本轮使用的源 Git 仓库路径。
     source_repo: Path | None = None
+    # project_subdir：仓库中业务项目的相对路径。
     project_subdir: Path | None = None
+    # verify_commands：在隔离工作区执行的固定验证命令列表。
     verify_commands: list[list[str]] = field(default_factory=list)
+    # git_push：是否允许交付阶段推送修复分支。
     git_push: bool = False
+    # workspaces：工作区快照、隔离、回归目录的管理器。
     workspaces: WorkspaceManager | None = None
+    # delivery：创建修复分支、提交和可选推送的适配器。
     delivery: GitBranchDelivery | None = None
+    # eligibility：同一执行轮次的修复资格唯一性服务。
     eligibility: ExecutionEligibility | None = None
+    # log_source：读取真实 ES 异常日志的适配器。
     log_source: ESLogAdapter | None = None
+    # ignore_errors：在归一化阶段排除的错误消息清单。
     ignore_errors: list[str] = field(default_factory=list)
+    # scope_policy：判断变更是否超出目标 carrier 授权范围的策略。
     scope_policy: ScopePolicy | None = None
+    # metadata：注入验证器和其他基础设施适配器的扩展依赖。
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def close(self) -> None:
