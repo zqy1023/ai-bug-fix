@@ -99,24 +99,16 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
 
     config = getattr(runtime, "config", None)
     config = config if isinstance(config, LocateConfig) else LocateConfig.load()
-    rules = WorkspaceManager.readable_rule_paths(root)
-    roots = _read_roots(root, carrier_dir, rules)
-    allowed_roots = tuple(Path(item).resolve() for item in roots)
     candidates = evidence.get("candidates")
     if not isinstance(candidates, list) or not candidates:
         return _manual("预检没有候选源码文件，缺少定位证据")
     if len(candidates) > config.max_candidate_files:
         return _manual("预检候选数量超过 locate.max_candidate_files，要求确定性预检收敛")
     verified_candidates = [_relative_file(root, item) for item in candidates]
-    prepared_scope_escalation = False
     for relative in verified_candidates:
         candidate = (root / relative).resolve()
-        if candidate.is_relative_to(carrier_root):
-            continue
-        if not any(candidate == allowed or candidate.is_relative_to(allowed) for allowed in allowed_roots):
-            return _manual(f"预检候选超出定位只读范围: {relative}")
-        # 共享层代码可用于定位，但不会自动获得写权限；后续必须经过方案和人工授权。
-        prepared_scope_escalation = True
+        if not candidate.is_relative_to(carrier_root):
+            return _manual(f"预检候选超出目标 carrier 范围: {relative}")
 
     serialized_problem = json.dumps(incoming.problem, ensure_ascii=False)
     if len(serialized_problem) > config.max_context_chars:
@@ -124,12 +116,13 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
             f"原始问题长度 {len(serialized_problem)} 字符，超过 locate.max_context_chars="
             f"{config.max_context_chars}；为避免丢失真实异常上下文，本次未截断输入，也未调用模型。"
         )
+    rules = WorkspaceManager.readable_rule_paths(root)
+    roots = _read_roots(root, carrier_dir, rules)
     prepared_evidence = {
         key: evidence.get(key)
         for key in ("carrier_dir", "candidates", "symbols", "category", "extracted", "legacy_only", "legacy_reason")
         if key in evidence
     }
-    prepared_evidence["candidate_scope"] = "project" if prepared_scope_escalation else "carrier"
     historical_knowledge = evidence.get("knowledge_cases", [])
     context = prompt_context(
         "locate",
@@ -171,59 +164,87 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
     payload = parse_result(raw, "locate")
     original = raw_result(raw)
     usage = usage_of(raw)
-    scope_escalation = prepared_scope_escalation
-    manual_continue_allowed = False
-    raw_scope = str(payload.get("recommended_scope") or "").strip().lower()
+    output: LocateOutput | None = None
     try:
         output = LocateOutput.model_validate(payload)
-        model_scope_escalation = _validate_output_paths(root, roots, carrier_root, output)
-        scope_escalation = scope_escalation or model_scope_escalation or output.recommended_scope == "project"
-        if scope_escalation and output.status == "LOCATED":
-            # 合法共享层候选属于范围升级，不是定位契约失败；写入权限由修复与 apply_plan 门禁独立控制。
-            output = output.model_copy(update={
-                "category": "shared",
-                "recommended_scope": "project",
-                "summary": output.summary or "根因候选涉及共享层，需生成变更方案并经人工授权后才能落盘。",
-            })
+        _validate_output_paths(root, roots, carrier_root, output)
     except Exception as error:
-        # 尽量保留已返回且可验证的证据，便于人工复核；不把不完整结论伪装成 LOCATED。
-        safe_fields = {key: value for key, value in payload.items() if key in LocateOutput.model_fields}
-        safe_fields.update({
-            "status": "MANUAL", "category": safe_fields.get("category") or "unknown",
-            "recommended_scope": "manual", "passed": False,
-            "summary": _locate_contract_summary(error),
-            "evidence_gaps": [*(safe_fields.get("evidence_gaps") or []), str(error)],
-        })
-        try:
-            output = LocateOutput.model_validate(safe_fields)
-            model_scope_escalation = _validate_output_paths(root, roots, carrier_root, output)
-            scope_escalation = model_scope_escalation or prepared_scope_escalation or raw_scope == "project"
-            manual_continue_allowed = bool(
-                output.root_cause.strip() and output.source_evidence and output.candidate_files
-                and raw_scope in {"carrier", "project"}
-            )
-            if raw_scope in {"carrier", "project"}:
-                output = output.model_copy(update={"recommended_scope": raw_scope})
-            if scope_escalation:
-                output = output.model_copy(update={"category": "shared", "recommended_scope": "project"})
-        except Exception as path_error:
-            output = LocateOutput(
-                status="MANUAL", root_cause="", category="unknown", facts=[],
-                source_evidence=[], candidate_files=[],
-                evidence_gaps=[str(error), str(path_error)], recommended_scope="manual",
-                summary=_locate_contract_summary(error),
-            )
-            scope_escalation = False
-            manual_continue_allowed = False
+        # 校验失败必须停止自动修复，但不能把 Agent 已提供的诊断证据全部清空。
+        # 候选文件只保留目标 carrier 内的路径；共享层文件仍可留在 source_evidence
+        #（前提是它们位于明确允许的只读根目录），绝不能借此扩大写入范围。
+        if output is None:
+            try:
+                fallback = dict(payload) if isinstance(payload, dict) else {}
+                fallback["status"] = "MANUAL"
+                fallback["recommended_scope"] = "manual"
+                fallback["passed"] = False
+                output = LocateOutput.model_validate(fallback)
+            except Exception:
+                output = LocateOutput(
+                    status="MANUAL",
+                    root_cause="",
+                    category="unknown",
+                    facts=[],
+                    source_evidence=[],
+                    candidate_files=[],
+                    evidence_gaps=[],
+                    recommended_scope="manual",
+                    summary="",
+                )
+        output.status = "MANUAL"
+        output.recommended_scope = "manual"
+        output.passed = False
+        output.candidate_files = _safe_carrier_candidates(
+            root, carrier_root, output.candidate_files
+        )
+        output.source_evidence = _safe_source_evidence(
+            root, roots, output.source_evidence
+        )
+        detail = " ".join(str(error).split()) or type(error).__name__
+        if detail not in output.evidence_gaps:
+            output.evidence_gaps.append(detail[:500])
+        contract_summary = _locate_contract_summary(error)
+        if contract_summary not in output.summary:
+            output.summary = f"{output.summary.strip()}；{contract_summary}".strip("；")
     return {
         **output.model_dump(),
         "passed": output.status == "LOCATED",
-        "scope_escalation_required": scope_escalation,
-        "manual_continue_allowed": manual_continue_allowed,
         "raw_result": original,
         "_usage": usage,
         "_audit": audit_metadata(request, usage),
     }
+
+
+def _safe_carrier_candidates(
+    root: Path, carrier_root: Path, values: list[str]
+) -> list[str]:
+    """只保留目标 carrier 内真实存在且路径安全的候选文件。"""
+    accepted: list[str] = []
+    for value in values:
+        try:
+            relative = _relative_file(root, value)
+            if (root / relative).resolve().is_relative_to(carrier_root):
+                accepted.append(relative)
+        except (OSError, ValueError):
+            continue
+    return list(dict.fromkeys(accepted))
+
+
+def _safe_source_evidence(
+    root: Path, read_roots: tuple[str, ...], items: list[Any]
+) -> list[Any]:
+    """只保留获准只读根目录内的真实源码证据。"""
+    allowed = tuple(Path(item).resolve() for item in read_roots)
+    accepted: list[Any] = []
+    for item in items:
+        try:
+            relative = _relative_file(root, item.path)
+            target = (root / relative).resolve()
+            if any(target == base or target.is_relative_to(base) for base in allowed):
+                accepted.append(item)
+        except (AttributeError, OSError, ValueError):
+            continue
+    return accepted
 
 
 def _validate_output_paths(
@@ -231,24 +252,18 @@ def _validate_output_paths(
     read_roots: tuple[str, ...],
     carrier_root: Path,
     output: LocateOutput,
-) -> bool:
-    """验证定位输出路径；共享层候选返回范围升级标记，不授予写权限。"""
+) -> None:
     allowed = tuple(Path(item).resolve() for item in read_roots)
-    scope_escalation = False
     for value in output.candidate_files:
         relative = _relative_file(root, value)
         target = (root / relative).resolve()
-        if target.is_relative_to(carrier_root):
-            continue
-        if not any(target == base or target.is_relative_to(base) for base in allowed):
-            raise ValueError(f"模型输出候选文件超出定位只读范围: {value}")
-        scope_escalation = True
+        if not target.is_relative_to(carrier_root):
+            raise ValueError(f"模型输出候选文件超出目标 carrier: {value}")
     for item in output.source_evidence:
         relative = _relative_file(root, item.path)
         target = (root / relative).resolve()
         if not any(target == base or target.is_relative_to(base) for base in allowed):
             raise ValueError(f"模型输出源码证据超出只读范围: {item.path}")
-    return scope_escalation
 
 
 def _manual(reason: str) -> dict[str, Any]:
