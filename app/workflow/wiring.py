@@ -300,7 +300,7 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
                     service_name=str(task.get("service_name") or ""),
                     problem=dict(state.get("problem") or task.get("problem") or {}),
                     evidence=dict(state.get("evidence") or {}),
-                    source_project_path=str(state.get("ai_workspace_path") or state.get("source_project_path") or ""),
+                    workspace_path=str(state.get("ai_workspace_path") or ""),
                     source_snapshot={
                         "baseline_dir": str(state.get("baseline_dir") or ""),
                         "baseline_manifest": dict(state.get("baseline_manifest") or {}),
