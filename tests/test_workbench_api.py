@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+import workbench.api as workbench_api
 from workbench.api import app
 
 
@@ -53,3 +54,34 @@ def test_control_audit_endpoint_requires_existing_run():
     client = TestClient(app)
     response = client.get("/api/v1/runs/nonexistent-run/control-audit")
     assert response.status_code in {404, 503}
+
+
+
+def test_manual_intervention_endpoint_lists_manual_locate_without_treating_it_as_approval(monkeypatch):
+    monkeypatch.setattr(workbench_api, "_store", lambda: object())
+    monkeypatch.setattr(workbench_api, "_all_run_ids", lambda _store: ["run-manual"])
+    monkeypatch.setattr(workbench_api, "_run_payload", lambda _store, _run_id: {
+        "updated_at": "2026-10-16T00:00:00+00:00",
+        "tasks": [{
+            "task_id": "task-1",
+            "carrier": "ExampleCarrier",
+            "biztype": "Brazil",
+            "status": "MANUAL",
+            "approval_pending": False,
+            "steps": [{
+                "name": "locate_agent",
+                "result": "MANUAL",
+                "summary": "缺少关键源码证据",
+                "output": {"status": "MANUAL", "summary": "缺少关键源码证据"},
+            }],
+        }],
+    })
+
+    result = workbench_api.v1_list_manual_interventions(None)
+
+    assert result["total"] == 1
+    item = result["items"][0]
+    assert item["intervention_id"] == "run-manual:task-1"
+    assert item["step"] == "locate_agent"
+    assert item["status"] == "open"
+    assert item["summary"] == "缺少关键源码证据"
