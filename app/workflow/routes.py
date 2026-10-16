@@ -73,19 +73,19 @@ def after_evidence(state: WorkflowState) -> str:
 
 
 def after_claim(state: WorkflowState) -> str:
-    """领到干净修复资格后准备源码快照；已有未合并分支则收尾。"""
+    """定位通过且成功领取本轮资格后，才创建隔离工作区。"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
         return FINALIZE
-    return SNAPSHOT if _result(state) == "passed" else FINALIZE
+    return WORKSPACE if _result(state) == "passed" else FINALIZE
 
 
 def after_locate(state: WorkflowState) -> str:
-    """定位到可修复根因后准备隔离工作区。"""
+    """仅在证据支持的根因定位成功后，才领取本轮修复资格。"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
         return FINALIZE
     disposition = locate_disposition(str((state.get("locate") or {}).get("status") or ""))
     if disposition == "repair" and _result(state) == "passed":
-        return WORKSPACE
+        return CLAIM
     return FINALIZE
 
 

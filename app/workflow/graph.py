@@ -63,10 +63,10 @@ TASK_COLLECT = "task_collect"
 _RUN_NODES = (DISCOVER, NORMALIZE, DEDUPLICATE, IDENTIFY)
 
 _TASK_NODES = (
-    CLAIM,
     SNAPSHOT,
     EVIDENCE,
     LOCATE,
+    CLAIM,
     WORKSPACE,
     REPAIR,
     CHECK,
@@ -115,11 +115,11 @@ def build_task_graph(nodes: dict[str, Callable[..., Any]]) -> CompiledStateGraph
         else:
             graph.add_node(name, nodes[name])
 
-    graph.add_edge(START, CLAIM)
-    graph.add_conditional_edges(CLAIM, after_claim, [SNAPSHOT, FINALIZE])
+    graph.add_edge(START, SNAPSHOT)
     graph.add_conditional_edges(SNAPSHOT, after_source_snapshot, [EVIDENCE, FINALIZE])
     graph.add_conditional_edges(EVIDENCE, after_evidence, [LOCATE, FINALIZE])
-    graph.add_conditional_edges(LOCATE, after_locate, [WORKSPACE, FINALIZE])
+    graph.add_conditional_edges(LOCATE, after_locate, [CLAIM, FINALIZE])
+    graph.add_conditional_edges(CLAIM, after_claim, [WORKSPACE, FINALIZE])
     graph.add_conditional_edges(WORKSPACE, after_workspace, [REPAIR, FINALIZE])
 
     # repair → check → verify → regression 链路（支持重试）
