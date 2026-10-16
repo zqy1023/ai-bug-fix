@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, App, Button, Card, Checkbox, Form, Input, Modal, Select, Space, Statistic, Table, Tag, Typography } from 'antd';
+import { Alert, App, Button, Card, Form, Input, Modal, Select, Space, Statistic, Table, Tag, Typography } from 'antd';
 import { BookOutlined, CheckCircleOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, StopOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { api } from '../lib/api';
@@ -72,7 +72,7 @@ export function KnowledgePage() {
   return <div className="page-stack">
     <div className="page-heading">
       <div><Title level={3}>修复知识中心</Title><Text type="secondary">沉淀可追溯的根因、证据、修复方案和失败经验。新案例默认进入候选状态，经过验证后才能发布。</Text></div>
-      <Button type="primary" icon={<PlusOutlined />} onClick={() => { form.resetFields(); form.setFieldsValue({ regression_passed: false, review_passed: false }); setCreateOpen(true); }}>登记案例</Button>
+      <Button type="primary" icon={<PlusOutlined />} onClick={() => { form.resetFields(); setCreateOpen(true); }}>登记案例</Button>
     </div>
     {cases.isError && <Alert type="error" showIcon message="知识案例加载失败" description={(cases.error as Error).message} action={<Button type="link" onClick={() => cases.refetch()}>重试</Button>} />}
     <div className="knowledge-metrics">
@@ -93,7 +93,7 @@ export function KnowledgePage() {
 
     <Modal title="登记修复案例" open={createOpen} onCancel={() => !create.isPending && setCreateOpen(false)} onOk={() => form.submit()} confirmLoading={create.isPending} okText="保存为候选" cancelText="取消" width={760} destroyOnClose>
       <Alert type="info" showIcon message="新案例不会自动发布" description="请如实填写证据与验证结果。只有回归和审查均通过的案例才允许发布；勾选项是人工录入声明，后续应由真实工作流报告自动关联验证证据。" style={{ marginBottom: 18 }} />
-      <Form form={form} layout="vertical" onFinish={(values) => create.mutate(values)} initialValues={{ regression_passed: false, review_passed: false }}>
+      <Form form={form} layout="vertical" onFinish={(values) => create.mutate(values)} >
         <Form.Item name="title" label="案例标题" rules={[{ required: true, min: 3, max: 200 }]}><Input maxLength={200} placeholder="例如：请求响应字段变化导致轨迹解析失败" /></Form.Item>
         <Space style={{ display: 'flex' }} align="start">
           <Form.Item name="carrier" label="运输商" style={{ flex: 1 }}><Input maxLength={160} placeholder="明确运输商标识" /></Form.Item>
@@ -103,11 +103,11 @@ export function KnowledgePage() {
         <Form.Item name="root_cause" label="根因结论" rules={[{ required: true, min: 3, max: 4000 }]}><TextArea rows={3} maxLength={4000} showCount placeholder="说明已被证据支持的根因；未确认的部分应明确标注" /></Form.Item>
         <Form.Item name="evidence" label="证据与来源"><TextArea rows={3} maxLength={8000} showCount placeholder="记录日志特征、代码位置、报告路径或可追溯引用；不要粘贴凭据" /></Form.Item>
         <Form.Item name="change_summary" label="修复方案摘要"><TextArea rows={3} maxLength={8000} showCount placeholder="修改内容、适用条件、风险及已知限制" /></Form.Item>
-        <Space direction="vertical">
-          <Form.Item name="regression_passed" valuePropName="checked" noStyle><Checkbox>已有证据证明回归测试通过</Checkbox></Form.Item>
-          <Form.Item name="review_passed" valuePropName="checked" noStyle><Checkbox>已有证据证明变更审查通过</Checkbox></Form.Item>
+        <Alert type="warning" showIcon message="验证状态由服务端核对真实运行记录" description="只有同时填写来源执行 ID 和任务 ID，且对应任务的回归步骤与审查步骤确有通过记录，案例才具备发布资格。前端不能手工勾选验证状态。" style={{ marginBottom: 16 }} />
+        <Space style={{ display: 'flex' }} align="start">
+          <Form.Item name="source_run_id" label="来源执行 ID" style={{ flex: 1 }}><Input maxLength={160} placeholder="真实执行 ID" /></Form.Item>
+          <Form.Item name="source_task_id" label="来源任务 ID" style={{ flex: 1 }}><Input maxLength={160} placeholder="该执行中的 task_id" /></Form.Item>
         </Space>
-        <Form.Item name="source_run_id" label="来源执行 ID（可选）" style={{ marginTop: 16 }}><Input maxLength={160} placeholder="关联真实执行记录" /></Form.Item>
       </Form>
     </Modal>
 
