@@ -987,8 +987,6 @@ class KnowledgeCaseCreate(BaseModel):
     root_cause: str = Field(min_length=3, max_length=4000)
     evidence: str = Field(default="", max_length=8000)
     change_summary: str = Field(default="", max_length=8000)
-    regression_passed: bool = False
-    review_passed: bool = False
     source_run_id: str = Field(default="", max_length=160)
     source_task_id: str = Field(default="", max_length=160)
 
