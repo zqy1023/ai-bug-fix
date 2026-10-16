@@ -57,8 +57,11 @@ def test_control_audit_endpoint_requires_existing_run():
 
 
 
-def test_manual_intervention_endpoint_lists_manual_locate_without_treating_it_as_approval(monkeypatch):
-    monkeypatch.setattr(workbench_api, "_store", lambda: object())
+def test_manual_intervention_endpoint_lists_manual_locate_without_treating_it_as_approval(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    fake_store = SimpleNamespace(task_dir=lambda run_id, task_id: tmp_path / run_id / task_id)
+    monkeypatch.setattr(workbench_api, "_store", lambda: fake_store)
     monkeypatch.setattr(workbench_api, "_all_run_ids", lambda _store: ["run-manual"])
     monkeypatch.setattr(workbench_api, "_run_payload", lambda _store, _run_id: {
         "updated_at": "2026-10-16T00:00:00+00:00",
@@ -87,8 +90,11 @@ def test_manual_intervention_endpoint_lists_manual_locate_without_treating_it_as
     assert item["summary"] == "缺少关键源码证据"
 
 
-def test_manual_intervention_endpoint_recovers_legacy_locate_detail(monkeypatch):
-    monkeypatch.setattr(workbench_api, "_store", lambda: object())
+def test_manual_intervention_endpoint_recovers_legacy_locate_detail(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    fake_store = SimpleNamespace(task_dir=lambda run_id, task_id: tmp_path / run_id / task_id)
+    monkeypatch.setattr(workbench_api, "_store", lambda: fake_store)
     monkeypatch.setattr(workbench_api, "_all_run_ids", lambda _store: ["run-legacy"])
     monkeypatch.setattr(workbench_api, "_run_payload", lambda _store, _run_id: {
         "updated_at": "2026-10-16T00:00:00+00:00",
