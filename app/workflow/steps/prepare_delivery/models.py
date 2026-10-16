@@ -45,6 +45,10 @@ class DeliveryInput(FrozenModel):
     requires_approval: bool = False
     # approval_granted：字段说明见该模型文档与工作流契约。
     approval_granted: bool = False
+    # analysis_only：只提交最终分析报告，不修改任何源码。
+    analysis_only: bool = False
+    # report_paths：AI 隔离工作区内需要随报告分支交付的审计产物。
+    report_paths: list[str] = []
 
 
 class DeliveryOutput(FrozenModel):
