@@ -37,6 +37,11 @@ export const api = {
     return request<PageResult<RunSummary>>(`/runs?${params.toString()}`);
   },
   run: (runId: string) => request<RunDetail>(`/runs/${encodeURIComponent(runId)}`),
+  artifactContent: (runId: string, path: string, taskId?: string) => {
+    const params = new URLSearchParams({ path });
+    if (taskId) params.set('task_id', taskId);
+    return request<{ path: string; task_id: string; content: unknown }>(`/runs/${encodeURIComponent(runId)}/artifacts/content?${params.toString()}`);
+  },
   modelCalls: (runId: string, taskId?: string) => {
     const params = new URLSearchParams();
     if (taskId) params.set('task_id', taskId);
