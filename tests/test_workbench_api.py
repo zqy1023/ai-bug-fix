@@ -130,13 +130,14 @@ def test_v1_start_persists_run_before_scheduling_background_task(tmp_path, monke
     monkeypatch.setattr(workbench_api, "_config", lambda: config)
     monkeypatch.setattr(workbench_api, "_store", lambda: store)
 
-    def prepare_run(run_id, *, overrides=None):
+    def prepare_run(run_id, *, overrides=None, queued=False):
         store.create_run(run_id, {
             "source_repo_path": str(config.source_repo),
             "log_days": overrides["log_days"],
             "log_limit": overrides["log_limit"],
             "review_mode": overrides["review_mode"],
             "max_attempts": overrides["max_attempts"],
+            "startup_state": "queued" if queued else "started",
         })
 
     monkeypatch.setattr("app.entrypoint.prepare_run", prepare_run)
