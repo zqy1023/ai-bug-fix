@@ -581,17 +581,25 @@ async def _run(
     result: Any = None
     events: list[dict[str, Any]] = []
     started_at = time.perf_counter()
-    async for message in query(prompt=prompt_stream(), options=options):
-        _collect_events(events, message, started_at)
-        _debug_hook_event(
-            {
-                "event": "Message",
-                "message_type": type(message).__name__,
-                "message": message,
-            }
-        )
-        if isinstance(message, ResultMessage):
-            result = message
+    try:
+        async for message in query(prompt=prompt_stream(), options=options):
+            _collect_events(events, message, started_at)
+            _debug_hook_event(
+                {
+                    "event": "Message",
+                    "message_type": type(message).__name__,
+                    "message": message,
+                }
+            )
+            if isinstance(message, ResultMessage):
+                result = message
+    except Exception as error:
+        # SDK 在流结束前异常时也把已经收到的有效事件交给调用审计层落盘。
+        try:
+            setattr(error, "agent_events", events)
+        except Exception:
+            pass
+        raise
     if result is None:
         raise RuntimeError("Claude 智能体未返回结果")
     if result.is_error:
@@ -600,7 +608,9 @@ async def _run(
             hint = f"（回合预算 {max_turns} 已耗尽：模型把预算花在探索上，没有输出结论）"
         # result.result 是真正的错误消息，subtype 只是类型标签（可能是 "success"）
         error_msg = result.result or result.subtype or "未知错误"
-        raise RuntimeError(f"Claude 智能体执行失败: {error_msg}{hint}")
+        error = RuntimeError(f"Claude 智能体执行失败: {error_msg}{hint}")
+        setattr(error, "agent_events", events)
+        raise error
     text = result.result or ""
     usage = getattr(result, "usage", None)
     tokens = _tokens(usage)

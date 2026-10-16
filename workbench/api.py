@@ -633,7 +633,7 @@ def v1_dashboard(_: None = Depends(_authorize)) -> dict[str, Any]:
     total = sum(item["succeeded_tasks"] + item["failed_tasks"] for item in recent_week)
     successes = sum(item["succeeded_tasks"] for item in recent_week)
     return {
-        "active_runs": sum(item["status"] in {"queued", "running", "cancel_requested"} for item in summaries),
+        "active_runs": sum(item["status"] in {"queued", "running", "pause_requested", "cancel_requested"} for item in summaries),
         "waiting_approvals": sum(item["waiting_tasks"] for item in summaries),
         "succeeded_24h": sum(item["succeeded_tasks"] for item in recent),
         "failed_24h": sum(item["failed_tasks"] for item in recent),
@@ -707,7 +707,11 @@ def v1_start_run(
         if run_id in _STARTED_RUNS or _store().run_dir(run_id).exists():
             raise HTTPException(status_code=409, detail="执行 ID 冲突，请重试")
         _STARTED_RUNS.add(run_id)
-    background.add_task(_run_workflow_background_v1, run_id, payload)
+        run_lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
+        if not run_lock.acquire(blocking=False):
+            _STARTED_RUNS.discard(run_id)
+            raise HTTPException(status_code=409, detail="该执行已被另一个工作线程启动")
+    background.add_task(_run_workflow_background_v1, run_id, payload, run_lock)
     _audit_control(run_id, "", "run.start_requested", "api", json.dumps(payload, ensure_ascii=False))
     return {"run_id": run_id, "status": "accepted", "idempotent_replay": False}
 
@@ -734,13 +738,23 @@ def _record_background_failure(run_id: str, error: Exception) -> None:
         logger.exception("无法写入后台失败报告 run_id=%s", run_id)
 
 
-def _run_workflow_background_v1(run_id: str, overrides: dict[str, Any]) -> None:
+def _run_workflow_background_v1(
+    run_id: str, overrides: dict[str, Any], run_lock: Any = None
+) -> None:
     from app.entrypoint import run_workflow
+    if run_lock is None:
+        with _RUN_LOCKS_GUARD:
+            run_lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
+        if not run_lock.acquire(blocking=False):
+            logger.warning("跳过重复启动的工作流 run_id=%s", run_id)
+            return
     try:
         run_workflow(run_id, overrides=overrides)
     except Exception as exc:
         logger.exception("工作流后台执行失败 run_id=%s", run_id)
         _record_background_failure(run_id, exc)
+    finally:
+        run_lock.release()
 
 
 @app.get("/api/v1/runs/{run_id}")
@@ -779,7 +793,6 @@ def v1_resume_run(run_id: str, background: BackgroundTasks, _: None = Depends(_a
         lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
     if not lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="该执行正在进行其他控制操作")
-    lock.release()
     connection = _control_db()
     try:
         connection.execute(
@@ -790,19 +803,34 @@ def v1_resume_run(run_id: str, background: BackgroundTasks, _: None = Depends(_a
         connection.commit()
     finally:
         connection.close()
-    background.add_task(_resume_workflow_background, run_id)
+    background.add_task(_resume_workflow_background, run_id, lock)
     _audit_control(run_id, "", "run.resume_requested", "api")
     return {"run_id": run_id, "status": "resume_requested"}
 
 
-def _resume_workflow_background(run_id: str) -> None:
+def _resume_workflow_background(run_id: str, run_lock: Any = None) -> None:
+    if run_lock is None:
+        with _RUN_LOCKS_GUARD:
+            run_lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
+        if not run_lock.acquire(blocking=False):
+            logger.warning("跳过重复恢复的工作流 run_id=%s", run_id)
+            return
     try:
         from app.workflow.wiring import build_graph
         graph = build_graph(store=_store())
-        graph.invoke(None, config={"configurable": {"thread_id": run_id}, "recursion_limit": 40})
+        config = {"configurable": {"thread_id": run_id}, "recursion_limit": 40}
+        snapshot = graph.get_state(config)
+        has_interrupt = any(getattr(task, "interrupts", ()) for task in (getattr(snapshot, "tasks", ()) or ()))
+        if has_interrupt:
+            from langgraph.types import Command
+            graph.invoke(Command(resume=None), config=config)
+        else:
+            graph.invoke(None, config=config)
     except Exception as exc:
         logger.exception("恢复工作流失败 run_id=%s", run_id)
         _record_background_failure(run_id, exc)
+    finally:
+        run_lock.release()
 
 
 @app.post("/api/v1/runs/{run_id}/cancel", status_code=202)

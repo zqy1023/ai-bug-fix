@@ -116,13 +116,20 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
             "task_id": str(getattr(request, "task_id", "") or ""),
             "agent_role": str(getattr(request, "agent_role", "") or ""),
             "attempt": int(getattr(request, "attempt", 1) or 1),
+            "provider": str(getattr(request, "provider", "") or ""),
             "model": str(getattr(request, "model", "") or ""),
             "prompt_version": str(getattr(request, "prompt_version", "") or ""),
             "prompt_hash": str(getattr(request, "prompt_hash", "") or ""),
             "started_at": started_at, "finished_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
             "duration_ms": round((time.perf_counter() - started) * 1000, 2),
             "status": status, "error_type": error_type,
+            "events": _audit_events(getattr(exc, "agent_events", [])),
+            "events_path": "",
+            "event_count": 0,
         }
+        event_path, event_count = _persist_agent_events(record, record["events"])
+        record["events_path"] = event_path
+        record["event_count"] = event_count
         _persist_model_call(record)
         raise
 
