@@ -209,9 +209,26 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
         contract_summary = _locate_contract_summary(error)
         if contract_summary not in output.summary:
             output.summary = f"{output.summary.strip()}；{contract_summary}".strip("；")
+    # A MANUAL result may continue only when a contract/path downgrade preserved
+    # enough verified evidence for a human to authorize a carrier-scoped repair.
+    # Use the original requested scope because LocateOutput intentionally normalizes
+    # every non-LOCATED result to scope="manual".
+    requested_scope = (
+        str(payload.get("recommended_scope") or "")
+        if isinstance(payload, dict)
+        else ""
+    )
+    manual_continue_allowed = (
+        output.status == "MANUAL"
+        and requested_scope == "carrier"
+        and bool(output.root_cause.strip())
+        and bool(output.candidate_files)
+        and bool(output.source_evidence)
+    )
     return {
         **output.model_dump(),
         "passed": output.status == "LOCATED",
+        "manual_continue_allowed": manual_continue_allowed,
         "raw_result": original,
         "_usage": usage,
         "_audit": audit_metadata(request, usage),
@@ -281,6 +298,7 @@ def _manual(reason: str) -> dict[str, Any]:
         "recommended_scope": "manual",
         "summary": reason,
         "passed": False,
+        "manual_continue_allowed": False,
         "_usage": {},
         "_audit": {},
     }
