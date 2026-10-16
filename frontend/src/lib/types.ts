@@ -115,7 +115,7 @@ export interface ModelCall {
   provider?: string; model: string; prompt_version?: string; prompt_hash?: string;
   started_at: string; finished_at?: string; duration_ms?: number; status: string;
   input_tokens?: number | null; output_tokens?: number | null; cache_tokens?: number | null;
-  total_tokens?: number | null; tool_call_count?: number | null; prompt_chars?: number | null; result_chars?: number | null; error_type?: string;
+  total_tokens?: number | null; tool_call_count?: number | null; prompt_chars?: number | null; system_prompt_chars?: number | null; task_context_chars?: number | null; problem_chars?: number | null; source_snapshot_chars?: number | null; evidence_chars?: number | null; identity_chars?: number | null; result_chars?: number | null; error_type?: string;
   event_count?: number; event_persistence_status?: "persisted" | "empty" | "failed"; events_path?: string;
   events?: Array<{ type: "assistant" | "tool_use" | "tool_result"; text?: string; tool?: string; input?: Record<string, unknown>; is_error?: boolean; elapsed_ms?: number }>;
   output_preview?: string;
