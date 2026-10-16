@@ -120,6 +120,23 @@ def _extract(problem: dict[str, Any]) -> dict[str, str]:
     return result
 
 
+def _references_legacy(new_root: Path, legacy_root: Path) -> bool:
+    """检测新 carrier 源码是否显式引用旧 spiders 实现。"""
+    if not new_root.is_dir() or not legacy_root.is_dir():
+        return False
+    markers = ("from spiders", "import spiders", "spiders.", "spiders/")
+    for source in sorted(new_root.rglob("*.py")):
+        if not source.is_file() or source.is_symlink():
+            continue
+        try:
+            content = source.read_text(encoding="utf-8", errors="ignore").lower()
+        except OSError as error:
+            raise StepFailed(f"读取旧框架引用证据失败: {source}: {error}") from error
+        if any(marker in content for marker in markers):
+            return True
+    return False
+
+
 def _legacy_reason(carrier: str, chain: list[str]) -> str:
     """旧框架转人工的原因文案，报告里直接可读。"""
     missing_entry = f"缺少新框架入口 gathers/{carrier}/main.py"
@@ -219,6 +236,10 @@ def run(ctx: StepContext, data: EvidenceInput) -> EvidenceOutput:
         carrier_dir = legacy_dir.relative_to(root).as_posix()
     # 旧框架也必须生成真实候选源码证据供只读定位 Agent 分析。
     # 是否允许修复由后续路由决定；这里不提前终止分析。
+    legacy_dependency = (
+        data.framework == "gathers"
+        and _references_legacy(root / "gathers" / safe_carrier, legacy_dir)
+    )
     all_files = [
         path.relative_to(root).as_posix()
         for path in sorted(carrier_root.rglob("*.py"))
@@ -265,7 +286,14 @@ def run(ctx: StepContext, data: EvidenceInput) -> EvidenceOutput:
         knowledge_cases=knowledge_cases,
         extracted=_extract(data.problem),
         legacy_only=legacy_only,
-        legacy_reason=_legacy_reason(safe_carrier, [carrier_dir]) if legacy_only else "",
+        legacy_dependency=legacy_dependency,
+        legacy_reason=(
+            _legacy_reason(safe_carrier, [carrier_dir])
+            if legacy_only
+            else f"新框架 carrier 显式引用旧框架 spiders/{safe_carrier}；本任务仅分析、不修改。"
+            if legacy_dependency
+            else ""
+        ),
     )
 
 
