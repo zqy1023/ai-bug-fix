@@ -88,3 +88,37 @@ def test_audit_events_omit_intermediate_analysis_and_sensitive_tool_inputs():
     assert events[0]["input"] == {"file_path": "gathers/A/main.py"}
     assert "中间分析" not in str(events)
     assert "super-secret-token" not in str(events)
+
+
+def test_failed_provider_response_keeps_collected_events(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from app.agents.common import invoke_with_audit
+    from app.infrastructure import config as config_module
+
+    class Config:
+        runtime_dir = tmp_path
+
+    monkeypatch.setattr(config_module, "load_config", lambda: Config())
+    request = SimpleNamespace(
+        run_id="run-provider-fail", task_id="task-provider-fail", agent_role="review",
+        attempt=1, provider="claude_session", model="test", prompt_version="v1", prompt_hash="hash",
+    )
+    response = {
+        "passed": False,
+        "reason": "AGENT_TIMEOUT",
+        "messages": [
+            {"type": "tool_use", "tool": "Read", "input": {"file_path": "gathers/A/main.py"}},
+            {"type": "tool_result", "is_error": True, "text": "read timed out"},
+        ],
+        "usage": {"tool_calls": 1},
+    }
+
+    result = invoke_with_audit(request, lambda: response)
+
+    run_dir = tmp_path / "runs" / "run-provider-fail"
+    call = json.loads((run_dir / "model_calls.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert result["reason"] == "AGENT_TIMEOUT"
+    assert call["status"] == "failed"
+    assert call["event_persistence_status"] == "persisted"
+    assert call["event_count"] == 2
+    assert (run_dir / call["events_path"]).is_file()

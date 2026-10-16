@@ -110,6 +110,11 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
         event_path, event_count = _persist_agent_events(record, record["events"])
         record["events_path"] = event_path
         record["event_count"] = event_count
+        record["event_persistence_status"] = (
+            "persisted" if event_count > 0 and event_path
+            else "failed" if record["events"] and not event_path
+            else "empty"
+        )
         # 事件只在任务级审计文件保存，Run 级调用记录保留引用与计数，避免双份存储。
         record["events"] = []
         _persist_model_call(record)
@@ -136,6 +141,11 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
         event_path, event_count = _persist_agent_events(record, record["events"])
         record["events_path"] = event_path
         record["event_count"] = event_count
+        record["event_persistence_status"] = (
+            "persisted" if event_count > 0 and event_path
+            else "failed" if record["events"] and not event_path
+            else "empty"
+        )
         record["events"] = []
         _persist_model_call(record)
         raise

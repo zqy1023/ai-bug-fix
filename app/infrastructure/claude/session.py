@@ -828,6 +828,9 @@ class ClaudeSession:
                 break
             current_read_roots = read_roots
             current_write_root = write_root
+            # 即使 SDK 在首条消息前异常，失败响应也要有一致的 events 字段。
+            # invoke_with_audit 会将已收集事件持久化到当前 task，而不是只保存失败元数据。
+            events: list[dict[str, Any]] = []
             try:
                 tool_count = 0
                 repeated_calls = {}
@@ -838,7 +841,6 @@ class ClaudeSession:
                 started_at = time.perf_counter()
                 await client.query(self._with_rules(prompt))
                 result: Any = None
-                events: list[dict[str, Any]] = []
                 async with asyncio.timeout(self._timeout_seconds):
                     async for message in client.receive_response():
                         _collect_events(events, message, started_at)
@@ -865,7 +867,17 @@ class ClaudeSession:
                 })
             except Exception as error:
                 reason = "AGENT_TIMEOUT" if isinstance(error, TimeoutError) else f"常驻 Agent 调用失败: {error}"
-                result_queue.put({"passed": False, "reason": reason})
+                # 不能把已收到的工具事件随异常一起丢弃；审计层会过滤并按 task 落盘。
+                result_queue.put({
+                    "passed": False,
+                    "reason": reason,
+                    "messages": events,
+                    "usage": {
+                        "tool_calls": tool_count,
+                        "prompt_chars": len(prompt),
+                        "result_chars": 0,
+                    },
+                })
                 if isinstance(error, TimeoutError):
                     break
         await client.disconnect()
