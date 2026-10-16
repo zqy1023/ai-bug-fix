@@ -14,7 +14,72 @@ from collections.abc import Callable
 from typing import Any
 
 from app.workflow.state import RunState, WorkflowState
-from app.workflow.definitions import TASK_CONDITIONAL_TRANSITIONS, TASK_STATIC_TRANSITIONS
+from app.workflow.definitions import TASK_CONDITIONAL_TRANSITIONS, TASK_NODE_NAMES, TASK_STATIC_TRANSITIONS
+from app.workflow.routes import (
+    APPLY,
+    APPROVE,
+    CHECK,
+    CLAIM,
+    DEDUPLICATE,
+    DELIVER,
+    DISCOVER,
+    EVIDENCE,
+    FINALIZE,
+    IDENTIFY,
+    LOCATE,
+    NORMALIZE,
+    REGRESSION,
+    REPAIR,
+    REVIEW,
+    RETRY,
+    SNAPSHOT,
+    VERIFY,
+    WORKSPACE,
+    after_apply,
+    after_approval,
+    after_check_changes,
+    after_claim,
+    after_deduplicate,
+    after_evidence,
+    after_identify,
+    after_locate,
+    after_regression,
+    after_repair,
+    after_review,
+    after_source_snapshot,
+    after_verify,
+    after_workspace,
+)
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
+from langgraph.types import RetryPolicy
+from config.settings import settings
+
+# 父图内部节点：串行分发一个任务、执行任务子图、收集该任务结果。
+RUN_TASK = "run_task"
+TASK_DISPATCH = "task_dispatch"
+TASK_COLLECT = "task_collect"
+
+_RUN_NODES = (DISCOVER, NORMALIZE, DEDUPLICATE, IDENTIFY)
+
+"主图与任务子图。
+
+run 级主图负责拉日志、规范化、去重、识别运输商，然后把任务清单交给串行分发；
+任务子图负责单个任务的完整修复链路。
+
+分发节点每次只放行一个任务，任务走到 ``finalize_execution`` 并记完汇总之后才推进
+游标，所以任务之间严格串行，不存在并发执行。任务子图自带任务局部状态，父图只留
+run 级字段与结果汇总。
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any
+
+from app.workflow.state import RunState, WorkflowState
+from app.workflow.definitions import TASK_CONDITIONAL_TRANSITIONS, TASK_NODE_NAMES, TASK_STATIC_TRANSITIONS
 from app.workflow.routes import (
     APPLY,
     APPROVE,
@@ -99,7 +164,7 @@ def build_task_graph(nodes: dict[str, Callable[..., Any]]) -> CompiledStateGraph
     graph: StateGraph = StateGraph(WorkflowState)
     # 任务图含文件写入、审批和 Git 交付等副作用节点，不做通用自动重试。
     # 业务重试通过 retry_prepare 统一计数，避免重复提交或推送。
-    for name in _TASK_NODES:
+    for name in TASK_NODE_NAMES:
         if name == RETRY:
             graph.add_node(name, lambda state: {
                 "attempt": int(state.get("attempt") or 1) + 1,
