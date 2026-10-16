@@ -477,7 +477,7 @@ def decide_approval(
     run_id: str,
     task_id: str,
     request: ApprovalRequest,
-    background: BackgroundTasks | None = None,
+    background: BackgroundTasks,
     _: None = Depends(_authorize),
 ) -> dict[str, Any]:
     decision = request.decision.upper()
@@ -524,39 +524,16 @@ def decide_approval(
         raise HTTPException(status_code=409, detail="该 run 正在执行恢复操作")
     fingerprint = str(approval_input.get("approval_fingerprint") or "")
     resume_payload = {"decision": decision, "approval_fingerprint": fingerprint}
-    if background is not None:
-        # 审批 API 只负责校验决定并排入恢复任务。恢复过程可能继续执行多个 carrier，
-        # 不应占用 HTTP 请求；同一个 run 的锁交给后台恢复器持有，直至整张父图完成。
-        background.add_task(
-            _resume_workflow_background,
-            run_id,
-            lock,
-            resume_payload,
-            {"mode": mode, "task_id": task_id, "decision": decision, "reason": request.reason},
-        )
-        return {"run_id": run_id, "task_id": task_id, "decision": decision, "status": "resume_requested"}
-    try:
-        from langgraph.types import Command
-        from app.workflow.wiring import build_graph
-
-        graph = build_graph(store=store)
-        final_state = graph.invoke(
-            Command(resume=resume_payload),
-            config={"configurable": {"thread_id": run_id}, "recursion_limit": 40},
-        )
-        from app.entrypoint import _write_run_report_if_terminal
-        _write_run_report_if_terminal(store, run_id, graph, final_state=final_state)
-        if mode == "manual_intervention" and decision in {"MARK_DONE", "TERMINATE"}:
-            now = datetime.now(timezone.utc).isoformat()
-            store.write_artifact(run_id, "reports/manual_resolution.json", {
-                "status": "completed" if decision == "MARK_DONE" else "terminated",
-                "decision": decision, "reason": request.reason, "resolved_at": now,
-            }, task_id)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"恢复工作流失败：{type(exc).__name__}: {exc}") from exc
-    finally:
-        lock.release()
-    return {"run_id": run_id, "task_id": task_id, "decision": decision, "status": "resumed"}
+    # 审批 API 只负责校验决定并排入恢复任务。恢复过程可能继续执行多个 carrier，
+    # 不应占用 HTTP 请求；同一个 run 的锁交给后台恢复器持有，直至整张父图完成。
+    background.add_task(
+        _resume_workflow_background,
+        run_id,
+        lock,
+        resume_payload,
+        {"mode": mode, "task_id": task_id, "decision": decision, "reason": request.reason},
+    )
+    return {"run_id": run_id, "task_id": task_id, "decision": decision, "status": "resume_requested"}
 
 # Versioned control-plane contract consumed by frontend/src/lib/api.ts.
 # Legacy /api routes remain available for existing local tooling.
