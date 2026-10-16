@@ -72,12 +72,8 @@ class WorkflowState(TypedDict, total=False):
     # baseline_dir：只读基线目录。
     baseline_dir: str
     changed_files: Annotated[list[str], _union]
-    # 两类改动分开记账：repair_changed_files 是修复 Agent 在 carrier 内的改动，
-    # plan_changed_files 是获批共享层方案实际落盘的文件。changed_files 始终是
-    # 两者去重后的并集，供门禁、回归和交付使用；任一类落盘都不能覆盖另一类。
+    # changed_files：修复 Agent 报告的变更文件去重清单；只有 carrier 局部变更允许交付。
     repair_changed_files: list[str]
-    # plan_changed_files：获批方案实际落盘的文件。
-    plan_changed_files: list[str]
     # repair：修复 Agent 的结构化结论。
     repair: dict[str, Any]
     # locate：根因定位 Agent 的结构化结论。
@@ -132,8 +128,6 @@ class WorkflowState(TypedDict, total=False):
     escalation_used: bool
     # authorized_files：人工授权的额外文件范围。
     authorized_files: list[str]
-    # plan_applied：授权变更方案是否已落盘。
-    plan_applied: bool
     # 审查结论与审批状态，交付门禁只认这两个字段，不从步骤记录里回读。
     review_decision: str
     # approval_granted：人工审批是否通过。
