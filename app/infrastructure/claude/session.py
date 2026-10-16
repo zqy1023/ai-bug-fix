@@ -456,19 +456,31 @@ async def _run(
     file_tools = resolve_tools(writable, tools)
 
     tool_count = 0
+    repeated_calls: dict[str, int] = {}
 
     async def pre_tool_use(
         hook_input: Any,
         _tool_use_id: str | None,
         _context: Any,
     ) -> dict[str, Any]:
-        """在每次工具调用前强制执行工具类型和路径边界。"""
+        """在每次工具调用前强制执行权限检查和重复调用预算。"""
         nonlocal tool_count
         tool_count += 1
         tool_name = hook_input.get("tool_name")
         tool_input = hook_input.get("tool_input")
+        signature = ""
+        if isinstance(tool_name, str) and isinstance(tool_input, dict):
+            signature = json.dumps(
+                {"tool": tool_name, "input": tool_input},
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+            repeated_calls[signature] = repeated_calls.get(signature, 0) + 1
         if tool_count > max_tool_calls:
             decision, reason = "deny", f"工具调用超过预算 {max_tool_calls}"
+        elif signature and repeated_calls[signature] > 3:
+            decision, reason = "deny", "相同工具和参数已重复调用 4 次，停止无效循环"
         elif not isinstance(tool_name, str):
             decision, reason = "deny", "工具名称无效"
         elif not isinstance(tool_input, dict):
@@ -686,6 +698,7 @@ class ClaudeSession:
         current_write_root: Path | Sequence[Path] = self._workspace
         tools = list(self._tools)
         tool_count = 0
+        repeated_calls: dict[str, int] = {}
 
         async def pre_tool_use(
             hook_input: Any, _tool_id: str | None, _context: Any
@@ -694,8 +707,19 @@ class ClaudeSession:
             tool_count += 1
             tool_name = hook_input.get("tool_name")
             tool_input = hook_input.get("tool_input")
+            signature = ""
+            if isinstance(tool_name, str) and isinstance(tool_input, dict):
+                signature = json.dumps(
+                    {"tool": tool_name, "input": tool_input},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                )
+                repeated_calls[signature] = repeated_calls.get(signature, 0) + 1
             if tool_count > self._max_tool_calls:
                 decision, reason = "deny", f"工具调用超过预算 {self._max_tool_calls}"
+            elif signature and repeated_calls[signature] > 3:
+                decision, reason = "deny", "相同工具和参数已重复调用 4 次，停止无效循环"
             elif not isinstance(tool_name, str) or not isinstance(tool_input, dict):
                 decision, reason = "deny", "工具输入无效"
             else:
@@ -756,6 +780,7 @@ class ClaudeSession:
             current_write_root = write_root
             try:
                 tool_count = 0
+                repeated_calls = {}
                 if context_prompt:
                     await client.query(context_prompt)
                     async for _ in client.receive_response():
