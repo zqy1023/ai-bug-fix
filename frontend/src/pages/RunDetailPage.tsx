@@ -81,14 +81,14 @@ export function RunDetailPage() {
       <Descriptions.Item label="任务结果"><span className="text-success">{data.succeeded_tasks} 成功</span> / <span className="text-danger">{data.failed_tasks} 失败</span> / {data.manual_tasks ?? 0} 人工介入 / {data.waiting_tasks} 待审批</Descriptions.Item>
     </Descriptions></Card>
     <Card title={"任务结果（" + data.tasks.length + "）"} className="content-card">
-      data.tasks.length ? <Table rowKey="task_id" dataSource={data.tasks} pagination={{ pageSize: 10, showSizeChanger: false }} onRow={(row) => ({ onClick: () => selectTask(row.task_id) })} rowClassName={() => 'clickable-row'} columns={[
+      {data.tasks.length ? <Table rowKey="task_id" dataSource={data.tasks} pagination={{ pageSize: 10, showSizeChanger: false }} onRow={(row) => ({ onClick: () => selectTask(row.task_id) })} rowClassName={() => 'clickable-row'} columns={[
         { title: '运输商', dataIndex: 'carrier', key: 'carrier' },
         { title: '业务类型', dataIndex: 'biztype', key: 'biztype' },
         { title: '结论', dataIndex: 'result', key: 'result', render: (v: string) => <Tag color={['MANUAL', 'INSUFFICIENT_EVIDENCE'].includes(String(v).toUpperCase()) ? 'orange' : undefined}>{resultLabel(v)}</Tag> },
         { title: '结束步骤', dataIndex: 'terminal_step', key: 'terminal_step', render: (v?: string) => v || '进行中' },
         { title: '结束原因', dataIndex: 'terminal_reason', key: 'terminal_reason', render: (v?: string) => <Text ellipsis={{ tooltip: v }} style={{ maxWidth: 420, display: 'inline-block' }}>{v || '尚未结束'}</Text> },
         { title: '操作', key: 'action', render: (_: unknown, row: { task_id: string }) => <Button type="link" onClick={(event) => { event.stopPropagation(); selectTask(row.task_id); }}>查看任务详情</Button> }
-      ]} /> : <Empty description="本轮尚无任务" /> },
+      ]} /> : <Empty description="本轮尚无任务" />}
     </Card>
     <Card className="content-card" title="Run 级诊断与审计（按需展开）" collapsible="header" defaultCollapsed>
     <Card title="Run 级工作流" className="content-card" collapsible="header" defaultCollapsed extra={<Text type="secondary">点击节点查看输入、输出、耗时与错误</Text>}><WorkflowGraph steps={graphSteps} selectedStep={selectedStepName} onSelectStep={setSelectedStepName} /></Card>
