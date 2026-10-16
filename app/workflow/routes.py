@@ -171,7 +171,7 @@ def after_regression(state: WorkflowState) -> str:
 
 
 def after_review(state: WorkflowState) -> str:
-    """审查后路由：PASS 后判断是否需要人工审批，FAIL 重试，MANUAL 转人工。
+    """审查后路由：PASS 进入分支交付，FAIL 有界重试，MANUAL 生成分析报告。
 
     审查子图回写的结论字段是 ``verdict``；``result`` 只在人工审查恢复时出现。
     """
@@ -239,7 +239,10 @@ def after_delivery(state: WorkflowState) -> str:
         or str(locate.get("status") or "") != "LOCATED"
         or str(locate.get("recommended_scope") or "") != "carrier"
     )
-    return END if analysis_only and _result(state) == "passed" else APPROVE if _result(state) == "passed" else FINALIZE
+    if analysis_only:
+        # 报告交付失败也结束当前任务，不能回到 FINALIZE 再次进入报告交付形成死循环。
+        return END
+    return APPROVE if _result(state) == "passed" else FINALIZE
 
 
 def after_finalize(state: WorkflowState) -> str:
