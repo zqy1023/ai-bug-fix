@@ -211,6 +211,9 @@ def after_approval(state: WorkflowState) -> str:
             return REPAIR if str(state.get("manual_resume_step") or "") == "repair_agent" or state.get("repair_slot_claimed") else CLAIM
         return FINALIZE
 
+    if state.get("approval_cleanup_failed"):
+        return FINALIZE
+
     approval_result = _result(state)
     # 人工明确拒绝后进入有上限的回修循环，不得继续 apply 或交付。
     if str(state.get("decision") or "").upper() == "REJECT" or approval_result == "rejected":
