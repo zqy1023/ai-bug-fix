@@ -619,6 +619,12 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
     finally:
         connection.close()
     run_report = _read_json(store.run_dir(run_id) / "reports" / "final.json", {})
+    if isinstance(run_report, dict) and run_report:
+        artifacts.append({
+            "name": "本轮终态报告", "path": "reports/final.json",
+            "media_type": "application/json", "description": "Run 级终态总结",
+            "size_bytes": None,
+        })
     return {
         **summary, "status": status,
         "config": {
@@ -817,6 +823,66 @@ def _run_workflow_background_v1(
 @app.get("/api/v1/runs/{run_id}")
 def v1_get_run(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
     return _v1_detail(run_id)
+
+
+@app.get("/api/v1/runs/{run_id}/tasks/{task_id}")
+def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
+    """只返回一个任务的详情，避免 Run 页面携带并渲染所有任务的步骤与产物。"""
+    store = _store()
+    run_id, task_id = _safe_id(run_id), _safe_id(task_id)
+    payload = _run_payload(store, run_id)
+    source = next((item for item in payload.get("tasks", []) if item.get("task_id") == task_id), None)
+    if source is None:
+        raise HTTPException(status_code=404, detail="该执行中不存在此任务")
+    steps = list(source.get("steps") or [])
+    report = source.get("report") if isinstance(source.get("report"), dict) else {}
+    if not report:
+        last = steps[-1] if steps else {}
+        error = last.get("error") if isinstance(last.get("error"), dict) else {}
+        detail = str(error.get("message") or last.get("summary") or "")
+        report = {
+            "result": source.get("status") or "INCOMPLETE",
+            "terminal_step": str(last.get("name") or "workflow"),
+            "terminal_reason": (
+                "历史任务没有持久化终态报告；当前只能根据已有步骤记录展示结果。"
+                + (f" 最后一步记录：{detail}" if detail else "")
+            ),
+            "next_action": "重新运行该任务以生成完整终态报告；如需排查旧记录，请检查步骤输入、输出和错误。",
+            "legacy_report": True,
+        }
+    artifacts = []
+    for step in steps:
+        for ref in step.get("artifacts") or []:
+            artifacts.append({
+                "name": ref.get("name") or "artifact",
+                "path": ref.get("path") or "",
+                "media_type": ref.get("media_type") or "application/json",
+                "description": str(step.get("name") or ""),
+                "size_bytes": None,
+                "task_id": task_id,
+            })
+    if (store.task_dir(run_id, task_id) / "reports" / "final.json").is_file():
+        artifacts.append({
+            "name": "任务终态报告", "path": "reports/final.json",
+            "media_type": "application/json", "description": "最终结果与处置原因",
+            "size_bytes": None, "task_id": task_id,
+        })
+    run_meta = _read_json(store.run_dir(run_id) / "run.json", {})
+    return {
+        "run_id": run_id,
+        "run_status": _v1_run_summary(payload)["status"],
+        "task": {
+            "task_id": task_id, "carrier": source.get("carrier", ""),
+            "biztype": source.get("biztype", ""), "result": source.get("status", "PENDING"),
+            "problem": source.get("problem") or {}, "approval_pending": bool(source.get("approval_pending")),
+            "steps": steps, "report": report,
+        },
+        "artifacts": artifacts,
+        "config": {
+            "log_days": run_meta.get("log_days", 1), "log_limit": run_meta.get("log_limit", 0),
+            "review_mode": run_meta.get("review_mode", "agent"), "max_attempts": run_meta.get("max_attempts", 3),
+        },
+    }
 
 
 @app.post("/api/v1/runs/{run_id}/pause", status_code=202)
