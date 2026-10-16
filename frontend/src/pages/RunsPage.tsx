@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, App, Button, Card, Form, Input, InputNumber, Modal, Select, Table, Typography } from 'antd';
 import { CloseCircleOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import dayjs from 'dayjs';
 import { api } from '../lib/api';
 import { StatusTag } from '../components/StatusTag';
@@ -10,8 +10,9 @@ import type { RunStatus, RunSummary } from '../lib/types';
 const { Title, Text } = Typography;
 type LaunchValues = { log_days: number; log_limit: number; review_mode: 'agent' | 'human'; max_attempts: number };
 export function RunsPage() {
-  const navigate = useNavigate(); const { message } = App.useApp(); const queryClient = useQueryClient();
-  const [page, setPage] = useState(1); const [keyword, setKeyword] = useState(''); const [status, setStatus] = useState<RunStatus | undefined>(); const [modalOpen, setModalOpen] = useState(false); const [form] = Form.useForm<LaunchValues>();
+  const navigate = useNavigate(); const [searchParams] = useSearchParams(); const { message } = App.useApp(); const queryClient = useQueryClient();
+  const initialStatus = searchParams.get('status');
+  const [page, setPage] = useState(1); const [keyword, setKeyword] = useState(''); const [status, setStatus] = useState<RunStatus | undefined>(initialStatus && ['queued', 'running', 'waiting_approval', 'succeeded', 'partial_failed', 'failed', 'cancelled', 'paused', 'pause_requested', 'cancel_requested'].includes(initialStatus) ? initialStatus as RunStatus : undefined); const [modalOpen, setModalOpen] = useState(false); const [form] = Form.useForm<LaunchValues>();
   const runs = useQuery({ queryKey: ['runs', page, keyword, status], queryFn: () => api.runs({ page, page_size: 20, keyword, status }), refetchInterval: 15000 });
   const start = useMutation({
     mutationFn: api.startRun,
