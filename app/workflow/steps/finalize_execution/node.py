@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+import uuid
+from hashlib import sha256
 from typing import Any
 
 from app.application.audit import StepRecord
 from app.application.context import StepContext
 from app.workflow.steps.finalize_execution.models import FinalizeInput, FinalizeOutput
 from app.infrastructure.run_control import cancellation_requested
+from app.infrastructure.config import load_config
 
 FINAL_REPORT = "reports/final.json"
 _SELF = "finalize_execution"
@@ -33,9 +37,82 @@ def run(ctx: StepContext, data: FinalizeInput) -> FinalizeOutput:
         "tokens": _tokens(ctx, data.task_id),
         "completed_steps": [record.name for record in records if record.status in {"succeeded", "skipped"}],
     }
+    knowledge_case_id = _capture_knowledge_candidate(ctx, data, records, report)
+    if knowledge_case_id:
+        report["knowledge_case_id"] = knowledge_case_id
     path = ctx.store.write_artifact(ctx.run.run_id, FINAL_REPORT, report, data.task_id)
     return FinalizeOutput(report_path=path, delivery_status=result)
 
+
+
+def _capture_knowledge_candidate(
+    ctx: StepContext,
+    data: FinalizeInput,
+    records: list[StepRecord],
+    report: dict[str, Any],
+) -> str:
+    """自动沉淀每个已收尾任务的候选案例；不自动发布，也不阻断主流程。"""
+    try:
+        database = load_config().runtime_dir / "workbench-control.sqlite3"
+        if not database.is_file():
+            return ""
+        locate = next((record.output for record in records if record.name == "locate_agent"), {})
+        repair = next((record.output for record in records if record.name == "repair_agent"), {})
+        regression = next((record for record in records if record.name == "run_regression"), None)
+        review = next((record.output for record in records if record.name == "review_agent"), {})
+        root_cause = str(locate.get("root_cause") or "").strip()
+        if not root_cause:
+            root_cause = "尚未形成可确认的根因结论；需结合失败记录和证据人工补充"
+        facts = locate.get("facts", []) if isinstance(locate, dict) else []
+        source_evidence = locate.get("source_evidence", []) if isinstance(locate, dict) else []
+        evidence_gaps = locate.get("evidence_gaps", []) if isinstance(locate, dict) else []
+        evidence = json.dumps(
+            {"facts": facts, "source_evidence": source_evidence, "evidence_gaps": evidence_gaps},
+            ensure_ascii=False,
+        )[:8000]
+        change_summary = str(repair.get("summary") or repair.get("analysis") or "").strip()
+        changed_files = repair.get("changed_files", [])
+        if isinstance(changed_files, list) and changed_files:
+            change_summary += "\\n变更文件：" + ", ".join(str(item) for item in changed_files[:30])
+        error_text = str(report.get("problem") or "")
+        fingerprint = sha256(error_text.encode("utf-8")).hexdigest() if error_text else ""
+        regression_output = regression.output if regression is not None else {}
+        regression_passed = bool(
+            regression is not None
+            and (
+                str(regression.result or "").lower() in {"passed", "succeeded"}
+                or (isinstance(regression_output, dict) and regression_output.get("passed") is True)
+                or (isinstance(regression_output, dict) and str(regression_output.get("status") or "").upper() in {"PASS", "PASSED", "SUCCESS", "SUCCEEDED"})
+            )
+        )
+        review_passed = str(review.get("verdict") or review.get("status") or "").upper() == "PASS" if isinstance(review, dict) else False
+        case_id = uuid.uuid4().hex
+        title = f"{data.carrier or '未知运输商'} / {data.biztype or '未知业务类型'}：{root_cause[:120]}"
+        connection = sqlite3.connect(str(database), timeout=2)
+        try:
+            connection.execute(
+                """INSERT OR IGNORE INTO repair_knowledge_cases
+                (case_id,title,fingerprint,carrier,biztype,root_cause,evidence,change_summary,
+                 regression_passed,review_passed,status,source_run_id,source_task_id,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,'candidate',?,?,?,?)""",
+                (
+                    case_id, title[:200], fingerprint, data.carrier, data.biztype, root_cause[:4000],
+                    evidence, change_summary[:8000], int(regression_passed), int(review_passed),
+                    ctx.run.run_id, data.task_id, __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+                    __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+                ),
+            )
+            connection.commit()
+            row = connection.execute(
+                "SELECT case_id FROM repair_knowledge_cases WHERE source_run_id=? AND source_task_id=?",
+                (ctx.run.run_id, data.task_id),
+            ).fetchone()
+            return str(row[0]) if row else ""
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error, ValueError, TypeError):
+        # 知识库不可用不应把本已完成的修复任务变成失败；日志/产物仍保留完整事实。
+        return ""
 
 def _problem(ctx: StepContext, task_id: str) -> str:
     tasks = ctx.store.load(ctx.run.run_id, "identify_carrier")
