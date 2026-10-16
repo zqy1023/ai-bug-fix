@@ -395,26 +395,62 @@ def _debug_hook_event(event: dict[str, Any]) -> None:
                 f"{_tool_brief(event.get('tool_name'), event.get('tool_input'))}"
             )
         elif event_type == "Message":
-            detail = f"message_type={event.get('message_type')}"
-            brief = _message_brief(event.get("message")) if event.get("message") is not None else ""
-            thinking = "subtype=thinking_tokens" in brief
-            if brief:
-                detail = f"{detail} | {brief}"
+            message = event.get("message")
+            message_type = str(event.get("message_type") or "")
+            detail = f"message_type={message_type}"
+            if message_type == "ResultMessage":
+                brief = _message_brief(message)
+                if brief:
+                    detail = f"{detail} | {_clip(brief, 160)}"
+            elif message_type == "AssistantMessage":
+                # 不把模型的中间分析逐行打印到终端；只展示事件类别。
+                content = getattr(message, "content", None)
+                detail = f"{detail} | blocks={len(content) if isinstance(content, list) else 0}"
+            elif message_type == "UserMessage":
+                detail = f"{detail} | tool_result"
         else:
             detail = ""
         line = f"[agent] {time.strftime('%H:%M:%S')} {event_type} {detail}"
         if thinking:
-            print(f"\r{line}", end="", file=sys.stderr, flush=True)
+            print(f"\\r{line}", end="", file=sys.stderr, flush=True)
         else:
-            print(f"\n{line}" if _THINKING_OPEN else line, file=sys.stderr, flush=True)
+            print(f"\\n{line}" if _THINKING_OPEN else line, file=sys.stderr, flush=True)
         _set_thinking(thinking)
     if not _flag("AI_REPAIR_DEBUG_HOOKS", settings.agent_archive):
         return
     path_value = os.getenv("AI_REPAIR_DEBUG_HOOK_LOG", "").strip()
     path = Path(path_value).resolve() if path_value else settings.agent_archive_path
+    # 调试文件只保留过滤后的事件摘要，不序列化完整 SDK 消息、Prompt 或工具正文。
+    safe_event: dict[str, Any] = {"event": str(event.get("event") or "unknown")}
+    if event.get("event") == "PreToolUse":
+        safe_event.update({
+            "tool_name": str(event.get("tool_name") or "")[:80],
+            "decision": str(event.get("decision") or "")[:20],
+            "detail": _tool_brief(event.get("tool_name"), event.get("tool_input"))[:240],
+            "reason": _clip(event.get("reason") or "", 240),
+        })
+    elif event.get("event") == "Message":
+        safe_event["message_type"] = str(event.get("message_type") or "")[:80]
+        # 公开正文由按任务拆分的 agent_events.jsonl 负责；调试文件不重复存全文。
+        safe_event["message_summary"] = (
+            _message_brief(event.get("message"))[:160]
+            if type(event.get("message")).__name__ == "ResultMessage" else ""
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as file_obj:
-        file_obj.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
+    encoded = json.dumps(safe_event, ensure_ascii=False, separators=(",", ":")) + "\\n"
+    max_bytes = 5 * 1024 * 1024
+    try:
+        if path.exists() and path.stat().st_size + len(encoded.encode("utf-8")) > max_bytes:
+            rotated = path.with_suffix(path.suffix + ".1")
+            if rotated.exists():
+                rotated.unlink()
+            path.replace(rotated)
+        with path.open("a", encoding="utf-8") as file_obj:
+            file_obj.write(encoded)
+    except OSError:
+        # 调试日志不能阻断 Agent 调用；任务级审计的持久化失败会单独记录。
+        import logging
+        logging.getLogger(__name__).exception("Agent 调试事件写入失败 path=%s", path)
 
 
 def _sdk() -> tuple[Any, Any, Any]:

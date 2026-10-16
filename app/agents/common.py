@@ -97,10 +97,15 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
             "prompt_chars": usage.get("prompt_chars"),
             "result_chars": usage.get("result_chars"),
             "events": _audit_events(raw.get("messages")),
+            "events_path": "",
+            "event_count": 0,
             "output_preview": raw_result(raw)[:4000],
             "error_type": str(raw.get("reason") or "")[:300] if raw.get("passed") is False else "",
             "finished_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
         }
+        event_path, event_count = _persist_agent_events(record, record["events"])
+        record["events_path"] = event_path
+        record["event_count"] = event_count
         _persist_model_call(record)
         return raw
     except Exception as exc:

@@ -68,6 +68,8 @@ def _delivery_status(records: list[StepRecord], terminal_status: str) -> str:
     # MANUAL 是业务终态，不是节点异常。定位/审查给出 MANUAL 时，节点本身可能是
     # succeeded；必须先检查业务结论，否则 final.json 会把转人工错误记成 FAILED。
     results = {str(record.result or "").upper() for record in records}
+    if str(terminal_status or "").upper() == "CANCELLED":
+        return "CANCELLED"
     if (
         _legacy_only(records)
         or str(terminal_status or "").upper() == "MANUAL"

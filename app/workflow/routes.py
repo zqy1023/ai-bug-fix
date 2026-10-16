@@ -31,11 +31,15 @@ RETRY = "retry_prepare"
 
 def after_deduplicate(state: WorkflowState) -> str:
     """去重后继续识别运输商；run 级步骤失败则整轮结束。"""
+    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
+        return END
     return IDENTIFY if _result(state) == "passed" else END
 
 
 def after_identify(state: WorkflowState) -> str:
     """识别出任务后交给串行分发节点；识别失败则整轮结束。"""
+    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
+        return END
     return TASK_DISPATCH if _result(state) == "passed" else END
 
 
@@ -55,10 +59,14 @@ def _needs_human_authorization(state: WorkflowState) -> bool:
 
 
 def after_source_snapshot(state: WorkflowState) -> str:
+    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
+        return FINALIZE
     return EVIDENCE if _result(state) == "passed" else FINALIZE
 
 
 def after_evidence(state: WorkflowState) -> str:
+    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
+        return FINALIZE
     if _result(state) != "passed" or (state.get("evidence") or {}).get("legacy_only"):
         return FINALIZE
     return LOCATE
@@ -66,11 +74,15 @@ def after_evidence(state: WorkflowState) -> str:
 
 def after_claim(state: WorkflowState) -> str:
     """领到干净修复资格后准备源码快照；已有未合并分支则收尾。"""
+    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
+        return FINALIZE
     return SNAPSHOT if _result(state) == "passed" else FINALIZE
 
 
 def after_locate(state: WorkflowState) -> str:
     """定位到可修复根因后准备隔离工作区。"""
+    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
+        return FINALIZE
     disposition = locate_disposition(str((state.get("locate") or {}).get("status") or ""))
     if disposition == "repair" and _result(state) == "passed":
         return WORKSPACE
@@ -78,11 +90,15 @@ def after_locate(state: WorkflowState) -> str:
 
 
 def after_workspace(state: WorkflowState) -> str:
+    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
+        return FINALIZE
     return REPAIR if _result(state) == "passed" else FINALIZE
 
 
 def after_repair(state: WorkflowState) -> str:
     """修复后路由：共享层方案先升级一次，否则通过的修复进入验证链。"""
+    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
+        return FINALIZE
     # 失败也要先看升级：修复被共享层挡住时结果是 failed，但仍带 project 方案。
     # escalation_used 保证同一任务只升级一次，用过之后回到重试或终止。
     if _needs_human_authorization(state):
@@ -93,18 +109,24 @@ def after_repair(state: WorkflowState) -> str:
 
 
 def after_check_changes(state: WorkflowState) -> str:
+    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
+        return FINALIZE
     if _result(state) != "passed":
         return _retry_or_finalize(state)
     return VERIFY
 
 
 def after_verify(state: WorkflowState) -> str:
+    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
+        return FINALIZE
     if _result(state) != "passed":
         return _retry_or_finalize(state)
     return REGRESSION
 
 
 def after_regression(state: WorkflowState) -> str:
+    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
+        return FINALIZE
     if _result(state) != "passed":
         return _retry_or_finalize(state)
     return APPROVE if state.get("review_mode") == "human" else REVIEW
@@ -115,6 +137,8 @@ def after_review(state: WorkflowState) -> str:
 
     审查子图回写的结论字段是 ``verdict``；``result`` 只在人工审查恢复时出现。
     """
+    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
+        return FINALIZE
     review = state.get("review") or {}
     result = str(review.get("verdict") or review.get("result") or "").upper()
 
@@ -162,6 +186,8 @@ def _needs_human_approval(state: WorkflowState) -> bool:
 
 def after_approval(state: WorkflowState) -> str:
     """审批后路由：根据 scope 决定是 apply 共享层还是直接交付"""
+    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
+        return FINALIZE
     approval_result = _result(state)
 
     # 人工明确拒绝后进入有上限的回修循环，不得继续 apply 或交付。
@@ -186,6 +212,8 @@ def after_approval(state: WorkflowState) -> str:
 
 def after_apply(state: WorkflowState) -> str:
     """共享层落盘后必须重新验证，不能沿用落盘前的回归结论。"""
+    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
+        return FINALIZE
     if _result(state) != "passed":
         return _retry_or_finalize(state)
     return CHECK

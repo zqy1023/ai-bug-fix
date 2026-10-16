@@ -17,7 +17,7 @@ from typing import Any
 
 from app.domain.models import utc_now
 from app.infrastructure.records.store import RecordStore
-from app.infrastructure.run_control import cancellation_requested
+from app.infrastructure.run_control import cancellation_requested, pause_requested
 from app.application.audit import (
     ArtifactRef,
     StepError,
@@ -36,6 +36,7 @@ from app.application.context import RunContext, StepContext, TaskContext
 from app.workflow.spec import StepSpec
 from app.domain.errors import StepFailed
 from langgraph.errors import GraphInterrupt
+from langgraph.types import interrupt
 from pydantic import ValidationError
 
 
@@ -66,8 +67,17 @@ def run_stage(
     # 本次节点执行的产物收集范围；重试不会带上一次尝试的引用。
     artifacts: list[ArtifactRef] = []
     try:
-        if cancellation_requested(store.root, run_id):
-            raise StepFailed("收到停止请求，已在节点边界停止后续执行", result="manual", code="RUN_CANCEL_REQUESTED")
+        # 控制信号只在节点边界处理；FINALIZE 必须允许执行，才能持久化取消终态。
+        if spec.name != "finalize_execution":
+            if pause_requested(store.root, run_id):
+                interrupt({"control": "pause", "run_id": run_id, "step": spec.name})
+            if cancellation_requested(store.root, run_id):
+                raise StepFailed(
+                    "收到取消请求，已在安全节点边界停止后续执行",
+                    result="manual",
+                    code="RUN_CANCEL_REQUESTED",
+                    output={"control_cancelled": True},
+                )
         parsed = parse_input(spec.name, spec.input_builder(state))
         record.input = dump_model(parsed)
         run_context = RunContext(
@@ -166,7 +176,11 @@ def bind(
 
     def node(state: dict[str, Any]) -> dict[str, Any]:
         result = run_stage(spec, store, services, state)
+        run_id = str(state.get("run_id") or "")
+        cancelled = spec.name != "finalize_execution" and cancellation_requested(store.root, run_id)
         action = result.next_action if next_step is None else next_step
+        if cancelled:
+            action = "finalize_execution"
         # 审批拒绝是业务决定而非节点崩溃；保留 REJECT 决定供路由进入有上限的回修循环。
         if result.failure is None or (
             spec.name == "request_approval" and str(result.output.get("decision") or "").upper() == "REJECT"
@@ -177,7 +191,8 @@ def bind(
             patch = {}
         return {
             **patch,
-            "last_result": result.status,
+            "last_result": "cancelled" if cancelled else result.status,
+            "terminal_status": "CANCELLED" if cancelled else state.get("terminal_status", ""),
             "next_step": action,
             "step_result": result.model_dump(mode="json"),
         }
