@@ -264,6 +264,9 @@ def after_finalize(state: WorkflowState) -> str:
     """对已完成根因分析但不允许自动修改的任务，交付 final.json 分支后结束。"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED":
         return END
+    # 明确拒绝或分支清理失败后不得再创建报告分支，避免重新引入被拒绝的分支。
+    if str(state.get("decision") or "").upper() == "REJECT" or state.get("approval_cleanup_failed"):
+        return END
     evidence = state.get("evidence") or {}
     locate = state.get("locate") or {}
     analysis_only = bool(
