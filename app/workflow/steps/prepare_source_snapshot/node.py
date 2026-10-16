@@ -39,8 +39,15 @@ def run(ctx: StepContext, data: SourceSnapshotInput) -> SourceSnapshotOutput:
         framework = "gathers"
         roots = [new_root.relative_to(root).as_posix()]
     elif (root / "spiders" / carrier).is_dir():
-        framework = "spiders"
-        roots = [(root / "spiders" / carrier).relative_to(root).as_posix()]
+        # 只确认旧框架入口存在，不复制旧源码、不建立基线；当前自动修复链路
+        # 只允许修改 gathers/<carrier>/，旧框架任务应直接转人工并结束分析。
+        return SourceSnapshotOutput(
+            source_project_path=str(root),
+            framework="spiders",
+            baseline_manifest={},
+            baseline_dir="",
+            file_count=0,
+        )
     else:
         raise StepFailed(f"源码快照找不到 carrier: {data.carrier}")
 
