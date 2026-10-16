@@ -24,7 +24,7 @@ class PromptRenderer:
         system_prompt = f"{common.body}\n\n---\n\n{specific.body}"
         payload = context.model_dump(mode="json", exclude={"agent_role"})
         prompt = "## 本次任务上下文\n\n```json\n"
-        prompt += json.dumps(payload, ensure_ascii=False, indent=2)
+        prompt += json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         prompt += "\n```"
         version = f"common/{common.version}+{role}/{specific.version}"
         digest = hashlib.sha256(
