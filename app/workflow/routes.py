@@ -131,6 +131,9 @@ def after_repair(state: WorkflowState) -> str:
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
         return FINALIZE
     # 失败也要先看升级：修复被共享层挡住时结果是 failed，但仍带 project 方案。
+    # 共享层范围已升级但 Agent 没有产出可审批方案时，转入人工介入；不能悄悄重试或假装审批方案存在。
+    if state.get("manual_intervention_required"):
+        return APPROVE
     # escalation_used 保证同一任务只升级一次，用过之后回到重试或终止。
     if _needs_human_authorization(state):
         return APPROVE
@@ -226,7 +229,8 @@ def after_approval(state: WorkflowState) -> str:
         if decision == "RETRY_LOCATE":
             return LOCATE
         if decision == "CONTINUE_REPAIR" and state.get("manual_continue_allowed"):
-            return CLAIM
+            # 定位阶段批准后首次领取修复资格；修复阶段缺少方案时直接重试 repair，不能二次 claim。
+            return REPAIR if str(state.get("manual_resume_step") or "") == "repair_agent" else CLAIM
         return FINALIZE
 
     approval_result = _result(state)
