@@ -86,3 +86,21 @@ def test_manual_resolution_finishes_current_task_so_parent_can_dispatch_next():
     assert collected["task_cursor"] == 1
     assert after_dispatch({**state, **collected}) == RUN_TASK
 
+
+def test_shared_layer_change_plan_reaches_approval_then_apply_plan():
+    from app.workflow.routes import APPLY, APPROVE, after_approval, after_repair
+
+    state = {
+        "last_result": "passed",
+        "scope_escalation_required": True,
+        "change_plan": {"scope": "project", "edits": [{"path": "common/redis_utils.py"}]},
+    }
+
+    assert after_repair(state) == APPROVE
+    assert after_approval({
+        **state,
+        "approval_mode": "change_approval",
+        "decision": "APPROVE",
+        "last_result": "passed",
+    }) == APPLY
+
