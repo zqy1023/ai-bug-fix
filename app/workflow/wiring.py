@@ -65,6 +65,7 @@ def build_services() -> WorkflowServices:
         project_subdir=config.project_subdir,
         verify_commands=list(config.verify_commands),
         git_push=config.git_push,
+        git_remote=config.git_remote,
         workspaces=workspaces,
         delivery=GitBranchDelivery(
             GitDeliveryConfig(
