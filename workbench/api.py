@@ -1121,6 +1121,9 @@ def v1_capture_knowledge_from_task(
     task = next((item for item in detail.get("tasks", []) if str(item.get("task_id") or "") == task_id), None)
     if task is None:
         raise HTTPException(status_code=404, detail="执行中不存在指定任务")
+    task_status = str(task.get("status") or task.get("result") or "").upper()
+    if task_status in {"RUNNING", "PENDING", "REPAIRING", "VERIFYING", "REVIEWING", "WAITING", "WAITING_APPROVAL"}:
+        raise HTTPException(status_code=409, detail="任务尚未结束，完成后再沉淀知识案例")
     connection = _control_db()
     try:
         existing = connection.execute(
@@ -1164,7 +1167,6 @@ def v1_capture_knowledge_from_task(
             "facts": locate_output.get("facts", []),
             "source_evidence": locate_output.get("source_evidence", []),
             "evidence_gaps": locate_output.get("evidence_gaps", []),
-            "problem": task.get("problem", ""),
         }
         change_summary = str(repair_output.get("summary") or repair_output.get("analysis") or report.get("summary") or "").strip()
         changed_files = repair_output.get("changed_files", [])
@@ -1173,7 +1175,9 @@ def v1_capture_knowledge_from_task(
         carrier = str(task.get("carrier") or "")
         biztype = str(task.get("biztype") or "")
         title = f"{carrier or '未知运输商'} / {biztype or '未知业务类型'}：{root_cause[:120]}"
-        fingerprint = str(task.get("problem") or "")[:500]
+        problem_value = task.get("problem") or {}
+        problem_serialized = json.dumps(problem_value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        fingerprint = sha256(problem_serialized.encode("utf-8")).hexdigest()
         now = datetime.now(timezone.utc).isoformat()
         case_id = uuid.uuid4().hex
         cursor = connection.execute(
