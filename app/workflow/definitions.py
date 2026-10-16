@@ -42,7 +42,8 @@ TASK_STATIC_TRANSITIONS: tuple[tuple[str, str], ...] = (
 
 TASK_CONDITIONAL_TRANSITIONS = (
     (PREPARE_CONTEXT, after_prepare_context, (LOCATE, FINALIZE)),
-    (LOCATE, after_locate, (CLAIM, FINALIZE)),
+    # after_locate may route to APPROVE when manual intervention is required.
+    (LOCATE, after_locate, (CLAIM, APPROVE, FINALIZE)),
     (CLAIM, after_claim, (WORKSPACE, FINALIZE)),
     (WORKSPACE, after_workspace, (REPAIR, FINALIZE)),
     (REPAIR, after_repair, (VALIDATE, RETRY, APPROVE, FINALIZE)),
