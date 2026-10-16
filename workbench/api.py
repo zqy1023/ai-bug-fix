@@ -1170,6 +1170,14 @@ def v1_list_manual_interventions(_: None = Depends(_authorize)) -> dict[str, Any
                         or step.get("summary") or
                         (("证据缺口：" + "；".join(str(item) for item in gaps[:8])) if isinstance(gaps, list) and gaps else "")
                     ).strip()
+                    generic_locate = {
+                        "定位输出不满足证据或路径契约，停止并转人工",
+                        "定位输出不满足证据或路径契约，停止并转人工。",
+                    }
+                    if name == "locate_agent" and reason in generic_locate and isinstance(gaps, list):
+                        detail = next((str(item).strip() for item in gaps if str(item).strip()), "")
+                        if detail:
+                            reason = "定位输出契约校验失败：" + detail[:1500]
                     break
 
             if not reason:
