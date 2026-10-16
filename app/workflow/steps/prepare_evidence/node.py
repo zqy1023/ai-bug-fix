@@ -63,9 +63,19 @@ def _rank_candidates(
     query = _query_tokens(problem)
     if not query:
         # 即使异常文本几乎没有可检索词，也要为只读分析 Agent 提供真实源码；
-        # 入口文件优先，后续由 Agent 明确标记证据不足，不能在此提前终止分析。
+        # 同时保留单文件大小门禁，避免异常大文件进入模型上下文。
+        available: list[str] = []
+        for relative in files:
+            try:
+                size = (root / relative).stat().st_size
+            except OSError as error:
+                raise StepFailed(f"读取候选源码元数据失败: {relative}: {error}") from error
+            if size > settings.evidence_max_read_bytes:
+                skipped_large_files.append(relative)
+                continue
+            available.append(relative)
         return sorted(
-            files,
+            available,
             key=lambda path: (0 if Path(path).name in {"main.py", "__init__.py"} else 1, path),
         )
     scored: list[tuple[str, float]] = []
