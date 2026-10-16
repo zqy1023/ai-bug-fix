@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any
 
 from app.application.audit import StepRecord
@@ -176,7 +177,10 @@ def _tokens(ctx: StepContext, task_id: str) -> int:
         except json.JSONDecodeError:
             continue
         if isinstance(item, dict):
-            total += int(item.get("total_tokens") or 0)
+            try:
+                total += max(0, int(item.get("total_tokens") or 0))
+            except (TypeError, ValueError):
+                continue
     return total
 
 
