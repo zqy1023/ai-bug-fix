@@ -119,7 +119,6 @@ def test_manual_intervention_endpoint_recovers_legacy_locate_detail(monkeypatch)
 
 
 def test_v1_start_persists_run_before_scheduling_background_task(tmp_path, monkeypatch):
-    from pathlib import Path
     from types import SimpleNamespace
 
     from app.infrastructure.records.store import RecordStore
