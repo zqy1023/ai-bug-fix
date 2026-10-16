@@ -115,15 +115,29 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
             final_path = store.task_dir(run_id, task_id) / "reports" / "final.json"
             report = _read_json(final_path, {})
             approval = next((s for s in task_steps if s.get("name") == "request_approval"), None)
+            carrier = str((report or {}).get("carrier") or _task_identity(slot, "carrier"))
+            biztype = str((report or {}).get("biztype") or _task_identity(slot, "biztype"))
+            inferred_status = str((report or {}).get("result") or _task_status(task_steps, approval))
+            fallback_report = _report_from_steps(
+                task_id=task_id, carrier=carrier, biztype=biztype,
+                steps=task_steps, status=inferred_status,
+            )
+            if not isinstance(report, dict) or not report:
+                report = fallback_report
+            elif not report.get("terminal_reason") or not report.get("terminal_step") or not report.get("next_action"):
+                # 旧 final.json 可能只有 MANUAL/FAILED，按步骤记录补全报告；已存在字段不覆盖。
+                report = {
+                    **report,
+                    "terminal_step": report.get("terminal_step") or fallback_report.get("terminal_step"),
+                    "terminal_reason": report.get("terminal_reason") or fallback_report.get("terminal_reason"),
+                    "next_action": report.get("next_action") or fallback_report.get("next_action"),
+                    "legacy_report": True,
+                }
             tasks.append({
-                "task_id": task_id,
-                "carrier": str((report or {}).get("carrier") or _task_identity(slot, "carrier")),
-                "biztype": str((report or {}).get("biztype") or _task_identity(slot, "biztype")),
-                "status": str((report or {}).get("result") or _task_status(task_steps, approval)),
-                "problem": _task_problem(slot),
-                "steps": task_steps,
-                "report": report if isinstance(report, dict) else {},
-                "approval_pending": _approval_pending(approval),
+                "task_id": task_id, "carrier": carrier, "biztype": biztype,
+                "status": str(report.get("result") or inferred_status),
+                "problem": _task_problem(slot), "steps": task_steps,
+                "report": report, "approval_pending": _approval_pending(approval),
             })
     pending = sum(1 for task in tasks if task["approval_pending"])
     results = [str(task["status"]).upper() for task in tasks]
@@ -171,6 +185,84 @@ def _task_problem(slot: dict[str, Any]) -> dict[str, Any]:
             if isinstance(problem, dict) and problem:
                 return problem
     return {}
+
+
+def _report_from_steps(
+    *, task_id: str, carrier: str, biztype: str,
+    steps: list[dict[str, Any]], status: str,
+) -> dict[str, Any]:
+    """兼容旧运行：从已有持久化事实恢复报告，绝不把人工转派伪装成普通完成。"""
+    ordered = sorted(steps, key=lambda item: str(item.get("finished_at") or item.get("started_at") or ""))
+    final = next((item for item in reversed(ordered) if item.get("name") == "finalize_execution"), None)
+    final_output = final.get("output") if isinstance(final, dict) and isinstance(final.get("output"), dict) else {}
+    result = str(final_output.get("delivery_status") or status or "INCOMPLETE").upper()
+    terminal = ordered[-1] if ordered else {}
+    terminal_name = str(final_output.get("terminal_step") or terminal.get("name") or "workflow")
+    reason = str(final_output.get("terminal_reason") or "").strip()
+    next_action = str(final_output.get("next_action") or "").strip()
+
+    if not reason:
+        evidence = next((item for item in reversed(ordered) if item.get("name") == "prepare_evidence"), None)
+        evidence_output = evidence.get("output") if isinstance(evidence, dict) and isinstance(evidence.get("output"), dict) else {}
+        if evidence_output.get("legacy_only"):
+            terminal_name = "prepare_evidence"
+            reason = str(evidence_output.get("legacy_reason") or evidence.get("summary") or
+                         "证据准备确认该运输商只有旧框架实现，不能进入自动修复。")
+            result = "MANUAL"
+            next_action = "人工核对实际采集入口和调用链，确定迁移或兼容方案。"
+
+    if not reason and result in {"MANUAL", "INSUFFICIENT_EVIDENCE"}:
+        manual = next((item for item in reversed(ordered) if
+                       str(item.get("result") or "").upper() in {"MANUAL", "INSUFFICIENT_EVIDENCE"}
+                       or str((item.get("output") or {}).get("status") or "").upper() in {"MANUAL", "INSUFFICIENT_EVIDENCE"}), None)
+        if manual:
+            output = manual.get("output") if isinstance(manual.get("output"), dict) else {}
+            terminal_name = str(manual.get("name") or terminal_name)
+            gaps = output.get("evidence_gaps")
+            reason = str(output.get("legacy_reason") or output.get("reason") or output.get("summary") or
+                         manual.get("summary") or (("证据缺口：" + "；".join(map(str, gaps[:8]))) if isinstance(gaps, list) and gaps else "")).strip()
+            generic_locate = {
+                "定位输出不满足证据或路径契约，停止并转人工",
+                "定位输出不满足证据或路径契约，停止并转人工。",
+            }
+            if str(manual.get("name") or "") == "locate_agent" and reason in generic_locate and isinstance(gaps, list):
+                detail = next((str(item).strip() for item in gaps if str(item).strip()), "")
+                if detail:
+                    reason = "定位输出契约校验失败：" + detail[:1500]
+        reason = reason or "安全门禁要求人工介入，但历史步骤没有保存明确原因。"
+        next_action = next_action or "补齐缺失证据并由人工确认处理范围；证据充分前不要自动修改代码。"
+
+    if not reason and result in {"FAILED", "FAIL", "REJECTED"}:
+        failure = next((item for item in reversed(ordered) if item.get("status") == "failed"
+                        or str(item.get("result") or "").upper() in {"FAIL", "FAILED", "REJECTED"}), terminal)
+        error = failure.get("error") if isinstance(failure, dict) and isinstance(failure.get("error"), dict) else {}
+        terminal_name = str((failure or {}).get("name") or terminal_name)
+        reason = str(error.get("message") or (failure or {}).get("summary") or
+                     "历史任务未通过自动修复门禁，但没有保存更具体的失败原因。")
+        next_action = next_action or "检查失败节点的错误详情和产物，修复原因后再重试或转人工。"
+
+    if not reason:
+        if result in {"RUNNING", "PENDING", "WAITING_APPROVAL"}:
+            reason = "任务仍在执行或等待人工决策，尚未形成终态。"
+            next_action = next_action or "继续观察任务步骤；若等待审批，请进入审批页面处理。"
+        elif result in {"SUCCESS", "SUCCEEDED", "COMPLETED"}:
+            reason = "历史任务已结束，但没有保存终态报告；此结论仅基于已有步骤记录推导。"
+            next_action = next_action or "查看交付记录并按团队流程完成人工评审和合并。"
+        else:
+            reason = "历史任务缺少正式终态报告；现有步骤记录未提供更具体的结束原因。"
+            next_action = next_action or "检查最后一个已执行步骤的输入、输出和错误后确定处置方案。"
+
+    return {
+        "report_version": 0, "report_kind": "task_final",
+        "legacy_report": result not in {"RUNNING", "PENDING", "WAITING_APPROVAL"},
+        "task_id": task_id, "carrier": carrier, "biztype": biztype,
+        "result": result, "status": result, "terminal_status": result,
+        "terminal_step": terminal_name, "terminal_reason": reason,
+        "next_action": next_action or "检查终态步骤及关联产物，确认后续处置动作。",
+        "finished_at": final_output.get("finished_at") or terminal.get("finished_at") or "",
+        "elapsed_ms": round(sum(float(item.get("duration_ms") or 0) for item in ordered), 2),
+        "completed_steps": [str(item.get("name")) for item in ordered if item.get("status") in {"succeeded", "skipped"}],
+    }
 
 
 def _task_status(steps: list[dict[str, Any]], approval: dict[str, Any] | None) -> str:
@@ -403,10 +495,12 @@ def decide_approval(
         from app.workflow.wiring import build_graph
 
         graph = build_graph(store=store)
-        graph.invoke(
+        final_state = graph.invoke(
             Command(resume=decision),
             config={"configurable": {"thread_id": run_id}, "recursion_limit": 40},
         )
+        from app.entrypoint import _write_run_report_if_terminal
+        _write_run_report_if_terminal(store, run_id, graph, final_state=final_state)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"恢复审批工作流失败：{type(exc).__name__}: {exc}") from exc
     finally:
@@ -580,19 +674,18 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
             })
     for task in payload.get("tasks") or []:
         result = str(task.get("status") or "PENDING")
+        report = task.get("report") if isinstance(task.get("report"), dict) else {}
+        task_steps = task.get("steps") or []
         tasks.append({
             "task_id": task.get("task_id", ""), "carrier": task.get("carrier", ""),
             "biztype": task.get("biztype", ""), "result": result, "terminal_status": result.lower(),
-            "steps": task.get("steps") or [],
+            "terminal_step": str(report.get("terminal_step") or ""),
+            "terminal_reason": str(report.get("terminal_reason") or ""),
+            "next_action": str(report.get("next_action") or ""),
+            "steps_count": len(task_steps),
+            "duration_ms": report.get("elapsed_ms"),
+            "approval_pending": bool(task.get("approval_pending")),
         })
-        for step in task.get("steps") or []:
-            for ref in step.get("artifacts") or []:
-                artifacts.append({
-                    "name": ref.get("name") or "artifact", "path": ref.get("path") or "",
-                    "media_type": ref.get("media_type") or "application/json",
-                    "description": f'{task.get("task_id", "")} · {step.get("name", "")}',
-                    "size_bytes": None, "task_id": task.get("task_id", ""),
-                })
     resumable, next_nodes = False, []
     try:
         from app.workflow.wiring import build_graph
@@ -614,11 +707,18 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
             has_waiting_step = any(step.get("status") == "waiting" for step in steps)
             has_waiting_step = has_waiting_step or any(
                 step.get("status") == "waiting"
-                for task in tasks for step in (task.get("steps") or [])
+                for task in (payload.get("tasks") or []) for step in (task.get("steps") or [])
             )
             status = "paused" if has_waiting_step else "pause_requested"
     finally:
         connection.close()
+    run_report = _read_json(store.run_dir(run_id) / "reports" / "final.json", {})
+    if isinstance(run_report, dict) and run_report:
+        artifacts.append({
+            "name": "本轮终态报告", "path": "reports/final.json",
+            "media_type": "application/json", "description": "Run 级终态总结",
+            "size_bytes": None,
+        })
     return {
         **summary, "status": status,
         "config": {
@@ -626,6 +726,7 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
             "review_mode": run_meta.get("review_mode", "agent"), "max_attempts": run_meta.get("max_attempts", 3),
         },
         "steps": steps, "tasks": tasks, "artifacts": artifacts,
+        "run_report": run_report if isinstance(run_report, dict) else {},
         "run_error": payload.get("run_error") or {},
         "checkpoint": {"resumable": resumable, "next_nodes": next_nodes},
     }
@@ -782,14 +883,34 @@ def _record_background_failure(run_id: str, error: Exception) -> None:
         report_dir.mkdir(parents=True, exist_ok=True)
         target = report_dir / "run_failure.json"
         temporary = report_dir / "run_failure.json.tmp"
+        now = datetime.now(timezone.utc).isoformat()
+        reason = f"{type(error).__name__}: {str(error).strip()}"[:2000]
         payload = {
-            "status": "FAILED",
-            "error_type": type(error).__name__,
-            "message": "后台工作流异常，请检查服务端日志并按 run_id 查询完整堆栈。",
-            "failed_at": datetime.now(timezone.utc).isoformat(),
+            "status": "FAILED", "error_type": type(error).__name__,
+            "message": reason or "后台工作流异常，请检查服务端日志并按 run_id 查询完整堆栈。",
+            "terminal_step": "workflow_startup", "terminal_reason": reason or "后台工作流在初始化阶段异常退出。",
+            "next_action": "检查配置、工作流图装配错误和服务端异常堆栈，修复后重新执行。",
+            "failed_at": now,
         }
         temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(target)
+        final_path = report_dir / "final.json"
+        existing_report = _read_json(final_path, {})
+        if not isinstance(existing_report, dict):
+            existing_report = {}
+        final_tmp = report_dir / "final.json.tmp"
+        final_report = {
+            **existing_report,
+            "report_version": max(int(existing_report.get("report_version") or 0), 1),
+            "report_kind": "run_final", "run_id": run_id,
+            "result": "FAILED", "status": "FAILED", "terminal_step": payload["terminal_step"],
+            "terminal_reason": payload["terminal_reason"], "next_action": payload["next_action"],
+            "finished_at": now,
+            "task_count": int(existing_report.get("task_count") or 0),
+            "task_results": existing_report.get("task_results") if isinstance(existing_report.get("task_results"), list) else [],
+        }
+        final_tmp.write_text(json.dumps(final_report, ensure_ascii=False, indent=2), encoding="utf-8")
+        final_tmp.replace(final_path)
     except Exception:
         logger.exception("无法写入后台失败报告 run_id=%s", run_id)
 
@@ -816,6 +937,66 @@ def _run_workflow_background_v1(
 @app.get("/api/v1/runs/{run_id}")
 def v1_get_run(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
     return _v1_detail(run_id)
+
+
+@app.get("/api/v1/runs/{run_id}/tasks/{task_id}")
+def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
+    """只返回一个任务的详情，避免 Run 页面携带并渲染所有任务的步骤与产物。"""
+    store = _store()
+    run_id, task_id = _safe_id(run_id), _safe_id(task_id)
+    payload = _run_payload(store, run_id)
+    source = next((item for item in payload.get("tasks", []) if item.get("task_id") == task_id), None)
+    if source is None:
+        raise HTTPException(status_code=404, detail="该执行中不存在此任务")
+    steps = list(source.get("steps") or [])
+    report = source.get("report") if isinstance(source.get("report"), dict) else {}
+    if not report:
+        last = steps[-1] if steps else {}
+        error = last.get("error") if isinstance(last.get("error"), dict) else {}
+        detail = str(error.get("message") or last.get("summary") or "")
+        report = {
+            "result": source.get("status") or "INCOMPLETE",
+            "terminal_step": str(last.get("name") or "workflow"),
+            "terminal_reason": (
+                "历史任务没有持久化终态报告；当前只能根据已有步骤记录展示结果。"
+                + (f" 最后一步记录：{detail}" if detail else "")
+            ),
+            "next_action": "重新运行该任务以生成完整终态报告；如需排查旧记录，请检查步骤输入、输出和错误。",
+            "legacy_report": True,
+        }
+    artifacts = []
+    for step in steps:
+        for ref in step.get("artifacts") or []:
+            artifacts.append({
+                "name": ref.get("name") or "artifact",
+                "path": ref.get("path") or "",
+                "media_type": ref.get("media_type") or "application/json",
+                "description": str(step.get("name") or ""),
+                "size_bytes": None,
+                "task_id": task_id,
+            })
+    if (store.task_dir(run_id, task_id) / "reports" / "final.json").is_file():
+        artifacts.append({
+            "name": "任务终态报告", "path": "reports/final.json",
+            "media_type": "application/json", "description": "最终结果与处置原因",
+            "size_bytes": None, "task_id": task_id,
+        })
+    run_meta = _read_json(store.run_dir(run_id) / "run.json", {})
+    return {
+        "run_id": run_id,
+        "run_status": _v1_run_summary(payload)["status"],
+        "task": {
+            "task_id": task_id, "carrier": source.get("carrier", ""),
+            "biztype": source.get("biztype", ""), "result": source.get("status", "PENDING"),
+            "problem": source.get("problem") or {}, "approval_pending": bool(source.get("approval_pending")),
+            "steps": steps, "report": report,
+        },
+        "artifacts": artifacts,
+        "config": {
+            "log_days": run_meta.get("log_days", 1), "log_limit": run_meta.get("log_limit", 0),
+            "review_mode": run_meta.get("review_mode", "agent"), "max_attempts": run_meta.get("max_attempts", 3),
+        },
+    }
 
 
 @app.post("/api/v1/runs/{run_id}/pause", status_code=202)
@@ -877,15 +1058,18 @@ def _resume_workflow_background(run_id: str, run_lock: Any = None) -> None:
             return
     try:
         from app.workflow.wiring import build_graph
-        graph = build_graph(store=_store())
+        store = _store()
+        graph = build_graph(store=store)
         config = {"configurable": {"thread_id": run_id}, "recursion_limit": 40}
         snapshot = graph.get_state(config)
         has_interrupt = any(getattr(task, "interrupts", ()) for task in (getattr(snapshot, "tasks", ()) or ()))
         if has_interrupt:
             from langgraph.types import Command
-            graph.invoke(Command(resume=None), config=config)
+            final_state = graph.invoke(Command(resume=None), config=config)
         else:
-            graph.invoke(None, config=config)
+            final_state = graph.invoke(None, config=config)
+        from app.entrypoint import _write_run_report_if_terminal
+        _write_run_report_if_terminal(store, run_id, graph, final_state=final_state)
     except Exception as exc:
         logger.exception("恢复工作流失败 run_id=%s", run_id)
         _record_background_failure(run_id, exc)
@@ -964,7 +1148,7 @@ def v1_list_approvals(
 
 @app.get("/api/v1/manual-interventions")
 def v1_list_manual_interventions(_: None = Depends(_authorize)) -> dict[str, Any]:
-    """列出已终止自动流程、需要人工判断的任务；不把它们伪装成可批准的变更方案。"""
+    """列出已终止自动流程、需要人工判断的任务；优先使用终态报告记载的真实阻断步骤。"""
     store = _store()
     items: list[dict[str, Any]] = []
     for run_id in _all_run_ids(store):
@@ -976,45 +1160,56 @@ def v1_list_manual_interventions(_: None = Depends(_authorize)) -> dict[str, Any
             if task.get("approval_pending"):
                 continue
             steps = task.get("steps") or []
-            manual_step: dict[str, Any] | None = None
-            reason = ""
-            for step in steps:
-                output = step.get("output") if isinstance(step.get("output"), dict) else {}
-                name = str(step.get("name") or "")
-                is_manual = (
-                    (name == "locate_agent" and str(output.get("status") or "").upper() == "MANUAL")
-                    or (name == "review_agent" and str(output.get("verdict") or "").upper() == "MANUAL")
-                    or str(step.get("result") or "").lower() == "manual"
-                )
-                if is_manual:
+            report = task.get("report") if isinstance(task.get("report"), dict) else {}
+            terminal = str(report.get("result") or task.get("status") or "").upper()
+            if terminal not in {"MANUAL", "INSUFFICIENT_EVIDENCE"}:
+                continue
+
+            report_step = str(report.get("terminal_step") or "").strip()
+            reason = str(report.get("terminal_reason") or "").strip()
+            manual_step = next((step for step in reversed(steps) if report_step and step.get("name") == report_step), None)
+
+            # 终态报告是人工介入原因的权威来源。这样证据阶段打回时不会显示成“执行收尾 MANUAL”。
+            if not reason or not report_step:
+                for step in reversed(steps):
+                    output = step.get("output") if isinstance(step.get("output"), dict) else {}
+                    name = str(step.get("name") or "")
+                    verdict = str(output.get("status") or output.get("verdict") or step.get("result") or "").upper()
+                    is_manual = (
+                        verdict in {"MANUAL", "INSUFFICIENT_EVIDENCE"}
+                        or bool(output.get("legacy_only") and name == "prepare_evidence")
+                    )
+                    if not is_manual:
+                        continue
                     manual_step = step
-                    reason = str(output.get("summary") or output.get("reason") or step.get("summary") or "自动流程无法安全继续，需要人工排查")
-                    # 兼容历史记录：旧版 locate_agent 的 summary 是固定文案，
-                    # 真实契约错误已写入 evidence_gaps，应优先把具体原因展示给人工。
-                    generic_locate_summaries = {
+                    report_step = name
+                    gaps = output.get("evidence_gaps")
+                    reason = str(
+                        output.get("legacy_reason") or output.get("reason") or output.get("summary")
+                        or step.get("summary") or
+                        (("证据缺口：" + "；".join(str(item) for item in gaps[:8])) if isinstance(gaps, list) and gaps else "")
+                    ).strip()
+                    generic_locate = {
                         "定位输出不满足证据或路径契约，停止并转人工",
                         "定位输出不满足证据或路径契约，停止并转人工。",
                     }
-                    if name == "locate_agent" and reason.strip() in generic_locate_summaries:
-                        gaps = output.get("evidence_gaps")
-                        if isinstance(gaps, list):
-                            detail = next((str(item).strip() for item in gaps if str(item).strip()), "")
-                            if detail:
-                                reason = f"定位输出契约校验失败：{detail[:1500]}"
+                    if name == "locate_agent" and reason in generic_locate and isinstance(gaps, list):
+                        detail = next((str(item).strip() for item in gaps if str(item).strip()), "")
+                        if detail:
+                            reason = "定位输出契约校验失败：" + detail[:1500]
                     break
-            terminal = str(task.get("status") or "").upper()
-            if manual_step is None and terminal != "MANUAL":
-                continue
-            if manual_step is None:
-                manual_step = next((step for step in reversed(steps) if step.get("name") == "finalize_execution"), {})
-                reason = str((manual_step.get("output") or {}).get("summary") or "任务最终结论为 MANUAL，需要人工排查")
+
+            if not reason:
+                reason = "自动流程因安全门禁无法继续，需要人工排查；历史记录没有保存更具体的原因。"
+            if not report_step:
+                report_step = str((manual_step or {}).get("name") or "finalize_execution")
             items.append({
                 "intervention_id": f"{run_id}:{task.get('task_id', '')}",
                 "run_id": run_id,
                 "task_id": str(task.get("task_id") or ""),
                 "carrier": str(task.get("carrier") or ""),
                 "biztype": str(task.get("biztype") or ""),
-                "step": str(manual_step.get("name") or "finalize_execution"),
+                "step": report_step,
                 "status": "open",
                 "summary": reason[:2000],
                 "created_at": str(payload.get("updated_at") or payload.get("created_at") or ""),

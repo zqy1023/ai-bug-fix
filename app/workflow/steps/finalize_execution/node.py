@@ -26,26 +26,138 @@ _FAILED_RESULTS = frozenset({"FAIL", "FAILED", "MANUAL", "REJECTED", "INSUFFICIE
 
 
 def run(ctx: StepContext, data: FinalizeInput) -> FinalizeOutput:
-    """写精简 final.json。步骤全文在 steps.json，这里不再复制。"""
+    """写入可直接用于处置的终态报告；原始步骤记录仍以 steps.json 为准。"""
     records = [record for record in ctx.store.list_steps(ctx.run.run_id, data.task_id) if record.name != _SELF]
     terminal_status = "CANCELLED" if cancellation_requested(ctx.store.root, ctx.run.run_id) else data.terminal_status
     result = _delivery_status(records, terminal_status)
+    terminal_step, terminal_reason, next_action = _terminal_details(records, terminal_status, result)
+    finished_at = datetime.now(timezone.utc).isoformat()
+    locate = _output(records, "locate_agent")
+    repair = _output(records, "repair_agent")
     report = {
-        "task_id": data.task_id,
-        "carrier": data.carrier,
-        "biztype": data.biztype,
-        "problem": _problem(ctx, data.task_id),
-        "result": result,
-        "status": result,
+        "report_version": 2, "report_kind": "task_final",
+        "task_id": data.task_id, "carrier": data.carrier, "biztype": data.biztype,
+        "problem": _problem(ctx, data.task_id), "result": result, "status": result,
+        "terminal_status": result, "terminal_step": terminal_step,
+        "terminal_reason": terminal_reason, "next_action": next_action, "finished_at": finished_at,
         "elapsed_ms": round(sum(record.duration_ms for record in records), 2),
         "tokens": _tokens(ctx, data.task_id),
+        "root_cause": str(locate.get("root_cause") or locate.get("analysis") or ""),
+        "change_summary": str(repair.get("summary") or repair.get("analysis") or ""),
         "completed_steps": [record.name for record in records if record.status in {"succeeded", "skipped"}],
     }
     knowledge_case_id = _capture_knowledge_candidate(ctx, data, records, report)
     if knowledge_case_id:
         report["knowledge_case_id"] = knowledge_case_id
     path = ctx.store.write_artifact(ctx.run.run_id, FINAL_REPORT, report, data.task_id)
-    return FinalizeOutput(report_path=path, delivery_status=result)
+    return FinalizeOutput(report_path=path, delivery_status=result, terminal_step=terminal_step,
+                          terminal_reason=terminal_reason, next_action=next_action, finished_at=finished_at)
+
+
+def _record_reason(record: StepRecord | None) -> str:
+    if record is None:
+        return ""
+    error = getattr(record, "error", None)
+    output = record.output if isinstance(record.output, dict) else {}
+    candidates = [
+        getattr(error, "message", "") if error else "",
+        output.get("terminal_reason"), output.get("legacy_reason"),
+        output.get("failure_reason"), output.get("reason"),
+        output.get("summary"), output.get("message"), record.summary,
+    ]
+    for value in candidates:
+        text = str(value or "").strip()
+        if text:
+            return text[:2000]
+    return ""
+
+
+def _terminal_details(
+    records: list[StepRecord], terminal_status: str, result: str
+) -> tuple[str, str, str]:
+    """从持久化步骤事实生成终态原因；不依赖模型自称成功。"""
+    ordered = sorted(records, key=lambda item: str(item.finished_at or item.started_at or ""))
+    latest = ordered[-1] if ordered else None
+    status, outcome = str(terminal_status or "").upper(), str(result or "").upper()
+
+    if status == "CANCELLED" or outcome == "CANCELLED":
+        return (latest.name if latest else "workflow",
+                "收到停止请求，任务已在安全节点边界终止。",
+                "确认停止原因；需要继续时重新发起执行。")
+
+    evidence = next((item for item in ordered if item.name == "prepare_evidence"), None)
+    evidence_output = evidence.output if evidence and isinstance(evidence.output, dict) else {}
+    if evidence_output.get("legacy_only"):
+        reason = str(evidence_output.get("legacy_reason") or _record_reason(evidence) or
+                     "证据准备确认目标运输商只有旧框架实现，不能进入当前自动修复路径。")
+        return ("prepare_evidence", reason,
+                "人工核对真实采集入口和调用链，确认迁移或兼容方案后再执行修复。")
+
+    manual_names = ("locate_agent", "review_agent", "prepare_evidence", "repair_agent")
+    if outcome == "MANUAL" or status == "MANUAL":
+        for name in manual_names:
+            record = next((item for item in reversed(ordered) if item.name == name), None)
+            if record is None:
+                continue
+            output = record.output if isinstance(record.output, dict) else {}
+            verdict = str(output.get("status") or output.get("verdict") or record.result or "").upper()
+            if verdict in {"MANUAL", "INSUFFICIENT_EVIDENCE"} or str(record.result or "").upper() in {"MANUAL", "INSUFFICIENT_EVIDENCE"}:
+                reason = _record_reason(record)
+                gaps = output.get("evidence_gaps")
+                if not reason and isinstance(gaps, list) and gaps:
+                    reason = "证据缺口：" + "；".join(str(item) for item in gaps[:8])
+                reason = reason or "安全门禁要求人工介入，但步骤未写明具体原因。"
+                return (name, reason,
+                        "补充缺失证据并由人工确认处理范围；证据充分前不要自动修改代码。")
+        return (latest.name if latest else "workflow",
+                "流程因安全门禁要求人工介入而结束，现有记录未给出更具体原因。",
+                "检查最后执行步骤的输出，补录人工处置原因后再继续。")
+
+    approval = next((item for item in reversed(ordered) if item.name == "request_approval"), None)
+    approval_output = approval.output if approval and isinstance(approval.output, dict) else {}
+    if outcome == "REJECTED" or str(approval_output.get("decision") or "").upper() == "REJECT":
+        detail = str(approval_output.get("reason") or approval_output.get("summary") or "").strip()
+        reason = "人工审批拒绝了本次变更方案。拒绝原因：" + (detail or "审批记录未填写具体原因。")
+        return ("request_approval", reason,
+                "根据拒绝意见调整方案；重新验证后再提交审批。")
+
+    failed_records = [
+        item for item in ordered
+        if item.status == "failed" or str(item.result or "").upper() in {"FAIL", "FAILED", "REJECTED"}
+    ]
+    if outcome in {"FAILED", "FAIL"} or failed_records:
+        failed = failed_records[-1] if failed_records else latest
+        name = failed.name if failed else "workflow"
+        reason = _record_reason(failed) or "任务未通过自动修复门禁，现有步骤记录未提供更具体的失败原因。"
+        followups = {
+            "prepare_source_snapshot": "检查源仓库和目标 carrier 路径后重试。",
+            "prepare_evidence": "检查证据准备错误并补齐源码或运行证据后重试。",
+            "locate_agent": "核对定位证据与目标文件范围后重新定位。",
+            "claim_repair_slot": "确认本轮修复资格以及重复任务去重结果。",
+            "prepare_workspace": "检查隔离工作区创建日志、磁盘权限和剩余空间。",
+            "repair_agent": "依据修复输出调整方案后重试或转人工。",
+            "check_changes": "检查变更门禁报告与文件范围，修正不合规改动。",
+            "verify_issue": "检查问题验证报告和原始异常证据。",
+            "run_regression": "检查准生产回归报告及失败命令。",
+            "review_agent": "按审查报告修正风险项后重新提交审查。",
+            "apply_plan": "核对获批方案与实际落盘结果，再重新验证。",
+            "prepare_delivery": "检查分支创建、文件复制和交付记录。",
+        }
+        return (name, reason, followups.get(name, "检查失败节点的错误和产物，明确修复方案后重试或转人工。"))
+
+    if outcome == "SUCCESS":
+        delivery = next((item for item in reversed(ordered) if item.name == "prepare_delivery"), None)
+        return (delivery.name if delivery else (latest.name if latest else "finalize_execution"),
+                _record_reason(delivery) or "任务已达到交付门槛并完成交付准备。",
+                "检查交付分支和最终变更清单，按团队流程完成人工评审与合并。")
+
+    name = latest.name if latest else "workflow"
+    reason = _record_reason(latest) or f"任务以 {outcome or 'UNKNOWN'} 结论结束，步骤记录没有给出更具体原因。"
+    return (name, reason, "查看终态步骤的输入、输出和产物，确认原因后再继续。")
+
+def _output(records: list[StepRecord], name: str) -> dict[str, Any]:
+    record = next((item for item in records if item.name == name), None)
+    return record.output if record is not None and isinstance(record.output, dict) else {}
 
 
 
