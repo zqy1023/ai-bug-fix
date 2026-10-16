@@ -7,7 +7,7 @@ import dayjs from 'dayjs';
 import { api } from '../lib/api';
 import { StatusTag } from '../components/StatusTag';
 import { WorkflowGraph } from '../components/WorkflowGraph';
-import type { ManualIntervention, ModelCall, StepRecord } from '../lib/types';
+import type { ModelCall, StepRecord } from '../lib/types';
 
 const { Title, Text, Paragraph } = Typography;
 const active = ['running', 'queued', 'waiting_approval', 'pause_requested', 'paused', 'cancel_requested'];
@@ -36,7 +36,6 @@ export function TaskDetailPage() {
   const [artifactPath, setArtifactPath] = useState<{ path: string; name: string } | null>(null);
   const [manualAction, setManualAction] = useState<'retry_locate' | 'continue_repair' | 'mark_done' | 'terminate' | null>(null);
   const [manualReason, setManualReason] = useState('');
-  const { message } = App.useApp();
   const detail = useQuery({
     queryKey: ['task', runId, taskId],
     queryFn: () => api.task(runId, taskId),
