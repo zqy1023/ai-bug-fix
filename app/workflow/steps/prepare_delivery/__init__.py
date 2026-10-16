@@ -76,7 +76,6 @@ SPEC = StepSpec(
     output_model=DeliveryOutput,
     input_builder=_input,
     output_patch=_patch,
-    depends_on=(Dependency("apply_plan", "task"),),
     next_step="finalize_execution",
 )
 
