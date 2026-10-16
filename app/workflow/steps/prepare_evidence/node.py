@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 import re
 import sqlite3
-from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -63,7 +62,12 @@ def _rank_candidates(
     """
     query = _query_tokens(problem)
     if not query:
-        raise StepFailed("异常内容没有可用于源码检索的有效 token")
+        # 即使异常文本几乎没有可检索词，也要为只读分析 Agent 提供真实源码；
+        # 入口文件优先，后续由 Agent 明确标记证据不足，不能在此提前终止分析。
+        return sorted(
+            files,
+            key=lambda path: (0 if Path(path).name in {"main.py", "__init__.py"} else 1, path),
+        )
     scored: list[tuple[str, float]] = []
     df: dict[str, int] = {}
     hits_per_file: dict[str, set[str]] = {}
