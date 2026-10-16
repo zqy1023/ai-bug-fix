@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -10,13 +12,42 @@ from typing import Any
 from app.application.audit import StepRecord
 from app.application.context import StepContext
 from app.workflow.steps.finalize_execution.models import FinalizeInput, FinalizeOutput
+from app.infrastructure.config import load_config
 from app.infrastructure.run_control import cancellation_requested
 
 FINAL_REPORT = "reports/final.json"
+logger = logging.getLogger(__name__)
 _SELF = "finalize_execution"
 
 # 阻断交付的业务结论。执行成功但结论是这几个的步骤不能算通过。
 _FAILED_RESULTS = frozenset({"FAIL", "FAILED", "MANUAL", "REJECTED", "INSUFFICIENT_EVIDENCE"})
+
+
+def _update_knowledge_usage(ctx: StepContext, data: FinalizeInput, result: str, total_tokens: int) -> None:
+    """回填已检索案例的使用结果统计，不自动沉淀或发布知识案例。"""
+    try:
+        database = load_config().runtime_dir / "workbench-control.sqlite3"
+        if not database.is_file():
+            return
+        connection = sqlite3.connect(str(database), timeout=2)
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            connection.execute(
+                """UPDATE knowledge_case_usage
+                   SET task_result=?, total_tokens=?, updated_at=?
+                   WHERE run_id=? AND task_id=?""",
+                (result, max(0, int(total_tokens)), now, ctx.run.run_id, data.task_id),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error, AttributeError, TypeError, ValueError):
+        logger.warning(
+            "知识案例使用统计回填失败: run_id=%s task_id=%s",
+            ctx.run.run_id,
+            data.task_id,
+            exc_info=True,
+        )
 
 
 def run(ctx: StepContext, data: FinalizeInput) -> FinalizeOutput:
@@ -40,7 +71,8 @@ def run(ctx: StepContext, data: FinalizeInput) -> FinalizeOutput:
         "change_summary": str(repair.get("summary") or repair.get("analysis") or ""),
         "completed_steps": [record.name for record in records if record.status in {"succeeded", "skipped"}],
     }
-    # 知识沉淀已从自动工作流中移除；终态报告只记录本次任务事实。
+    # 仅回填已发布案例的使用结果统计，不创建候选案例或自动发布知识。
+    _update_knowledge_usage(ctx, data, result, int(report.get("tokens") or 0))
     path = ctx.store.write_artifact(ctx.run.run_id, FINAL_REPORT, report, data.task_id)
     if data.ai_workspace_path:
         workspace = Path(data.ai_workspace_path).resolve()
