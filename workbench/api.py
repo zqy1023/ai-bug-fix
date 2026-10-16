@@ -1224,9 +1224,13 @@ def v1_list_manual_interventions(_: None = Depends(_authorize)) -> dict[str, Any
             locate_step = next((step for step in reversed(steps) if step.get("name") == "locate_agent"), None)
             locate_output = locate_step.get("output") if isinstance(locate_step, dict) and isinstance(locate_step.get("output"), dict) else {}
             report_step = str(report.get("terminal_step") or ("locate_agent" if manual_pending else "")).strip()
-            reason = str(approval_input.get("intervention_reason") or report.get("terminal_reason") or locate_output.get("summary") or "").strip()
-            if not reason and isinstance(locate_output.get("evidence_gaps"), list):
-                reason = "；".join(str(item) for item in locate_output["evidence_gaps"][:8])
+            reason = str(approval_input.get("intervention_reason") or report.get("terminal_reason") or "").strip()
+            evidence_gaps = locate_output.get("evidence_gaps")
+            if not reason and isinstance(evidence_gaps, list) and evidence_gaps:
+                # 具体的路径/契约失败比通用 summary 更有操作价值，必须优先展示。
+                reason = "定位输出契约校验失败：" + "；".join(str(item) for item in evidence_gaps[:8])
+            if not reason:
+                reason = str(locate_output.get("summary") or "").strip()
             if not reason:
                 reason = "自动流程因安全门禁无法继续，需要人工排查；历史记录没有保存更具体的原因。"
             continue_allowed = bool(approval_input.get("continue_allowed")) if manual_pending else False
