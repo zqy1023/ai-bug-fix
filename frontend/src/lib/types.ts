@@ -143,6 +143,9 @@ export interface KnowledgeCase {
   review_passed: boolean;
   status: KnowledgeCaseStatus;
   source_run_id: string;
+  source_task_id: string;
+  usage_count: number;
+  last_used_at?: string | null;
   created_at: string;
   updated_at: string;
 }
