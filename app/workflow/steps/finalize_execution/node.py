@@ -3,20 +3,12 @@
 from __future__ import annotations
 
 import json
-import logging
-import sqlite3
-import uuid
-from datetime import datetime, timezone
-from hashlib import sha256
 from typing import Any
 
 from app.application.audit import StepRecord
 from app.application.context import StepContext
 from app.workflow.steps.finalize_execution.models import FinalizeInput, FinalizeOutput
 from app.infrastructure.run_control import cancellation_requested
-from app.infrastructure.config import load_config
-
-logger = logging.getLogger(__name__)
 
 FINAL_REPORT = "reports/final.json"
 _SELF = "finalize_execution"
@@ -158,91 +150,6 @@ def _output(records: list[StepRecord], name: str) -> dict[str, Any]:
     return record.output if record is not None and isinstance(record.output, dict) else {}
 
 
-
-def _capture_knowledge_candidate(
-    ctx: StepContext,
-    data: FinalizeInput,
-    records: list[StepRecord],
-    report: dict[str, Any],
-) -> str:
-    """自动沉淀每个已收尾任务的候选案例；不自动发布，也不阻断主流程。"""
-    try:
-        database = load_config().runtime_dir / "workbench-control.sqlite3"
-        if not database.is_file():
-            return ""
-        locate = next((record.output for record in records if record.name == "locate_agent"), {})
-        repair = next((record.output for record in records if record.name == "repair_agent"), {})
-        regression = next((record for record in records if record.name == "run_regression"), None)
-        review = next((record.output for record in records if record.name == "review_agent"), {})
-        root_cause = str(locate.get("root_cause") or "").strip()
-        if not root_cause:
-            root_cause = "尚未形成可确认的根因结论；需结合失败记录和证据人工补充"
-        facts = locate.get("facts", []) if isinstance(locate, dict) else []
-        source_evidence = locate.get("source_evidence", []) if isinstance(locate, dict) else []
-        evidence_gaps = locate.get("evidence_gaps", []) if isinstance(locate, dict) else []
-        evidence = json.dumps(
-            {"facts": facts, "source_evidence": source_evidence, "evidence_gaps": evidence_gaps},
-            ensure_ascii=False,
-        )[:8000]
-        change_summary = str(repair.get("summary") or repair.get("analysis") or "").strip()
-        changed_files = repair.get("changed_files", [])
-        if isinstance(changed_files, list) and changed_files:
-            change_summary += "\n变更文件：" + ", ".join(str(item) for item in changed_files[:30])
-        error_text = str(report.get("problem") or "")
-        fingerprint = sha256(error_text.encode("utf-8")).hexdigest() if error_text else ""
-        regression_output = regression.output if regression is not None else {}
-        regression_passed = bool(
-            regression is not None
-            and (
-                str(regression.result or "").lower() in {"passed", "succeeded"}
-                or (isinstance(regression_output, dict) and regression_output.get("passed") is True)
-                or (isinstance(regression_output, dict) and str(regression_output.get("status") or "").upper() in {"PASS", "PASSED", "SUCCESS", "SUCCEEDED"})
-            )
-        )
-        review_passed = str(review.get("verdict") or review.get("status") or "").upper() == "PASS" if isinstance(review, dict) else False
-        case_id = uuid.uuid4().hex
-        title = f"{data.carrier or '未知运输商'} / {data.biztype or '未知业务类型'}：{root_cause[:120]}"
-        connection = sqlite3.connect(str(database), timeout=2)
-        try:
-            connection.execute(
-                """UPDATE knowledge_case_usage
-                   SET task_result=?, total_tokens=?, updated_at=?
-                   WHERE run_id=? AND task_id=?""",
-                (str(report.get("result") or ""), int(report.get("tokens") or 0),
-                 datetime.now(timezone.utc).isoformat(), ctx.run.run_id, data.task_id),
-            )
-            connection.commit()
-            cursor = connection.execute(
-                """INSERT OR IGNORE INTO repair_knowledge_cases
-                (case_id,title,fingerprint,carrier,biztype,root_cause,evidence,change_summary,
-                 regression_passed,review_passed,status,source_run_id,source_task_id,created_at,updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,'candidate',?,?,?,?)""",
-                (
-                    case_id, title[:200], fingerprint, data.carrier, data.biztype, root_cause[:4000],
-                    evidence, change_summary[:8000], int(regression_passed), int(review_passed),
-                    ctx.run.run_id, data.task_id, datetime.now(timezone.utc).isoformat(),
-                    datetime.now(timezone.utc).isoformat(),
-                ),
-            )
-            connection.commit()
-            if cursor.rowcount:
-                connection.execute(
-                    """INSERT INTO control_audit(run_id,task_id,action,actor,reason,created_at)
-                       VALUES(?,?,?,?,?,?)""",
-                    (ctx.run.run_id, data.task_id, "knowledge.case.auto_capture", "workflow",
-                     "candidate captured from finalized task", datetime.now(timezone.utc).isoformat()),
-                )
-                connection.commit()
-            row = connection.execute(
-                "SELECT case_id FROM repair_knowledge_cases WHERE source_run_id=? AND source_task_id=?",
-                (ctx.run.run_id, data.task_id),
-            ).fetchone()
-            return str(row[0]) if row else ""
-        finally:
-            connection.close()
-    except Exception:  # noqa: BLE001 - 知识沉淀失败不能改变修复任务的业务终态
-        logger.exception("自动沉淀修复知识候选失败 run_id=%s task_id=%s", ctx.run.run_id, data.task_id)
-        return ""
 
 def _problem(ctx: StepContext, task_id: str) -> str:
     tasks = ctx.store.load(ctx.run.run_id, "identify_carrier")
