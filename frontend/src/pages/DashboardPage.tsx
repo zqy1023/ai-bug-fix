@@ -1,35 +1,22 @@
 import { useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, App, Button, Card, Col, Empty, Form, InputNumber, Modal, Row, Select, Skeleton, Statistic, Table, Typography } from 'antd';
+import { useQuery } from '@tanstack/react-query';
+import { Alert, Button, Card, Col, Empty, Row, Skeleton, Statistic, Table, Typography } from 'antd';
 import { CheckCircleOutlined, ClockCircleOutlined, ExclamationCircleOutlined, PlayCircleOutlined, PlusOutlined, ReloadOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import ReactECharts from 'echarts-for-react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../lib/api';
 import { StatusTag } from '../components/StatusTag';
 import type { RunSummary } from '../lib/types';
+import { ExecutionLaunchDialog } from '../features/executions/ExecutionLaunchDialog';
 
 const { Title, Text } = Typography;
-type LaunchValues = { log_days: number; log_limit: number; review_mode: 'agent' | 'human'; max_attempts: number };
 function formatDate(value: string) { const date = new Date(value); return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN', { hour12: false }); }
 
 export function DashboardPage() {
   const navigate = useNavigate();
-  const { message } = App.useApp();
-  const client = useQueryClient();
   const [launchOpen, setLaunchOpen] = useState(false);
-  const [form] = Form.useForm<LaunchValues>();
   const query = useQuery({ queryKey: ['dashboard'], queryFn: api.dashboard, refetchInterval: 15000 });
   const health = useQuery({ queryKey: ['workbench-health'], queryFn: api.health, refetchInterval: 30000, retry: 1 });
-  const start = useMutation({
-    mutationFn: api.startRun,
-    onSuccess: async ({ run_id }) => {
-      setLaunchOpen(false);
-      message.success('执行已创建，正在进入执行工作区');
-      await Promise.all([client.invalidateQueries({ queryKey: ['dashboard'] }), client.invalidateQueries({ queryKey: ['runs'] })]);
-      navigate('/runs/' + encodeURIComponent(run_id));
-    },
-    onError: (error) => message.error('创建执行失败：' + (error as Error).message),
-  });
   const data = query.data;
   const option = {
     tooltip: { trigger: 'axis' }, legend: { data: ['成功任务', '失败任务'], bottom: 0 },
@@ -59,7 +46,7 @@ export function DashboardPage() {
     {query.isError && <Alert type="error" showIcon message="无法加载工作台数据" description={(query.error as Error).message} action={<Button type="link" onClick={() => query.refetch()}>重试</Button>} />}
     <div className="workbench-welcome">
       <div><span className="welcome-eyebrow">异常修复工作流</span><h2>今天需要关注什么？</h2><p>从异常扫描开始，跟踪每个运输商任务，只有在需要你决策时才进入人工处理。</p></div>
-      <Button type="primary" size="large" icon={<PlusOutlined />} onClick={() => { form.setFieldsValue({ log_days: 1, log_limit: 0, review_mode: 'agent', max_attempts: 3 }); setLaunchOpen(true); }}>开始异常扫描</Button>
+      <Button type="primary" size="large" icon={<PlusOutlined />} onClick={() => setLaunchOpen(true)}>开始异常扫描</Button>
     </div>
     <section className="attention-section">
       <div className="section-heading"><div><Title level={5}>处理队列</Title><Text type="secondary">点击数字直接进入对应工作区</Text></div><Button type="text" icon={<ReloadOutlined />} loading={query.isFetching} onClick={() => query.refetch()}>刷新数据</Button></div>
@@ -85,15 +72,7 @@ export function DashboardPage() {
     <Card title="最近执行" className="content-card" extra={<Button type="link" onClick={() => navigate('/runs')}>查看全部执行 →</Button>}>
       {query.isLoading ? <Skeleton active /> : <Table rowKey="run_id" columns={columns} dataSource={data?.recent_runs ?? []} pagination={false} locale={{ emptyText: '还没有执行记录。可以从页面右上方开始一次异常扫描。' }} />}
     </Card>
-    <Modal title="开始异常扫描" open={launchOpen} onCancel={() => !start.isPending && setLaunchOpen(false)} onOk={() => form.submit()} confirmLoading={start.isPending} okText="确认并开始" cancelText="返回修改" destroyOnClose>
-      <Alert type="info" showIcon message="启动后任务按工作流规则串行处理" description="这一步只创建执行，不会直接提交或合并代码。遇到共享层变更、证据不足或审查风险时，工作流会进入相应门禁。" style={{ marginBottom: 20 }} />
-      <Form form={form} layout="vertical" onFinish={(values) => start.mutate(values)} initialValues={{ log_days: 1, log_limit: 0, review_mode: 'agent', max_attempts: 3 }}>
-        <Form.Item name="log_days" label="扫描最近多少天的日志" rules={[{ required: true }, { type: 'number', min: 1, max: 30, message: '范围为 1–30 天' }]}><InputNumber min={1} max={30} precision={0} style={{ width: '100%' }} /></Form.Item>
-        <Form.Item name="log_limit" label="日志数量上限" extra="0 表示采用服务端配置的默认策略" rules={[{ required: true }, { type: 'number', min: 0, max: 10000 }]}><InputNumber min={0} max={10000} precision={0} style={{ width: '100%' }} /></Form.Item>
-        <Form.Item name="review_mode" label="变更审查方式" rules={[{ required: true }]}><Select options={[{ value: 'agent', label: 'AI 审查，必要时转人工' }, { value: 'human', label: '所有任务强制人工审查' }]} /></Form.Item>
-        <Form.Item name="max_attempts" label="每个任务最多修复尝试次数" rules={[{ required: true }, { type: 'number', min: 1, max: 5, message: '范围为 1–5 次' }]}><InputNumber min={1} max={5} precision={0} style={{ width: '100%' }} /></Form.Item>
-      </Form>
-    </Modal>
+    <ExecutionLaunchDialog open={launchOpen} onClose={() => setLaunchOpen(false)} />dal>
   </div>;
 }
 
