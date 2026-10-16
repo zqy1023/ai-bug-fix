@@ -48,16 +48,11 @@ _TOOL_INPUT_KEYS = (
     "notebook_path",
     "pattern",
     "path",
-    "command",
     "description",
     "url",
     "query",
-    "prompt",
     "skill",
     "glob",
-    "old_string",
-    "new_string",
-    "content",
 )
 
 
@@ -307,7 +302,8 @@ def _tool_brief(tool_name: Any, tool_input: Any) -> str:
     """
     if not isinstance(tool_input, dict):
         return ""
-    keys = ("file_path", "path", "pattern", "glob", "command", "old_string", "new_string")
+    # 终端摘要只展示定位信息；命令正文和编辑前后文不进入日志。 
+    keys = ("file_path", "path", "pattern", "glob", "description", "query")
     parts: list[str] = []
     for key in keys:
         value = tool_input.get(key)
@@ -434,10 +430,10 @@ def _debug_hook_event(event: dict[str, Any]) -> None:
             _message_brief(event.get("message"))[:160]
             if type(event.get("message")).__name__ == "ResultMessage" else ""
         )
-    path.parent.mkdir(parents=True, exist_ok=True)
     encoded = json.dumps(safe_event, ensure_ascii=False, separators=(",", ":")) + chr(10)
     max_bytes = 5 * 1024 * 1024
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists() and path.stat().st_size + len(encoded.encode("utf-8")) > max_bytes:
             rotated = path.with_suffix(path.suffix + ".1")
             if rotated.exists():

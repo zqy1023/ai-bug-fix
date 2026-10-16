@@ -122,3 +122,27 @@ def test_failed_provider_response_keeps_collected_events(tmp_path, monkeypatch):
     assert call["event_persistence_status"] == "persisted"
     assert call["event_count"] == 2
     assert (run_dir / call["events_path"]).is_file()
+
+
+def test_debug_summaries_exclude_command_and_edit_bodies():
+    from app.infrastructure.claude.session import _tool_brief, _tool_input_summary
+
+    tool_input = {
+        "file_path": "gathers/A/main.py",
+        "command": "python main.py --token=secret",
+        "old_string": "old source body",
+        "new_string": "new source body",
+        "content": "entire file contents",
+        "pattern": "track_number",
+    }
+
+    summary = _tool_input_summary(tool_input)
+    brief = _tool_brief("Edit", tool_input)
+
+    assert summary == {
+        "file_path": "gathers/A/main.py",
+        "pattern": "track_number",
+    }
+    assert "secret" not in brief
+    assert "old source body" not in brief
+    assert "new source body" not in brief
