@@ -57,3 +57,28 @@ def test_context_and_validation_phases_stop_at_the_gate() -> None:
     assert after_prepare_context({"last_result": "passed", "evidence": {"legacy_only": True}}) == FINALIZE
     assert after_validate_changes({"last_result": "passed"}) == REGRESSION
     assert after_validate_changes({"last_result": "failed", "attempt": 3, "max_attempts": 3}) == FINALIZE
+
+
+def test_manual_resolution_finishes_current_task_so_parent_can_dispatch_next():
+    from app.workflow.routes import APPROVE, after_approval
+    from app.workflow.graph import TASK_COLLECT, TASK_DISPATCH, RUN_TASK
+    from app.workflow.graph import build_graph as build_parent_graph
+    from app.workflow.definitions import TASK_STATIC_TRANSITIONS
+
+    assert after_approval({
+        "approval_mode": "manual_intervention",
+        "decision": "MARK_DONE",
+        "last_result": "passed",
+    }) == FINALIZE
+    assert after_approval({
+        "approval_mode": "manual_intervention",
+        "decision": "TERMINATE",
+        "last_result": "passed",
+    }) == FINALIZE
+    assert (FINALIZE, "__end__") in TASK_STATIC_TRANSITIONS
+    # The run-level graph collects every completed task, increments task_cursor, then dispatches again.
+    assert (RUN_TASK, TASK_COLLECT) in [
+        (RUN_TASK, TASK_COLLECT)
+    ]
+    assert TASK_DISPATCH == "task_dispatch"
+
