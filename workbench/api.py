@@ -459,7 +459,6 @@ def _control_db():
             action TEXT NOT NULL, actor TEXT NOT NULL DEFAULT 'unknown', reason TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL
         );
-    """)
         CREATE TABLE IF NOT EXISTS repair_knowledge_cases (
             case_id TEXT PRIMARY KEY, title TEXT NOT NULL, fingerprint TEXT NOT NULL DEFAULT '',
             carrier TEXT NOT NULL DEFAULT '', biztype TEXT NOT NULL DEFAULT '', root_cause TEXT NOT NULL,
@@ -468,7 +467,8 @@ def _control_db():
             status TEXT NOT NULL DEFAULT 'candidate', source_run_id TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL
         );
-        # 旧版控制库原位升级；保留已有运行记录与取消请求。\n    columns = {row[1] for row in connection.execute("PRAGMA table_info(run_control)")}
+    """)
+    # 旧版控制库原位升级；保留已有运行记录与取消请求。\n    columns = {row[1] for row in connection.execute("PRAGMA table_info(run_control)")}
     if "pause_requested" not in columns:
         connection.execute("ALTER TABLE run_control ADD COLUMN pause_requested INTEGER NOT NULL DEFAULT 0")
         connection.commit()
