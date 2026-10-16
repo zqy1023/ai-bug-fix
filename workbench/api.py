@@ -495,10 +495,12 @@ def decide_approval(
         from app.workflow.wiring import build_graph
 
         graph = build_graph(store=store)
-        graph.invoke(
+        final_state = graph.invoke(
             Command(resume=decision),
             config={"configurable": {"thread_id": run_id}, "recursion_limit": 40},
         )
+        from app.entrypoint import _write_run_report_if_terminal
+        _write_run_report_if_terminal(store, run_id, graph, final_state=final_state)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"恢复审批工作流失败：{type(exc).__name__}: {exc}") from exc
     finally:
@@ -1050,15 +1052,18 @@ def _resume_workflow_background(run_id: str, run_lock: Any = None) -> None:
             return
     try:
         from app.workflow.wiring import build_graph
-        graph = build_graph(store=_store())
+        store = _store()
+        graph = build_graph(store=store)
         config = {"configurable": {"thread_id": run_id}, "recursion_limit": 40}
         snapshot = graph.get_state(config)
         has_interrupt = any(getattr(task, "interrupts", ()) for task in (getattr(snapshot, "tasks", ()) or ()))
         if has_interrupt:
             from langgraph.types import Command
-            graph.invoke(Command(resume=None), config=config)
+            final_state = graph.invoke(Command(resume=None), config=config)
         else:
-            graph.invoke(None, config=config)
+            final_state = graph.invoke(None, config=config)
+        from app.entrypoint import _write_run_report_if_terminal
+        _write_run_report_if_terminal(store, run_id, graph, final_state=final_state)
     except Exception as exc:
         logger.exception("恢复工作流失败 run_id=%s", run_id)
         _record_background_failure(run_id, exc)
