@@ -154,9 +154,8 @@ export interface KnowledgeCaseCreate {
   root_cause: string;
   evidence?: string;
   change_summary?: string;
-  regression_passed: boolean;
-  review_passed: boolean;
   source_run_id?: string;
+  source_task_id?: string;
 }
 export interface KnowledgeCaseList {
   items: KnowledgeCase[];
