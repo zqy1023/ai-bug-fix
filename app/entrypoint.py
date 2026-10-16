@@ -13,7 +13,6 @@ from typing import Any
 from app.infrastructure.config import load_config
 from app.infrastructure.records.store import RecordStore
 from app.infrastructure.runtime import close_sessions
-from app.workflow.wiring import build_graph
 
 
 def prepare_run(
@@ -70,6 +69,8 @@ def prepare_run(
 def run_workflow(run_id: str | None = None, *, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     """执行一次完整工作流；每个 carrier 任务使用自己的隔离工作区。"""
     resolved, config, store = prepare_run(run_id, overrides=overrides)
+    from app.workflow.wiring import build_graph
+
     graph = build_graph(store=store)
     try:
         graph.invoke(
