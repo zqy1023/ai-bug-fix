@@ -164,7 +164,7 @@ def build_graph(
     # 只有日志拉取是无副作用的外部读取，允许瞬时故障自动重试。
     retry = _transient_retry()
     for name in _RUN_NODES:
-        graph.add_node(name, nodes[name], retry_policy=retry if name == DISCOVER else None)
+        graph.add_node(name, nodes[name], retry_policy=retry if name == RUN_PREPARE else None)
     graph.add_node(TASK_DISPATCH, dispatch)
     graph.add_node(RUN_TASK, task_graph)
     graph.add_node(TASK_COLLECT, collect)
