@@ -55,6 +55,7 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
             or str((state.get("review") or {}).get("verdict") or "").upper() == "MANUAL"
             or str((state.get("locate") or {}).get("status") or "") != "LOCATED"
             or str((state.get("locate") or {}).get("recommended_scope") or "") != "carrier"
+            or str((state.get("locate") or {}).get("category") or "") != "carrier"
         ),
         "report_paths": ["reports/final.json"],
         # 需要审批 = 本轮存在已获批或待审批的共享层方案；是否放行只看批准结果。
