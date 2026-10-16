@@ -90,12 +90,21 @@ def build_task_graph(nodes: dict[str, Callable[..., Any]]) -> CompiledStateGraph
                 # Agent/审批重试前恢复不可变基线，避免在上一次失败的半成品上继续修改。
                 workspace_manager = nodes.get("_workspace_manager")
                 if workspace_manager is not None:
-                    task = dict(state.get("task") or {})
-                    workspace_manager.reset_carrier_workspace(
-                        state.get("ai_workspace_path") or "",
-                        state.get("baseline_dir") or "",
-                        str(task.get("carrier") or ""),
-                    )
+                    try:
+                        task = dict(state.get("task") or {})
+                        workspace_manager.reset_carrier_workspace(
+                            state.get("ai_workspace_path") or "",
+                            state.get("baseline_dir") or "",
+                            str(task.get("carrier") or ""),
+                        )
+                    except Exception as error:
+                        return {
+                            "attempt": int(state.get("attempt") or 1),
+                            "last_result": "failed",
+                            "terminal_status": "failed",
+                            "retry_target": "__retry_reset_failed__",
+                            "retry_reason": f"重试前恢复隔离工作区失败：{error}",
+                        }
                 return {
                     "attempt": int(state.get("attempt") or 1) + 1,
                     "decision": "PENDING",
