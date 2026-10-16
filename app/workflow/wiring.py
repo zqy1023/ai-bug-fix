@@ -499,6 +499,14 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
                         or bool((state.get("evidence") or {}).get("legacy_dependency"))
                         or str(view.recommended_scope or "") != "carrier"
                         or str(view.category or "") != "carrier"
+                        or any(
+                            str(item.path or "").replace("\\", "/").startswith("spiders/")
+                            for item in view.source_evidence
+                        )
+                        or any(
+                            str(item).replace("\\", "/").startswith("spiders/")
+                            for item in view.candidate_files
+                        )
                     )
                 ) or (kind == "review" and str(view.verdict or "").upper() == "MANUAL")
                 else "failed" if failed else "passed"
