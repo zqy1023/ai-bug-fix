@@ -468,7 +468,8 @@ def _control_db():
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL
         );
     """)
-    # 旧版控制库原位升级；保留已有运行记录与取消请求。\n    columns = {row[1] for row in connection.execute("PRAGMA table_info(run_control)")}
+    # 旧版控制库原位升级；保留已有运行记录与取消请求。
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(run_control)")}
     if "pause_requested" not in columns:
         connection.execute("ALTER TABLE run_control ADD COLUMN pause_requested INTEGER NOT NULL DEFAULT 0")
         connection.commit()
@@ -476,6 +477,10 @@ def _control_db():
     if "source_task_id" not in knowledge_columns:
         connection.execute("ALTER TABLE repair_knowledge_cases ADD COLUMN source_task_id TEXT NOT NULL DEFAULT ''")
         connection.commit()
+    connection.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_repair_knowledge_source
+                          ON repair_knowledge_cases(source_run_id, source_task_id)
+                          WHERE source_run_id <> '' AND source_task_id <> ''""")
+    connection.commit()
     return connection
 
 
@@ -1164,8 +1169,8 @@ def v1_capture_knowledge_from_task(
         fingerprint = str(task.get("problem") or "")[:500]
         now = datetime.now(timezone.utc).isoformat()
         case_id = uuid.uuid4().hex
-        connection.execute(
-            """INSERT INTO repair_knowledge_cases
+        cursor = connection.execute(
+            """INSERT OR IGNORE INTO repair_knowledge_cases
             (case_id,title,fingerprint,carrier,biztype,root_cause,evidence,change_summary,
              regression_passed,review_passed,status,source_run_id,source_task_id,created_at,updated_at)
             VALUES(?,?,?,?,?,?,?,?,?,?,'candidate',?,?,?,?)""",
@@ -1174,9 +1179,13 @@ def v1_capture_knowledge_from_task(
              int(regression_passed), int(review_passed), run_id, task_id, now, now),
         )
         connection.commit()
-        _audit_control(run_id, task_id, "knowledge.case.capture", "bearer-token" if authorization else "local-user",
-                       "captured from persisted task report; remains candidate")
-        item = dict(connection.execute("SELECT * FROM repair_knowledge_cases WHERE case_id=?", (case_id,)).fetchone())
+        if cursor.rowcount:
+            _audit_control(run_id, task_id, "knowledge.case.capture", "bearer-token" if authorization else "local-user",
+                           "captured from persisted task report; remains candidate")
+        item = dict(connection.execute(
+            "SELECT * FROM repair_knowledge_cases WHERE source_run_id=? AND source_task_id=?",
+            (run_id, task_id),
+        ).fetchone())
         item["regression_passed"] = bool(item["regression_passed"])
         item["review_passed"] = bool(item["review_passed"])
         return item
