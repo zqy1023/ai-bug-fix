@@ -92,9 +92,11 @@ def build_task_graph(nodes: dict[str, Callable[..., Any]]) -> CompiledStateGraph
                 if workspace_manager is not None:
                     try:
                         task = dict(state.get("task") or {})
-                        workspace_manager.reset_carrier_workspace(
+                        workspace_manager.reset_task_workspace(
                             state.get("ai_workspace_path") or "",
+                            state.get("source_repo_path") or "",
                             state.get("baseline_dir") or "",
+                            state.get("source_project_path") or "",
                             str(task.get("carrier") or ""),
                         )
                     except Exception as error:
