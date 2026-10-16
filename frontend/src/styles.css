@@ -289,3 +289,11 @@ body, .app-shell, .main-layout { background: var(--wb-canvas) !important; }
   .global-search:focus-within { width: min(52vw, 220px); }
   .header-right .ant-btn-primary { font-size: 11px; }
 }
+
+
+.change-plan-detail { display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid #e3e8f0; border-radius: 10px; background: #fafbfe; }
+.change-plan-detail > .ant-typography { font-size: 12px; }
+.change-plan-meta { display: flex; flex-wrap: wrap; gap: 6px; }
+.change-plan-detail .ant-table-wrapper { margin-top: 2px; }
+.change-plan-detail .ant-table { background: transparent; }
+.change-plan-detail .ant-table-tbody > tr > td { overflow-wrap: anywhere; }
