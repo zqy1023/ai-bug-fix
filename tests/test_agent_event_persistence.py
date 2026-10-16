@@ -65,3 +65,26 @@ def test_failed_call_persists_events_emitted_before_exception(tmp_path, monkeypa
     assert call["event_count"] == 2
     assert call["events_path"] == "tasks/task-failed/audit/agent_events.jsonl"
     assert (run_dir / call["events_path"]).is_file()
+
+
+def test_audit_events_omit_intermediate_analysis_and_sensitive_tool_inputs():
+    from app.agents.common import _audit_events
+
+    events = _audit_events([
+        {"type": "assistant", "text": "中间分析不应入库"},
+        {
+            "type": "tool_use", "tool": "Edit",
+            "input": {
+                "file_path": "gathers/A/main.py",
+                "content": "large source text",
+                "old_string": "before",
+                "new_string": "after",
+            },
+        },
+        {"type": "tool_result", "text": "Authorization: Bearer super-secret-token"},
+    ])
+
+    assert len(events) == 2
+    assert events[0]["input"] == {"file_path": "gathers/A/main.py"}
+    assert "中间分析" not in str(events)
+    assert "super-secret-token" not in str(events)

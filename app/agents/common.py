@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 import json
+import re
 import threading
 import time
 import uuid
@@ -99,13 +100,18 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
             "events": _audit_events(raw.get("messages")),
             "events_path": "",
             "event_count": 0,
-            "output_preview": raw_result(raw)[:4000],
+            "output_preview": _audit_text(raw_result(raw), 500),
             "error_type": str(raw.get("reason") or "")[:300] if raw.get("passed") is False else "",
             "finished_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
         }
+        final_text = _audit_text(raw_result(raw), 3000)
+        if final_text:
+            record["events"].append({"type": "assistant", "text": final_text, "final": True})
         event_path, event_count = _persist_agent_events(record, record["events"])
         record["events_path"] = event_path
         record["event_count"] = event_count
+        # 事件只在任务级审计文件保存，Run 级调用记录保留引用与计数，避免双份存储。
+        record["events"] = []
         _persist_model_call(record)
         return raw
     except Exception as exc:
@@ -130,6 +136,7 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
         event_path, event_count = _persist_agent_events(record, record["events"])
         record["events_path"] = event_path
         record["event_count"] = event_count
+        record["events"] = []
         _persist_model_call(record)
         raise
 
@@ -183,33 +190,66 @@ def _persist_agent_events(
         return "", 0
 
 
+def _audit_text(value: Any, limit: int) -> str:
+    """裁剪审计文本并遮蔽常见凭据格式，避免工具输出把密钥写进运行记录。"""
+    text = str(value or "").strip()
+    text = re.sub(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;]+", r"\1[REDACTED]", text)
+    text = re.sub(
+        r"(?i)((?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret)\s*[:=]\s*)['\"]?[^\s,'\"]+",
+        r"\1[REDACTED]",
+        text,
+    )
+    return text[:limit]
+
+
+_SAFE_TOOL_INPUT_KEYS = frozenset({
+    "file_path", "notebook_path", "path", "pattern", "glob", "description", "skill", "url", "query",
+})
+
+
+def _safe_tool_input(value: Any) -> dict[str, Any]:
+    """仅保留定位工具调用所需的短字段；不保存 prompt、正文、命令或编辑前后文。"""
+    if not isinstance(value, dict):
+        return {}
+    safe: dict[str, Any] = {}
+    for key in _SAFE_TOOL_INPUT_KEYS:
+        item = value.get(key)
+        if item in (None, "", [], {}):
+            continue
+        if isinstance(item, str):
+            safe[key] = _audit_text(item, 240)
+        elif isinstance(item, (int, float, bool)):
+            safe[key] = item
+        elif isinstance(item, list):
+            safe[key] = [_audit_text(part, 120) for part in item[:5] if isinstance(part, str)]
+    return safe
+
+
 def _audit_events(value: Any) -> list[dict[str, Any]]:
-    """保留可审计的公开对话事件；不记录系统提示词或隐藏思考链。"""
+    """只留工具使用/结果事件；模型中间分析不入库，最终结论单独追加一次。"""
     if not isinstance(value, list):
         return []
     result: list[dict[str, Any]] = []
-    for item in value[:100]:
+    for item in value[:200]:
         if not isinstance(item, dict):
             continue
         kind = str(item.get("type") or "")
-        if kind == "assistant":
-            text = str(item.get("text") or "").strip()
-            if text:
-                result.append({"type": "assistant", "text": text[:2000], "elapsed_ms": item.get("elapsed_ms")})
-        elif kind == "tool_use":
+        if kind == "tool_use":
             result.append({
                 "type": "tool_use",
                 "tool": str(item.get("tool") or "unknown")[:80],
-                "input": item.get("input") if isinstance(item.get("input"), dict) else {},
+                "input": _safe_tool_input(item.get("input")),
                 "elapsed_ms": item.get("elapsed_ms"),
             })
         elif kind == "tool_result":
             result.append({
                 "type": "tool_result",
                 "is_error": bool(item.get("is_error")),
-                "text": str(item.get("text") or "")[:800],
+                "text": _audit_text(item.get("text") or "", 500),
                 "elapsed_ms": item.get("elapsed_ms"),
             })
+        if len(result) >= 99:
+            break
     return result
 
 

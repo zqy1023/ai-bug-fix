@@ -834,11 +834,20 @@ def _resume_workflow_background(run_id: str, run_lock: Any = None) -> None:
 
 
 @app.post("/api/v1/runs/{run_id}/cancel", status_code=202)
-def v1_cancel_run(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
+def v1_cancel_run(
+    run_id: str, background: BackgroundTasks, _: None = Depends(_authorize)
+) -> dict[str, Any]:
     run_id = _safe_id(run_id)
     detail = _v1_detail(run_id)
     if detail["status"] not in {"running", "queued", "paused", "pause_requested"}:
         raise HTTPException(status_code=409, detail="执行当前不是可请求停止的状态")
+    # 已经挂起的 interrupt 不会自行观察取消标志；恢复检查点让它进入取消收尾。
+    paused_lock = None
+    if detail["status"] == "paused":
+        with _RUN_LOCKS_GUARD:
+            paused_lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
+        if not paused_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="执行正在恢复或仍未完全暂停，请稍后重试")
     connection = _control_db()
     try:
         connection.execute(
@@ -847,10 +856,16 @@ def v1_cancel_run(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
             (run_id, datetime.now(timezone.utc).isoformat()),
         )
         connection.commit()
+    except Exception:
+        if paused_lock is not None:
+            paused_lock.release()
+        raise
     finally:
         connection.close()
+    if paused_lock is not None:
+        background.add_task(_resume_workflow_background, run_id, paused_lock)
     _audit_control(run_id, "", "run.cancel_requested", "api")
-    return {"run_id": run_id, "status": "cancel_requested", "message": "已记录停止请求；当前运行节点可能需要完成后才会响应"}
+    return {"run_id": run_id, "status": "cancel_requested", "message": "已记录取消请求；正在执行的节点会在安全边界收尾"}
 
 
 @app.get("/api/v1/approvals")
