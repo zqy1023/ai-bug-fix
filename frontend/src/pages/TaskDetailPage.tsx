@@ -39,7 +39,8 @@ export function TaskDetailPage() {
     queryFn: () => api.task(runId, taskId),
     refetchInterval: (q) => active.includes(q.state.data?.run_status ?? '') ? 3000 : false,
   });
-  const task = detail.data?.task;
+  const taskResponse = detail.data;
+  const task = taskResponse?.task;
   const report = task?.report;
   const steps = task?.steps ?? [];
   const captureKnowledge = useMutation({
@@ -61,7 +62,7 @@ export function TaskDetailPage() {
     enabled: Boolean(artifactPath),
   });
   if (detail.isLoading) return <div className="page-loading"><Spin size="large" /><Text type="secondary">正在加载任务详情…</Text></div>;
-  if (detail.isError || !task || !report) return <div className="page-stack">
+  if (detail.isError || !taskResponse || !task || !report) return <div className="page-stack">
     <Button type="text" icon={<ArrowLeftOutlined />} onClick={() => navigate('/runs/' + encodeURIComponent(runId))}>返回 Run 概览</Button>
     <Alert type="error" showIcon message="无法加载任务详情" description={(detail.error as Error)?.message ?? '任务不存在或终态报告不可用'} action={<Button onClick={() => detail.refetch()}>重试</Button>} />
   </div>;
@@ -95,7 +96,7 @@ export function TaskDetailPage() {
       </div>
       <Space>
         <Button icon={<ReloadOutlined />} onClick={() => detail.refetch()} loading={detail.isFetching}>刷新任务</Button>
-        <Button disabled={active.includes(detail.data.run_status) || captureKnowledge.isPending}
+        <Button disabled={active.includes(taskResponse.run_status) || captureKnowledge.isPending}
           loading={captureKnowledge.isPending} onClick={() => captureKnowledge.mutate()}>沉淀知识案例</Button>
       </Space>
     </div>
@@ -122,7 +123,7 @@ export function TaskDetailPage() {
     <Card className="content-card" title={'当前任务步骤记录（' + steps.length + '）'}>
       <Table rowKey="name" columns={stepColumns} dataSource={steps} pagination={{ pageSize: 10, showSizeChanger: false }} locale={{ emptyText: '当前任务尚无步骤记录' }} />
     </Card>
-    <Card className="content-card" title={'当前任务产物（' + detail.data.artifacts.length + '）'}>
+    <Card className="content-card" title={'当前任务产物（' + taskResponse.artifacts.length + '）'}>
       <Table rowKey={(row) => row.task_id + ':' + row.path} dataSource={detail.data.artifacts} pagination={{ pageSize: 8, showSizeChanger: false }} locale={{ emptyText: '该任务没有登记产物' }}
         columns={[
           { title: '产物', dataIndex: 'name', key: 'name' }, { title: '所属步骤', dataIndex: 'description', key: 'description' },
