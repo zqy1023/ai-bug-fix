@@ -28,7 +28,7 @@ def _is_transient_query_error(error: BaseException) -> bool:
     markers = (
         "connection closed mid-response", "connection reset", "server disconnected",
         "incomplete chunked read", "remoteprotocolerror", "readtimeout", "connecttimeout",
-        "broken pipe", "temporarily unavailable", "connection aborted", "api error",
+        "broken pipe", "temporarily unavailable", "connection aborted",
     )
     return any(marker in diagnostic for marker in markers) or isinstance(error, (TimeoutError, ConnectionError, OSError))
 
