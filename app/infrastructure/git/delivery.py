@@ -198,7 +198,8 @@ class GitBranchDelivery:
                 ) from error
 
             pushed = False
-            remote_names = {remote.name for remote in delivery_repo.remotes}
+            # 推送实际由源仓库 Repo 执行，必须检查源仓库配置的 remote，而不是临时克隆的 origin。
+            remote_names = {remote.name for remote in repo.remotes}
             require_push = bool(state.get("require_push") or state.get("analysis_only"))
             if require_push and self._config.remote_name not in remote_names:
                 raise DeliveryError(
