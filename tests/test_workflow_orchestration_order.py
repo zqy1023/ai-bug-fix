@@ -60,9 +60,8 @@ def test_context_and_validation_phases_stop_at_the_gate() -> None:
 
 
 def test_manual_resolution_finishes_current_task_so_parent_can_dispatch_next():
-    from app.workflow.routes import APPROVE, after_approval
-    from app.workflow.graph import TASK_COLLECT, TASK_DISPATCH, RUN_TASK
-    from app.workflow.graph import build_graph as build_parent_graph
+    from app.workflow.routes import after_approval
+    from app.workflow.graph import RUN_TASK, after_dispatch, collect
     from app.workflow.definitions import TASK_STATIC_TRANSITIONS
 
     assert after_approval({
@@ -76,9 +75,14 @@ def test_manual_resolution_finishes_current_task_so_parent_can_dispatch_next():
         "last_result": "passed",
     }) == FINALIZE
     assert (FINALIZE, "__end__") in TASK_STATIC_TRANSITIONS
-    # The run-level graph collects every completed task, increments task_cursor, then dispatches again.
-    assert (RUN_TASK, TASK_COLLECT) in [
-        (RUN_TASK, TASK_COLLECT)
-    ]
-    assert TASK_DISPATCH == "task_dispatch"
+
+    state = {
+        "task_cursor": 0,
+        "task": {"task_id": "task-1", "carrier": "A", "biztype": "track"},
+        "task_summary": {"task_id": "task-1", "result": "MANUAL"},
+        "tasks": [{"task_id": "task-1"}, {"task_id": "task-2"}],
+    }
+    collected = collect(state)
+    assert collected["task_cursor"] == 1
+    assert after_dispatch({**state, **collected}) == RUN_TASK
 
