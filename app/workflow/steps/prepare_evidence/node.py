@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import re
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -190,7 +191,7 @@ def _published_knowledge(problem: dict[str, Any], carrier: str, biztype: str, ca
             runtime_dir = load_config().runtime_dir
             connection = sqlite3.connect(str(runtime_dir / "workbench-control.sqlite3"), timeout=2)
             try:
-                now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+                now = datetime.now(timezone.utc).isoformat()
                 connection.executemany(
                     """INSERT OR IGNORE INTO knowledge_case_usage
                        (run_id, task_id, case_id, match_score, created_at) VALUES(?,?,?,?,?)""",
