@@ -108,26 +108,8 @@ class WorkflowState(TypedDict, total=False):
     blocked_reason: str
     # scope_escalation_required：是否需要共享层范围升级。
     scope_escalation_required: bool
-    # manual_intervention_required：定位安全门禁要求人工决定，工作流应挂起而不是直接收尾。
-    manual_intervention_required: bool
-    # manual_continue_allowed：只有保留了有效根因、源码证据与合法候选路径时才允许批准继续修复。
-    manual_continue_allowed: bool
-    # manual_continue_authorized：人工明确批准后，允许修复 Agent 消费已保留的 MANUAL 定位证据一次。
-    manual_continue_authorized: bool
     # repair_slot_claimed：本任务是否已经领取过修复资格，重新定位后不得重复领取。
     repair_slot_claimed: bool
-    # manual_intervention_reason：人工介入队列展示的具体阻断原因。
-    manual_intervention_reason: str
-    # manual_intervention_step：触发人工介入的真实工作流节点。
-    manual_intervention_step: str
-    # manual_resume_step：批准继续后恢复的节点，避免重复领取修复资格。
-    manual_resume_step: str
-    # approval_mode：当前 request_approval 中断的类型。
-    approval_mode: str
-    # escalation_used：本任务是否已使用范围升级。
-    escalation_used: bool
-    # authorized_files：人工授权的额外文件范围。
-    authorized_files: list[str]
     # 审查结论与审批状态，交付门禁只认这两个字段，不从步骤记录里回读。
     review_decision: str
     # approval_granted：人工审批是否通过。
