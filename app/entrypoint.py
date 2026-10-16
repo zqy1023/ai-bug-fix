@@ -7,12 +7,17 @@
 from __future__ import annotations
 
 import uuid
+import json
+import logging
+from datetime import datetime, timezone
 from dataclasses import replace
 from typing import Any
 
 from app.infrastructure.config import load_config
 from app.infrastructure.records.store import RecordStore
 from app.infrastructure.runtime import close_sessions
+
+logger = logging.getLogger(__name__)
 
 
 def prepare_run(
@@ -96,7 +101,7 @@ def run_workflow(
 
     graph = build_graph(store=store)
     try:
-        graph.invoke(
+        final_state = graph.invoke(
             {
                 "schema_version": 2,
                 "run_id": resolved,
@@ -113,9 +118,114 @@ def run_workflow(
             },
             config={"configurable": {"thread_id": resolved}, "recursion_limit": 40},
         )
+        _write_run_report(store, resolved, final_state=final_state)
+    except Exception as exc:
+        _write_run_report(store, resolved, error=exc)
+        raise
     finally:
         close_sessions()
     return {"run_id": resolved, "steps": [item.name for item in store.list_steps(resolved)]}
+
+
+def _write_run_report(
+    store: RecordStore,
+    run_id: str,
+    *,
+    final_state: dict[str, Any] | None = None,
+    error: Exception | None = None,
+) -> None:
+    """每轮执行无论正常、无任务还是异常退出，都写一份 Run 级终态报告。"""
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        run_dir = store.run_dir(run_id)
+        reports_dir = run_dir / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        steps_path = store.steps_path(run_id)
+        payload = json.loads(steps_path.read_text(encoding="utf-8")) if steps_path.is_file() else {}
+        slots = payload.get("tasks", []) if isinstance(payload, dict) else []
+        task_results = []
+        for slot in slots if isinstance(slots, list) else []:
+            if not isinstance(slot, dict) or not isinstance(slot.get("task_id"), str):
+                continue
+            task_id = slot["task_id"]
+            report_path = store.task_dir(run_id, task_id) / "reports" / "final.json"
+            report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.is_file() else {}
+            task_results.append({
+                "task_id": task_id,
+                "carrier": str(report.get("carrier") or ""),
+                "biztype": str(report.get("biztype") or ""),
+                "result": str(report.get("result") or "INCOMPLETE"),
+                "terminal_step": str(report.get("terminal_step") or ""),
+                "terminal_reason": str(report.get("terminal_reason") or
+                    ("任务结束但缺少 reports/final.json，无法确认结果。" if not report else "终态报告未记录原因。")),
+                "next_action": str(report.get("next_action") or ""),
+            })
+
+        run_steps = store.list_steps(run_id)
+        failed_steps = [step for step in run_steps if step.status == "failed"]
+        if error is not None:
+            result = "FAILED"
+            terminal = failed_steps[-1] if failed_steps else (run_steps[-1] if run_steps else None)
+            reason = f"{type(error).__name__}: {error}".strip()
+            terminal_step = terminal.name if terminal else "workflow"
+            next_action = "检查工作流异常堆栈、最后一个节点的输入输出和运行产物后重试。"
+            failure = {
+                "status": "FAILED", "error_type": type(error).__name__, "message": str(error),
+                "failed_at": now, "terminal_step": terminal_step, "terminal_reason": reason,
+            }
+            _atomic_json(reports_dir / "run_failure.json", failure)
+        elif failed_steps:
+            terminal = failed_steps[-1]
+            result = "FAILED"
+            reason = str(getattr(terminal.error, "message", "") or terminal.summary or
+                         f"Run 级步骤 {terminal.name} 执行失败，但没有记录具体原因。")
+            terminal_step = terminal.name
+            next_action = "检查失败节点的错误详情和产物，修复配置或输入后重新执行。"
+        elif not task_results:
+            result = "NO_TASKS"
+            terminal = next((step for step in reversed(run_steps) if step.name == "identify_carrier"),
+                            run_steps[-1] if run_steps else None)
+            terminal_step = terminal.name if terminal else "workflow"
+            reason = "本轮工作流已结束，但没有产生可处理的运输商任务。"
+            next_action = "检查日志筛选条件、异常规范化、去重结果和运输商识别输出。"
+        else:
+            counts = {}
+            for task in task_results:
+                outcome = task["result"].upper()
+                counts[outcome] = counts.get(outcome, 0) + 1
+            total = len(task_results)
+            successes = counts.get("SUCCESS", 0) + counts.get("SUCCEEDED", 0)
+            manuals = counts.get("MANUAL", 0) + counts.get("INSUFFICIENT_EVIDENCE", 0)
+            failures = sum(count for key, count in counts.items()
+                           if key in {"FAILED", "FAIL", "REJECTED", "INCOMPLETE", "CANCELLED"})
+            if failures or manuals:
+                result = "PARTIAL_FAILED" if successes else ("MANUAL" if manuals and not failures else "FAILED")
+            elif successes == total:
+                result = "SUCCESS"
+            else:
+                result = "INCOMPLETE"
+            blocker = next((task for task in task_results if task["result"].upper() not in {"SUCCESS", "SUCCEEDED"}), None)
+            terminal_step = str(blocker.get("terminal_step") or "task_collect") if blocker else "task_collect"
+            reason = f"本轮共处理 {total} 个任务：成功 {successes} 个，需人工介入 {manuals} 个，失败或未完成 {failures} 个。"
+            if blocker and blocker["terminal_reason"]:
+                reason += " 首个未成功任务：" + blocker["carrier"] + " / " + blocker["biztype"] + " — " + blocker["terminal_reason"]
+            next_action = str(blocker.get("next_action") or "检查各任务终态报告，按团队流程完成人工评审与合并。") if blocker else "所有任务均已完成交付准备；按团队流程完成人工评审与合并。"
+
+        report = {
+            "report_version": 1, "report_kind": "run_final", "run_id": run_id,
+            "result": result, "status": result, "terminal_step": terminal_step,
+            "terminal_reason": reason, "next_action": next_action, "finished_at": now,
+            "task_count": len(task_results), "task_results": task_results,
+        }
+        _atomic_json(reports_dir / "final.json", report)
+    except Exception:
+        logger.exception("写入 Run 级终态报告失败 run_id=%s", run_id)
+
+
+def _atomic_json(path, value: dict[str, Any]) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)
 
 
 def main() -> None:
