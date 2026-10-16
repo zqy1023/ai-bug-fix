@@ -52,6 +52,15 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _patch(output: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "delivery": dict(output),
+        "repair_branch": str(output.get("repair_branch") or ""),
+        "delivery_pushed": bool(output.get("pushed")),
+        "delivery_commit": str(output.get("commit") or ""),
+    }
+
+
 SPEC = StepSpec(
     name="prepare_delivery",
     title="创建修复分支",
@@ -59,6 +68,7 @@ SPEC = StepSpec(
     input_model=DeliveryInput,
     output_model=DeliveryOutput,
     input_builder=_input,
+    output_patch=_patch,
     requires_confirmation=True,
     depends_on=(Dependency("apply_plan", "task"),),
     next_step="finalize_execution",
