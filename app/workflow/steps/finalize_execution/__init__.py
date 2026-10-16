@@ -16,6 +16,7 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         "carrier": str(task.get("carrier") or ""),
         "biztype": str(task.get("biztype") or ""),
         "terminal_status": str(state.get("terminal_status") or ""),
+        "ai_workspace_path": str(state.get("ai_workspace_path") or ""),
     }
 
 
