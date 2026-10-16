@@ -107,6 +107,38 @@ class WorkspaceManager:
             raise
         return target
 
+    def reset_task_workspace(
+        self,
+        workspace: str | Path,
+        source_repo: str | Path,
+        baseline_dir: str | Path,
+        source_project_path: str | Path,
+        carrier: str,
+    ) -> None:
+        """从干净源项目重建任务工作区，再恢复本次任务的 carrier 基线。"""
+        root = Path(workspace).resolve()
+        source = self.project_root(source_repo)
+        expected = Path(source_project_path).resolve()
+        if source != expected:
+            raise WorkspaceError("重试时源项目路径与原始快照不一致")
+        if not root.is_dir():
+            raise WorkspaceError("重试工作区不存在")
+        temporary = root.with_name(root.name + ".reset")
+        if temporary.exists():
+            shutil.rmtree(temporary, ignore_errors=True)
+        try:
+            self._copy_source(source, temporary)
+            self.restore_carrier_snapshot(temporary, baseline_dir, carrier, "gathers")
+            # restore_carrier_snapshot 需要知道框架；同时尝试恢复旧框架快照。
+            for framework in ("gathers", "spiders"):
+                self.restore_carrier_snapshot(temporary, baseline_dir, carrier, framework)
+            self._write_ignore(temporary)
+            shutil.rmtree(root, ignore_errors=True)
+            temporary.replace(root)
+        except Exception:
+            shutil.rmtree(temporary, ignore_errors=True)
+            raise
+
     @classmethod
     def reset_carrier_workspace(
         cls,
