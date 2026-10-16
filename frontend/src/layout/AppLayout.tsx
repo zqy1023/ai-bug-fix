@@ -12,10 +12,10 @@ const { Header, Sider, Content, Footer } = Layout;
 const { Text } = Typography;
 
 const routeMeta = [
-  { key: '/dashboard', title: '运行控制台', eyebrow: 'CONTROL CENTER' },
-  { key: '/runs', title: '执行记录', eyebrow: 'RUN HISTORY' },
-  { key: '/approvals', title: '审批中心', eyebrow: 'HUMAN GATE' },
-  { key: '/knowledge', title: '修复知识中心', eyebrow: 'REPAIR KNOWLEDGE' },
+  { key: '/dashboard', title: '工作台首页', eyebrow: 'WORKSPACE OVERVIEW' },
+  { key: '/runs', title: '执行工作区', eyebrow: 'EXECUTION WORKSPACE' },
+  { key: '/approvals', title: '待审批与人工介入', eyebrow: 'HUMAN DECISIONS' },
+  { key: '/knowledge', title: '修复知识库', eyebrow: 'KNOWLEDGE OPERATIONS' },
 ];
 
 export function AppLayout() {
@@ -25,7 +25,7 @@ export function AppLayout() {
   const [collapsed, setCollapsed] = useState(false);
   const [tokenDraft, setTokenDraft] = useState('');
   const selected = location.pathname.startsWith('/runs/') ? '/runs' : location.pathname;
-  const current = location.pathname.startsWith('/runs/') ? { title: '执行详情', eyebrow: 'RUN INSPECTOR' } : routeMeta.find((item) => item.key === selected) ?? { title: '工作台', eyebrow: 'AI REPAIR OPERATIONS' };
+  const current = location.pathname.startsWith('/runs/') ? { title: '执行工作区 / 任务检查', eyebrow: 'EXECUTION INSPECTOR' } : routeMeta.find((item) => item.key === selected) ?? { title: '工作台', eyebrow: 'AI REPAIR OPERATIONS' };
   const health = useQuery({ queryKey: ['workbench-health'], queryFn: api.health, refetchInterval: 30000, retry: 1 });
   const approvals = useQuery({ queryKey: ['approvals'], queryFn: api.approvals, refetchInterval: 15000, retry: 1 });
   const authRequired = health.error instanceof ApiError && health.error.status === 401;
@@ -51,10 +51,10 @@ export function AppLayout() {
       </div>
       {!collapsed && <div className="sider-section-label">工作空间</div>}
       <Menu theme="light" mode="inline" selectedKeys={[selected]} items={[
-        { key: '/dashboard', icon: <AppstoreOutlined />, label: '运行控制台' },
-        { key: '/runs', icon: <ClockCircleOutlined />, label: '执行与调试' },
-        { key: '/approvals', icon: <SafetyCertificateOutlined />, label: <span className="menu-label">审批中心 <Badge size="small" count={approvals.data?.length ?? 0} overflowCount={99} /></span> },
-        { key: '/knowledge', icon: <BookOutlined />, label: '修复知识中心' },
+        { key: '/dashboard', icon: <AppstoreOutlined />, label: '工作台首页' },
+        { key: '/runs', icon: <ClockCircleOutlined />, label: '执行工作区' },
+        { key: '/approvals', icon: <SafetyCertificateOutlined />, label: <span className="menu-label">待审批与人工介入 <Badge size="small" count={approvals.data?.length ?? 0} overflowCount={99} /></span> },
+        { key: '/knowledge', icon: <BookOutlined />, label: '修复知识库' },
       ]} onClick={({ key }) => navigate(key)} />
       <div className="sider-bottom">
         <div className="sider-runtime">
@@ -75,7 +75,7 @@ export function AppLayout() {
           <Tooltip title={health.data ? '后端健康检查成功' : health.isError ? '后端健康检查失败' : '正在检查后端'}>
             <span className="health-indicator"><i className={'status-dot ' + (health.isSuccess ? 'is-online' : health.isError ? 'is-offline' : 'is-checking')} />{health.isSuccess ? '服务在线' : health.isError ? '服务异常' : '检查中'}</span>
           </Tooltip>
-          <Button type="text" icon={<CheckCircleOutlined />} onClick={() => navigate('/approvals')} aria-label="前往审批中心" />
+          <Button type="text" icon={<CheckCircleOutlined />} onClick={() => navigate('/approvals')} aria-label="前往待审批与人工介入" title={'待审批 ' + (approvals.data?.length ?? 0) + ' 项'} />
         </Space>
       </Header>
       <Content className="page-content"><Outlet /></Content>
