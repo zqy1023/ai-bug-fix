@@ -77,6 +77,15 @@ def _retry_or_finalize(state: WorkflowState) -> str:
     return FINALIZE if int(state.get("attempt") or 1) >= int(state.get("max_attempts") or 3) else RETRY
 
 
+def _locate_references_legacy(locate: dict) -> bool:
+    """定位 Agent 若把根因证据指向 spiders，则强制走分析报告分支。"""
+    paths = [str(item) for item in locate.get("candidate_files") or []]
+    for item in locate.get("source_evidence") or []:
+        if isinstance(item, dict):
+            paths.append(str(item.get("path") or ""))
+    return any(path.replace("\\", "/").startswith("spiders/") for path in paths)
+
+
 def after_source_snapshot(state: WorkflowState) -> str:
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
         return FINALIZE
@@ -122,9 +131,12 @@ def after_locate(state: WorkflowState) -> str:
     if evidence.get("legacy_only") or evidence.get("legacy_dependency"):
         return FINALIZE
     locate = state.get("locate") or {}
+    if _locate_references_legacy(locate):
+        return FINALIZE
     if (
         str(locate.get("recommended_scope") or "") != "carrier"
         or str(locate.get("category") or "") != "carrier"
+        or _locate_references_legacy(locate)
     ):
         return FINALIZE
     disposition = locate_disposition(str(locate.get("status") or ""))
@@ -280,6 +292,7 @@ def after_finalize(state: WorkflowState) -> str:
             str(locate.get("status") or "") != "LOCATED"
             or str(locate.get("recommended_scope") or "") != "carrier"
             or str(locate.get("category") or "") != "carrier"
+            or _locate_references_legacy(locate)
         ))
     )
     return DELIVER if analysis_only and state.get("ai_workspace_path") else END
