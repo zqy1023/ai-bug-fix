@@ -1,14 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, App, Button, Card, Descriptions, Drawer, Empty, Modal, Select, Space, Spin, Table, Tabs, Tag, Typography } from 'antd';
-import { ArrowLeftOutlined, BookOutlined, ReloadOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useNavigate, useParams } from 'react-router-dom';
 import dayjs from 'dayjs';
 import { api } from '../lib/api';
 import { StatusTag, statusLabel } from '../components/StatusTag';
 import { WorkflowGraph } from '../components/WorkflowGraph';
 import type { ModelCall, StepRecord } from '../lib/types';
-const { Title, Text } = Typography;
+const { Title, Text, Paragraph } = Typography;
 function duration(value?: number | null) { if (value == null) return '—'; return value >= 1000 ? (value / 1000).toFixed(2) + ' 秒' : value.toFixed(0) + ' ms'; }
 function resultLabel(value?: string | null) { if (!value) return '—'; const labels: Record<string, string> = { passed: '通过', failed: '失败', FAILED: '失败', rejected: '已拒绝', REJECTED: '已拒绝', manual: '需人工介入', MANUAL: '需人工介入', PASS: '审查通过', FAIL: '审查未通过', LOCATED: '已定位根因', INSUFFICIENT_EVIDENCE: '证据不足', PENDING: '待处理', COMPLETED: '已结束', SUCCESS: '成功', SUCCEEDED: '成功', FAILED_VALIDATION: '验证失败', NOT_RUN: '未运行', INCOMPLETE: '验证不完整', STALE: '验证已过期', DELIVERED: '已交付', RUNNING: '执行中', WAITING_APPROVAL: '待审批', CLAIMED: '已领取', REPAIRING: '修复中', VERIFYING: '验证中', REVIEWING: '审查中', DELIVERING: '交付中' }; return labels[value] ?? labels[value.toUpperCase()] ?? value; }
 export function RunDetailPage() {
