@@ -116,6 +116,8 @@ class WorkflowState(TypedDict, total=False):
     manual_continue_allowed: bool
     # manual_continue_authorized：人工明确批准后，允许修复 Agent 消费已保留的 MANUAL 定位证据一次。
     manual_continue_authorized: bool
+    # repair_slot_claimed：本任务是否已经领取过修复资格，重新定位后不得重复领取。
+    repair_slot_claimed: bool
     # manual_intervention_reason：人工介入队列展示的具体阻断原因。
     manual_intervention_reason: str
     # manual_intervention_step：触发人工介入的真实工作流节点。
