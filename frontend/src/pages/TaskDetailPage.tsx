@@ -124,7 +124,7 @@ export function TaskDetailPage() {
       <Table rowKey="name" columns={stepColumns} dataSource={steps} pagination={{ pageSize: 10, showSizeChanger: false }} locale={{ emptyText: '当前任务尚无步骤记录' }} />
     </Card>
     <Card className="content-card" title={'当前任务产物（' + taskResponse.artifacts.length + '）'}>
-      <Table rowKey={(row) => row.task_id + ':' + row.path} dataSource={taskResponse.artifacts} pagination={{ pageSize: 8, showSizeChanger: false }} locale={{ emptyText: '该任务没有登记产物' }}
+      <Table rowKey={(row) => (row.task_id ?? taskId) + ':' + row.path} dataSource={taskResponse.artifacts} pagination={{ pageSize: 8, showSizeChanger: false }} locale={{ emptyText: '该任务没有登记产物' }}
         columns={[
           { title: '产物', dataIndex: 'name', key: 'name' }, { title: '所属步骤', dataIndex: 'description', key: 'description' },
           { title: '类型', dataIndex: 'media_type', key: 'media_type' },
