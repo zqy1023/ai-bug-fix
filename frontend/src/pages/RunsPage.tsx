@@ -14,6 +14,7 @@ export function RunsPage() {
   const initialStatus = searchParams.get('status');
   const [page, setPage] = useState(1); const [keyword, setKeyword] = useState(''); const [status, setStatus] = useState<RunStatus | undefined>(initialStatus && ['queued', 'running', 'waiting_approval', 'succeeded', 'partial_failed', 'failed', 'cancelled', 'paused', 'pause_requested', 'cancel_requested'].includes(initialStatus) ? initialStatus as RunStatus : undefined); const [modalOpen, setModalOpen] = useState(false);
   const runs = useQuery({ queryKey: ['runs', page, keyword, status], queryFn: () => api.runs({ page, page_size: 20, keyword, status }), refetchInterval: 15000 });
+  const health = useQuery({ queryKey: ['workbench-health'], queryFn: api.health, refetchInterval: 30000, retry: 1 });
   const columns = [
     { title: '执行 ID', dataIndex: 'run_id', key: 'run_id', render: (v: string) => <a onClick={() => navigate('/runs/' + encodeURIComponent(v))}>{v}</a> },
     { title: '状态', dataIndex: 'status', key: 'status', render: (v: RunSummary['status']) => <StatusTag status={v} /> },
@@ -24,7 +25,9 @@ export function RunsPage() {
     { title: '操作', key: 'actions', render: (_: unknown, row: RunSummary) => <Button type="link" onClick={() => navigate('/runs/' + encodeURIComponent(row.run_id))}>查看详情</Button> },
   ];
   return <div className="page-stack">
-    <div className="page-heading"><div><Title level={3}>执行工作区</Title><Text type="secondary">按状态找到需要处理的轮次；打开后优先查看任务结论、根因证据与下一步操作。</Text></div><Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)}>新建执行</Button></div>
+    <div className="page-heading"><div><Title level={3}>执行工作区</Title><Text type="secondary">按状态找到需要处理的轮次；打开后优先查看任务结论、根因证据与下一步操作。</Text></div><Button type="primary" icon={<PlusOutlined />} disabled={Boolean(health.data && !health.data.source_repo_configured)} onClick={() => setModalOpen(true)}>新建执行</Button></div>
+    {health.data && !health.data.source_repo_configured && <Alert type="warning" showIcon message="尚未配置源代码仓库，当前无法启动新执行" description="请先完成 AI_REPAIR_SOURCE_REPO 配置。已有执行记录仍可查询和审计。" />}
+    {health.isError && <Alert type="error" showIcon message="无法确认工作流服务状态" description={(health.error as Error).message} action={<Button type="link" onClick={() => health.refetch()}>重试连接</Button>} />}
     {runs.isError && <Alert type="error" showIcon message="执行记录加载失败" description={(runs.error as Error).message} action={<Button type="link" onClick={() => runs.refetch()}>重试</Button>} />}
     <Card className="content-card"><div className="filter-row">
       <Input allowClear prefix={<SearchOutlined />} placeholder="搜索执行 ID" value={keyword} onChange={(e) => { setKeyword(e.target.value); setPage(1); }} style={{ maxWidth: 300 }} />
