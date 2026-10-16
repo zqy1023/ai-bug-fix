@@ -80,8 +80,12 @@ def _prompt_metrics(request: Any) -> dict[str, int]:
         except (TypeError, ValueError):
             return 0
 
+    system_prompt = str(getattr(request, "system_prompt", "") or "")
+    common_prompt, separator, role_prompt = system_prompt.partition("\\n\\n---\\n\\n")
     return {
-        "system_prompt_chars": len(str(getattr(request, "system_prompt", "") or "")),
+        "system_prompt_chars": len(system_prompt),
+        "common_rules_chars": len(common_prompt) if separator else len(system_prompt),
+        "role_prompt_chars": len(role_prompt) if separator else 0,
         "task_context_chars": len(str(getattr(request, "prompt", "") or "")),
         "problem_chars": size(context.get("problem")),
         "source_snapshot_chars": size(context.get("source_snapshot")),
