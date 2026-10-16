@@ -131,3 +131,45 @@ a { cursor: pointer; }
 .knowledge-detail .ant-typography strong { color: #344054; }
 @media (max-width: 1000px) { .knowledge-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 600px) { .page-content { padding: 18px 14px; } .app-header { padding: 0 14px; } .knowledge-metrics { grid-template-columns: 1fr; } .header-right .ant-tag { display: none; } }
+
+
+/* Task-first workbench interaction layer */
+.workbench-home { gap: 22px; }
+.workbench-welcome {
+  display: flex; align-items: center; justify-content: space-between; gap: 24px;
+  padding: 28px 30px; border: 1px solid #dfe7fb; border-radius: 14px;
+  background: linear-gradient(112deg, #f2f6ff 0%, #ffffff 68%);
+}
+.workbench-welcome h2 { margin: 7px 0 8px; color: #172235; font-size: 23px; font-weight: 740; letter-spacing: -.5px; }
+.workbench-welcome p { margin: 0; max-width: 680px; color: #667085; font-size: 13px; line-height: 1.75; }
+.welcome-eyebrow { color: #4569cf; font-size: 10px; font-weight: 750; letter-spacing: 1.4px; }
+.attention-section { display: flex; flex-direction: column; gap: 12px; }
+.section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.section-heading h5.ant-typography { margin: 0 0 4px; font-size: 16px; color: #27364b; }
+.section-heading .ant-typography-secondary { font-size: 12px; }
+.attention-card { cursor: pointer; border: 1px solid #e5eaf2; border-radius: 12px; transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease; }
+.attention-card:hover { transform: translateY(-2px); box-shadow: 0 8px 22px rgba(26, 45, 85, .07); }
+.attention-card .ant-card-body { padding: 17px 18px; }
+.attention-top { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; color: #667085; font-size: 12px; }
+.attention-top .anticon { font-size: 16px; }
+.attention-card .ant-statistic { margin-bottom: 7px; }
+.attention-card .ant-statistic-content { font-size: 29px; font-weight: 750; letter-spacing: -.6px; }
+.attention-card .ant-typography-secondary { font-size: 11px; }
+.attention-blue { border-top: 3px solid #6387ee; }
+.attention-blue .attention-top .anticon { color: #4569cf; }
+.attention-amber { border-top: 3px solid #e8b64b; }
+.attention-amber .attention-top .anticon { color: #b98014; }
+.attention-red { border-top: 3px solid #e77e78; }
+.attention-red .attention-top .anticon { color: #c84c4c; }
+.attention-green { border-top: 3px solid #6abf91; }
+.attention-green .attention-top .anticon { color: #278455; }
+.service-state { display: flex; align-items: center; gap: 10px; padding: 8px 0 18px; color: #344054; font-size: 13px; }
+.service-card .health-row { border-bottom: 1px solid #f0f2f6; }
+.dashboard-refresh-note { padding-top: 12px; font-size: 12px; white-space: nowrap; }
+@media (max-width: 768px) {
+  .workbench-welcome { align-items: flex-start; flex-direction: column; padding: 22px; }
+  .workbench-welcome h2 { font-size: 20px; }
+  .workbench-welcome .ant-btn { width: 100%; }
+  .dashboard-refresh-note { display: none; }
+  .section-heading { align-items: flex-start; }
+}
