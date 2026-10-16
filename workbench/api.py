@@ -1129,7 +1129,7 @@ def v1_list_approvals(
 
 @app.get("/api/v1/manual-interventions")
 def v1_list_manual_interventions(_: None = Depends(_authorize)) -> dict[str, Any]:
-    """列出已终止自动流程、需要人工判断的任务；不把它们伪装成可批准的变更方案。"""
+    """列出已终止自动流程、需要人工判断的任务；优先使用终态报告记载的真实阻断步骤。"""
     store = _store()
     items: list[dict[str, Any]] = []
     for run_id in _all_run_ids(store):
@@ -1141,45 +1141,48 @@ def v1_list_manual_interventions(_: None = Depends(_authorize)) -> dict[str, Any
             if task.get("approval_pending"):
                 continue
             steps = task.get("steps") or []
-            manual_step: dict[str, Any] | None = None
-            reason = ""
-            for step in steps:
-                output = step.get("output") if isinstance(step.get("output"), dict) else {}
-                name = str(step.get("name") or "")
-                is_manual = (
-                    (name == "locate_agent" and str(output.get("status") or "").upper() == "MANUAL")
-                    or (name == "review_agent" and str(output.get("verdict") or "").upper() == "MANUAL")
-                    or str(step.get("result") or "").lower() == "manual"
-                )
-                if is_manual:
-                    manual_step = step
-                    reason = str(output.get("summary") or output.get("reason") or step.get("summary") or "自动流程无法安全继续，需要人工排查")
-                    # 兼容历史记录：旧版 locate_agent 的 summary 是固定文案，
-                    # 真实契约错误已写入 evidence_gaps，应优先把具体原因展示给人工。
-                    generic_locate_summaries = {
-                        "定位输出不满足证据或路径契约，停止并转人工",
-                        "定位输出不满足证据或路径契约，停止并转人工。",
-                    }
-                    if name == "locate_agent" and reason.strip() in generic_locate_summaries:
-                        gaps = output.get("evidence_gaps")
-                        if isinstance(gaps, list):
-                            detail = next((str(item).strip() for item in gaps if str(item).strip()), "")
-                            if detail:
-                                reason = f"定位输出契约校验失败：{detail[:1500]}"
-                    break
-            terminal = str(task.get("status") or "").upper()
-            if manual_step is None and terminal != "MANUAL":
+            report = task.get("report") if isinstance(task.get("report"), dict) else {}
+            terminal = str(report.get("result") or task.get("status") or "").upper()
+            if terminal not in {"MANUAL", "INSUFFICIENT_EVIDENCE"}:
                 continue
-            if manual_step is None:
-                manual_step = next((step for step in reversed(steps) if step.get("name") == "finalize_execution"), {})
-                reason = str((manual_step.get("output") or {}).get("summary") or "任务最终结论为 MANUAL，需要人工排查")
+
+            report_step = str(report.get("terminal_step") or "").strip()
+            reason = str(report.get("terminal_reason") or "").strip()
+            manual_step = next((step for step in reversed(steps) if report_step and step.get("name") == report_step), None)
+
+            # 终态报告是人工介入原因的权威来源。这样证据阶段打回时不会显示成“执行收尾 MANUAL”。
+            if not reason or not report_step:
+                for step in reversed(steps):
+                    output = step.get("output") if isinstance(step.get("output"), dict) else {}
+                    name = str(step.get("name") or "")
+                    verdict = str(output.get("status") or output.get("verdict") or step.get("result") or "").upper()
+                    is_manual = (
+                        verdict in {"MANUAL", "INSUFFICIENT_EVIDENCE"}
+                        or bool(output.get("legacy_only") and name == "prepare_evidence")
+                    )
+                    if not is_manual:
+                        continue
+                    manual_step = step
+                    report_step = name
+                    gaps = output.get("evidence_gaps")
+                    reason = str(
+                        output.get("legacy_reason") or output.get("reason") or output.get("summary")
+                        or step.get("summary") or
+                        (("证据缺口：" + "；".join(str(item) for item in gaps[:8])) if isinstance(gaps, list) and gaps else "")
+                    ).strip()
+                    break
+
+            if not reason:
+                reason = "自动流程因安全门禁无法继续，需要人工排查；历史记录没有保存更具体的原因。"
+            if not report_step:
+                report_step = str((manual_step or {}).get("name") or "finalize_execution")
             items.append({
                 "intervention_id": f"{run_id}:{task.get('task_id', '')}",
                 "run_id": run_id,
                 "task_id": str(task.get("task_id") or ""),
                 "carrier": str(task.get("carrier") or ""),
                 "biztype": str(task.get("biztype") or ""),
-                "step": str(manual_step.get("name") or "finalize_execution"),
+                "step": report_step,
                 "status": "open",
                 "summary": reason[:2000],
                 "created_at": str(payload.get("updated_at") or payload.get("created_at") or ""),
