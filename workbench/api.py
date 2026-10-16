@@ -118,11 +118,21 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
             carrier = str((report or {}).get("carrier") or _task_identity(slot, "carrier"))
             biztype = str((report or {}).get("biztype") or _task_identity(slot, "biztype"))
             inferred_status = str((report or {}).get("result") or _task_status(task_steps, approval))
+            fallback_report = _report_from_steps(
+                task_id=task_id, carrier=carrier, biztype=biztype,
+                steps=task_steps, status=inferred_status,
+            )
             if not isinstance(report, dict) or not report:
-                report = _report_from_steps(
-                    task_id=task_id, carrier=carrier, biztype=biztype,
-                    steps=task_steps, status=inferred_status,
-                )
+                report = fallback_report
+            elif not report.get("terminal_reason") or not report.get("terminal_step") or not report.get("next_action"):
+                # 旧 final.json 可能只有 MANUAL/FAILED，按步骤记录补全报告；已存在字段不覆盖。
+                report = {
+                    **report,
+                    "terminal_step": report.get("terminal_step") or fallback_report.get("terminal_step"),
+                    "terminal_reason": report.get("terminal_reason") or fallback_report.get("terminal_reason"),
+                    "next_action": report.get("next_action") or fallback_report.get("next_action"),
+                    "legacy_report": True,
+                }
             tasks.append({
                 "task_id": task_id, "carrier": carrier, "biztype": biztype,
                 "status": str(report.get("result") or inferred_status),
@@ -686,7 +696,7 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
             has_waiting_step = any(step.get("status") == "waiting" for step in steps)
             has_waiting_step = has_waiting_step or any(
                 step.get("status") == "waiting"
-                for task in tasks for step in (task.get("steps") or [])
+                for task in (payload.get("tasks") or []) for step in (task.get("steps") or [])
             )
             status = "paused" if has_waiting_step else "pause_requested"
     finally:
