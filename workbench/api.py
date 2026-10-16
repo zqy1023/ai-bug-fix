@@ -533,7 +533,7 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
     try:
         row = connection.execute("SELECT cancel_requested FROM run_control WHERE run_id=?", (run_id,)).fetchone()
         if row and row["cancel_requested"]:
-            status = "cancelled" if not next_nodes else "cancel_requested"
+            status = "cancelled" if payload.get("status") in {"completed", "failed"} and not next_nodes else "cancel_requested"
     finally:
         connection.close()
     return {
@@ -778,7 +778,10 @@ def v1_model_calls(
 ) -> dict[str, Any]:
     """返回 Provider 层真实请求审计；未记录的旧运行返回空列表，不补造统计。"""
     run_id = _safe_id(run_id)
-    path = _store().run_dir(run_id) / "model_calls.jsonl"
+    run_dir = _store().run_dir(run_id)
+    if not run_dir.is_dir():
+        raise HTTPException(status_code=404, detail="运行记录不存在")
+    path = run_dir / "model_calls.jsonl"
     items: list[dict[str, Any]] = []
     if path.is_file():
         try:
