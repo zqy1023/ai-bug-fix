@@ -500,7 +500,7 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
                 source_evidence = locate.get("source_evidence")
                 candidate_files = locate.get("candidate_files")
                 can_retry_repair = bool(
-                    str(locate.get("status") or "") == "LOCATED"
+                    (str(locate.get("status") or "") == "LOCATED" or bool(state.get("manual_continue_authorized")))
                     and str(locate.get("root_cause") or "").strip()
                     and isinstance(source_evidence, list) and source_evidence
                     and isinstance(candidate_files, list) and candidate_files
