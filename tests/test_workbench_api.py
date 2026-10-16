@@ -257,3 +257,16 @@ def test_v1_approval_projection_uses_real_repair_plan_and_hides_file_contents(mo
     assert item["change_plan"]["edits"][0]["path"] == "common/redis_utils.py"
     assert "content" not in item["change_plan"]["edits"][0]
     assert "SENSITIVE_FULL_FILE_CONTENT" not in str(item)
+
+
+def test_latest_approval_step_prefers_current_interrupt_over_historical_approval():
+    old = {"name": "request_approval", "status": "succeeded", "output": {"decision": "APPROVE"}}
+    latest = {"name": "request_approval", "status": "running", "output": {"decision": "PENDING"}}
+
+    assert workbench_api._latest_approval_step([
+        old,
+        {"name": "repair_agent", "status": "succeeded"},
+        latest,
+    ]) is latest
+    assert workbench_api._approval_pending(workbench_api._latest_approval_step([old, latest])) is True
+
