@@ -1,4 +1,4 @@
-"""在 Locate 与资格认领后创建任务级隔离工作区。"""
+"""在根因定位前创建任务级隔离工作区，Agent 只读取副本。"""
 
 from __future__ import annotations
 
@@ -33,13 +33,11 @@ SPEC = StepSpec(
     output_model=WorkspaceOutput,
     input_builder=_input,
     output_patch=_patch,
-    requires_confirmation=True,
     depends_on=(
         Dependency("identify_carrier", "run"),
-        Dependency("claim_repair_slot", "task"),
         Dependency("prepare_source_snapshot", "task"),
     ),
-    next_step="repair_agent",
+    next_step="prepare_evidence",
 )
 
 __all__ = ["SPEC"]
