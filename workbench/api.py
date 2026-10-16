@@ -895,16 +895,15 @@ def _record_background_failure(run_id: str, error: Exception) -> None:
         temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(target)
         final_path = report_dir / "final.json"
-        if not final_path.exists():
-            final_tmp = report_dir / "final.json.tmp"
-            final_report = {
-                "report_version": 1, "report_kind": "run_final", "run_id": run_id,
-                "result": "FAILED", "status": "FAILED", "terminal_step": payload["terminal_step"],
-                "terminal_reason": payload["terminal_reason"], "next_action": payload["next_action"],
-                "finished_at": now, "task_count": 0, "task_results": [],
-            }
-            final_tmp.write_text(json.dumps(final_report, ensure_ascii=False, indent=2), encoding="utf-8")
-            final_tmp.replace(final_path)
+        final_tmp = report_dir / "final.json.tmp"
+        final_report = {
+            "report_version": 1, "report_kind": "run_final", "run_id": run_id,
+            "result": "FAILED", "status": "FAILED", "terminal_step": payload["terminal_step"],
+            "terminal_reason": payload["terminal_reason"], "next_action": payload["next_action"],
+            "finished_at": now, "task_count": 0, "task_results": [],
+        }
+        final_tmp.write_text(json.dumps(final_report, ensure_ascii=False, indent=2), encoding="utf-8")
+        final_tmp.replace(final_path)
     except Exception:
         logger.exception("无法写入后台失败报告 run_id=%s", run_id)
 
