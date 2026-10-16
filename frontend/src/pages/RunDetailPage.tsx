@@ -27,6 +27,7 @@ export function RunDetailPage() {
   const data = detail.data;
   const modelCalls = useQuery({ queryKey: ['model-calls', runId], queryFn: () => api.modelCalls(runId), refetchInterval: (q) => ['running', 'queued', 'waiting_approval', 'cancel_requested'].includes(detail.data?.status ?? '') ? 5000 : false });
   const controlAudit = useQuery({ queryKey: ['control-audit', runId], queryFn: () => api.controlAudit(runId) });
+  const artifactContent = useQuery({ queryKey: ['artifact-content', runId, selectedArtifact?.path, selectedArtifact?.task_id], queryFn: () => api.artifactContent(runId, selectedArtifact!.path, selectedArtifact?.task_id), enabled: Boolean(selectedArtifact) });
   const stepColumns = [
     { title: '节点', dataIndex: 'title', key: 'title', render: (v: string, row: StepRecord) => <div><strong>{v || row.name}</strong><div className="secondary-small">{row.name}</div></div> },
     { title: '执行状态', dataIndex: 'status', key: 'status', render: (v: StepRecord['status']) => <StatusTag status={v} /> },
