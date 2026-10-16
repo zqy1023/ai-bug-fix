@@ -105,6 +105,26 @@ def run_stage(
         raise
     except StepFailed as error:
         return _save_fail(spec, store, state, record, task_id, artifacts, started, error, **_views(spec))
+    except Exception as error:
+        # Agent SDK/API/进程级异常不能直接冒泡出任务子图；按 Agent 执行失败记录，
+        # 由 after_* 路由进入有界 retry，耗尽后只结束当前 task。
+        if spec.name in {"locate_agent", "repair_agent", "review_agent"}:
+            return _save_fail(
+                spec,
+                store,
+                state,
+                record,
+                task_id,
+                artifacts,
+                started,
+                StepFailed(
+                    f"{spec.name} 执行异常: {error}",
+                    result="failed",
+                    code="AGENT_EXECUTION_ERROR",
+                ),
+                **_views(spec),
+            )
+        raise
     except (ValidationError, KeyError, ValueError) as error:
         return _save_fail(
             spec,
