@@ -464,7 +464,16 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
             "attempt": int(state.get("attempt") or 1),
             "terminal_status": (
                 "manual"
-                if kind == "locate" and (failed or bool((state.get("evidence") or {}).get("legacy_only")))
+                if (
+                    kind == "locate"
+                    and (
+                        failed
+                        or bool((state.get("evidence") or {}).get("legacy_only"))
+                        or bool((state.get("evidence") or {}).get("legacy_dependency"))
+                        or str(view.recommended_scope or "") != "carrier"
+                        or str(view.category or "") != "carrier"
+                    )
+                ) or (kind == "review" and str(view.verdict or "").upper() == "MANUAL")
                 else "failed" if failed else "passed"
             ),
         }
@@ -518,6 +527,8 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
                     "terminal_status": "manual",
                 })
             else:
+                if scope_escalation:
+                    patch["terminal_status"] = "manual"
                 patch.update({
                     "manual_intervention_required": False,
                     "manual_continue_allowed": False,
