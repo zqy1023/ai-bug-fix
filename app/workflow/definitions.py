@@ -27,10 +27,10 @@ TASK_PHASES = {
     VALIDATE: PHASE_COMPOSITIONS[VALIDATE],
 }
 
-# 12 个业务主节点；retry_prepare 是仅供有界回修使用的内部控制节点。
+# 11 个业务主节点；retry_prepare 是仅供有界回修使用的内部控制节点。
 TASK_NODE_NAMES = (
     PREPARE_CONTEXT, LOCATE, CLAIM, REPAIR, VALIDATE,
-    REGRESSION, REVIEW, APPROVE, APPLY, DELIVER, FINALIZE, RETRY,
+    REGRESSION, REVIEW, APPROVE, DELIVER, FINALIZE, RETRY,
 )
 
 TASK_STATIC_TRANSITIONS: tuple[tuple[str, str], ...] = (
@@ -40,7 +40,7 @@ TASK_STATIC_TRANSITIONS: tuple[tuple[str, str], ...] = (
 TASK_CONDITIONAL_TRANSITIONS = (
     (PREPARE_CONTEXT, after_prepare_context, (LOCATE, FINALIZE)),
     # 定位不确定或非 carrier 范围结论只产出报告，不进入中间审批。
-    (LOCATE, after_locate, (CLAIM, APPROVE, FINALIZE)),
+    (LOCATE, after_locate, (CLAIM, RETRY, FINALIZE)),
     (CLAIM, after_claim, (REPAIR, FINALIZE)),
     (REPAIR, after_repair, (VALIDATE, RETRY, FINALIZE)),
     (VALIDATE, after_validate_changes, (REGRESSION, RETRY, FINALIZE)),
