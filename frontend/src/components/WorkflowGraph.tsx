@@ -68,11 +68,15 @@ function statusLabel(status?: StepStatus): string {
 export function WorkflowGraph({ steps, selectedStep, onSelectStep }: { steps: StepRecord[]; selectedStep?: string; onSelectStep?: (name: string) => void }) {
   const { nodes, edges } = useMemo(() => {
     const records = new Map(steps.map((step) => [step.name, step]));
-    const builtNodes: Node[] = layout.map(({ id, label, x, y }) => {
+    const runStepIds = new Set(["discover_logs", "normalize_error", "deduplicate_error", "identify_carrier"]);
+    const taskGraph = steps.some((step) => !runStepIds.has(step.name));
+    const visibleLayout = layout.filter(({ id }) => taskGraph ? !runStepIds.has(id) : runStepIds.has(id));
+    const visibleIds = new Set(visibleLayout.map((item) => item.id));
+    const builtNodes: Node[] = visibleLayout.map(({ id, label, x, y }) => {
       const record = records.get(id);
       return { id, position: { x, y }, data: { label: <div><div>{label}</div><small>{statusLabel(record?.status)}</small></div> }, style: { ...nodeStyle(record?.status), borderWidth: selectedStep === id ? 2 : 1, borderColor: selectedStep === id ? '#456de0' : undefined, boxShadow: selectedStep === id ? '0 0 0 3px rgba(69,109,224,.14)' : undefined }, };
     });
-    const builtEdges: Edge[] = transitions.map(([source, target, label], index) => ({
+    const builtEdges: Edge[] = transitions.filter(([source, target]) => visibleIds.has(source) && visibleIds.has(target)).map(([source, target, label], index) => ({
       id: source + '-' + target + '-' + index,
       source,
       target,
