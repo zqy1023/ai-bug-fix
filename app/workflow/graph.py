@@ -18,7 +18,6 @@ from app.workflow.definitions import TASK_CONDITIONAL_TRANSITIONS, TASK_NODE_NAM
 from app.workflow.routes import (
     RUN_PREPARE,
     after_run_prepare,
-    APPLY,
     APPROVE,
     CHECK,
     CLAIM,
@@ -37,7 +36,6 @@ from app.workflow.routes import (
     SNAPSHOT,
     VERIFY,
     WORKSPACE,
-    after_apply,
     after_approval,
     after_delivery,
     after_finalize,
@@ -188,7 +186,6 @@ def build_graph(
 
 
 __all__ = [
-    "APPLY",
     "APPROVE",
     "CHECK",
     "CLAIM",
@@ -211,7 +208,6 @@ __all__ = [
     "TASK_DISPATCH",
     "VERIFY",
     "WORKSPACE",
-    "after_apply",
     "after_approval",
     "after_delivery",
     "after_finalize",
