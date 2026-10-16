@@ -75,7 +75,7 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
     """用原始异常、预检候选和真实源码证据定位根因。"""
     input_values = {key: state[key] for key in LocateInput.model_fields if key in state}
     incoming = LocateInput.model_validate(input_values)
-    root = Path(incoming.source_project_path).resolve()
+    root = Path(incoming.workspace_path).resolve()
     if not root.is_dir():
         raise ValueError(f"定位工作区不存在: {root}")
     evidence = incoming.evidence
