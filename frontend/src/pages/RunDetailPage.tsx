@@ -17,7 +17,7 @@ export function RunDetailPage() {
   const [selectedTaskId, setSelectedTaskId] = useState<string>('');
   const [selectedAgent, setSelectedAgent] = useState<string>('all');
   const [selectedArtifact, setSelectedArtifact] = useState<{ path: string; task_id?: string; name: string } | null>(null);
-  const detail = useQuery({ queryKey: ['run', runId], queryFn: () => api.run(runId), refetchInterval: (q) => ['running', 'queued', 'waiting_approval', 'pause_requested'].includes(q.state.data?.status ?? '') ? 3000 : false });
+  const detail = useQuery({ queryKey: ['run', runId], queryFn: () => api.run(runId), refetchInterval: (q) => ['running', 'queued', 'waiting_approval', 'pause_requested', 'paused', 'cancel_requested'].includes(q.state.data?.status ?? '') ? 3000 : false });
   const pause = useMutation({ mutationFn: () => api.pauseRun(runId), onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ['run', runId] }); }, });
   const resume = useMutation({ mutationFn: () => api.resumeRun(runId), onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ['run', runId] }); }, });
   const cancel = useMutation({ mutationFn: () => api.cancelRun(runId), onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ['run', runId] }); }, });
