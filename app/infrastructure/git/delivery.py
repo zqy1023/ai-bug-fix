@@ -173,6 +173,7 @@ class GitBranchDelivery:
                 source_root,
                 delivery_project,
                 state.get("report_paths", []),
+                carrier=str(state.get("carrier") or ""),
             )
             audit_files = self._copy_audit_records(source_root, delivery_project, state)
             paths_to_add = sorted({*changed_files, *report_files, *audit_files})
@@ -364,8 +365,14 @@ class GitBranchDelivery:
         return copied
 
     @staticmethod
-    def _copy_reports(source_root: Path, destination_root: Path, raw_paths: Any) -> list[str]:
-        """复制 AI 工作区中的审计报告到分支工作区。"""
+    def _copy_reports(
+        source_root: Path,
+        destination_root: Path,
+        raw_paths: Any,
+        *,
+        carrier: str,
+    ) -> list[str]:
+        """仅复制目标 carrier 目录中的 final.json 或白名单 Markdown 审计报告。"""
         if not isinstance(raw_paths, list):
             return []
         copied: list[str] = []
@@ -380,7 +387,15 @@ class GitBranchDelivery:
                 raise DeliveryError(f"报告不在 AI 工作区内: {raw_path}") from error
             relative_text = relative.as_posix()
             valid_markdown = source.suffix == ".md"
-            valid_final_json = source.suffix == ".json" and relative_text == "reports/final.json"
+            parts = relative.parts
+            expected_carrier = WorkspaceManager.safe_carrier_name(carrier)
+            valid_final_json = (
+                source.suffix == ".json"
+                and len(parts) == 3
+                and parts[0] in {"gathers", "spiders"}
+                and parts[1] == expected_carrier
+                and parts[2] == "final.json"
+            )
             if not source.is_file() or not (valid_markdown or valid_final_json):
                 raise DeliveryError(f"非法审计报告: {raw_path}")
             destination = destination_root / relative
