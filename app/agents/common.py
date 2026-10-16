@@ -81,7 +81,7 @@ def _prompt_metrics(request: Any) -> dict[str, int]:
             return 0
 
     system_prompt = str(getattr(request, "system_prompt", "") or "")
-    common_prompt, separator, role_prompt = system_prompt.partition("\\n\\n---\\n\\n")
+    common_prompt, separator, role_prompt = system_prompt.partition(chr(10) * 2 + "---" + chr(10) * 2)
     return {
         "system_prompt_chars": len(system_prompt),
         "common_rules_chars": len(common_prompt) if separator else len(system_prompt),
