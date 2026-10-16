@@ -1329,7 +1329,7 @@ def v1_decide_manual_intervention(
         raise HTTPException(status_code=422, detail="继续修复、人工完成或终止操作必须填写处置说明")
     actor = "bearer-token" if authorization else "local-user"
     _audit_control(run_id, task_id, "manual_intervention." + decision.lower(), actor, request.reason)
-    return decide_approval(run_id, task_id, ApprovalRequest(decision=decision, reason=request.reason))
+    return decide_approval(run_id, task_id, ApprovalRequest(decision=decision, reason=request.reason), background=background)
 
 class KnowledgeCaseCreate(BaseModel):
     title: str = Field(min_length=3, max_length=200)
