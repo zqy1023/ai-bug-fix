@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.domain.keys import repair_branch
+from app.infrastructure.filesystem.workspace import WorkspaceManager
 from app.workflow.spec import Dependency, StepSpec
 from app.workflow.steps.prepare_delivery.models import DeliveryInput, DeliveryOutput
 from config.settings import settings
@@ -26,6 +27,13 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         review_decision = "PASS" if str(state.get("decision") or "") == "APPROVE" else ""
     else:
         review_decision = str(review_payload.get("verdict") or "")
+    evidence = dict(state.get("evidence") or {})
+    report_framework = (
+        "spiders"
+        if evidence.get("legacy_only") or evidence.get("legacy_dependency")
+        else str(state.get("framework") or "gathers")
+    )
+    report_carrier = WorkspaceManager.safe_carrier_name(str(task.get("carrier") or ""))
     return {
         "task_id": task_id,
         "carrier": str(task.get("carrier") or ""),
@@ -57,7 +65,7 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
             or str((state.get("locate") or {}).get("recommended_scope") or "") != "carrier"
             or str((state.get("locate") or {}).get("category") or "") != "carrier"
         ),
-        "report_paths": ["reports/final.json"],
+        "report_paths": [f"{report_framework}/{report_carrier}/final.json"],
         # 需要审批 = 本轮存在已获批或待审批的共享层方案；是否放行只看批准结果。
         "requires_approval": bool(state.get("scope_escalation_required")),
         "approval_granted": str(state.get("decision") or "") == "APPROVE",
