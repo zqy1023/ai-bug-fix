@@ -29,6 +29,8 @@ class WorkflowServices:
     verify_commands: list[list[str]] = field(default_factory=list)
     # git_push：是否允许交付阶段推送修复分支。
     git_push: bool = False
+    # git_remote：检查未合并分支与交付时使用的同一远程名。
+    git_remote: str = "origin"
     # workspaces：工作区快照、隔离、回归目录的管理器。
     workspaces: WorkspaceManager | None = None
     # delivery：创建修复分支、提交和可选推送的适配器。
