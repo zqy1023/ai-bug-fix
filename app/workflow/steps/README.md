@@ -21,7 +21,7 @@
 | `prepare_delivery` | 创建修复分支并按配置提交/推送 | `finalize_execution` |
 | `finalize_execution` | 生成终态报告并收尾 | 结束 |
 
-`retry_prepare` 是内部控制节点，不计入 12 个业务主节点。图中 12 个业务主节点保留了 Agent、安全隔离、资格占用、回归、审批、交付等必须独立审计的边界。
+任务子图保留 12 个业务主节点；`retry_prepare` 是内部控制节点，不计入节点数。run 级主图只保留日志准备阶段和 `identify_carrier` 两个节点。12 个任务主节点保留了 Agent、安全隔离、资格占用、回归、审批、交付等必须独立审计的边界。
 
 ## 原子步骤目录与职责
 
