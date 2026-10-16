@@ -1169,6 +1169,8 @@ def v1_list_approvals(
     _: None = Depends(_authorize),
 ) -> dict[str, Any]:
     legacy = list_approvals()
+    store = _store()
+    run_cache: dict[str, dict[str, Any]] = {}
     items = []
     for item in legacy.get("items", []):
         if status != "pending":
@@ -1178,18 +1180,53 @@ def v1_list_approvals(
         if str(approval_input.get("mode") or "") == "manual_intervention":
             continue
         output = step.get("output") if isinstance(step.get("output"), dict) else {}
-        plan = output.get("change_plan") if isinstance(output.get("change_plan"), dict) else {}
-        files = plan.get("changed_files") or plan.get("files") or []
+        run_id, task_id = str(item.get("run_id") or ""), str(item.get("task_id") or "")
+        if run_id not in run_cache:
+            try:
+                run_cache[run_id] = _run_payload(store, run_id)
+            except (HTTPException, OSError, ValueError):
+                run_cache[run_id] = {}
+        task = next(
+            (value for value in run_cache[run_id].get("tasks", []) if str(value.get("task_id") or "") == task_id),
+            {},
+        )
+        steps = task.get("steps") if isinstance(task.get("steps"), list) else []
+        repair_step = next((value for value in reversed(steps) if value.get("name") == "repair_agent"), {})
+        review_step = next((value for value in reversed(steps) if value.get("name") == "review_agent"), {})
+        repair_output = repair_step.get("output") if isinstance(repair_step.get("output"), dict) else {}
+        review_output = review_step.get("output") if isinstance(review_step.get("output"), dict) else {}
+        plan = repair_output.get("change_plan") if isinstance(repair_output.get("change_plan"), dict) else {}
+        if not plan:
+            plan = review_output.get("change_plan") if isinstance(review_output.get("change_plan"), dict) else {}
+        raw_edits = plan.get("edits") if isinstance(plan.get("edits"), list) else []
+        edits = [
+            {
+                "path": str(edit.get("path") or ""),
+                "action": str(edit.get("action") or "update"),
+                "note": str(edit.get("note") or ""),
+            }
+            for edit in raw_edits if isinstance(edit, dict) and str(edit.get("path") or "").strip()
+        ]
+        files = plan.get("changed_files") or plan.get("files") or approval_input.get("changed_files") or repair_output.get("changed_files") or [edit["path"] for edit in edits]
         if not isinstance(files, list):
             files = []
-        run_id, task_id = str(item.get("run_id") or ""), str(item.get("task_id") or "")
+        scope = str(plan.get("scope") or approval_input.get("recommended_scope") or "").lower()
+        summary = str(
+            plan.get("rationale") or repair_output.get("summary") or review_output.get("summary")
+            or output.get("summary") or output.get("reason") or "需要人工确认变更方案"
+        )
+        safe_plan = {
+            "scope": "project" if scope == "project" else "carrier",
+            "rationale": str(plan.get("rationale") or summary),
+            "requires_human_authorization": bool(plan.get("requires_human_authorization") or scope == "project"),
+            "edits": edits,
+        }
         items.append({
             "approval_id": f"{run_id}:{task_id}", "run_id": run_id, "task_id": task_id,
             "carrier": item.get("carrier") or "", "biztype": item.get("biztype") or "",
-            "scope": "project" if str(plan.get("scope") or "").lower() == "project" else "carrier",
-            "status": "pending",
-            "summary": str(output.get("summary") or output.get("reason") or "需要人工确认变更方案"),
-            "changed_files": [str(value) for value in files],
+            "scope": safe_plan["scope"], "status": "pending", "summary": summary,
+            "changed_files": list(dict.fromkeys(str(value) for value in files if str(value).strip())),
+            "change_plan": safe_plan,
             "created_at": item.get("updated_at") or datetime.now(timezone.utc).isoformat(), "expires_at": None,
         })
     return {"items": items, "total": len(items)}
