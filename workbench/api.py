@@ -492,6 +492,8 @@ def decide_approval(
     _: None = Depends(_authorize),
 ) -> dict[str, Any]:
     decision = request.decision.upper()
+    if decision not in {"APPROVE", "REJECT", "RETRY_LOCATE", "CONTINUE_REPAIR", "MARK_DONE", "TERMINATE"}:
+        raise HTTPException(status_code=422, detail="审批或人工处置决定无效")
     if decision in {"CONTINUE_REPAIR", "MARK_DONE", "TERMINATE"} and not request.reason.strip():
         raise HTTPException(status_code=422, detail="继续修复、人工完成或终止操作必须填写处置说明")
     run_id, task_id = _safe_id(run_id), _safe_id(task_id)
