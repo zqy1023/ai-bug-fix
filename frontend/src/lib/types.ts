@@ -132,6 +132,8 @@ export interface ApprovalItem {
   expires_at?: string | null;
 }
 
+export type ManualInterventionDecision = 'RETRY_LOCATE' | 'CONTINUE_REPAIR' | 'MARK_DONE' | 'TERMINATE';
+
 export interface ManualIntervention {
   intervention_id: string;
   run_id: string;
@@ -139,8 +141,12 @@ export interface ManualIntervention {
   carrier: string;
   biztype: string;
   step: string;
-  status: 'open';
+  status: 'open' | 'waiting_decision';
   summary: string;
+  root_cause?: string;
+  candidate_files?: string[];
+  continue_allowed?: boolean;
+  decision_options?: ManualInterventionDecision[];
   created_at: string;
 }
 
