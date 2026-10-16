@@ -198,9 +198,13 @@ class GitBranchDelivery:
                 ) from error
 
             pushed = False
-            if self._config.push and self._config.remote_name in {
-                remote.name for remote in delivery_repo.remotes
-            }:
+            remote_names = {remote.name for remote in delivery_repo.remotes}
+            require_push = bool(state.get("require_push") or state.get("analysis_only"))
+            if require_push and self._config.remote_name not in remote_names:
+                raise DeliveryError(
+                    f"本次交付要求推送分支，但源仓库没有远程 {self._config.remote_name}"
+                )
+            if (self._config.push or require_push) and self._config.remote_name in remote_names:
                 # 推送回到源仓库执行：临时克隆的分支对源仓库不可见。
                 # 源仓库只接收这一次按提交哈希的 push，不切换检出、不改工作区文件。
                 try:
