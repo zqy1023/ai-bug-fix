@@ -789,14 +789,28 @@ def _record_background_failure(run_id: str, error: Exception) -> None:
         report_dir.mkdir(parents=True, exist_ok=True)
         target = report_dir / "run_failure.json"
         temporary = report_dir / "run_failure.json.tmp"
+        now = datetime.now(timezone.utc).isoformat()
+        reason = f"{type(error).__name__}: {str(error).strip()}"[:2000]
         payload = {
-            "status": "FAILED",
-            "error_type": type(error).__name__,
-            "message": "后台工作流异常，请检查服务端日志并按 run_id 查询完整堆栈。",
-            "failed_at": datetime.now(timezone.utc).isoformat(),
+            "status": "FAILED", "error_type": type(error).__name__,
+            "message": reason or "后台工作流异常，请检查服务端日志并按 run_id 查询完整堆栈。",
+            "terminal_step": "workflow_startup", "terminal_reason": reason or "后台工作流在初始化阶段异常退出。",
+            "next_action": "检查配置、工作流图装配错误和服务端异常堆栈，修复后重新执行。",
+            "failed_at": now,
         }
         temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(target)
+        final_path = report_dir / "final.json"
+        if not final_path.exists():
+            final_tmp = report_dir / "final.json.tmp"
+            final_report = {
+                "report_version": 1, "report_kind": "run_final", "run_id": run_id,
+                "result": "FAILED", "status": "FAILED", "terminal_step": payload["terminal_step"],
+                "terminal_reason": payload["terminal_reason"], "next_action": payload["next_action"],
+                "finished_at": now, "task_count": 0, "task_results": [],
+            }
+            final_tmp.write_text(json.dumps(final_report, ensure_ascii=False, indent=2), encoding="utf-8")
+            final_tmp.replace(final_path)
     except Exception:
         logger.exception("无法写入后台失败报告 run_id=%s", run_id)
 
