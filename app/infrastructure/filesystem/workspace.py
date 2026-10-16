@@ -370,13 +370,13 @@ class WorkspaceManager:
         for current, directories, filenames in os.walk(source, followlinks=False):
             current_path = Path(current)
             relative = current_path.relative_to(source)
-            if any(part in cls._SKIP_DIRS for part in relative.parts):
+            if any(cls._is_skipped_dir(part) for part in relative.parts):
                 directories[:] = []
                 continue
             directories[:] = [
                 name
                 for name in directories
-                if name not in cls._SKIP_DIRS and not cls._is_sensitive(name)
+                if not cls._is_skipped_dir(name) and not cls._is_sensitive(name)
             ]
             destination_dir = target / relative
             destination_dir.mkdir(parents=True, exist_ok=True)
@@ -445,11 +445,23 @@ class WorkspaceManager:
         return [item for item in cls.RULE_FILES if (root / item).is_file()]
 
     @classmethod
+    def _is_skipped_dir(cls, name: str) -> bool:
+        """大小写无关地排除 Git、缓存、日志和运行时数据目录。"""
+        lowered = name.casefold()
+        return any(lowered == item.casefold() for item in cls._SKIP_DIRS)
+
+    @classmethod
     def _is_sensitive(cls, name: str) -> bool:
-        """判断文件名属于凭据/敏感配置，或属于不该进隔离区的编译产物。"""
+        """判断文件名属于凭据/敏感配置、认证/供应商 CSV 或编译产物。"""
         lowered = name.lower()
+        stem = lowered[:-4] if lowered.endswith(".csv") else ""
+        sensitive_csv = bool(stem) and any(
+            marker in stem
+            for marker in ("provider", "auth", "token", "credential", "secret", "password")
+        )
         return (
-            lowered.endswith(cls._SENSITIVE_SUFFIXES)
+            sensitive_csv
+            or lowered.endswith(cls._SENSITIVE_SUFFIXES)
             or lowered.endswith(cls._BUILD_ARTIFACT_SUFFIXES)
             or any(lowered == item or lowered.startswith(item) for item in cls._SENSITIVE_NAMES)
         )
