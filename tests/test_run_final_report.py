@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import workbench.api as workbench_api
 from app.entrypoint import _write_run_report
 
 
@@ -48,3 +49,31 @@ def test_run_report_captures_unhandled_workflow_exception(tmp_path):
     assert report["terminal_step"] == "workflow"
     assert "graph construction failed" in report["terminal_reason"]
     assert report["next_action"].strip()
+
+
+def test_background_failure_preserves_task_level_report_summary(tmp_path, monkeypatch):
+    run_dir = tmp_path / "run-with-task"
+    report_dir = run_dir / "reports"
+    report_dir.mkdir(parents=True)
+    expected_tasks = [{
+        "task_id": "task-1", "carrier": "CouriersPlease", "biztype": "framework.track_server",
+        "result": "MANUAL", "terminal_step": "prepare_evidence",
+        "terminal_reason": "missing gather source entry point", "next_action": "review source layout",
+    }]
+    (report_dir / "final.json").write_text(json.dumps({
+        "report_version": 1, "report_kind": "run_final", "run_id": "run-with-task",
+        "result": "MANUAL", "status": "MANUAL", "task_count": 1, "task_results": expected_tasks,
+    }), encoding="utf-8")
+
+    class Store:
+        def run_dir(self, run_id: str) -> Path:
+            return run_dir
+
+    monkeypatch.setattr(workbench_api, "_store", lambda: Store())
+    workbench_api._record_background_failure("run-with-task", RuntimeError("background error"))
+
+    report = json.loads((report_dir / "final.json").read_text(encoding="utf-8"))
+    assert report["result"] == "FAILED"
+    assert report["task_count"] == 1
+    assert report["task_results"] == expected_tasks
+    assert "background error" in report["terminal_reason"]
