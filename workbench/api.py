@@ -119,7 +119,7 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
             # 同一任务可经历多轮回修与多次审批；必须以最后一次 request_approval 为准。
             # 读取第一条会让旧的已完成审批遮蔽当前 running/PENDING 的 interrupt，
             # API 随后把 MARK_DONE 当作历史登记，根本不恢复 LangGraph checkpoint。
-            approval = next((s for s in reversed(task_steps) if s.get("name") == "request_approval"), None)
+            approval = _latest_approval_step(task_steps)
             carrier = str((report or {}).get("carrier") or _task_identity(slot, "carrier"))
             biztype = str((report or {}).get("biztype") or _task_identity(slot, "biztype"))
             inferred_status = str((report or {}).get("result") or _task_status(task_steps, approval))
@@ -280,6 +280,14 @@ def _task_status(steps: list[dict[str, Any]], approval: dict[str, Any] | None) -
     return "RUNNING" if steps else "PENDING"
 
 
+def _latest_approval_step(steps: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """返回任务最近一次审批记录，不能让历史审批遮蔽当前 interrupt。"""
+    return next(
+        (step for step in reversed(steps) if isinstance(step, dict) and step.get("name") == "request_approval"),
+        None,
+    )
+
+
 def _approval_pending(step: dict[str, Any] | None) -> bool:
     if not step:
         return False
@@ -398,7 +406,7 @@ def list_approvals(_: None = Depends(_authorize)) -> dict[str, Any]:
                     "biztype": task["biztype"],
                     "problem": task["problem"],
                     "updated_at": run["updated_at"],
-                    "approval_step": next((step for step in reversed(task["steps"]) if step.get("name") == "request_approval"), None),
+                    "approval_step": _latest_approval_step(task["steps"]),
                 })
     return {"items": approvals, "total": len(approvals)}
 
@@ -493,7 +501,7 @@ def decide_approval(
     if task is None:
         raise HTTPException(status_code=404, detail="任务不存在")
     steps = task.get("steps") if isinstance(task.get("steps"), list) else []
-    approval_step = next((item for item in reversed(steps) if item.get("name") == "request_approval"), None)
+    approval_step = _latest_approval_step(steps)
     approval_input = approval_step.get("input") if isinstance(approval_step, dict) and isinstance(approval_step.get("input"), dict) else {}
     mode = str(approval_input.get("mode") or "change_approval")
     if not task.get("approval_pending") and decision in {"MARK_DONE", "TERMINATE"}:
@@ -1262,7 +1270,7 @@ def v1_list_manual_interventions(_: None = Depends(_authorize)) -> dict[str, Any
             if isinstance(resolution, dict) and resolution.get("status") in {"completed", "terminated"}:
                 continue
             steps = task.get("steps") if isinstance(task.get("steps"), list) else []
-            approval = next((step for step in reversed(steps) if step.get("name") == "request_approval"), None)
+            approval = _latest_approval_step(steps)
             approval_input = approval.get("input") if isinstance(approval, dict) and isinstance(approval.get("input"), dict) else {}
             manual_pending = bool(task.get("approval_pending")) and str(approval_input.get("mode") or "") == "manual_intervention"
             if task.get("approval_pending") and not manual_pending:
