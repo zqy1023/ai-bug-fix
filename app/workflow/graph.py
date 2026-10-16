@@ -96,6 +96,11 @@ def build_task_graph(nodes: dict[str, Callable[..., Any]]) -> CompiledStateGraph
                 "scope_escalation_required": False,
                 "authorized_files": [],
                 "plan_applied": False,
+                "delivery": {},
+                "delivery_pushed": False,
+                "delivery_commit": "",
+                "repair_branch": "",
+                "approval_cleanup_failed": False,
                 "last_result": "passed",
             })
         else:
