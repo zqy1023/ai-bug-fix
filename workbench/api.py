@@ -711,17 +711,43 @@ def v1_start_run(
         raise HTTPException(status_code=409, detail="未配置 AI_REPAIR_SOURCE_REPO，不能启动生产工作流")
     if not idempotency_key:
         raise HTTPException(status_code=400, detail="缺少 Idempotency-Key，请为本次启动生成唯一请求键")
+
     payload = request.model_dump(mode="json")
     payload_hash = sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     run_id = uuid.uuid4().hex
     connection = _control_db()
+    run_lock: threading.Lock | None = None
+    lock_held = False
     try:
         connection.execute("BEGIN IMMEDIATE")
-        existing = connection.execute("SELECT payload_hash,run_id FROM idempotency_keys WHERE key=?", (idempotency_key,)).fetchone()
+        existing = connection.execute(
+            "SELECT payload_hash,run_id FROM idempotency_keys WHERE key=?", (idempotency_key,)
+        ).fetchone()
         if existing:
             if existing["payload_hash"] != payload_hash:
                 raise HTTPException(status_code=409, detail="相同 Idempotency-Key 不允许复用于不同请求参数")
             return {"run_id": existing["run_id"], "status": "accepted", "idempotent_replay": True}
+
+        # 在返回 202 之前持久化 run.json。详情/事件/模型调用接口因此能立即查询到 queued Run，
+        # 不再依赖 BackgroundTasks 何时开始执行后才创建目录。
+        with _RUN_LOCKS_GUARD:
+            if run_id in _STARTED_RUNS or _store().run_dir(run_id).exists():
+                raise HTTPException(status_code=409, detail="执行 ID 冲突，请重试")
+            run_lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
+            if not run_lock.acquire(blocking=False):
+                raise HTTPException(status_code=409, detail="该执行已被另一个工作线程启动")
+            lock_held = True
+            _STARTED_RUNS.add(run_id)
+
+        try:
+            from app.entrypoint import prepare_run
+            prepare_run(run_id, overrides=payload, queued=True)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"初始化执行记录失败，工作流未启动：{type(exc).__name__}: {exc}",
+            ) from exc
+
         connection.execute(
             "INSERT INTO idempotency_keys(key,payload_hash,run_id,created_at) VALUES(?,?,?,?)",
             (idempotency_key, payload_hash, run_id, datetime.now(timezone.utc).isoformat()),
@@ -729,19 +755,20 @@ def v1_start_run(
         connection.commit()
     except Exception:
         connection.rollback()
+        if lock_held and run_lock is not None:
+            run_lock.release()
+            with _RUN_LOCKS_GUARD:
+                _STARTED_RUNS.discard(run_id)
         raise
     finally:
         connection.close()
-    with _RUN_LOCKS_GUARD:
-        if run_id in _STARTED_RUNS or _store().run_dir(run_id).exists():
-            raise HTTPException(status_code=409, detail="执行 ID 冲突，请重试")
-        _STARTED_RUNS.add(run_id)
-        run_lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
-        if not run_lock.acquire(blocking=False):
-            _STARTED_RUNS.discard(run_id)
-            raise HTTPException(status_code=409, detail="该执行已被另一个工作线程启动")
+
+    try:
+        _audit_control(run_id, "", "run.start_requested", "api", json.dumps(payload, ensure_ascii=False))
+    except Exception:
+        logger.exception("写入启动审计失败 run_id=%s", run_id)
+    assert run_lock is not None
     background.add_task(_run_workflow_background_v1, run_id, payload, run_lock)
-    _audit_control(run_id, "", "run.start_requested", "api", json.dumps(payload, ensure_ascii=False))
     return {"run_id": run_id, "status": "accepted", "idempotent_replay": False}
 
 
@@ -778,7 +805,7 @@ def _run_workflow_background_v1(
             logger.warning("跳过重复启动的工作流 run_id=%s", run_id)
             return
     try:
-        run_workflow(run_id, overrides=overrides)
+        run_workflow(run_id, overrides=overrides, prepared=True)
     except Exception as exc:
         logger.exception("工作流后台执行失败 run_id=%s", run_id)
         _record_background_failure(run_id, exc)
