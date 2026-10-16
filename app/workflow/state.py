@@ -114,6 +114,12 @@ class WorkflowState(TypedDict, total=False):
     manual_intervention_required: bool
     # manual_continue_allowed：只有保留了有效根因、源码证据与合法候选路径时才允许批准继续修复。
     manual_continue_allowed: bool
+    # manual_intervention_reason：人工介入队列展示的具体阻断原因。
+    manual_intervention_reason: str
+    # manual_intervention_step：触发人工介入的真实工作流节点。
+    manual_intervention_step: str
+    # manual_resume_step：批准继续后恢复的节点，避免重复领取修复资格。
+    manual_resume_step: str
     # approval_mode：当前 request_approval 中断的类型。
     approval_mode: str
     # escalation_used：本任务是否已使用范围升级。
