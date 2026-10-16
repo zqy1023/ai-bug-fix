@@ -741,7 +741,7 @@ def v1_start_run(
 
         try:
             from app.entrypoint import prepare_run
-            prepare_run(run_id, overrides=payload)
+            prepare_run(run_id, overrides=payload, queued=True)
         except Exception as exc:
             raise HTTPException(
                 status_code=503,
@@ -805,7 +805,7 @@ def _run_workflow_background_v1(
             logger.warning("跳过重复启动的工作流 run_id=%s", run_id)
             return
     try:
-        run_workflow(run_id, overrides=overrides)
+        run_workflow(run_id, overrides=overrides, prepared=True)
     except Exception as exc:
         logger.exception("工作流后台执行失败 run_id=%s", run_id)
         _record_background_failure(run_id, exc)
