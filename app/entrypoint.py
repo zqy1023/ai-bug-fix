@@ -97,10 +97,10 @@ def run_workflow(
     resolved, config, store = prepare_run(
         run_id, overrides=overrides, allow_prepared=prepared
     )
-    from app.workflow.wiring import build_graph
-
-    graph = build_graph(store=store)
     try:
+        from app.workflow.wiring import build_graph
+
+        graph = build_graph(store=store)
         final_state = graph.invoke(
             {
                 "schema_version": 2,
