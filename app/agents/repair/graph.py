@@ -91,6 +91,7 @@ def _call(
             "prepared_source_evidence": evidence,
             "locate": locate,
             "deterministic_analysis": deterministic_analysis,
+            "manual_continue_authorized": manual_continue_authorized,
         },
         read_roots=read_roots,
         write_roots=(write_root,),
