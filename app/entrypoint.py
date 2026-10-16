@@ -189,7 +189,15 @@ def _ensure_task_final_report(
     terminal_status = str(existing.get("terminal_status") or result).upper()
 
     if not result:
-        if any(
+        is_cancelled = False
+        try:
+            from app.infrastructure.run_control import cancellation_requested as _cancel_requested
+            is_cancelled = _cancel_requested(store.root, run_id)
+        except Exception:
+            logger.debug("读取任务取消标记失败 run_id=%s task_id=%s", run_id, task_id, exc_info=True)
+        if is_cancelled:
+            result = "CANCELLED"
+        elif any(
             isinstance(record.output, dict) and record.output.get("legacy_only")
             for record in records
         ) or any(str(record.result or "").upper() in {"MANUAL", "INSUFFICIENT_EVIDENCE"} for record in records):
