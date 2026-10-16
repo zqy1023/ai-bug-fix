@@ -93,3 +93,63 @@ def test_knowledge_usage_summary_is_present(monkeypatch, tmp_path):
     )
     assert result["summary"]["retrievals"] == 0
     assert result["summary"]["successful_reuses"] == 0
+
+
+def test_prepare_evidence_retrieves_only_published_cases_and_records_usage(monkeypatch, tmp_path):
+    from app.workflow.steps.prepare_evidence import node as evidence_node
+
+    _configure_runtime(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        evidence_node,
+        "load_config",
+        lambda: SimpleNamespace(runtime_dir=tmp_path),
+    )
+    connection = workbench_api._control_db()
+    try:
+        connection.execute(
+            """INSERT INTO repair_knowledge_cases
+            (case_id,title,fingerprint,carrier,biztype,root_cause,evidence,change_summary,
+             regression_passed,review_passed,status,source_run_id,source_task_id,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,'published','','',?,?)""",
+            (
+                "case-published", "ExampleCarrier response parsing", "fingerprint",
+                "ExampleCarrier", "Brazil", "Upstream response omitted optional field",
+                "KeyError response parsing", "Use a safe default", 1, 1,
+                "2026-10-16T00:00:00+00:00", "2026-10-16T00:00:00+00:00",
+            ),
+        )
+        connection.execute(
+            """INSERT INTO repair_knowledge_cases
+            (case_id,title,fingerprint,carrier,biztype,root_cause,evidence,change_summary,
+             regression_passed,review_passed,status,source_run_id,source_task_id,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,'candidate','','',?,?)""",
+            (
+                "case-candidate", "ExampleCarrier response parsing draft", "draft",
+                "ExampleCarrier", "Brazil", "Unverified root cause", "Draft evidence",
+                "Draft change", 0, 0, "2026-10-16T00:00:00+00:00", "2026-10-16T00:00:00+00:00",
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    matches = evidence_node._published_knowledge(
+        {"error": "KeyError response parsing optional field"},
+        "ExampleCarrier",
+        "Brazil",
+        "HTML/XML/JSON 解析",
+        "run-knowledge",
+        "task-knowledge",
+    )
+
+    assert [item["case_id"] for item in matches] == ["case-published"]
+    connection = workbench_api._control_db()
+    try:
+        usage = connection.execute(
+            "SELECT run_id, task_id, case_id FROM knowledge_case_usage"
+        ).fetchall()
+    finally:
+        connection.close()
+    assert [(row["run_id"], row["task_id"], row["case_id"]) for row in usage] == [
+        ("run-knowledge", "task-knowledge", "case-published")
+    ]
