@@ -124,6 +124,43 @@ def test_manual_intervention_endpoint_recovers_legacy_locate_detail(monkeypatch,
     assert result["items"][0]["summary"].startswith("定位输出契约校验失败：")
 
 
+
+def test_manual_intervention_pending_exposes_only_evidence_supported_actions(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    fake_store = SimpleNamespace(task_dir=lambda run_id, task_id: tmp_path / run_id / task_id)
+    monkeypatch.setattr(workbench_api, "_store", lambda: fake_store)
+    monkeypatch.setattr(workbench_api, "_all_run_ids", lambda _store: ["run-pending"])
+    monkeypatch.setattr(workbench_api, "_run_payload", lambda _store, _run_id: {
+        "updated_at": "2026-10-16T00:00:00+00:00",
+        "tasks": [{
+            "task_id": "task-pending",
+            "carrier": "ExampleCarrier",
+            "biztype": "track_server",
+            "status": "WAITING_APPROVAL",
+            "approval_pending": True,
+            "steps": [{
+                "name": "request_approval",
+                "input": {
+                    "mode": "manual_intervention",
+                    "intervention_reason": "定位契约不完整，需要人工复核",
+                    "root_cause": "上游响应解析异常",
+                    "candidate_files": ["gathers/ExampleCarrier/main.py"],
+                    "continue_allowed": True,
+                },
+            }],
+        }],
+    })
+
+    result = workbench_api.v1_list_manual_interventions(None)
+
+    assert result["total"] == 1
+    item = result["items"][0]
+    assert item["status"] == "waiting_decision"
+    assert item["root_cause"] == "上游响应解析异常"
+    assert item["candidate_files"] == ["gathers/ExampleCarrier/main.py"]
+    assert item["decision_options"] == ["RETRY_LOCATE", "CONTINUE_REPAIR", "MARK_DONE", "TERMINATE"]
+
 def test_v1_start_persists_run_before_scheduling_background_task(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
