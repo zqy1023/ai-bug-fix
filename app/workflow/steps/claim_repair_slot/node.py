@@ -26,7 +26,11 @@ def run(ctx: StepContext, data: ClaimInput) -> ClaimOutput:
         repo = Repo(source, search_parent_directories=True)
     except Exception as error:
         raise StepFailed(f"不是有效的本地 Git 仓库: {source}") from error
-    pending = _pending_branch(repo, branch, settings.default_git_remote)
+    pending = _pending_branch(
+        repo,
+        branch,
+        ctx.services.git_remote or settings.default_git_remote,
+    )
     if pending:
         raise StepFailed(
             f"存在未合并的修复分支，跳过本轮任务: {pending}",
