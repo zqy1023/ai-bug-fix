@@ -14,6 +14,7 @@ from collections.abc import Callable
 from typing import Any
 
 from app.workflow.state import RunState, WorkflowState
+from app.workflow.definitions import TASK_CONDITIONAL_TRANSITIONS, TASK_NODE_NAMES, TASK_STATIC_TRANSITIONS
 from app.workflow.routes import (
     APPLY,
     APPROVE,
@@ -62,23 +63,6 @@ TASK_COLLECT = "task_collect"
 
 _RUN_NODES = (DISCOVER, NORMALIZE, DEDUPLICATE, IDENTIFY)
 
-_TASK_NODES = (
-    CLAIM,
-    SNAPSHOT,
-    EVIDENCE,
-    LOCATE,
-    WORKSPACE,
-    REPAIR,
-    CHECK,
-    VERIFY,
-    REGRESSION,
-    REVIEW,
-    APPROVE,
-    APPLY,
-    DELIVER,
-    FINALIZE,
-    RETRY,
-)
 
 
 def _transient_retry() -> RetryPolicy:
@@ -98,7 +82,7 @@ def build_task_graph(nodes: dict[str, Callable[..., Any]]) -> CompiledStateGraph
     graph: StateGraph = StateGraph(WorkflowState)
     # 任务图含文件写入、审批和 Git 交付等副作用节点，不做通用自动重试。
     # 业务重试通过 retry_prepare 统一计数，避免重复提交或推送。
-    for name in _TASK_NODES:
+    for name in TASK_NODE_NAMES:
         if name == RETRY:
             graph.add_node(name, lambda state: {
                 "attempt": int(state.get("attempt") or 1) + 1,
@@ -115,31 +99,11 @@ def build_task_graph(nodes: dict[str, Callable[..., Any]]) -> CompiledStateGraph
         else:
             graph.add_node(name, nodes[name])
 
-    graph.add_edge(START, CLAIM)
-    graph.add_conditional_edges(CLAIM, after_claim, [SNAPSHOT, FINALIZE])
-    graph.add_conditional_edges(SNAPSHOT, after_source_snapshot, [EVIDENCE, FINALIZE])
-    graph.add_conditional_edges(EVIDENCE, after_evidence, [LOCATE, FINALIZE])
-    graph.add_conditional_edges(LOCATE, after_locate, [WORKSPACE, FINALIZE])
-    graph.add_conditional_edges(WORKSPACE, after_workspace, [REPAIR, FINALIZE])
-
-    # repair → check → verify → regression 链路（支持重试）
-    graph.add_conditional_edges(REPAIR, after_repair, [CHECK, RETRY, APPROVE, FINALIZE])
-    graph.add_conditional_edges(CHECK, after_check_changes, [VERIFY, RETRY, FINALIZE])
-    graph.add_conditional_edges(VERIFY, after_verify, [REGRESSION, RETRY, FINALIZE])
-    graph.add_conditional_edges(REGRESSION, after_regression, [REVIEW, APPROVE, RETRY, FINALIZE])
-
-    # review 后的条件分支
-    graph.add_conditional_edges(REVIEW, after_review, [REPAIR, APPROVE, DELIVER, RETRY, FINALIZE])
-
-    # 审批和应用
-    graph.add_conditional_edges(APPROVE, after_approval, [REPAIR, APPLY, DELIVER, RETRY, FINALIZE])
-    graph.add_conditional_edges(APPLY, after_apply, [CHECK, RETRY, FINALIZE])
-
-    graph.add_edge(RETRY, REPAIR)
-
-    # 交付和终止
-    graph.add_edge(DELIVER, FINALIZE)
-    graph.add_edge(FINALIZE, END)
+    # 任务流程唯一由 definitions.py 声明；这里仅负责将定义编译成 LangGraph。
+    for source, target in TASK_STATIC_TRANSITIONS:
+        graph.add_edge(source, target)
+    for source, router, targets in TASK_CONDITIONAL_TRANSITIONS:
+        graph.add_conditional_edges(source, router, list(targets))
 
     return graph.compile()
 

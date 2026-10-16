@@ -24,6 +24,7 @@ def verify_registry() -> None:
     for spec in registry.agents():
         problems.extend(_check_agent(spec))
     problems.extend(_check_cycles())
+    problems.extend(_check_task_topology())
     if problems:
         raise PluginError("插件契约自检失败:\n- " + "\n- ".join(problems))
 
@@ -34,6 +35,42 @@ def _known(name: str) -> bool:
     except PluginError:
         return False
     return True
+
+
+def _check_task_topology() -> list[str]:
+    """任务图拓扑必须引用已声明的节点，且所有任务插件必须在主流程中有位置。"""
+    from app.workflow.definitions import (
+        TASK_CONDITIONAL_TRANSITIONS,
+        TASK_NODE_NAMES,
+        TASK_STATIC_TRANSITIONS,
+    )
+    from langgraph.graph import END, START
+
+    problems: list[str] = []
+    declared = set(TASK_NODE_NAMES)
+    from app.workflow import registry
+
+    registered = {spec.name for spec in registry.steps() if spec.task_level}
+    registered |= {spec.name for spec in registry.agents() if spec.task_level}
+    # retry_prepare 是编排内置节点，不是业务插件。
+    registered.add("retry_prepare")
+    for name in sorted(registered - declared):
+        problems.append(f"任务插件未纳入任务流程: {name}")
+    for name in sorted(declared - registered):
+        problems.append(f"任务流程声明了不存在的节点: {name}")
+
+    edges: list[tuple[str, str]] = list(TASK_STATIC_TRANSITIONS)
+    for source, _router, targets in TASK_CONDITIONAL_TRANSITIONS:
+        edges.extend((source, target) for target in targets)
+    for source, target in edges:
+        if source not in {START, END} and source not in declared:
+            problems.append(f"任务流程边的源节点未声明: {source}")
+        if target not in {START, END} and target not in declared:
+            problems.append(f"任务流程边的目标节点未声明: {target}")
+    conditional_sources = [source for source, _router, _targets in TASK_CONDITIONAL_TRANSITIONS]
+    if len(conditional_sources) != len(set(conditional_sources)):
+        problems.append("任务流程同一节点声明了多组条件路由")
+    return problems
 
 
 def _check_models(spec: StepSpec | AgentSpec) -> list[str]:
