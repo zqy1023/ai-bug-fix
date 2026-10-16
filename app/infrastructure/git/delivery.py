@@ -28,6 +28,9 @@ class DeliveryPort(Protocol):
     def deliver(self, state: Mapping[str, Any]) -> dict[str, Any]:
         """创建分支并交付本轮代码。"""
 
+    def discard_branch(self, state: Mapping[str, Any]) -> dict[str, Any]:
+        """删除最终审批拒绝的修复分支。"""
+
 
 # 提交说明会永久留在版本库里，比运行记录更难回收，因此对随单变化的内容脱敏。
 # 单号、运单号这类连续数字是最容易泄露又最没信息量的部分。敏感键名的掩码规则
@@ -74,6 +77,31 @@ class GitBranchDelivery:
         """创建不执行 MR 或自动合并的交付器。"""
         self._config = config or GitDeliveryConfig()
         self._workspaces = self._config.workspace_manager or WorkspaceManager()
+
+    def discard_branch(self, state: Mapping[str, Any]) -> dict[str, Any]:
+        """最终审批拒绝时删除本任务已推送的修复分支，不触碰默认分支。"""
+        branch = str(state.get("repair_branch") or "")
+        source_repo = state.get("source_repo_path") or self._config.source_repo
+        if not branch or not self._BRANCH.fullmatch(branch):
+            raise DeliveryError("拒绝审批时缺少合法修复分支名")
+        if not source_repo:
+            raise DeliveryError("拒绝审批时缺少源仓库，无法清理修复分支")
+        if not state.get("pushed"):
+            return {"deleted": False, "reason": "branch_not_pushed"}
+        if branch in {"main", "master", "develop"}:
+            raise DeliveryError("拒绝删除受保护的默认分支")
+        branch_root = self._repo_root(source_repo)
+        try:
+            repo = Repo(branch_root, search_parent_directories=True)
+        except Exception as error:
+            raise DeliveryError(f"无法打开源 Git 仓库以清理分支: {branch_root}") from error
+        if self._config.remote_name not in {remote.name for remote in repo.remotes}:
+            raise DeliveryError(f"远程不存在，无法删除被拒绝的分支: {self._config.remote_name}")
+        try:
+            repo.git.push(self._config.remote_name, "--delete", branch)
+        except Exception as error:
+            raise DeliveryError(f"删除被拒绝的远程修复分支失败: {branch}") from error
+        return {"deleted": True, "repair_branch": branch}
 
     def deliver(self, state: Mapping[str, Any]) -> dict[str, Any]:
         """把 AI 工作区修改复制到独立修复分支工作区并提交推送。"""
