@@ -1,4 +1,4 @@
-import type { ApprovalItem, DashboardSummary, ManualIntervention, ModelCall, PageResult, RunDetail, RunQuery, RunSummary, ControlAuditItem } from './types';
+import type { ApprovalItem, DashboardSummary, ManualIntervention, ModelCall, PageResult, RunDetail, RunQuery, RunSummary, ControlAuditItem, KnowledgeCase, KnowledgeCaseCreate, KnowledgeCaseList, KnowledgeCaseStatus } from './types';
 
 const API_BASE = '/api/v1';
 let apiToken = '';
@@ -35,6 +35,17 @@ export const api = {
     }>;
   },
   dashboard: () => request<DashboardSummary>('/dashboard/summary'),
+  knowledgeCases: (query: { q?: string; status?: 'all' | KnowledgeCaseStatus; page?: number; page_size?: number }) => {
+    const params = new URLSearchParams();
+    Object.entries(query).forEach(([key, value]) => { if (value !== undefined && value !== '') params.set(key, String(value)); });
+    return request<KnowledgeCaseList>(`/knowledge/cases?${params.toString()}`);
+  },
+  createKnowledgeCase: (payload: KnowledgeCaseCreate) =>
+    request<KnowledgeCase>('/knowledge/cases', { method: 'POST', body: JSON.stringify(payload) }),
+  updateKnowledgeCaseStatus: (caseId: string, status: KnowledgeCaseStatus, reason = '') =>
+    request<KnowledgeCase>(`/knowledge/cases/${encodeURIComponent(caseId)}/status`, {
+      method: 'POST', body: JSON.stringify({ status, reason }),
+    }),
   runs: (query: RunQuery) => {
     const params = new URLSearchParams();
     Object.entries(query).forEach(([key, value]) => { if (value !== undefined && value !== '') params.set(key, String(value)); });
