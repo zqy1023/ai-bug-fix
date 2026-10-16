@@ -200,6 +200,27 @@ export function ApprovalsPage() {
           <div><Text type="secondary">来源执行 / 任务</Text><div><code>{selected.run_id}</code><div><code>{selected.task_id}</code></div><Button type="link" style={{ paddingInline: 0 }} onClick={() => navigate('/runs/' + encodeURIComponent(selected.run_id) + '/tasks/' + encodeURIComponent(selected.task_id))}>打开任务详情，检查根因、节点与验证报告</Button></div></div>
           <div><Text type="secondary">变更文件（{selected.changed_files.length}）</Text><ul>{selected.changed_files.map((file) => <li key={file}><code>{file}</code></li>)}</ul></div>
           <div><Text type="secondary">方案摘要</Text><p>{selected.summary}</p></div>
+          {selected.change_plan && <div className="change-plan-detail">
+            <Text type="secondary">结构化变更方案</Text>
+            <div className="change-plan-meta">
+              <Tag color={selected.change_plan.scope === 'project' ? 'purple' : 'blue'}>{selected.change_plan.scope === 'project' ? '共享层方案' : '运输商内方案'}</Tag>
+              {selected.change_plan.requires_human_authorization && <Tag color="gold">需要人工授权</Tag>}
+            </div>
+            {selected.change_plan.rationale && <Paragraph>{selected.change_plan.rationale}</Paragraph>}
+            {selected.change_plan.edits.length > 0
+              ? <Table
+                  size="small"
+                  rowKey={(edit) => edit.path}
+                  pagination={false}
+                  dataSource={selected.change_plan.edits}
+                  columns={[
+                    { title: '目标文件', dataIndex: 'path', key: 'path', render: (path: string) => <code>{path}</code> },
+                    { title: '动作', dataIndex: 'action', key: 'action', render: (action: string) => ({ create: '新建', update: '修改', delete: '删除' } as Record<string, string>)[action] ?? action },
+                    { title: '方案说明', dataIndex: 'note', key: 'note', render: (note: string) => note || '—' },
+                  ]}
+                />
+              : <Text type="secondary">当前记录没有结构化文件编辑项。为避免错误授权，请先返回任务详情核对修复 Agent 产物。</Text>}
+          </div>}
           {selected.expires_at && <div><Text type="secondary">审批截止时间</Text><div>{dayjs(selected.expires_at).isValid() ? dayjs(selected.expires_at).format('YYYY-MM-DD HH:mm:ss') : selected.expires_at}</div></div>}
         </div>
         <label className="form-label">{decision === 'approve' ? '审批意见（选填）' : '拒绝原因（必填）'}</label>
