@@ -100,7 +100,7 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
     roots = _read_roots(root, carrier_dir, rules)
     prepared_evidence = {
         key: evidence.get(key)
-        for key in ("carrier_dir", "candidates", "symbols", "category", "extracted", "legacy_only", "legacy_reason")
+        for key in ("carrier_dir", "candidates", "symbols", "category", "extracted", "legacy_only", "legacy_reason", "knowledge_cases")
         if key in evidence
     }
     context = prompt_context(
