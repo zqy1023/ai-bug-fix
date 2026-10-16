@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { Alert, Button, Card, Col, Empty, Row, Skeleton, Statistic, Table, Typography } from 'antd';
-import { CheckCircleOutlined, ClockCircleOutlined, ExclamationCircleOutlined, PlayCircleOutlined } from '@ant-design/icons';
+import { CheckCircleOutlined, ClockCircleOutlined, ExclamationCircleOutlined, PlayCircleOutlined, PlusOutlined } from '@ant-design/icons';
 import ReactECharts from 'echarts-for-react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../lib/api';
@@ -11,6 +11,7 @@ function formatDate(value: string) { const date = new Date(value); return Number
 export function DashboardPage() {
   const navigate = useNavigate();
   const query = useQuery({ queryKey: ['dashboard'], queryFn: api.dashboard, refetchInterval: 15000 });
+  const health = useQuery({ queryKey: ['workbench-health'], queryFn: api.health, refetchInterval: 30000, retry: 1 });
   const data = query.data;
   const option = {
     tooltip: { trigger: 'axis' }, legend: { data: ['成功任务', '失败任务'], bottom: 0 },
@@ -30,7 +31,9 @@ export function DashboardPage() {
     { title: '发起人', dataIndex: 'operator', key: 'operator', render: (v?: string) => v || '系统' },
   ];
   return <div className="page-stack">
-    <div className="page-heading"><div><Title level={3}>运行总览</Title><Text type="secondary">掌握自动修复执行、待审批事项与近期质量变化。</Text></div></div>
+    <div className="page-heading"><div><Title level={3}>运行控制台</Title><Text type="secondary">从异常发现到回归交付，集中监控每轮自动修复的状态与风险。</Text></div><Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/runs')}>新建执行</Button></div>
+    {health.data && !health.data.source_repo_configured && <Alert type="warning" showIcon message="生产工作流尚未就绪" description="后端健康检查正常，但未配置 AI_REPAIR_SOURCE_REPO。启动执行会被服务端拒绝，请先完成源仓库配置。" />}
+    {health.isError && <Alert type="error" showIcon message="无法确认工作流服务状态" description={(health.error as Error).message} action={<Button type="link" onClick={() => health.refetch()}>重试健康检查</Button>} />}
     {query.isError && <Alert type="error" showIcon message="无法加载运行概览" description={(query.error as Error).message} action={<Button type="link" onClick={() => query.refetch()}>重试</Button>} />}
     <Row gutter={[16, 16]}>
       <Col xs={24} sm={12} xl={6}><Card className="metric-card"><Statistic title="正在执行" value={data?.active_runs ?? 0} prefix={<PlayCircleOutlined />} loading={query.isLoading} /></Card></Col>
