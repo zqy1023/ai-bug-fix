@@ -21,8 +21,8 @@ class EvidenceInput(FrozenModel):
     service_name: str
     # problem：字段说明见该模型文档与工作流契约。
     problem: dict[str, Any] = Field(default_factory=dict)
-    # source_project_path：字段说明见该模型文档与工作流契约。
-    source_project_path: str
+    # workspace_path：只允许访问已复制的隔离工作区。
+    workspace_path: str
     # framework：字段说明见该模型文档与工作流契约。
     framework: Literal["gathers", "spiders"]
 
