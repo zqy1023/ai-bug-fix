@@ -17,6 +17,7 @@ export function DashboardPage() {
   const [launchOpen, setLaunchOpen] = useState(false);
   const query = useQuery({ queryKey: ['dashboard'], queryFn: api.dashboard, refetchInterval: 15000 });
   const health = useQuery({ queryKey: ['workbench-health'], queryFn: api.health, refetchInterval: 30000, retry: 1 });
+  const manual = useQuery({ queryKey: ['manual-interventions'], queryFn: api.manualInterventions, refetchInterval: 15000, retry: 1 });
   const data = query.data;
   const option = {
     tooltip: { trigger: 'axis' }, legend: { data: ['成功任务', '失败任务'], bottom: 0 },
@@ -50,12 +51,13 @@ export function DashboardPage() {
     </div>
     <section className="attention-section">
       <div className="section-heading"><div><Title level={5}>处理队列</Title><Text type="secondary">点击数字直接进入对应工作区</Text></div><Button type="text" icon={<ReloadOutlined />} loading={query.isFetching} onClick={() => query.refetch()}>刷新数据</Button></div>
-      <Row gutter={[14, 14]}>
-        <Col xs={12} xl={6}><Card className="attention-card attention-blue" hoverable onClick={() => navigate('/runs?status=running')}><div className="attention-top"><PlayCircleOutlined /><span>执行中</span></div><Statistic value={data?.active_runs ?? 0} loading={query.isLoading} /><Text type="secondary">查看执行进度与异常</Text></Card></Col>
-        <Col xs={12} xl={6}><Card className="attention-card attention-amber" hoverable onClick={() => navigate('/approvals')}><div className="attention-top"><SafetyCertificateOutlined /><span>待审批</span></div><Statistic value={data?.waiting_approvals ?? 0} loading={query.isLoading} /><Text type="secondary">审查变更并作出决定</Text></Card></Col>
-        <Col xs={12} xl={6}><Card className="attention-card attention-red"><div className="attention-top"><ExclamationCircleOutlined /><span>24 小时失败任务</span></div><Statistic value={data?.failed_24h ?? 0} loading={query.isLoading} /><Text type="secondary">定位失败原因与后续动作</Text></Card></Col>
-        <Col xs={12} xl={6}><Card className="attention-card attention-green"><div className="attention-top"><CheckCircleOutlined /><span>24 小时成功任务</span></div><Statistic value={data?.succeeded_24h ?? 0} loading={query.isLoading} /><Text type="secondary">查看已完成的修复结果</Text></Card></Col>
-      </Row>
+      <div className="attention-grid">
+        <Card className="attention-card attention-blue" hoverable onClick={() => navigate('/runs?status=running')}><div className="attention-top"><PlayCircleOutlined /><span>执行中</span></div><Statistic value={data?.active_runs ?? 0} loading={query.isLoading} /><Text type="secondary">查看执行进度与异常</Text></Card>
+        <Card className="attention-card attention-amber" hoverable onClick={() => navigate('/approvals')}><div className="attention-top"><SafetyCertificateOutlined /><span>待审批</span></div><Statistic value={data?.waiting_approvals ?? 0} loading={query.isLoading} /><Text type="secondary">查看方案并作出决定</Text></Card>
+        <Card className="attention-card attention-red" hoverable onClick={() => navigate('/approvals')}><div className="attention-top"><ExclamationCircleOutlined /><span>人工介入</span></div><Statistic value={manual.data?.length ?? 0} loading={manual.isLoading} /><Text type="secondary">恢复定位、批准继续或登记人工处理</Text></Card>
+        <Card className="attention-card attention-red" hoverable onClick={() => navigate('/runs?status=failed')}><div className="attention-top"><ExclamationCircleOutlined /><span>24 小时失败任务</span></div><Statistic value={data?.failed_24h ?? 0} loading={query.isLoading} /><Text type="secondary">定位失败原因与后续动作</Text></Card>
+        <Card className="attention-card attention-green" hoverable onClick={() => navigate('/runs?status=succeeded')}><div className="attention-top"><CheckCircleOutlined /><span>24 小时成功任务</span></div><Statistic value={data?.succeeded_24h ?? 0} loading={query.isLoading} /><Text type="secondary">查看已完成的修复结果</Text></Card>
+      </div>
     </section>
     <Row gutter={[16, 16]}>
       <Col xs={24} xl={16}><Card title="近 7 天处理趋势" extra={<Text type="secondary">任务成功率 {((data?.success_rate_7d ?? 0) * 100).toFixed(1)}%</Text>} className="content-card">
