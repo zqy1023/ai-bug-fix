@@ -1195,9 +1195,13 @@ def v1_list_approvals(
         review_step = next((value for value in reversed(steps) if value.get("name") == "review_agent"), {})
         repair_output = repair_step.get("output") if isinstance(repair_step.get("output"), dict) else {}
         review_output = review_step.get("output") if isinstance(review_step.get("output"), dict) else {}
-        plan = repair_output.get("change_plan") if isinstance(repair_output.get("change_plan"), dict) else {}
-        if not plan:
-            plan = review_output.get("change_plan") if isinstance(review_output.get("change_plan"), dict) else {}
+        repair_plan = repair_output.get("change_plan") if isinstance(repair_output.get("change_plan"), dict) else {}
+        review_plan = review_output.get("change_plan") if isinstance(review_output.get("change_plan"), dict) else {}
+        # 审查 Agent 新提出的 project 方案覆盖早先 carrier 方案，和工作流实际将审批的状态保持一致。
+        if str(review_plan.get("scope") or "").lower() == "project" and isinstance(review_plan.get("edits"), list) and review_plan.get("edits"):
+            plan = review_plan
+        else:
+            plan = repair_plan or review_plan
         raw_edits = plan.get("edits") if isinstance(plan.get("edits"), list) else []
         edits = [
             {
@@ -1207,7 +1211,7 @@ def v1_list_approvals(
             }
             for edit in raw_edits if isinstance(edit, dict) and str(edit.get("path") or "").strip()
         ]
-        files = plan.get("changed_files") or plan.get("files") or approval_input.get("changed_files") or repair_output.get("changed_files") or [edit["path"] for edit in edits]
+        files = plan.get("changed_files") or plan.get("files") or [edit["path"] for edit in edits] or approval_input.get("changed_files") or repair_output.get("changed_files")
         if not isinstance(files, list):
             files = []
         scope = str(plan.get("scope") or approval_input.get("recommended_scope") or "").lower()
