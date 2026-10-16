@@ -40,6 +40,8 @@ def _known(name: str) -> bool:
 def _check_task_topology() -> list[str]:
     """任务图拓扑必须引用已声明的节点，且所有任务插件必须在主流程中有位置。"""
     from app.workflow.definitions import (
+        PHASE_COMPOSITIONS,
+        RUN_PHASES,
         TASK_CONDITIONAL_TRANSITIONS,
         TASK_NODE_NAMES,
         TASK_STATIC_TRANSITIONS,
@@ -52,12 +54,29 @@ def _check_task_topology() -> list[str]:
 
     registered = {spec.name for spec in registry.steps() if spec.task_level}
     registered |= {spec.name for spec in registry.agents() if spec.task_level}
-    # retry_prepare 是编排内置节点，不是业务插件。
+    composed_task_plugins = {
+        member
+        for phase, members in PHASE_COMPOSITIONS.items()
+        if phase in declared
+        for member in members
+        if member in registered
+    }
+    # 被组合阶段承载的原子插件不直接出现在主图；它们仍必须注册且可独立调试。
+    for phase, members in PHASE_COMPOSITIONS.items():
+        if phase not in declared and phase not in RUN_PHASES:
+            problems.append(f"组合阶段未纳入工作流: {phase}")
+        for member in members:
+            if not _known(member):
+                problems.append(f"组合阶段 {phase} 引用了未注册插件: {member}")
+    registered -= composed_task_plugins
+    # retry_prepare 是编排内置控制节点，不是业务插件。
     registered.add("retry_prepare")
     for name in sorted(registered - declared):
         problems.append(f"任务插件未纳入任务流程: {name}")
     for name in sorted(declared - registered):
-        problems.append(f"任务流程声明了不存在的节点: {name}")
+        # 组合阶段名不要求在业务插件注册表中登记。
+        if name not in PHASE_COMPOSITIONS:
+            problems.append(f"任务流程声明了不存在的节点: {name}")
 
     edges: list[tuple[str, str]] = list(TASK_STATIC_TRANSITIONS)
     for source, _router, targets in TASK_CONDITIONAL_TRANSITIONS:

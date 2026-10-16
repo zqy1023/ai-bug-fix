@@ -17,6 +17,7 @@ from app.infrastructure.config import load_config
 from app.infrastructure.eligibility import ExecutionEligibility
 from app.workflow.graph import build_graph as build_state_graph
 from app.workflow.graph import build_task_graph
+from app.workflow.definitions import PHASE_COMPOSITIONS
 from app.domain.errors import StepFailed
 from app.workflow.runner import bind
 from app.workflow.routes import FINALIZE
@@ -211,7 +212,41 @@ def build_nodes(
         nodes[spec.name] = bind(spec, store, services)
     for agent in registry.agents():
         nodes[agent.name] = build_agent_node(agent, store, overrides.get(agent.kind))
+
+    # 图上按业务阶段调度；阶段内部仍逐个调用原始插件节点，因此原有步骤记录、
+    # artifact、单步调试入口和失败结果语义均保持不变。
+    for phase_name, step_names in PHASE_COMPOSITIONS.items():
+        nodes[phase_name] = _compose_phase(step_names, nodes)
     return nodes
+
+
+def _compose_phase(
+    step_names: tuple[str, ...],
+    nodes: dict[str, Callable[..., Any]],
+) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """顺序执行一个组合阶段；失败、人工介入或取消后立即停止后续子步骤。"""
+    missing = [name for name in step_names if name not in nodes]
+    if missing:
+        raise PluginError(f"组合阶段缺少步骤插件: {', '.join(missing)}")
+
+    def node(state: dict[str, Any]) -> dict[str, Any]:
+        current = dict(state)
+        combined_patch: dict[str, Any] = {}
+        for name in step_names:
+            patch = nodes[name](current)
+            if not isinstance(patch, dict):
+                raise PluginError(f"组合阶段子步骤必须返回 dict: {name}")
+            current.update(patch)
+            combined_patch.update(patch)
+            result = str(patch.get("last_result") or "passed").lower()
+            if result not in {"passed", "skipped"}:
+                break
+            if str(current.get("terminal_status") or "").upper() == "CANCELLED":
+                break
+        return combined_patch
+
+    node.__name__ = "_".join(step_names)
+    return node
 
 
 def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) -> Callable[..., Any]:
