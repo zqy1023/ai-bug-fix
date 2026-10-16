@@ -136,7 +136,8 @@ def after_repair(state: WorkflowState) -> str:
         return APPROVE
     if _result(state) != "passed":
         return _retry_or_finalize(state)
-    return CHECK
+    # VALIDATE 是图中的组合阶段节点；CHECK 是组合阶段内部步骤，不能作为直接路由目标。
+    return VALIDATE
 
 
 def after_check_changes(state: WorkflowState) -> str:
