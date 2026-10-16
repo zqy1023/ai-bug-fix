@@ -480,6 +480,8 @@ def decide_approval(
     _: None = Depends(_authorize),
 ) -> dict[str, Any]:
     decision = request.decision.upper()
+    if decision in {"CONTINUE_REPAIR", "MARK_DONE", "TERMINATE"} and not request.reason.strip():
+        raise HTTPException(status_code=422, detail="继续修复、人工完成或终止操作必须填写处置说明")
     run_id, task_id = _safe_id(run_id), _safe_id(task_id)
     store = _store()
     run = _run_payload(store, run_id)
