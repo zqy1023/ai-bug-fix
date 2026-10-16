@@ -228,10 +228,35 @@ def after_approval(state: WorkflowState) -> str:
 
 
 def after_delivery(state: WorkflowState) -> str:
-    """分支交付成功后才进入唯一的最终人工审批节点。"""
+    """分析报告分支交付后直接结束；源码修复分支交付后进入唯一最终审批。"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
         return FINALIZE
-    return APPROVE if _result(state) == "passed" else FINALIZE
+    evidence = state.get("evidence") or {}
+    locate = state.get("locate") or {}
+    analysis_only = bool(
+        evidence.get("legacy_only")
+        or evidence.get("legacy_dependency")
+        or str(locate.get("status") or "") != "LOCATED"
+        or str(locate.get("recommended_scope") or "") != "carrier"
+    )
+    return END if analysis_only and _result(state) == "passed" else APPROVE if _result(state) == "passed" else FINALIZE
+
+
+def after_finalize(state: WorkflowState) -> str:
+    """对已完成根因分析但不允许自动修改的任务，交付 final.json 分支后结束。"""
+    if str(state.get("terminal_status") or "").upper() == "CANCELLED":
+        return END
+    evidence = state.get("evidence") or {}
+    locate = state.get("locate") or {}
+    analysis_only = bool(
+        evidence.get("legacy_only")
+        or evidence.get("legacy_dependency")
+        or (locate and (
+            str(locate.get("status") or "") != "LOCATED"
+            or str(locate.get("recommended_scope") or "") != "carrier"
+        ))
+    )
+    return DELIVER if analysis_only and state.get("ai_workspace_path") else END
 
 
 def after_apply(state: WorkflowState) -> str:
@@ -248,7 +273,7 @@ __all__ = [
     "PREPARE_CONTEXT", "RUN_PREPARE", "VALIDATE",
     "EVIDENCE", "FINALIZE", "IDENTIFY", "LOCATE", "NORMALIZE", "REGRESSION", "REPAIR",
     "REVIEW", "RETRY", "SNAPSHOT", "TASK_DISPATCH", "VERIFY", "WORKSPACE",
-    "after_apply", "after_approval", "after_delivery", "after_check_changes", "after_claim", "after_prepare_context",
+    "after_apply", "after_approval", "after_delivery", "after_finalize", "after_check_changes", "after_claim", "after_prepare_context",
     "after_run_prepare", "after_validate_changes",
     "after_deduplicate", "after_evidence", "after_identify", "after_locate",
     "after_regression", "after_repair", "after_review", "after_source_snapshot",
