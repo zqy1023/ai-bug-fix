@@ -42,6 +42,8 @@ export const api = {
   },
   createKnowledgeCase: (payload: KnowledgeCaseCreate) =>
     request<KnowledgeCase>('/knowledge/cases', { method: 'POST', body: JSON.stringify(payload) }),
+  captureKnowledgeFromTask: (runId: string, taskId: string) =>
+    request<KnowledgeCase>(`/knowledge/cases/from-run/${encodeURIComponent(runId)}/${encodeURIComponent(taskId)}`, { method: 'POST' }),
   updateKnowledgeCaseStatus: (caseId: string, status: KnowledgeCaseStatus, reason = '') =>
     request<KnowledgeCase>(`/knowledge/cases/${encodeURIComponent(caseId)}/status`, {
       method: 'POST', body: JSON.stringify({ status, reason }),
