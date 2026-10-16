@@ -34,6 +34,6 @@ export function RunsPage() {
       <Select allowClear placeholder="执行状态" value={status} onChange={(v) => { setStatus(v); setPage(1); }} style={{ width: 170 }} options={[{ value: 'queued', label: '排队中' }, { value: 'running', label: '执行中' }, { value: 'waiting_approval', label: '待审批' }, { value: 'succeeded', label: '已完成' }, { value: 'partial_failed', label: '部分失败' }, { value: 'failed', label: '失败' }, { value: 'cancelled', label: '已取消' }]} />
       <Button icon={<CloseCircleOutlined />} disabled={!keyword && !status} onClick={() => { setKeyword(''); setStatus(undefined); setPage(1); }}>清除筛选</Button><Button icon={<ReloadOutlined />} onClick={() => runs.refetch()} loading={runs.isFetching}>刷新</Button><Text type="secondary">每 15 秒自动更新</Text>
     </div><Table rowKey="run_id" loading={runs.isLoading} columns={columns} dataSource={runs.data?.items ?? []} pagination={{ current: page, pageSize: 20, total: runs.data?.total ?? 0, showSizeChanger: false, onChange: setPage, showTotal: (total) => '共 ' + total + ' 条' }} locale={{ emptyText: '没有符合条件的执行记录' }} /></Card>
-    <ExecutionLaunchDialog open={modalOpen} onClose={() => setModalOpen(false)} />dal>
+    <ExecutionLaunchDialog open={modalOpen} onClose={() => setModalOpen(false)} />
   </div>;
 }
