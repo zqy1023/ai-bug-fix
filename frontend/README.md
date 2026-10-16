@@ -73,4 +73,4 @@ docker compose logs -f api frontend
 
 本次升级分支采用白色导航栏、浅灰工作区、蓝色主操作和轻量边界的浅色视觉规范，不使用深色侧栏。视觉变更不改变现有 API 的真实状态来源。
 
-企业级工作台与知识沉淀的目标、数据治理要求、安全边界和验收清单见 [企业级工作台升级实施规范](../docs/enterprise-workbench-upgrade.md)。当前分支已实现知识案例的 SQLite 持久化、候选登记/发布门禁/停用、在 `finalize_execution` 阶段自动沉淀候选案例，并在 `prepare_evidence` 阶段向根因定位 Agent 注入已发布案例。知识召回目前是轻量确定性排序；候选自动生成已实现，但自动复核、知识收益的完整统计和完整生产验收仍需继续实现。远程提交不能替代本地 `npm run typecheck`、`npm run build` 和端到端测试。
+企业级工作台与知识沉淀的目标、数据治理要求、安全边界和验收清单见 [企业级工作台升级实施规范](../docs/enterprise-workbench-upgrade.md)。当前分支已实现知识案例的 SQLite 持久化、候选登记/发布门禁/停用、在 `finalize_execution` 阶段自动沉淀候选案例，并在 `prepare_evidence` 阶段向根因定位 Agent 注入已发布案例。知识召回目前是指纹优先的轻量确定性排序，并记录检索使用和任务结果；候选自动生成已实现，但自动复核、Token/耗时节省对照分析和完整生产验收仍需继续实现。远程提交不能替代本地 `npm run typecheck`、`npm run build` 和端到端测试。

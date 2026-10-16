@@ -1084,6 +1084,9 @@ def v1_create_knowledge_case(
         task = next((item for item in detail.get("tasks", []) if str(item.get("task_id") or "") == source_task_id), None)
         if task is None:
             raise HTTPException(status_code=404, detail="来源执行中不存在指定任务")
+        task_status = str(task.get("status") or task.get("result") or "").upper()
+        if task_status in {"RUNNING", "PENDING", "REPAIRING", "VERIFYING", "REVIEWING", "WAITING", "WAITING_APPROVAL"}:
+            raise HTTPException(status_code=409, detail="来源任务尚未结束，不能核验知识发布资格")
         steps = task.get("steps") if isinstance(task.get("steps"), list) else []
         for step in steps:
             if not isinstance(step, dict):
@@ -1200,8 +1203,8 @@ def v1_capture_knowledge_from_task(
         biztype = str(task.get("biztype") or "")
         title = f"{carrier or '未知运输商'} / {biztype or '未知业务类型'}：{root_cause[:120]}"
         problem_value = task.get("problem") or {}
-        problem_serialized = json.dumps(problem_value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        fingerprint = sha256(problem_serialized.encode("utf-8")).hexdigest()
+        problem_error = str(problem_value.get("error") or "") if isinstance(problem_value, dict) else str(problem_value)
+        fingerprint = sha256(problem_error.encode("utf-8")).hexdigest() if problem_error else ""
         now = datetime.now(timezone.utc).isoformat()
         case_id = uuid.uuid4().hex
         cursor = connection.execute(
