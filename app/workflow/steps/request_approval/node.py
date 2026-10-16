@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.domain.errors import StepFailed
+from app.domain.errors import DeliveryError, StepFailed
 from app.application.context import StepContext
 from app.workflow.steps.request_approval.approval import final_gate
 from app.workflow.steps.request_approval.models import ApprovalInput, ApprovalOutput
@@ -50,6 +50,25 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
         return ApprovalOutput(decision=decision, passed=True, reason=reasons[decision])
 
     if decision == "REJECT":
+        if data.delivery_pushed:
+            if ctx.services.delivery is None:
+                raise StepFailed(
+                    "审批拒绝但交付服务未配置，无法删除已推送分支",
+                    {"decision": "REJECT", "approval_cleanup_failed": True, "passed": False},
+                    result="manual",
+                )
+            try:
+                ctx.services.delivery.discard_branch({
+                    "source_repo_path": data.source_repo_path,
+                    "repair_branch": data.repair_branch,
+                    "pushed": True,
+                })
+            except DeliveryError as error:
+                raise StepFailed(
+                    f"审批拒绝，但清理远程分支失败：{error}",
+                    {"decision": "REJECT", "approval_cleanup_failed": True, "passed": False},
+                    result="manual",
+                ) from error
         raise StepFailed("人工打回", {"decision": "REJECT", "passed": False, "reason": "人工打回"}, result="rejected")
     if decision != "APPROVE":
         raise StepFailed("缺少人工决定", {"decision": "PENDING", "passed": False, "reason": "缺少人工决定"})
