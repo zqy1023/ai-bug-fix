@@ -222,16 +222,6 @@ def after_approval(state: WorkflowState) -> str:
     """审批后路由：最终审批只保留或拒绝已交付分支，不自动合并。"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
         return FINALIZE
-    # 定位阶段的人工处置与变更方案审批共用 interrupt，但决策语义完全分开。
-    if str(state.get("approval_mode") or "") == "manual_intervention":
-        decision = str(state.get("decision") or "").upper()
-        if decision == "RETRY_LOCATE":
-            return LOCATE
-        if decision == "CONTINUE_REPAIR" and state.get("manual_continue_allowed"):
-            # 定位阶段批准后首次领取修复资格；修复阶段缺少方案时直接重试 repair，不能二次 claim。
-            return REPAIR if str(state.get("manual_resume_step") or "") == "repair_agent" or state.get("repair_slot_claimed") else CLAIM
-        return FINALIZE
-
     if state.get("approval_cleanup_failed"):
         return FINALIZE
 
