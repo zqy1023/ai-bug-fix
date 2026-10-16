@@ -10,14 +10,14 @@ from app.workflow.routes import (
     REGRESSION, REPAIR, REVIEW, RETRY, RUN_PREPARE, VALIDATE, WORKSPACE,
     after_apply, after_approval, after_claim, after_prepare_context,
     after_regression, after_repair, after_review, after_run_prepare,
-    after_validate_changes, after_workspace, after_locate,
+    after_validate_changes, after_locate,
 )
 from langgraph.graph import END, START
 
 # 编排节点 -> 实际执行的插件。每个插件仍独立写入自己的步骤记录。
 PHASE_COMPOSITIONS = {
     RUN_PREPARE: ("discover_logs", "normalize_error", "deduplicate_error"),
-    PREPARE_CONTEXT: ("prepare_source_snapshot", "prepare_evidence"),
+    PREPARE_CONTEXT: ("prepare_source_snapshot", "prepare_workspace", "prepare_evidence"),
     VALIDATE: ("check_changes", "verify_issue"),
 }
 
@@ -29,7 +29,7 @@ TASK_PHASES = {
 
 # 12 个业务主节点；retry_prepare 是仅供有界回修使用的内部控制节点。
 TASK_NODE_NAMES = (
-    PREPARE_CONTEXT, LOCATE, CLAIM, WORKSPACE, REPAIR, VALIDATE,
+    PREPARE_CONTEXT, LOCATE, CLAIM, REPAIR, VALIDATE,
     REGRESSION, REVIEW, APPROVE, APPLY, DELIVER, FINALIZE, RETRY,
 )
 
@@ -44,8 +44,7 @@ TASK_CONDITIONAL_TRANSITIONS = (
     (PREPARE_CONTEXT, after_prepare_context, (LOCATE, FINALIZE)),
     # after_locate may route to APPROVE when manual intervention is required.
     (LOCATE, after_locate, (CLAIM, APPROVE, FINALIZE)),
-    (CLAIM, after_claim, (WORKSPACE, FINALIZE)),
-    (WORKSPACE, after_workspace, (REPAIR, FINALIZE)),
+    (CLAIM, after_claim, (REPAIR, FINALIZE)),
     (REPAIR, after_repair, (VALIDATE, RETRY, APPROVE, FINALIZE)),
     (VALIDATE, after_validate_changes, (REGRESSION, RETRY, FINALIZE)),
     (REGRESSION, after_regression, (REVIEW, APPROVE, RETRY, FINALIZE)),
