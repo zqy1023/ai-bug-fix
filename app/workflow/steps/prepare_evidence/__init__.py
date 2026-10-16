@@ -25,7 +25,7 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
 def _patch(output: dict[str, Any]) -> dict[str, Any]:
     """预检结论回写状态；纯旧框架仍需 Locate 分析，但不进入修复。"""
     patch: dict[str, Any] = {"evidence": output}
-    if output.get("legacy_only"):
+    if output.get("legacy_only") or output.get("legacy_dependency"):
         patch["terminal_status"] = "manual"
     return patch
 
