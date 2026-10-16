@@ -48,10 +48,12 @@ logger = logging.getLogger("workbench.api")
 
 
 class StartRunRequest(BaseModel):
+    # run_id：可选的调用方指定执行标识；缺省由服务端生成。
     run_id: str | None = Field(default=None, max_length=160)
 
 
 class ApprovalRequest(BaseModel):
+    # decision：人工审批决定，只允许 APPROVE 或 REJECT。
     decision: str
 
 
@@ -418,14 +420,20 @@ from typing import Literal
 
 
 class V1StartRunRequest(BaseModel):
+    # log_days：本轮向 ES 回溯的天数，范围 1–30。
     log_days: int = Field(default=1, ge=1, le=30)
+    # log_limit：本轮最多读取的日志数；0 表示采用服务端配置。
     log_limit: int = Field(default=0, ge=0, le=10000)
+    # review_mode：agent 表示 AI 审查，human 表示强制人工审查。
     review_mode: Literal["agent", "human"] = "agent"
+    # max_attempts：单任务修复尝试总次数，包含首次执行。
     max_attempts: int = Field(default=3, ge=1, le=5)
 
 
 class V1ApprovalDecision(BaseModel):
+    # decision：人工审批动作，仅允许 approve/reject。
     decision: Literal["approve", "reject"]
+    # reason：审批说明或拒绝原因，最多 1000 字符。
     reason: str = Field(default="", max_length=1000)
 
 

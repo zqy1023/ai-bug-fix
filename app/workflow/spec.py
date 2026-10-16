@@ -31,7 +31,9 @@ class FrozenModel(BaseModel):
 class Dependency:
     """单步调试的前置步骤：``run`` 是执行级，``task`` 是任务级。"""
 
+    # name：该模型字段用于承载对应契约中的结构化数据。
     name: str
+    # level：该模型字段用于承载对应契约中的结构化数据。
     level: Level = "run"
 
 
@@ -48,7 +50,9 @@ class RecordView:
     ``("tasks.problem", (...))`` 则逐层下去裁。
     """
 
+    # keep：该模型字段用于承载对应契约中的结构化数据。
     keep: tuple[str, ...] = ()
+    # trim：该模型字段用于承载对应契约中的结构化数据。
     trim: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
     def is_empty(self) -> bool:
@@ -66,18 +70,31 @@ class StepSpec:
     ``input_record`` / ``output_record`` 只影响 steps.json 的落盘内容。
     """
 
+    # name：该模型字段用于承载对应契约中的结构化数据。
     name: str
+    # title：该模型字段用于承载对应契约中的结构化数据。
     title: str
+    # runner：该模型字段用于承载对应契约中的结构化数据。
     runner: Runner
+    # input_model：该模型字段用于承载对应契约中的结构化数据。
     input_model: type[BaseModel]
+    # output_model：该模型字段用于承载对应契约中的结构化数据。
     output_model: type[BaseModel]
+    # input_builder：该模型字段用于承载对应契约中的结构化数据。
     input_builder: InputBuilder
+    # task_level：该模型字段用于承载对应契约中的结构化数据。
     task_level: bool = True
+    # requires_confirmation：该模型字段用于承载对应契约中的结构化数据。
     requires_confirmation: bool = False
+    # output_patch：该模型字段用于承载对应契约中的结构化数据。
     output_patch: OutputPatch | None = None
+    # depends_on：该模型字段用于承载对应契约中的结构化数据。
     depends_on: tuple[Dependency, ...] = ()
+    # next_step：该模型字段用于承载对应契约中的结构化数据。
     next_step: str = ""
+    # input_record：该模型字段用于承载对应契约中的结构化数据。
     input_record: RecordView | None = None
+    # output_record：该模型字段用于承载对应契约中的结构化数据。
     output_record: RecordView | None = None
 
     def patch(self, output: dict[str, Any]) -> dict[str, Any]:
@@ -89,16 +106,27 @@ class StepSpec:
 class AgentSpec:
     """一个 agent 子图的自描述。子图本身仍由各自 ``graph.build`` 编译。"""
 
+    # name：该模型字段用于承载对应契约中的结构化数据。
     name: str
+    # title：该模型字段用于承载对应契约中的结构化数据。
     title: str
+    # kind：该模型字段用于承载对应契约中的结构化数据。
     kind: str
+    # input_model：该模型字段用于承载对应契约中的结构化数据。
     input_model: type[BaseModel]
+    # output_model：该模型字段用于承载对应契约中的结构化数据。
     output_model: type[BaseModel]
+    # task_level：该模型字段用于承载对应契约中的结构化数据。
     task_level: bool = True
+    # requires_confirmation：该模型字段用于承载对应契约中的结构化数据。
     requires_confirmation: bool = False
+    # depends_on：该模型字段用于承载对应契约中的结构化数据。
     depends_on: tuple[Dependency, ...] = ()
+    # next_step：该模型字段用于承载对应契约中的结构化数据。
     next_step: str = ""
+    # input_record：该模型字段用于承载对应契约中的结构化数据。
     input_record: RecordView | None = None
+    # output_record：该模型字段用于承载对应契约中的结构化数据。
     output_record: RecordView | None = None
 PluginSpec = StepSpec | AgentSpec
 

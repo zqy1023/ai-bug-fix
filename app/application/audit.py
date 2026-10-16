@@ -237,35 +237,55 @@ class ArtifactRef(FrozenModel):
     产物，只有该任务能读。归属判定不许由调用点自行推断，一律走 ``store.read_ref``。
     """
 
+    # name：该模型字段用于承载对应契约中的结构化数据。
     name: str
+    # path：该模型字段用于承载对应契约中的结构化数据。
     path: str
+    # task_id：该模型字段用于承载对应契约中的结构化数据。
     task_id: str = ""
 
 
 class StepError(FrozenModel):
     """步骤执行失败的固定错误结构。只在 ``status == "failed"`` 时存在。"""
 
+    # code：该模型字段用于承载对应契约中的结构化数据。
     code: StepErrorCode
+    # message：该模型字段用于承载对应契约中的结构化数据。
     message: str
+    # retryable：该模型字段用于承载对应契约中的结构化数据。
     retryable: bool = False
 
 
 class StepRecord(FrozenModel):
     """一个步骤的完整记录，写入 ``steps.json``。"""
 
+    # name：该模型字段用于承载对应契约中的结构化数据。
     name: str
+    # title：该模型字段用于承载对应契约中的结构化数据。
     title: str
+    # status：该模型字段用于承载对应契约中的结构化数据。
     status: StepPhase = "pending"
+    # result：该模型字段用于承载对应契约中的结构化数据。
     result: StepResultValue | None = None
+    # attempt：该模型字段用于承载对应契约中的结构化数据。
     attempt: int = 0
+    # started_at：该模型字段用于承载对应契约中的结构化数据。
     started_at: str = ""
+    # finished_at：该模型字段用于承载对应契约中的结构化数据。
     finished_at: str = ""
+    # duration_ms：该模型字段用于承载对应契约中的结构化数据。
     duration_ms: float = 0.0
+    # summary：该模型字段用于承载对应契约中的结构化数据。
     summary: str = ""
+    # error：该模型字段用于承载对应契约中的结构化数据。
     error: StepError | None = None
+    # artifacts：该模型字段用于承载对应契约中的结构化数据。
     artifacts: list[ArtifactRef] = Field(default_factory=list)
+    # input：该模型字段用于承载对应契约中的结构化数据。
     input: dict[str, Any] = Field(default_factory=dict)
+    # output：该模型字段用于承载对应契约中的结构化数据。
     output: dict[str, Any] = Field(default_factory=dict)
+    # schema_version：该模型字段用于承载对应契约中的结构化数据。
     schema_version: int = SCHEMA_VERSION
 
     @model_validator(mode="after")

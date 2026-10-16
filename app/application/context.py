@@ -17,11 +17,17 @@ if TYPE_CHECKING:
 class RunContext:
     """一次工作流执行共享的身份与审计信息。"""
 
+    # run_id：该模型字段用于承载对应契约中的结构化数据。
     run_id: str
+    # started_at：该模型字段用于承载对应契约中的结构化数据。
     started_at: str
+    # source_environment：该模型字段用于承载对应契约中的结构化数据。
     source_environment: str | None
+    # config_version：该模型字段用于承载对应契约中的结构化数据。
     config_version: str | None
+    # operator：该模型字段用于承载对应契约中的结构化数据。
     operator: str | None
+    # audit_id：该模型字段用于承载对应契约中的结构化数据。
     audit_id: str | None
 
 
@@ -29,16 +35,27 @@ class RunContext:
 class TaskContext:
     """一个异常任务的身份与产物。"""
 
+    # task_id：该模型字段用于承载对应契约中的结构化数据。
     task_id: str
+    # service_name：该模型字段用于承载对应契约中的结构化数据。
     service_name: str
+    # biztype：该模型字段用于承载对应契约中的结构化数据。
     biztype: str
+    # carrier：该模型字段用于承载对应契约中的结构化数据。
     carrier: str
+    # error_fingerprint：该模型字段用于承载对应契约中的结构化数据。
     error_fingerprint: str
+    # framework：该模型字段用于承载对应契约中的结构化数据。
     framework: str | None
+    # source_repo：该模型字段用于承载对应契约中的结构化数据。
     source_repo: str
+    # workspace_path：该模型字段用于承载对应契约中的结构化数据。
     workspace_path: str | None
+    # baseline_manifest：该模型字段用于承载对应契约中的结构化数据。
     baseline_manifest: dict[str, str] | None
+    # evidence_refs：该模型字段用于承载对应契约中的结构化数据。
     evidence_refs: tuple[str, ...]
+    # attempt：该模型字段用于承载对应契约中的结构化数据。
     attempt: int
 
 
@@ -50,10 +67,15 @@ class StepContext:
     上一次尝试的引用不会混进新记录，重试也不会累积。
     """
 
+    # run：该模型字段用于承载对应契约中的结构化数据。
     run: RunContext
+    # task：该模型字段用于承载对应契约中的结构化数据。
     task: TaskContext | None
+    # store：该模型字段用于承载对应契约中的结构化数据。
     store: "RecordStore"
+    # services：该模型字段用于承载对应契约中的结构化数据。
     services: "WorkflowServices"
+    # artifacts：该模型字段用于承载对应契约中的结构化数据。
     artifacts: list["ArtifactRef"] = field(default_factory=list)
 
     def _owner(self) -> str:
