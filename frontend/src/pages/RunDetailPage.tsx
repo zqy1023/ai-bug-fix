@@ -55,6 +55,7 @@ export function RunDetailPage() {
         {['running', 'queued'].includes(data.status) && <Button disabled={controlPending} onClick={() => Modal.confirm({ title: data.status === 'queued' ? '暂停排队中的执行？' : '暂停本轮执行？', content: '系统会请求工作流在安全节点边界暂停。当前正在运行的节点可能需要先完成，状态变为“暂停中”不代表已经暂停成功。', okText: '确认请求暂停', cancelText: '取消', onOk: () => pause.mutateAsync() })} loading={pause.isPending}>请求暂停</Button>}
         {data.status === 'pause_requested' && <Button disabled loading>等待安全节点暂停</Button>}
         {data.status === 'paused' && data.checkpoint?.resumable && <Button type="primary" disabled={controlPending} onClick={() => Modal.confirm({ title: '恢复本轮执行？', content: '从服务端确认的可恢复检查点继续执行。恢复后将重新进入运行状态。', okText: '确认恢复', cancelText: '暂不恢复', onOk: () => resume.mutateAsync() })} loading={resume.isPending}>恢复执行</Button>}
+        {data.status === 'failed' && data.checkpoint?.resumable && <Button type="primary" disabled={controlPending} onClick={() => Modal.confirm({ title: '从检查点恢复失败的执行？', content: '系统会从服务端确认的 checkpoint 继续；不会从头重跑。发生写入或交付副作用的节点仍由原有门禁负责。', okText: '确认恢复', cancelText: '取消', onOk: () => resume.mutateAsync() })} loading={resume.isPending}>从检查点恢复</Button>}
         {data.status === 'paused' && !data.checkpoint?.resumable && <Button disabled>暂无可恢复检查点</Button>}
         {data.status === 'cancel_requested' && <Button danger disabled loading>等待停止生效</Button>}
         {['running', 'queued', 'paused', 'pause_requested'].includes(data.status) && <Button danger disabled={controlPending} onClick={() => Modal.confirm({ title: '停止本轮执行？', content: '停止是终止操作，不等同于暂停；后台可能需要在安全边界收尾后才能结束。此请求提交后请等待服务端确认最终状态。', okText: '确认停止', cancelText: '继续检查', okButtonProps: { danger: true }, onOk: () => cancel.mutateAsync() })} loading={cancel.isPending}>停止执行</Button>}
@@ -63,6 +64,7 @@ export function RunDetailPage() {
     {['running', 'queued'].includes(data.status) && <div className="run-control-hint"><Text type="secondary">当前可请求暂停；暂停请求生效后，操作区会切换为“恢复执行”。暂停与恢复不会同时出现。</Text></div>}
     {data.status === 'pause_requested' && <div className="run-control-hint"><Text type="secondary">暂停请求已提交，工作流正在等待安全节点边界。此时不能恢复；请等待状态变为“已暂停”。</Text></div>}
     {data.status === 'paused' && <div className="run-control-hint"><Text type="secondary">{data.checkpoint?.resumable ? '执行已暂停，可从可恢复检查点继续。' : '执行已暂停，但服务端尚未提供可恢复检查点，因此暂不开放恢复操作。'}</Text></div>}
+    {data.status === 'failed' && data.checkpoint?.resumable && <div className="run-control-hint"><Text type="secondary">工作流异常退出，但服务端保留了可恢复检查点。可尝试恢复；若失败节点存在副作用，恢复仍会受现有门禁约束。</Text></div>}
     {data.status === 'cancel_requested' && <div className="run-control-hint"><Text type="secondary">停止请求已提交，正在等待后台任务到达安全边界并确认终态。</Text></div>}
     {pause.isError && <Alert type="error" showIcon message="暂停请求失败" description={(pause.error as Error).message} />}
     {resume.isError && <Alert type="error" showIcon message="恢复执行失败" description={(resume.error as Error).message} />}
