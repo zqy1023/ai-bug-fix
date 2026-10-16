@@ -86,22 +86,33 @@ def build_task_graph(nodes: dict[str, Callable[..., Any]]) -> CompiledStateGraph
     # 业务重试通过 retry_prepare 统一计数，避免重复提交或推送。
     for name in TASK_NODE_NAMES:
         if name == RETRY:
-            graph.add_node(name, lambda state: {
-                "attempt": int(state.get("attempt") or 1) + 1,
-                "decision": "PENDING",
-                "approval_granted": False,
-                "review_decision": "",
-                "review": {},
-                "change_plan": {},
-                "scope_escalation_required": False,
-                "authorized_files": [],
-                "delivery": {},
-                "delivery_pushed": False,
-                "delivery_commit": "",
-                "repair_branch": "",
-                "approval_cleanup_failed": False,
-                "last_result": "passed",
-            })
+            def retry_node(state: dict[str, Any]) -> dict[str, Any]:
+                # Agent/审批重试前恢复不可变基线，避免在上一次失败的半成品上继续修改。
+                workspace_manager = nodes.get("_workspace_manager")
+                if workspace_manager is not None:
+                    task = dict(state.get("task") or {})
+                    workspace_manager.reset_carrier_workspace(
+                        state.get("ai_workspace_path") or "",
+                        state.get("baseline_dir") or "",
+                        str(task.get("carrier") or ""),
+                    )
+                return {
+                    "attempt": int(state.get("attempt") or 1) + 1,
+                    "decision": "PENDING",
+                    "approval_granted": False,
+                    "review_decision": "",
+                    "review": {},
+                    "change_plan": {},
+                    "scope_escalation_required": False,
+                    "authorized_files": [],
+                    "delivery": {},
+                    "delivery_pushed": False,
+                    "delivery_commit": "",
+                    "repair_branch": "",
+                    "approval_cleanup_failed": False,
+                    "last_result": "passed",
+                }
+            graph.add_node(name, retry_node)
         else:
             graph.add_node(name, nodes[name])
 
