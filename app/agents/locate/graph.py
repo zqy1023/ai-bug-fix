@@ -164,21 +164,48 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
     payload = parse_result(raw, "locate")
     original = raw_result(raw)
     usage = usage_of(raw)
+    output: LocateOutput | None = None
     try:
         output = LocateOutput.model_validate(payload)
         _validate_output_paths(root, roots, carrier_root, output)
-    except (ValueError, Exception) as error:
-        output = LocateOutput(
-            status="MANUAL",
-            root_cause="",
-            category="unknown",
-            facts=[],
-            source_evidence=[],
-            candidate_files=[],
-            evidence_gaps=[str(error)],
-            recommended_scope="manual",
-            summary=_locate_contract_summary(error),
+    except Exception as error:
+        # 校验失败必须停止自动修复，但不能把 Agent 已提供的诊断证据全部清空。
+        # 候选文件只保留目标 carrier 内的路径；共享层文件仍可留在 source_evidence
+        #（前提是它们位于明确允许的只读根目录），绝不能借此扩大写入范围。
+        if output is None:
+            try:
+                fallback = dict(payload) if isinstance(payload, dict) else {}
+                fallback["status"] = "MANUAL"
+                fallback["recommended_scope"] = "manual"
+                fallback["passed"] = False
+                output = LocateOutput.model_validate(fallback)
+            except Exception:
+                output = LocateOutput(
+                    status="MANUAL",
+                    root_cause="",
+                    category="unknown",
+                    facts=[],
+                    source_evidence=[],
+                    candidate_files=[],
+                    evidence_gaps=[],
+                    recommended_scope="manual",
+                    summary="",
+                )
+        output.status = "MANUAL"
+        output.recommended_scope = "manual"
+        output.passed = False
+        output.candidate_files = _safe_carrier_candidates(
+            root, carrier_root, output.candidate_files
         )
+        output.source_evidence = _safe_source_evidence(
+            root, roots, output.source_evidence
+        )
+        detail = " ".join(str(error).split()) or type(error).__name__
+        if detail not in output.evidence_gaps:
+            output.evidence_gaps.append(detail[:500])
+        contract_summary = _locate_contract_summary(error)
+        if contract_summary not in output.summary:
+            output.summary = f"{output.summary.strip()}；{contract_summary}".strip("；")
     return {
         **output.model_dump(),
         "passed": output.status == "LOCATED",
@@ -186,6 +213,38 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
         "_usage": usage,
         "_audit": audit_metadata(request, usage),
     }
+
+
+def _safe_carrier_candidates(
+    root: Path, carrier_root: Path, values: list[str]
+) -> list[str]:
+    """只保留目标 carrier 内真实存在且路径安全的候选文件。"""
+    accepted: list[str] = []
+    for value in values:
+        try:
+            relative = _relative_file(root, value)
+            if (root / relative).resolve().is_relative_to(carrier_root):
+                accepted.append(relative)
+        except (OSError, ValueError):
+            continue
+    return list(dict.fromkeys(accepted))
+
+
+def _safe_source_evidence(
+    root: Path, read_roots: tuple[str, ...], items: list[Any]
+) -> list[Any]:
+    """只保留获准只读根目录内的真实源码证据。"""
+    allowed = tuple(Path(item).resolve() for item in read_roots)
+    accepted: list[Any] = []
+    for item in items:
+        try:
+            relative = _relative_file(root, item.path)
+            target = (root / relative).resolve()
+            if any(target == base or target.is_relative_to(base) for base in allowed):
+                accepted.append(item)
+        except (AttributeError, OSError, ValueError):
+            continue
+    return accepted
 
 
 def _validate_output_paths(
