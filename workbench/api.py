@@ -1223,7 +1223,7 @@ def v1_list_manual_interventions(_: None = Depends(_authorize)) -> dict[str, Any
                 continue
             locate_step = next((step for step in reversed(steps) if step.get("name") == "locate_agent"), None)
             locate_output = locate_step.get("output") if isinstance(locate_step, dict) and isinstance(locate_step.get("output"), dict) else {}
-            report_step = str(report.get("terminal_step") or ("locate_agent" if manual_pending else "")).strip()
+            report_step = str(report.get("terminal_step") or approval_input.get("intervention_step") or ("locate_agent" if manual_pending else "")).strip()
             reason = str(approval_input.get("intervention_reason") or report.get("terminal_reason") or "").strip()
             evidence_gaps = locate_output.get("evidence_gaps")
             if not reason and isinstance(evidence_gaps, list) and evidence_gaps:
