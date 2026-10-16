@@ -57,12 +57,12 @@ function nodeStyle(status?: StepStatus): CSSProperties {
   return { border: '1px solid ' + (palette?.border ?? '#d7dce5'), background: palette?.background ?? '#fff', color: palette?.color ?? '#344054', borderRadius: 8, padding: 10, width: 142, fontSize: 12, textAlign: 'center', boxShadow: '0 2px 6px rgba(20, 35, 70, .04)' };
 }
 
-export function WorkflowGraph({ steps }: { steps: StepRecord[] }) {
+export function WorkflowGraph({ steps, selectedStep, onSelectStep }: { steps: StepRecord[]; selectedStep?: string; onSelectStep?: (name: string) => void }) {
   const { nodes, edges } = useMemo(() => {
     const records = new Map(steps.map((step) => [step.name, step]));
     const builtNodes: Node[] = layout.map(({ id, label, x, y }) => {
       const record = records.get(id);
-      return { id, position: { x, y }, data: { label: <div><div>{label}</div><small>{record ? record.status : '未执行'}</small></div> }, style: nodeStyle(record?.status) };
+      return { id, position: { x, y }, data: { label: <div><div>{label}</div><small>{record ? record.status : '未执行'}</small></div> }, style: { ...nodeStyle(record?.status), borderWidth: selectedStep === id ? 2 : 1, borderColor: selectedStep === id ? '#456de0' : undefined, boxShadow: selectedStep === id ? '0 0 0 3px rgba(69,109,224,.14)' : undefined }, };
     });
     const builtEdges: Edge[] = transitions.map(([source, target, label], index) => ({
       id: source + '-' + target + '-' + index,
@@ -75,6 +75,6 @@ export function WorkflowGraph({ steps }: { steps: StepRecord[] }) {
       labelBgStyle: { fill: '#fbfcfe' },
     }));
     return { nodes: builtNodes, edges: builtEdges };
-  }, [steps]);
-  return <div className="workflow-canvas"><ReactFlow nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.18 }} nodesDraggable={false} nodesConnectable={false} elementsSelectable={false} proOptions={{ hideAttribution: true }}><Background color="#e7eaf0" gap={20} /><MiniMap pannable zoomable /><Controls /></ReactFlow></div>;
+  }, [steps, selectedStep]);
+  return <div className="workflow-canvas"><ReactFlow nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.18 }} nodesDraggable={false} nodesConnectable={false} elementsSelectable={true} onNodeClick={(_, node) => onSelectStep?.(node.id)} proOptions={{ hideAttribution: true }}><Background color="#e7eaf0" gap={20} /><MiniMap pannable zoomable /><Controls /></ReactFlow></div>;
 }
