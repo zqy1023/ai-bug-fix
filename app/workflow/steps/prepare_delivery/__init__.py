@@ -67,6 +67,15 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
             or str((state.get("locate") or {}).get("status") or "") != "LOCATED"
             or str((state.get("locate") or {}).get("recommended_scope") or "") != "carrier"
             or str((state.get("locate") or {}).get("category") or "") != "carrier"
+            or any(
+                str(item.get("path") or "").replace("\\", "/").startswith("spiders/")
+                for item in ((state.get("locate") or {}).get("source_evidence") or [])
+                if isinstance(item, dict)
+            )
+            or any(
+                str(item).replace("\\", "/").startswith("spiders/")
+                for item in ((state.get("locate") or {}).get("candidate_files") or [])
+            )
         ),
         "report_paths": [f"{report_framework}/{report_carrier}/final.json"],
         # 需要审批 = 本轮存在已获批或待审批的共享层方案；是否放行只看批准结果。
