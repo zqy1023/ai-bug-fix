@@ -236,6 +236,9 @@ def after_delivery(state: WorkflowState) -> str:
     analysis_only = bool(
         evidence.get("legacy_only")
         or evidence.get("legacy_dependency")
+        or state.get("scope_escalation_required")
+        or state.get("manual_intervention_required")
+        or str((state.get("review") or {}).get("verdict") or "").upper() == "MANUAL"
         or str(locate.get("status") or "") != "LOCATED"
         or str(locate.get("recommended_scope") or "") != "carrier"
     )
@@ -254,6 +257,9 @@ def after_finalize(state: WorkflowState) -> str:
     analysis_only = bool(
         evidence.get("legacy_only")
         or evidence.get("legacy_dependency")
+        or state.get("scope_escalation_required")
+        or state.get("manual_intervention_required")
+        or str((state.get("review") or {}).get("verdict") or "").upper() == "MANUAL"
         or (locate and (
             str(locate.get("status") or "") != "LOCATED"
             or str(locate.get("recommended_scope") or "") != "carrier"
