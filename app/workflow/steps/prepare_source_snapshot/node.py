@@ -35,21 +35,20 @@ def run(ctx: StepContext, data: SourceSnapshotInput) -> SourceSnapshotOutput:
 
     carrier = WorkspaceManager.safe_carrier_name(data.carrier)
     new_root = root / "gathers" / carrier
-    if (new_root / "main.py").is_file():
-        framework = "gathers"
-        roots = [new_root.relative_to(root).as_posix()]
-    elif (root / "spiders" / carrier).is_dir():
-        # 只确认旧框架入口存在，不复制旧源码、不建立基线；当前自动修复链路
-        # 只允许修改 gathers/<carrier>/，旧框架任务应直接转人工并结束分析。
-        return SourceSnapshotOutput(
-            source_project_path=str(root),
-            framework="spiders",
-            baseline_manifest={},
-            baseline_dir="",
-            file_count=0,
-        )
-    else:
+    legacy_root = root / "spiders" / carrier
+    has_new = (new_root / "main.py").is_file()
+    has_legacy = legacy_root.is_dir()
+    if not has_new and not has_legacy:
         raise StepFailed(f"源码快照找不到 carrier: {data.carrier}")
+
+    # 同时快照新旧框架的同名 carrier（如果两者都存在），以便只读定位能够核对
+    # 新框架是否调用旧实现；是否允许修改由定位结论和后续范围门禁决定。
+    framework = "gathers" if has_new else "spiders"
+    roots = [
+        path.relative_to(root).as_posix()
+        for path, exists in ((new_root, has_new), (legacy_root, has_legacy))
+        if exists
+    ]
 
     task_dir = ctx.store.task_dir(ctx.run.run_id, data.task_id)
     task_dir.mkdir(parents=True, exist_ok=True)
