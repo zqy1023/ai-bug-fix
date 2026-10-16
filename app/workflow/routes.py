@@ -279,6 +279,7 @@ def after_finalize(state: WorkflowState) -> str:
         or (locate and (
             str(locate.get("status") or "") != "LOCATED"
             or str(locate.get("recommended_scope") or "") != "carrier"
+            or str(locate.get("category") or "") != "carrier"
         ))
     )
     return DELIVER if analysis_only and state.get("ai_workspace_path") else END
