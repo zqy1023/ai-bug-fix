@@ -398,7 +398,7 @@ def list_approvals(_: None = Depends(_authorize)) -> dict[str, Any]:
                     "biztype": task["biztype"],
                     "problem": task["problem"],
                     "updated_at": run["updated_at"],
-                    "approval_step": next((step for step in task["steps"] if step.get("name") == "request_approval"), None),
+                    "approval_step": next((step for step in reversed(task["steps"]) if step.get("name") == "request_approval"), None),
                 })
     return {"items": approvals, "total": len(approvals)}
 
