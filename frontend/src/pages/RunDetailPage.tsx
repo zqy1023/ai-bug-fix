@@ -10,6 +10,7 @@ import { WorkflowGraph } from '../components/WorkflowGraph';
 import type { ModelCall, StepRecord } from '../lib/types';
 const { Title, Text } = Typography;
 function duration(value?: number | null) { if (value == null) return '—'; return value >= 1000 ? (value / 1000).toFixed(2) + ' 秒' : value.toFixed(0) + ' ms'; }
+function resultLabel(value?: string | null) { if (!value) return '—'; const labels: Record<string, string> = { passed: '通过', failed: '失败', rejected: '已拒绝', manual: '需人工介入', MANUAL: '需人工介入', PASS: '审查通过', FAIL: '审查未通过', LOCATED: '已定位根因', INSUFFICIENT_EVIDENCE: '证据不足', PENDING: '等待处理', COMPLETED: '已完成', SUCCESS: '成功', SUCCEEDED: '成功' }; return labels[value] ?? value; }
 export function RunDetailPage() {
   const { runId = '' } = useParams(); const navigate = useNavigate(); const queryClient = useQueryClient();
   const [selectedStepName, setSelectedStepName] = useState<string>();
@@ -36,7 +37,7 @@ export function RunDetailPage() {
   const stepColumns = [
     { title: '节点', dataIndex: 'title', key: 'title', render: (v: string, row: StepRecord) => <div><strong>{v || row.name}</strong><div className="secondary-small">{row.name}</div></div> },
     { title: '执行状态', dataIndex: 'status', key: 'status', render: (v: StepRecord['status']) => <StatusTag status={v} /> },
-    { title: '业务结论', dataIndex: 'result', key: 'result', render: (v?: string | null) => v ? <Tag>{v}</Tag> : '—' },
+    { title: '业务结论', dataIndex: 'result', key: 'result', render: (v?: string | null) => v ? <Tag color={String(v).toUpperCase() === 'MANUAL' ? 'orange' : undefined}>{resultLabel(v)}</Tag> : '—' },
     { title: '耗时', dataIndex: 'duration_ms', key: 'duration_ms', render: duration },
     { title: '尝试次数', dataIndex: 'attempt', key: 'attempt', render: (v?: number) => v ?? 1 },
     { title: '摘要', dataIndex: 'summary', key: 'summary', render: (v?: string) => v || '—' },
