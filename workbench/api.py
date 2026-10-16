@@ -470,6 +470,7 @@ def _control_db():
         CREATE TABLE IF NOT EXISTS knowledge_case_usage (
             id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, task_id TEXT NOT NULL,
             case_id TEXT NOT NULL, match_score INTEGER NOT NULL, created_at TEXT NOT NULL,
+            task_result TEXT NOT NULL DEFAULT '', total_tokens INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT '',
             UNIQUE(run_id, task_id, case_id)
         );
     """)
@@ -482,6 +483,13 @@ def _control_db():
     if "source_task_id" not in knowledge_columns:
         connection.execute("ALTER TABLE repair_knowledge_cases ADD COLUMN source_task_id TEXT NOT NULL DEFAULT ''")
         connection.commit()
+    usage_columns = {row[1] for row in connection.execute("PRAGMA table_info(knowledge_case_usage)")}
+    if "task_result" not in usage_columns:
+        connection.execute("ALTER TABLE knowledge_case_usage ADD COLUMN task_result TEXT NOT NULL DEFAULT ''")
+    if "total_tokens" not in usage_columns:
+        connection.execute("ALTER TABLE knowledge_case_usage ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0")
+    if "updated_at" not in usage_columns:
+        connection.execute("ALTER TABLE knowledge_case_usage ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
     connection.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_repair_knowledge_source
                           ON repair_knowledge_cases(source_run_id, source_task_id)
                           WHERE source_run_id <> '' AND source_task_id <> ''""")
@@ -1053,6 +1061,7 @@ def v1_list_knowledge_cases(
             "candidate": int(connection.execute("SELECT COUNT(*) FROM repair_knowledge_cases WHERE status='candidate'").fetchone()[0]),
             "disabled": int(connection.execute("SELECT COUNT(*) FROM repair_knowledge_cases WHERE status='disabled'").fetchone()[0]),
             "retrievals": int(connection.execute("SELECT COUNT(*) FROM knowledge_case_usage").fetchone()[0]),
+            "successful_reuses": int(connection.execute("SELECT COUNT(*) FROM knowledge_case_usage WHERE task_result='SUCCESS'").fetchone()[0]),
         }
         return {"items": items, "total": total, "page": page, "page_size": page_size, "summary": summary}
     finally:
