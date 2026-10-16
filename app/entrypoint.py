@@ -163,6 +163,13 @@ def _write_run_report(
 
         run_steps = store.list_steps(run_id)
         failed_steps = [step for step in run_steps if step.status == "failed"]
+        cancellation_requested = False
+        try:
+            from app.infrastructure.run_control import cancellation_requested as _cancel_requested
+            cancellation_requested = _cancel_requested(store.root, run_id)
+        except Exception:
+            logger.debug("读取 Run 取消标记失败 run_id=%s", run_id, exc_info=True)
+
         if error is not None:
             result = "FAILED"
             terminal = failed_steps[-1] if failed_steps else (run_steps[-1] if run_steps else None)
@@ -174,6 +181,12 @@ def _write_run_report(
                 "failed_at": now, "terminal_step": terminal_step, "terminal_reason": reason,
             }
             _atomic_json(reports_dir / "run_failure.json", failure)
+        elif cancellation_requested:
+            result = "CANCELLED"
+            terminal = run_steps[-1] if run_steps else None
+            terminal_step = terminal.name if terminal else "workflow"
+            reason = "收到停止请求，本轮执行已按安全节点策略终止。"
+            next_action = "确认停止原因；如仍需修复，请在问题和证据确认后重新发起一轮执行。"
         elif failed_steps:
             terminal = failed_steps[-1]
             result = "FAILED"
