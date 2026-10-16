@@ -59,3 +59,13 @@ def test_manual_decision_does_not_leak_into_the_next_approval_gate():
 
     assert approval_input["decision"] == "PENDING"
     assert approval_input["mode"] == "change_approval"
+
+
+def test_manual_continue_grants_only_the_explicit_repair_capability():
+    from app.workflow.steps.request_approval import _patch
+
+    continued = _patch({"decision": "CONTINUE_REPAIR"})
+    retried = _patch({"decision": "RETRY_LOCATE"})
+
+    assert continued["manual_continue_authorized"] is True
+    assert retried["manual_continue_authorized"] is False
