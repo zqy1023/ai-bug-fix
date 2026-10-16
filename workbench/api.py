@@ -1084,6 +1084,9 @@ def v1_create_knowledge_case(
         task = next((item for item in detail.get("tasks", []) if str(item.get("task_id") or "") == source_task_id), None)
         if task is None:
             raise HTTPException(status_code=404, detail="来源执行中不存在指定任务")
+        task_status = str(task.get("status") or task.get("result") or "").upper()
+        if task_status in {"RUNNING", "PENDING", "REPAIRING", "VERIFYING", "REVIEWING", "WAITING", "WAITING_APPROVAL"}:
+            raise HTTPException(status_code=409, detail="来源任务尚未结束，不能核验知识发布资格")
         steps = task.get("steps") if isinstance(task.get("steps"), list) else []
         for step in steps:
             if not isinstance(step, dict):
