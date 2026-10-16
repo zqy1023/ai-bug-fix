@@ -85,3 +85,34 @@ def test_manual_intervention_endpoint_lists_manual_locate_without_treating_it_as
     assert item["step"] == "locate_agent"
     assert item["status"] == "open"
     assert item["summary"] == "缺少关键源码证据"
+
+
+def test_manual_intervention_endpoint_recovers_legacy_locate_detail(monkeypatch):
+    monkeypatch.setattr(workbench_api, "_store", lambda: object())
+    monkeypatch.setattr(workbench_api, "_all_run_ids", lambda _store: ["run-legacy"])
+    monkeypatch.setattr(workbench_api, "_run_payload", lambda _store, _run_id: {
+        "updated_at": "2026-10-16T00:00:00+00:00",
+        "tasks": [{
+            "task_id": "task-legacy",
+            "carrier": "ExampleCarrier",
+            "biztype": "track_server",
+            "status": "MANUAL",
+            "approval_pending": False,
+            "steps": [{
+                "name": "locate_agent",
+                "result": "MANUAL",
+                "summary": "定位输出不满足证据或路径契约，停止并转人工",
+                "output": {
+                    "status": "MANUAL",
+                    "summary": "定位输出不满足证据或路径契约，停止并转人工",
+                    "evidence_gaps": ["candidate_files[0] 超出目标 carrier 目录：gathers/Other/main.py"],
+                },
+            }],
+        }],
+    })
+
+    result = workbench_api.v1_list_manual_interventions(None)
+
+    assert result["total"] == 1
+    assert "gathers/Other/main.py" in result["items"][0]["summary"]
+    assert result["items"][0]["summary"].startswith("定位输出契约校验失败：")
