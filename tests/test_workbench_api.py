@@ -116,3 +116,54 @@ def test_manual_intervention_endpoint_recovers_legacy_locate_detail(monkeypatch)
     assert result["total"] == 1
     assert "gathers/Other/main.py" in result["items"][0]["summary"]
     assert result["items"][0]["summary"].startswith("定位输出契约校验失败：")
+
+
+def test_v1_start_persists_run_before_scheduling_background_task(tmp_path, monkeypatch):
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from app.infrastructure.records.store import RecordStore
+    from workbench.api import V1StartRunRequest
+
+    runtime_dir = tmp_path / "runtime"
+    config = SimpleNamespace(runtime_dir=runtime_dir, source_repo=tmp_path / "source")
+    store = RecordStore(runtime_dir)
+    monkeypatch.setattr(workbench_api, "_config", lambda: config)
+    monkeypatch.setattr(workbench_api, "_store", lambda: store)
+
+    def prepare_run(run_id, *, overrides=None):
+        store.create_run(run_id, {
+            "source_repo_path": str(config.source_repo),
+            "log_days": overrides["log_days"],
+            "log_limit": overrides["log_limit"],
+            "review_mode": overrides["review_mode"],
+            "max_attempts": overrides["max_attempts"],
+        })
+
+    monkeypatch.setattr("app.entrypoint.prepare_run", prepare_run)
+
+    class CapturingBackground:
+        def __init__(self):
+            self.tasks = []
+
+        def add_task(self, function, *args, **kwargs):
+            run_id = args[0]
+            assert store.run_dir(run_id).joinpath("run.json").is_file()
+            self.tasks.append((function, args, kwargs))
+
+    background = CapturingBackground()
+    result = workbench_api.v1_start_run(
+        V1StartRunRequest(log_days=1, log_limit=0, review_mode="agent", max_attempts=3),
+        background,
+        idempotency_key="start-run-test-key",
+    )
+
+    assert result["status"] == "accepted"
+    assert result["idempotent_replay"] is False
+    assert len(background.tasks) == 1
+    assert store.load_run(result["run_id"])["log_days"] == 1
+
+    # The fake background scheduler does not run the callback, so release the acquired run lock.
+    workbench_api._RUN_LOCKS[result["run_id"]].release()
+    with workbench_api._RUN_LOCKS_GUARD:
+        workbench_api._STARTED_RUNS.discard(result["run_id"])
