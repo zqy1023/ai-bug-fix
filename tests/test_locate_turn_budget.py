@@ -45,12 +45,14 @@ def test_transient_claude_stream_failure_becomes_manual_result_after_bounded_ret
         "max_candidate_files": 6,
         "timeout_seconds": 10,
     })
+    carrier_root = tmp_path / "gathers" / "ExampleCarrier"
+    carrier_root.mkdir(parents=True)
     request = AgentRequest(
         agent_role="locate",
         run_id="run-1",
         task_id="task-1",
         attempt=1,
-        prompt_context={},
+        prompt_context={"carrier": "ExampleCarrier", "framework": "gathers"},
         input_evidence={},
         budget={"max_turns": 14},
         stage="locate",
@@ -60,7 +62,7 @@ def test_transient_claude_stream_failure_becomes_manual_result_after_bounded_ret
         prompt_version="v1",
         prompt_hash="hash",
         model="test-model",
-        allowed_read_roots=(str(tmp_path),),
+        allowed_read_roots=(str(carrier_root),),
         allowed_write_roots=(),
     )
     calls = {"count": 0}
