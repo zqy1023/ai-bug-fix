@@ -71,8 +71,8 @@ class WorkflowState(TypedDict, total=False):
     baseline_manifest: Annotated[dict[str, str], _merge]
     # baseline_dir：只读基线目录。
     baseline_dir: str
-    changed_files: Annotated[list[str], _union]
-    # changed_files：修复 Agent 报告的变更文件去重清单；只有 carrier 局部变更允许交付。
+    # changed_files：当前尝试的实际变更文件；每次重试必须从空集合重新计算。
+    changed_files: list[str]
     repair_changed_files: list[str]
     # repair：修复 Agent 的结构化结论。
     repair: dict[str, Any]
