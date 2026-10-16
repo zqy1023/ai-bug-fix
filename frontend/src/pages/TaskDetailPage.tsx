@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { Alert, Button, Card, Descriptions, Drawer, Empty, Space, Spin, Table, Tag, Typography } from 'antd';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Alert, App, Button, Card, Descriptions, Drawer, Empty, Space, Spin, Table, Tag, Typography } from 'antd';
 import { ArrowLeftOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useNavigate, useParams } from 'react-router-dom';
 import dayjs from 'dayjs';
@@ -30,6 +30,8 @@ function resultLabel(value?: string | null) {
 export function TaskDetailPage() {
   const { runId = '', taskId = '' } = useParams();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { message } = App.useApp();
   const [selectedStepName, setSelectedStepName] = useState<string>();
   const [artifactPath, setArtifactPath] = useState<{ path: string; name: string } | null>(null);
   const detail = useQuery({
@@ -40,6 +42,14 @@ export function TaskDetailPage() {
   const task = detail.data?.task;
   const report = task?.report;
   const steps = task?.steps ?? [];
+  const captureKnowledge = useMutation({
+    mutationFn: () => api.captureKnowledgeFromTask(runId, taskId),
+    onSuccess: async () => {
+      message.success('已从当前任务记录沉淀候选知识');
+      await queryClient.invalidateQueries({ queryKey: ['knowledge-cases'] });
+    },
+    onError: (error) => message.error('沉淀知识失败：' + (error as Error).message),
+  });
   const calls = useQuery({
     queryKey: ['model-calls', runId, taskId],
     queryFn: () => api.modelCalls(runId, taskId),
@@ -80,10 +90,14 @@ export function TaskDetailPage() {
     <div className="page-heading run-heading">
       <div><Space wrap><Button type="text" icon={<ArrowLeftOutlined />} onClick={() => navigate('/runs/' + encodeURIComponent(runId))}>返回 Run 概览</Button>
         <Title level={3} className="run-detail-title">{task.carrier || '未知运输商'} · {task.biztype || '未知业务类型'}</Title>
-        <StatusTag status={manual ? 'waiting' : result.toLowerCase()} /></Space>
+        <StatusTag status={result} /></Space>
         <Text type="secondary" className="run-id">Run {runId} · Task {task.task_id}</Text>
       </div>
-      <Button icon={<ReloadOutlined />} onClick={() => detail.refetch()} loading={detail.isFetching}>刷新任务</Button>
+      <Space>
+        <Button icon={<ReloadOutlined />} onClick={() => detail.refetch()} loading={detail.isFetching}>刷新任务</Button>
+        <Button disabled={active.includes(detail.data.run_status) || captureKnowledge.isPending}
+          loading={captureKnowledge.isPending} onClick={() => captureKnowledge.mutate()}>沉淀知识案例</Button>
+      </Space>
     </div>
     {report.legacy_report && <Alert type="warning" showIcon message="历史任务没有完整的终态报告" description="当前结束原因根据现有步骤推导；重新执行后会写入完整终态报告。" />}
     <Card className="content-card" title="最终结论">
