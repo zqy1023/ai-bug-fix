@@ -77,13 +77,6 @@ def _retry_or_finalize(state: WorkflowState) -> str:
     return FINALIZE if int(state.get("attempt") or 1) >= int(state.get("max_attempts") or 3) else RETRY
 
 
-def _needs_human_authorization(state: WorkflowState) -> bool:
-    if state.get("escalation_used"):
-        return False
-    plan = state.get("change_plan")
-    return bool(state.get("scope_escalation_required")) and isinstance(plan, dict) and bool(plan)
-
-
 def after_source_snapshot(state: WorkflowState) -> str:
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
         return FINALIZE
@@ -154,7 +147,7 @@ def after_repair(state: WorkflowState) -> str:
         return FINALIZE
     # 失败也要先看升级：修复被共享层挡住时结果是 failed，但仍带 project 方案。
     # 共享层范围已升级但 Agent 没有产出可审批方案时，转入人工介入；不能悄悄重试或假装审批方案存在。
-    if state.get("manual_intervention_required") or _needs_human_authorization(state):
+    if state.get("manual_intervention_required") or state.get("scope_escalation_required"):
         # 共享层/范围升级不属于允许自动修改的 carrier 局部问题。
         return FINALIZE
     if _result(state) != "passed":
