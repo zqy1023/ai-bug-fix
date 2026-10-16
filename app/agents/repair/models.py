@@ -27,8 +27,6 @@ class RepairInput(FrozenModel):
     evidence: EvidenceOutput = Field(default_factory=EvidenceOutput)
     # locate：字段说明见该模型文档与工作流契约。
     locate: dict[str, Any] = Field(default_factory=dict)
-    # manual_continue_authorized：人工批准后允许消费证据完整但契约状态为 MANUAL 的定位结论。
-    manual_continue_authorized: bool = False
 
 
 class RepairView(FrozenModel):
