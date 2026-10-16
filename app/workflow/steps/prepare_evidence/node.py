@@ -133,7 +133,7 @@ def _legacy_reason(carrier: str, chain: list[str]) -> str:
 
 
 
-def _published_knowledge(problem: dict[str, Any], carrier: str, biztype: str, category: str) -> list[dict[str, str]]:
+def _published_knowledge(problem: dict[str, Any], carrier: str, biztype: str, category: str, run_id: str, task_id: str) -> list[dict[str, str]]:
     """读取已发布案例并做轻量确定性排序；知识检索失败不阻断主修复流程。"""
     try:
         runtime_dir = load_config().runtime_dir
@@ -184,7 +184,24 @@ def _published_knowledge(problem: dict[str, Any], carrier: str, biztype: str, ca
             "match_score": str(score),
         }))
     ranked.sort(key=lambda pair: (-pair[0], pair[1]["case_id"]))
-    return [item for _, item in ranked[:3]]
+    selected = ranked[:3]
+    if selected and run_id and task_id:
+        try:
+            runtime_dir = load_config().runtime_dir
+            connection = sqlite3.connect(str(runtime_dir / "workbench-control.sqlite3"), timeout=2)
+            try:
+                now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+                connection.executemany(
+                    """INSERT OR IGNORE INTO knowledge_case_usage
+                       (run_id, task_id, case_id, match_score, created_at) VALUES(?,?,?,?,?)""",
+                    [(run_id, task_id, item["case_id"], int(score), now) for score, item in selected],
+                )
+                connection.commit()
+            finally:
+                connection.close()
+        except (OSError, sqlite3.Error, AttributeError, ValueError):
+            pass
+    return [item for _, item in selected]
 
 def run(ctx: StepContext, data: EvidenceInput) -> EvidenceOutput:
     """定位唯一 carrier 目录并返回有限候选文件。旧框架任务不进入修复。"""
@@ -228,7 +245,7 @@ def run(ctx: StepContext, data: EvidenceInput) -> EvidenceOutput:
         :max_candidates
     ]
     category = _category(data.problem)
-    knowledge_cases = _published_knowledge(data.problem, data.carrier, data.biztype, category)
+    knowledge_cases = _published_knowledge(data.problem, data.carrier, data.biztype, category, ctx.run.run_id, data.task_id)
     symbols: dict[str, list[str]] = {}
     syntax_errors: dict[str, str] = {}
     for relative in candidates:
