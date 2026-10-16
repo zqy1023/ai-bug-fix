@@ -54,7 +54,9 @@ def _is_max_turns_error(error: BaseException) -> bool:
     return "maximum number of turns" in message or "error_max_turns" in message
 
 
-def _max_turns_fallback(\n    error: BaseException, max_turns: int, *, prompt_chars: int = 0\n) -> dict[str, Any]:
+def _max_turns_fallback(
+    error: BaseException, max_turns: int, *, prompt_chars: int = 0
+) -> dict[str, Any]:
     """将回合耗尽转为可审计的证据不足结论，而不是系统级崩溃。"""
     reason = (
         f"Claude 定位 Agent 已达到最大交互回合数 {max_turns}，"
