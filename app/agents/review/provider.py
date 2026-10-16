@@ -18,6 +18,7 @@ from typing import Any
 
 from app.infrastructure.claude.session import ClaudeSession, resolve_tools, run_agent_once
 from app.agents.policy import ToolPolicy
+from app.agents.common import invoke_with_audit
 from app.agents.review.config import ReviewConfig
 from app.application.contracts import AgentRequest
 
@@ -75,11 +76,11 @@ class ClaudeSessionProvider(ReviewProvider):
                 timeout_seconds=self.config.timeout_seconds,
             ),
         )
-        result = session.invoke(
+        result = invoke_with_audit(request, lambda: session.invoke(
             request.prompt,
             request.workspace,
             allowed_roots=request.allowed_read_roots,
-        )
+        ))
         if result.get("reason") == "AGENT_TIMEOUT":
             drop_session(request.agent_role, session_key)
         return result
@@ -97,7 +98,7 @@ class ClaudeQueryProvider(ReviewProvider):
         """以一次性查询方式调用只读智能体。"""
         try:
             ToolPolicy.validate(request)
-            return run_agent_once(
+            return invoke_with_audit(request, lambda: run_agent_once(
                 f"{request.system_prompt}\n\n---\n\n{request.prompt}",
                 request.workspace,
                 self.env,
@@ -107,7 +108,7 @@ class ClaudeQueryProvider(ReviewProvider):
                 max_tool_calls=self.config.max_tool_calls,
                 timeout_seconds=self.config.timeout_seconds,
                 allowed_roots=request.allowed_read_roots,
-            )
+            ))
         except TimeoutError:
             return {"passed": False, "reason": "AGENT_TIMEOUT"}
 

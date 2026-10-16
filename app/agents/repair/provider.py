@@ -18,6 +18,7 @@ from typing import Any
 
 from app.infrastructure.claude.session import ClaudeSession, run_agent_once
 from app.agents.policy import ToolPolicy
+from app.agents.common import invoke_with_audit
 from app.agents.repair.config import RepairConfig
 from app.application.contracts import AgentRequest
 
@@ -73,11 +74,11 @@ class ClaudeSessionProvider(RepairProvider):
                 allowed_roots=request.allowed_read_roots,
             ),
         )
-        result = session.invoke(
+        result = invoke_with_audit(request, lambda: session.invoke(
             request.prompt,
             request.write_root,
             allowed_roots=request.allowed_read_roots,
-        )
+        ))
         if result.get("reason") == "AGENT_TIMEOUT":
             drop_session(request.agent_role, session_key)
         return result
@@ -99,7 +100,7 @@ class ClaudeQueryProvider(RepairProvider):
                 raise ValueError("repair Agent 请求没有 write_root")
             env = {**self.env, "AI_REPAIR_WRITE_ROOT": request.write_root}
             prompt = f"{request.system_prompt}\n\n---\n\n{request.prompt}"
-            return run_agent_once(
+            return invoke_with_audit(request, lambda: run_agent_once(
                 prompt,
                 request.workspace,
                 env,
@@ -109,7 +110,7 @@ class ClaudeQueryProvider(RepairProvider):
                 max_tool_calls=self.config.max_tool_calls,
                 timeout_seconds=self.config.timeout_seconds,
                 allowed_roots=request.allowed_read_roots,
-            )
+            ))
         except TimeoutError:
             return {"passed": False, "reason": "AGENT_TIMEOUT"}
 

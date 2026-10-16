@@ -1,50 +1,49 @@
 # AI Repair Workbench
 
-这是连接真实运行记录与 LangGraph 检查点的运维工作台，不是静态演示页面。前端使用 React + TypeScript + Vite，后端使用 FastAPI；运行、任务、节点输入输出、错误、产物和审批都读取项目真实 runtime 数据。
+唯一正式前端位于 `frontend/`，后端使用 FastAPI，执行引擎复用仓库现有 LangGraph 主图、步骤插件、RecordStore 与 checkpoint。已退役的 `workbench/ui/` 不再作为启动或构建入口。
 
 ## 本地启动
 
-在仓库根目录执行：
+终端一（仓库根目录）：
 
 ```powershell
 python -m pip install -r requirements.txt
 uvicorn workbench.api:app --host 127.0.0.1 --port 8000
 ```
 
-另开终端：
+终端二：
 
 ```powershell
-cd workbench/ui
+cd frontend
 npm install
 npm run dev
 ```
 
-访问 Vite 输出的本地地址（默认 http://127.0.0.1:5173）。前端代理 `/api` 到 `127.0.0.1:8000`。生产构建：
+访问 Vite 输出的地址，默认 `http://127.0.0.1:5173`。API 文档：`http://127.0.0.1:8000/api/docs`。
+
+生产构建：
 
 ```powershell
-cd workbench/ui
+cd frontend
+npm run typecheck
 npm run build
 ```
 
-API OpenAPI 文档：`http://127.0.0.1:8000/api/docs`。
+## 工作台能力
 
-## 认证与部署
+- 运行创建、列表、详情、配置与任务进度。
+- 节点时间线及输入、输出、错误和产物引用。
+- Provider 请求级模型调用审计：模型、Prompt 哈希、耗时、Token 用量（供应商未返回时为空）、工具调用统计与错误类型。
+- 运行状态快照 SSE 和控制操作审计查询。
+- 审批队列与 LangGraph checkpoint 恢复。
+- 产物读取限制在当前运行/任务目录，限制最大读取大小。
 
-- 默认只监听回环地址，适用于本机运维。
-- 远程部署必须设置 `WORKBENCH_API_TOKEN`，通过 HTTPS 反向代理访问，并将 Token 配置到页面右上角的 API 认证中。
-- 不要把工作台 API 直接暴露到公网。Token 仅保存于当前浏览器会话的 sessionStorage。
-- 运行目录由现有 `AI_REPAIR_RUNTIME_DIR` 决定。请将其放在持久化磁盘，并备份运行记录、`workflow-checkpoints.sqlite3` 和 `eligibility.sqlite3`。
-- API 仅允许读取运行目录中的记录/产物；不提供任意文件读取，也不会展示工作区中的密钥文件。
-- 人工审批通过 LangGraph `Command(resume=...)` 恢复持久化 thread。批准前必须在任务详情查看验证、回归与审查证据。工作台不会自动合并分支。
+模型调用审计文件写入 `runtime/runs/<run_id>/model_calls.jsonl`。历史运行不会补造缺失的模型调用记录。Token 等用量字段以 Provider 实际返回为准。
 
-## 能力
+## 运行与安全边界
 
-- 运行总览、任务成功/失败与待审批数量。
-- 5 秒轮询执行列表与实时节点记录；可查看节点耗时、尝试次数、输入、输出和异常。
-- 按运行轮次查看任务轨迹、Agent 与步骤产物。
-- 审批队列，审批后恢复挂起工作流。
-- 系统健康、关键配置状态和 API 文档。
-
-## 生产化边界
-
-该版本是项目内的可运行控制台基线，不替代企业统一身份认证、RBAC/审批人权限矩阵、审计日志集中化、告警路由、反向代理限流与部署编排。部署到共享环境前应补齐这些运维控制并完成集成验收。
+- 默认仅监听回环地址；远程部署必须设置 `WORKBENCH_API_TOKEN` 并使用 HTTPS 反向代理。
+- 运行记录目录应位于持久化磁盘；同时备份 `workflow-checkpoints.sqlite3`、`eligibility.sqlite3` 与运行产物。
+- 工作台不自动合并代码；代码交付仍遵守工作流门禁。
+- 当前 SSE 发送的是基于持久化运行记录的状态快照，不等于逐 token 模型流。取消接口目前表达停止请求，当前节点可能完成后才响应。
+- 本仓库尚未提供完整的企业 SSO/OIDC 与 RBAC；远程部署前必须补齐统一身份认证、角色授权、反向代理安全策略和端到端验收。

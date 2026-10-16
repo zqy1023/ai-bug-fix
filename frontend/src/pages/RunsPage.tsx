@@ -4,7 +4,7 @@ import { Alert, App, Button, Card, Form, Input, InputNumber, Modal, Select, Tabl
 import { PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
-import { api, isDemoMode } from '../lib/api';
+import { api } from '../lib/api';
 import { StatusTag } from '../components/StatusTag';
 import type { RunStatus, RunSummary } from '../lib/types';
 const { Title, Text } = Typography;
@@ -29,7 +29,6 @@ export function RunsPage() {
   ];
   return <div className="page-stack">
     <div className="page-heading"><div><Title level={3}>执行记录</Title><Text type="secondary">查询每一轮工作流、检查任务结果，并进入节点级执行审计。</Text></div><Button type="primary" icon={<PlusOutlined />} onClick={() => { form.setFieldsValue({ log_days: 1, log_limit: 0, review_mode: 'agent', max_attempts: 3 }); setModalOpen(true); }}>新建执行</Button></div>
-    {isDemoMode && <Alert type="warning" showIcon message="当前为演示模式" description="列表使用演示数据；新建执行仍需真实后端 API，不会伪造执行成功。" />}
     {runs.isError && <Alert type="error" showIcon message="执行记录加载失败" description={(runs.error as Error).message} action={<Button type="link" onClick={() => runs.refetch()}>重试</Button>} />}
     <Card className="content-card"><div className="filter-row">
       <Input allowClear prefix={<SearchOutlined />} placeholder="搜索执行 ID" value={keyword} onChange={(e) => { setKeyword(e.target.value); setPage(1); }} style={{ maxWidth: 300 }} />

@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
+import json
+import threading
+import time
+import uuid
+from pathlib import Path
+
+_AUDIT_LOCK = threading.Lock()
 
 from app.domain.json_text import loads_object
 
@@ -60,4 +67,73 @@ def audit_metadata(
     }
 
 
-__all__ = ["audit_metadata", "parse_result", "raw_result", "usage_of"]
+def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    """记录一次真实 provider 请求的元数据；不持久化 prompt 正文或密钥。"""
+    started = time.perf_counter()
+    started_at = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+    call_id = uuid.uuid4().hex
+    status = "succeeded"
+    error_type = ""
+    try:
+        raw = invoke()
+        raw = raw if isinstance(raw, dict) else {}
+        usage = usage_of(raw)
+        record = {
+            "model_call_id": call_id, "run_id": str(getattr(request, "run_id", "") or ""),
+            "task_id": str(getattr(request, "task_id", "") or ""),
+            "agent_role": str(getattr(request, "agent_role", "") or ""),
+            "attempt": int(getattr(request, "attempt", 1) or 1),
+            "provider": str(getattr(request, "provider", "") or ""),
+            "model": str(getattr(request, "model", "") or ""),
+            "prompt_version": str(getattr(request, "prompt_version", "") or ""),
+            "prompt_hash": str(getattr(request, "prompt_hash", "") or ""),
+            "started_at": started_at, "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+            "status": "failed" if raw.get("passed") is False and raw.get("reason") else "succeeded",
+            "input_tokens": usage.get("input_tokens", usage.get("input", None)),
+            "output_tokens": usage.get("output_tokens", usage.get("output", None)),
+            "cache_tokens": usage.get("cache_read_input_tokens", usage.get("cache_tokens", None)),
+            "total_tokens": usage.get("total_tokens", None),
+            "tool_call_count": usage.get("tool_calls", None),
+            "error_type": str(raw.get("reason") or "")[:300] if raw.get("passed") is False else "",
+            "finished_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+        }
+        _persist_model_call(record)
+        return raw
+    except Exception as exc:
+        status = "failed"
+        error_type = type(exc).__name__
+        record = {
+            "model_call_id": call_id, "run_id": str(getattr(request, "run_id", "") or ""),
+            "task_id": str(getattr(request, "task_id", "") or ""),
+            "agent_role": str(getattr(request, "agent_role", "") or ""),
+            "attempt": int(getattr(request, "attempt", 1) or 1),
+            "model": str(getattr(request, "model", "") or ""),
+            "prompt_version": str(getattr(request, "prompt_version", "") or ""),
+            "prompt_hash": str(getattr(request, "prompt_hash", "") or ""),
+            "started_at": started_at, "finished_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+            "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+            "status": status, "error_type": error_type,
+        }
+        _persist_model_call(record)
+        raise
+
+
+def _persist_model_call(record: dict[str, Any]) -> None:
+    run_id = str(record.get("run_id") or "")
+    if not run_id or any(part in run_id for part in ("/", "\\", "..")):
+        return
+    try:
+        from app.infrastructure.config import load_config
+        target = Path(load_config().runtime_dir).resolve() / "runs" / run_id / "model_calls.jsonl"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+        with _AUDIT_LOCK:
+            with target.open("a", encoding="utf-8") as stream:
+                stream.write(line + chr(10))
+    except Exception:
+        # 审计落盘故障不能覆盖原始模型结果；系统日志会暴露该缺口。
+        import logging
+        logging.getLogger(__name__).exception("模型调用审计写入失败 run_id=%s", run_id)
+
+
+__all__ = ["audit_metadata", "parse_result", "raw_result", "usage_of", "invoke_with_audit"]

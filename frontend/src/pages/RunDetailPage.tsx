@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, Button, Card, Descriptions, Empty, Space, Spin, Table, Tabs, Tag, Typography } from 'antd';
 import { ArrowLeftOutlined, ReloadOutlined } from '@ant-design/icons';
@@ -6,7 +7,7 @@ import dayjs from 'dayjs';
 import { api } from '../lib/api';
 import { StatusTag } from '../components/StatusTag';
 import { WorkflowGraph } from '../components/WorkflowGraph';
-import type { StepRecord } from '../lib/types';
+import type { ModelCall, StepRecord } from '../lib/types';
 const { Title, Text } = Typography;
 function duration(value?: number | null) { if (value == null) return '—'; return value >= 1000 ? (value / 1000).toFixed(2) + ' 秒' : value.toFixed(0) + ' ms'; }
 export function RunDetailPage() {
@@ -14,7 +15,16 @@ export function RunDetailPage() {
   const detail = useQuery({ queryKey: ['run', runId], queryFn: () => api.run(runId), refetchInterval: (q) => ['running', 'queued', 'waiting_approval'].includes(q.state.data?.status ?? '') ? 5000 : false });
   const resume = useMutation({ mutationFn: () => api.resumeRun(runId), onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ['run', runId] }); }, });
   const cancel = useMutation({ mutationFn: () => api.cancelRun(runId), onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ['run', runId] }); }, });
+  useEffect(() => {
+    if (!runId) return;
+    const source = new EventSource(`/api/v1/runs/${encodeURIComponent(runId)}/events`);
+    source.addEventListener('run.snapshot', () => { void queryClient.invalidateQueries({ queryKey: ['run', runId] }); });
+    source.onerror = () => { /* EventSource 自动重连；详情查询仍提供快照兜底。 */ };
+    return () => source.close();
+  }, [runId, queryClient]);
   const data = detail.data;
+  const modelCalls = useQuery({ queryKey: ['model-calls', runId], queryFn: () => api.modelCalls(runId), refetchInterval: (q) => ['running', 'queued', 'waiting_approval', 'cancel_requested'].includes(detail.data?.status ?? '') ? 5000 : false });
+  const controlAudit = useQuery({ queryKey: ['control-audit', runId], queryFn: () => api.controlAudit(runId) });
   const stepColumns = [
     { title: '节点', dataIndex: 'title', key: 'title', render: (v: string, row: StepRecord) => <div><strong>{v || row.name}</strong><div className="secondary-small">{row.name}</div></div> },
     { title: '执行状态', dataIndex: 'status', key: 'status', render: (v: StepRecord['status']) => <StatusTag status={v} /> },
@@ -45,5 +55,26 @@ export function RunDetailPage() {
       { key: 'artifacts', label: '产物（' + data.artifacts.length + '）', children: data.artifacts.length ? <Table rowKey="path" dataSource={data.artifacts} pagination={false} columns={[{ title: '名称', dataIndex: 'name', key: 'name' }, { title: '说明', dataIndex: 'description', key: 'description' }, { title: '类型', dataIndex: 'media_type', key: 'media_type' }, { title: '大小', dataIndex: 'size_bytes', key: 'size_bytes', render: (v?: number) => v == null ? '—' : (v / 1024).toFixed(1) + ' KB' }]} /> : <Empty description="暂无产物" /> },
       { key: 'config', label: '执行配置', children: <pre className="json-panel">{JSON.stringify(data.config, null, 2)}</pre> },
     ]} /></Card>
+
+    <Card title={"模型调用审计（" + (modelCalls.data?.total ?? 0) + "）"} className="content-card" extra={<Button onClick={() => modelCalls.refetch()} loading={modelCalls.isFetching}>刷新调用</Button>}>
+      {modelCalls.isError && <Alert type="error" showIcon message="模型调用审计加载失败" description={(modelCalls.error as Error).message} />}
+      <Table rowKey="model_call_id" loading={modelCalls.isLoading} dataSource={modelCalls.data?.items ?? []} pagination={{ pageSize: 10 }} locale={{ emptyText: "没有调用级审计记录。历史运行不会补造模型调用数据。" }} columns={[
+        { title: "Agent", dataIndex: "agent_role", key: "agent_role" },
+        { title: "模型", dataIndex: "model", key: "model", render: (v: string) => v || "未返回" },
+        { title: "状态", dataIndex: "status", key: "status", render: (v: string) => <Tag color={v === "succeeded" ? "green" : "red"}>{v}</Tag> },
+        { title: "耗时", dataIndex: "duration_ms", key: "duration_ms", render: duration },
+        { title: "Token", key: "tokens", render: (_: unknown, row: ModelCall) => row.total_tokens == null ? "未返回" : row.total_tokens },
+        { title: "工具调用", dataIndex: "tool_call_count", key: "tool_call_count", render: (v?: number | null) => v ?? "未返回" },
+        { title: "Prompt 哈希", dataIndex: "prompt_hash", key: "prompt_hash", render: (v?: string) => v ? v.slice(0, 12) : "—" },
+        { title: "失败原因", dataIndex: "error_type", key: "error_type", render: (v?: string) => v || "—" },
+      ]} />
+    </Card>
+    <Card title={"控制操作审计（" + (controlAudit.data?.total ?? 0) + "）"} className="content-card">
+      <Table rowKey="id" dataSource={controlAudit.data?.items ?? []} loading={controlAudit.isLoading} pagination={{ pageSize: 10 }} locale={{ emptyText: "暂无控制操作记录" }} columns={[
+        { title: "时间", dataIndex: "created_at", key: "created_at", render: (v: string) => dayjs(v).isValid() ? dayjs(v).format("YYYY-MM-DD HH:mm:ss") : "—" },
+        { title: "操作", dataIndex: "action", key: "action" }, { title: "操作者", dataIndex: "actor", key: "actor" },
+        { title: "任务", dataIndex: "task_id", key: "task_id" }, { title: "原因/参数", dataIndex: "reason", key: "reason", render: (v: string) => v || "—" },
+      ]} />
+    </Card>
   </div>;
 }

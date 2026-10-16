@@ -17,6 +17,7 @@ from typing import Any
 
 from app.domain.models import utc_now
 from app.infrastructure.records.store import RecordStore
+from app.infrastructure.run_control import cancellation_requested
 from app.application.audit import (
     ArtifactRef,
     StepError,
@@ -65,6 +66,8 @@ def run_stage(
     # 本次节点执行的产物收集范围；重试不会带上一次尝试的引用。
     artifacts: list[ArtifactRef] = []
     try:
+        if cancellation_requested(store.root, run_id):
+            raise StepFailed("收到停止请求，已在节点边界停止后续执行", result="manual", code="RUN_CANCEL_REQUESTED")
         parsed = parse_input(spec.name, spec.input_builder(state))
         record.input = dump_model(parsed)
         run_context = RunContext(

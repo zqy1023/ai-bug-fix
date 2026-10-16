@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, App, Button, Card, Input, Modal, Space, Table, Tag, Typography } from 'antd';
 import { CheckOutlined, CloseOutlined, ReloadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { api, isDemoMode } from '../lib/api';
+import { api } from '../lib/api';
 import type { ApprovalItem } from '../lib/types';
 const { Title, Text } = Typography;
 const { TextArea } = Input;
@@ -26,7 +26,6 @@ export function ApprovalsPage() {
   ];
   return <div className="page-stack">
     <div className="page-heading"><div><Title level={3}>人工审批</Title><Text type="secondary">审批只对当前方案授权；批准后仍必须通过后续验证与交付门禁。</Text></div><Button icon={<ReloadOutlined />} onClick={() => approvals.refetch()} loading={approvals.isFetching}>刷新</Button></div>
-    {isDemoMode && <Alert type="warning" showIcon message="演示模式下审批队列为空" description="演示数据不会创建真实审批，也不会触发工作流副作用。" />}
     {approvals.isError && <Alert type="error" showIcon message="审批列表加载失败" description={(approvals.error as Error).message} action={<Button type="link" onClick={() => approvals.refetch()}>重试</Button>} />}
     <Card className="content-card" title={'待处理审批（' + (approvals.data?.length ?? 0) + '）'}><Table rowKey="approval_id" loading={approvals.isLoading} columns={columns} dataSource={approvals.data ?? []} pagination={{ pageSize: 10, showTotal: (total) => '共 ' + total + ' 条' }} locale={{ emptyText: '当前没有待处理审批' }} /></Card>
     <Modal title={decision === 'approve' ? '确认批准变更方案' : '确认拒绝变更方案'} open={Boolean(selected)} onCancel={() => !mutation.isPending && setSelected(null)} onOk={() => mutation.mutate()} confirmLoading={mutation.isPending} okText={decision === 'approve' ? '确认批准' : '确认拒绝'} okButtonProps={{ danger: decision === 'reject', disabled: decision === 'reject' && !reason.trim() }} cancelText="返回检查" destroyOnClose>

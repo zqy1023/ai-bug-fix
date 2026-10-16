@@ -40,3 +40,16 @@ def test_v1_start_requires_idempotency_key():
         "log_days": 1, "log_limit": 0, "review_mode": "agent", "max_attempts": 3
     })
     assert response.status_code in {400, 409, 503}
+
+
+
+def test_model_call_audit_endpoint_requires_existing_run():
+    client = TestClient(app)
+    response = client.get("/api/v1/runs/nonexistent-run/model-calls")
+    assert response.status_code in {404, 503}
+
+
+def test_control_audit_endpoint_requires_existing_run():
+    client = TestClient(app)
+    response = client.get("/api/v1/runs/nonexistent-run/control-audit")
+    assert response.status_code in {404, 503}

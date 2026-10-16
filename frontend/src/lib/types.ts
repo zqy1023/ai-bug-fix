@@ -95,6 +95,16 @@ export interface PageResult<T> {
   page_size: number;
 }
 
+export interface ModelCall {
+  model_call_id: string; run_id: string; task_id: string; agent_role: string; attempt: number;
+  provider?: string; model: string; prompt_version?: string; prompt_hash?: string;
+  started_at: string; finished_at?: string; duration_ms?: number; status: string;
+  input_tokens?: number | null; output_tokens?: number | null; cache_tokens?: number | null;
+  total_tokens?: number | null; tool_call_count?: number | null; error_type?: string;
+}
+export interface ControlAuditItem {
+  id: number; run_id: string; task_id: string; action: string; actor: string; reason: string; created_at: string;
+}
 export interface ApiErrorShape {
   code: string;
   message: string;

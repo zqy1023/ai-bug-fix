@@ -19,7 +19,7 @@ from typing import Any
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.infrastructure.config import load_config
@@ -532,8 +532,8 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
     connection = _control_db()
     try:
         row = connection.execute("SELECT cancel_requested FROM run_control WHERE run_id=?", (run_id,)).fetchone()
-        if row and row["cancel_requested"] and status in {"queued", "running"}:
-            status = "cancel_requested"
+        if row and row["cancel_requested"]:
+            status = "cancelled" if not next_nodes else "cancel_requested"
     finally:
         connection.close()
     return {
@@ -770,3 +770,82 @@ def v1_artifact_content(
     _: None = Depends(_authorize),
 ) -> JSONResponse:
     return get_artifact_content(run_id, path, task_id)
+
+
+@app.get("/api/v1/runs/{run_id}/model-calls")
+def v1_model_calls(
+    run_id: str, task_id: str | None = None, _: None = Depends(_authorize),
+) -> dict[str, Any]:
+    """返回 Provider 层真实请求审计；未记录的旧运行返回空列表，不补造统计。"""
+    run_id = _safe_id(run_id)
+    path = _store().run_dir(run_id) / "model_calls.jsonl"
+    items: list[dict[str, Any]] = []
+    if path.is_file():
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    logger.warning("忽略损坏的模型调用审计行 run_id=%s", run_id)
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                if task_id and str(item.get("task_id") or "") != task_id:
+                    continue
+                items.append(item)
+        except OSError as exc:
+            raise HTTPException(status_code=503, detail="模型调用审计暂时不可读取") from exc
+    items.sort(key=lambda item: str(item.get("started_at") or ""))
+    return {"items": items, "total": len(items), "source": "provider_audit"}
+
+
+@app.get("/api/v1/runs/{run_id}/events")
+def v1_run_events(run_id: str, _: None = Depends(_authorize)) -> StreamingResponse:
+    """SSE 状态流：以持久化运行记录为准，客户端重连后重新获取最新快照。"""
+    import hashlib
+    import time
+
+    run_id = _safe_id(run_id)
+    _v1_detail(run_id)
+
+    def stream():
+        previous = ""
+        sequence = 0
+        while True:
+            try:
+                snapshot = _v1_detail(run_id)
+                serialized = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+                digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+                if digest != previous:
+                    sequence += 1
+                    yield f"id: {sequence}\nevent: run.snapshot\ndata: {serialized}\n\n"
+                    previous = digest
+                else:
+                    yield ": heartbeat\n\n"
+                if snapshot.get("status") in {"succeeded", "failed", "cancelled"}:
+                    return
+            except Exception:
+                logger.exception("运行事件流读取失败 run_id=%s", run_id)
+                yield "event: stream.error\ndata: {\"message\":\"运行快照暂时不可用\"}\n\n"
+                return
+            time.sleep(1)
+    return StreamingResponse(stream(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+    })
+
+
+@app.get("/api/v1/runs/{run_id}/control-audit")
+def v1_control_audit(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
+    run_id = _safe_id(run_id)
+    _v1_detail(run_id)
+    connection = _control_db()
+    try:
+        rows = connection.execute(
+            "SELECT id,run_id,task_id,action,actor,reason,created_at FROM control_audit WHERE run_id=? ORDER BY id",
+            (run_id,),
+        ).fetchall()
+        return {"items": [dict(row) for row in rows], "total": len(rows)}
+    finally:
+        connection.close()

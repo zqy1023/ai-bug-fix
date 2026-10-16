@@ -7,6 +7,7 @@ from typing import Any
 
 from app.agents.locate.config import LocateConfig
 from app.agents.policy import ToolPolicy
+from app.agents.common import invoke_with_audit
 from app.application.contracts import AgentRequest
 from app.infrastructure.claude.session import run_agent_once
 
@@ -27,7 +28,7 @@ class ClaudeQueryLocateProvider:
         if request.allowed_write_roots or request.write_root is not None:
             raise ValueError("Locate provider 拒绝任何写入权限")
         prompt = f"{request.system_prompt}\n\n---\n\n{request.prompt}"
-        return run_agent_once(
+        return invoke_with_audit(request, lambda: run_agent_once(
             prompt,
             request.workspace,
             self.env,
@@ -37,7 +38,7 @@ class ClaudeQueryLocateProvider:
             max_tool_calls=self.config.max_tool_calls,
             timeout_seconds=self.config.timeout_seconds,
             allowed_roots=request.allowed_read_roots,
-        )
+        ))
 
 
 PROVIDERS: dict[str, type[ClaudeQueryLocateProvider]] = {
