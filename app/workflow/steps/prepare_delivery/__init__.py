@@ -46,6 +46,13 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         "repair_summary": str(repair_payload.get("summary") or ""),
         "review_summary": str(review_payload.get("summary") or ""),
         "review_decision": review_decision,
+        "analysis_only": bool(
+            (state.get("evidence") or {}).get("legacy_only")
+            or (state.get("evidence") or {}).get("legacy_dependency")
+            or str((state.get("locate") or {}).get("status") or "") != "LOCATED"
+            or str((state.get("locate") or {}).get("recommended_scope") or "") != "carrier"
+        ),
+        "report_paths": ["reports/final.json"],
         # 需要审批 = 本轮存在已获批或待审批的共享层方案；是否放行只看批准结果。
         "requires_approval": bool(state.get("scope_escalation_required")),
         "approval_granted": str(state.get("decision") or "") == "APPROVE",
