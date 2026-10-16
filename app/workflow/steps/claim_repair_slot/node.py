@@ -1,4 +1,4 @@
-"""04 按 Git 修复分支判断 biztype + carrier 是否可以进入本轮。"""
+"""04 按 Git 修复分支与问题指纹判断是否可以进入本轮。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,12 @@ def run(ctx: StepContext, data: ClaimInput) -> ClaimOutput:
     if ctx.services.source_repo is None and not data.source_repo_path:
         raise StepFailed("源仓库未配置，无法判断修复分支")
     source = data.source_repo_path or str(ctx.services.source_repo)
-    branch = repair_branch(data.biztype, data.carrier, settings.repair_branch_prefix)
+    branch = repair_branch(
+        data.biztype,
+        data.carrier,
+        settings.repair_branch_prefix,
+        data.problem_key or data.task_id.rsplit("__", 1)[-1],
+    )
     try:
         repo = Repo(source, search_parent_directories=True)
     except Exception as error:
@@ -29,26 +34,6 @@ def run(ctx: StepContext, data: ClaimInput) -> ClaimOutput:
             result="skipped",
         )
 
-    # 分支检查与本轮资格是两个不同的约束。分支不存在并不代表本轮尚未
-    # 为同一运输商领取过另一个问题的修复资格。
-    eligibility = ctx.services.eligibility
-    if eligibility is None:
-        raise StepFailed("修复资格服务未装配，拒绝绕过本轮去重门禁")
-    try:
-        claimed = eligibility.claim(
-            data.run_id,
-            data.biztype,
-            data.carrier,
-            data.problem_key,
-        )
-    except Exception as error:
-        raise StepFailed(f"领取本轮修复资格失败: {error}") from error
-    if not claimed:
-        raise StepFailed(
-            f"本轮已为该运输商领取过自动修复资格: {data.biztype}/{data.carrier}",
-            {"claimed": False, "result": "skipped"},
-            result="skipped",
-        )
     return ClaimOutput(claimed=True, result="claimed")
 
 
