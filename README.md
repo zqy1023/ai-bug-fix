@@ -75,3 +75,5 @@ docker compose logs -f api frontend
 
 运行记录目录通过 `AI_REPAIR_RUNTIME_DIR` 配置，默认位于项目根目录 `.ai-repair/`。
 "# ai-bug-fix" 
+
+- [运行产物与持久化文件说明](docs/RUNTIME_ARTIFACTS.md)：说明每次执行生成的 JSON、JSONL、SQLite 文件及审计、恢复、备份策略。

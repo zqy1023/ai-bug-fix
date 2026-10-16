@@ -72,16 +72,16 @@ docker compose logs -f api frontend
 |---|---|---|
 | `run.json` | 本轮启动参数与配置快照，用于真实输入重建 | 启动时创建，不覆盖 |
 | `steps.json` | Run 级与任务级节点状态、业务结论、摘要、耗时、错误和产物引用 | 每个节点状态变化时原子更新；不存大段原始事件 |
-| `reports/final.json` | 单个任务的最终业务结论、耗时、token 汇总和完成步骤 | 每个任务收尾时生成；取消任务标记 CANCELLED |
+| `tasks/<task_id>/reports/final.json` | 单个任务的最终业务结论、耗时、Token 汇总和完成步骤 | 任务收尾时生成；取消任务标记 CANCELLED |
 | `reports/run_failure.json` | 图外后台异常的安全摘要 | 仅后台发生未捕获异常时生成 |
 | `tasks/<task_id>/agents/*.json` | locate/repair/review Agent 的结果摘要和原始业务结论 | Agent 节点完成时生成；不包含隐藏思考流 |
 | `tasks/<task_id>/metrics/agent.jsonl` | 每次 Agent 调用的 token 用量、耗时、工具次数和业务状态 | 每次 Agent 调用追加一行 |
 | `tasks/<task_id>/audit/agent_events.jsonl` | 过滤后的工具调用、工具结果和最终公开输出，按调用 ID 关联 | 每次调用追加多行；不保存中间分析、Prompt 正文或编辑全文 |
 | `tasks/<task_id>/**` 下的其他 JSON | 证据、diff、验证、回归和交付报告等节点产物 | 由步骤按声明的相对路径生成；steps.json 只保存引用 |
 | `model_calls.jsonl` | 每次 Provider 调用的模型、角色、耗时、用量、输出摘要及事件索引 | 每次模型调用追加一行；旧记录缺失事件时不补造 |
-| `tasks/<task_id>/audit/agent_events.jsonl` | 按任务分拆的有效 Agent 对话/工具事件 | 每次调用逐事件追加，使用 model_call_id 关联 |
+
 | `workbench-control.sqlite3` | 启动幂等键、暂停/取消意图、控制操作审计 | 控制 API 首次调用时创建；必须持久化挂载 |
 | `eligibility.sqlite3` | 同一 run 中 carrier 修复资格的唯一性约束 | 领取修复资格时使用 |
-| `checkpoints.sqlite`（实际文件名以配置为准） | LangGraph 状态检查点，支持审批/暂停后继续 | 节点提交状态时更新；不能与 run 记录分开备份 |
+| `workflow-checkpoints.sqlite3` | runtime 根目录的 LangGraph 状态检查点，支持审批/暂停后继续 | 节点提交状态时更新；必须与同一 runtime 的 JSON/JSONL 一起备份 |
 
 运行根目录下的 JSON 是可读审计记录，SQLite 用于控制状态、资格唯一性和图检查点；二者不是互相替代关系。备份时应整体备份同一 runtime 目录，恢复后再验证 checkpoint 与 JSON 记录的 run_id 一致。
