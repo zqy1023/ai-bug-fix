@@ -52,6 +52,23 @@ def _read_roots(root: Path, carrier_dir: str, rules: list[str]) -> tuple[str, ..
     return tuple(str(path.resolve()) for path in paths)
 
 
+def _snapshot_prompt_context(source_snapshot: dict[str, Any], framework: str) -> dict[str, Any]:
+    """给定位 Prompt 提供最小快照元数据，不暴露完整哈希 manifest。"""
+    manifest = source_snapshot.get("baseline_manifest")
+    manifest_count = len(manifest) if isinstance(manifest, dict) else 0
+    try:
+        file_count = int(source_snapshot.get("file_count") or manifest_count)
+    except (TypeError, ValueError):
+        file_count = manifest_count
+    return {"framework": framework, "file_count": max(0, file_count)}
+
+
+def _locate_contract_summary(error: BaseException) -> str:
+    """将契约失败的真实原因写入面向人工的摘要。"""
+    detail = " ".join(str(error).split()) or type(error).__name__
+    return f"定位输出契约校验失败：{detail[:500]}；停止自动修复并转人工。"
+
+
 def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
     """用原始异常、预检候选和真实源码证据定位根因。"""
     input_values = {key: state[key] for key in LocateInput.model_fields if key in state}
@@ -125,13 +142,7 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
         },
         # manifest 是完整性校验清单，可能包含大量文件哈希；定位只需要框架和规模，
         # 候选文件路径已由 prepared_source_evidence 单独提供，不应把整份 manifest 塞进 Prompt。
-        source_snapshot={
-            "framework": str(framework),
-            "file_count": int(
-                incoming.source_snapshot.get("file_count")
-                or len(incoming.source_snapshot.get("baseline_manifest") or {})
-            ),
-        },
+        source_snapshot=_snapshot_prompt_context(incoming.source_snapshot, str(framework)),
         allowed_scope=(carrier_dir,),
         stop_conditions=("证据不足", "任务范围外", "源码快照与当前入口不一致"),
     )
@@ -166,7 +177,7 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
             candidate_files=[],
             evidence_gaps=[str(error)],
             recommended_scope="manual",
-            summary=f"定位输出契约校验失败：{str(error).strip()[:500] or type(error).__name__}；停止自动修复并转人工。",
+            summary=_locate_contract_summary(error),
         )
     return {
         **output.model_dump(),
