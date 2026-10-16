@@ -26,12 +26,7 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
                 {"review_decision": review_decision, "reason": "review_not_passed"},
                 result="failed",
             )
-        if data.requires_approval and not data.approval_granted:
-            raise StepFailed(
-                "交付失败：需要人工审批但未获批准",
-                {"requires_approval": True, "approval_granted": False, "reason": "approval_required"},
-                result="manual",
-            )
+
 
     # 执行交付
     if ctx.services.delivery is None:
