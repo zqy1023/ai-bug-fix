@@ -26,9 +26,18 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
     # review_agent 现在始终先执行；人工审批统一放在分支交付之后。
     review_decision = str(review_payload.get("verdict") or "")
     evidence = dict(state.get("evidence") or {})
+    locate_payload = dict(state.get("locate") or {})
+    legacy_reference = any(
+        str(item.get("path") or "").replace("\\", "/").startswith("spiders/")
+        for item in locate_payload.get("source_evidence") or []
+        if isinstance(item, dict)
+    ) or any(
+        str(item).replace("\\", "/").startswith("spiders/")
+        for item in locate_payload.get("candidate_files") or []
+    )
     report_framework = (
         "spiders"
-        if evidence.get("legacy_only") or evidence.get("legacy_dependency")
+        if evidence.get("legacy_only") or evidence.get("legacy_dependency") or legacy_reference
         else str(state.get("framework") or "gathers")
     )
     report_carrier = WorkspaceManager.safe_carrier_name(str(task.get("carrier") or ""))
