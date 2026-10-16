@@ -85,7 +85,24 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
     )
     if gate.get("passed") is not True:
         reason = str(gate.get("reason") or "最终门禁失败")
-        raise StepFailed(reason, {"decision": "APPROVE", "passed": False, "reason": reason})
+        if data.delivery_pushed:
+            try:
+                ctx.services.delivery.discard_branch({
+                    "source_repo_path": data.source_repo_path,
+                    "repair_branch": data.repair_branch,
+                    "pushed": True,
+                })
+            except (DeliveryError, AttributeError) as error:
+                raise StepFailed(
+                    f"最终门禁失败，且清理远程分支失败：{error}",
+                    {"decision": "REJECT", "approval_cleanup_failed": True, "passed": False, "reason": reason},
+                    result="manual",
+                ) from error
+        raise StepFailed(
+            reason,
+            {"decision": "REJECT", "passed": False, "reason": reason},
+            result="rejected",
+        )
     return ApprovalOutput(decision="APPROVE", passed=True, reason="人工审批通过")
 
 
