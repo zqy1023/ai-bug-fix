@@ -18,6 +18,8 @@ class FinalizeInput(FrozenModel):
     terminal_status: str
     # ai_workspace_path：用于为分析型任务准备只读最终报告分支。
     ai_workspace_path: str = ""
+    # report_destination：分析型报告在隔离区中的目标相对路径。
+    report_destination: str = "reports/final.json"
 
 
 class FinalizeOutput(FrozenModel):
