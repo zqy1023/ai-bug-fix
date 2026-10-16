@@ -24,6 +24,7 @@ export function AppLayout() {
   const selected = location.pathname.startsWith('/runs/') ? '/runs' : location.pathname;
   const current = routeMeta.find((item) => item.key === selected) ?? { title: '执行详情', eyebrow: 'RUN INSPECTOR' };
   const health = useQuery({ queryKey: ['workbench-health'], queryFn: api.health, refetchInterval: 30000, retry: 1 });
+  const approvals = useQuery({ queryKey: ['approvals'], queryFn: api.approvals, refetchInterval: 15000, retry: 1 });
 
   return <Layout className="app-shell">
     <Sider collapsible collapsed={collapsed} trigger={null} width={248} collapsedWidth={76} className="app-sider">
@@ -35,7 +36,7 @@ export function AppLayout() {
       <Menu theme="dark" mode="inline" selectedKeys={[selected]} items={[
         { key: '/dashboard', icon: <AppstoreOutlined />, label: '运行控制台' },
         { key: '/runs', icon: <ClockCircleOutlined />, label: '执行与调试' },
-        { key: '/approvals', icon: <SafetyCertificateOutlined />, label: <span className="menu-label">审批中心 <Badge size="small" dot /></span> },
+        { key: '/approvals', icon: <SafetyCertificateOutlined />, label: <span className="menu-label">审批中心 <Badge size="small" count={approvals.data?.length ?? 0} overflowCount={99} /></span> },
       ]} onClick={({ key }) => navigate(key)} />
       <div className="sider-bottom">
         <div className="sider-runtime">
