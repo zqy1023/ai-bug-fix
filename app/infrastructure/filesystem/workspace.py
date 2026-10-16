@@ -108,6 +108,37 @@ class WorkspaceManager:
         return target
 
     @classmethod
+    def reset_carrier_workspace(
+        cls,
+        workspace: str | Path,
+        baseline_dir: str | Path,
+        carrier: str,
+    ) -> None:
+        """将任务工作区恢复到不可变基线，供修复/审批重试使用。"""
+        root = Path(workspace).resolve()
+        baseline = Path(baseline_dir).resolve()
+        carrier_name = cls.safe_carrier_name(carrier)
+        if not root.is_dir() or not baseline.is_dir():
+            raise WorkspaceError("重置工作区所需路径不存在")
+        restored = 0
+        for framework in ("gathers", "spiders"):
+            source = baseline / framework / carrier_name
+            destination = root / framework / carrier_name
+            if not source.is_dir():
+                if destination.exists():
+                    shutil.rmtree(destination)
+                continue
+            if not destination.resolve().is_relative_to(root):
+                raise WorkspaceError("carrier 工作区路径越界")
+            if destination.exists():
+                shutil.rmtree(destination)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(source, destination, symlinks=False)
+            restored += 1
+        if not restored:
+            raise WorkspaceError("基线中没有可恢复的 carrier 目录")
+
+    @classmethod
     def restore_carrier_snapshot(
         cls,
         workspace: str | Path,
