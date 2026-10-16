@@ -19,6 +19,8 @@ class ApprovalInput(FrozenModel):
     mode: Literal["change_approval", "manual_intervention"] = "change_approval"
     # intervention_reason：定位失败的可审计原因。
     intervention_reason: str = ""
+    # intervention_step：触发人工介入的节点名称。
+    intervention_step: str = "locate_agent"
     # candidate_files：当前定位阶段验证过的候选路径。
     candidate_files: list[str] = Field(default_factory=list)
     # root_cause：当前可复核的根因摘要。
