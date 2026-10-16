@@ -93,8 +93,8 @@ SPEC = StepSpec(
     output_model=ApprovalOutput,
     input_builder=_input,
     output_patch=_patch,
-    depends_on=(Dependency("review_agent", "task"),),
-    next_step="apply_plan",
+    depends_on=(Dependency("prepare_delivery", "task"), Dependency("review_agent", "task")),
+    next_step="finalize_execution",
 )
 
 __all__ = ["SPEC"]
