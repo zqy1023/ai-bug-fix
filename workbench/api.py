@@ -13,7 +13,7 @@ import re
 import secrets
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -96,8 +96,7 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
     steps_payload = _read_json(store.steps_path(run_id), {})
     if not isinstance(steps_payload, dict):
         steps_payload = {}
-    run_steps = [
-        item.model_dump(mode="json")
+    run_steps = [        item.model_dump(mode="json")
         for item in store.list_steps(run_id)
     ]
     task_slots = steps_payload.get("tasks", [])
@@ -257,8 +256,7 @@ def list_runs(
                         "carrier": task["carrier"],
                         "biztype": task["biztype"],
                         "status": task["status"],
-                        "problem": task["problem"],
-                        "steps_count": len(task["steps"]),
+                        "problem": task["problem"],                        "steps_count": len(task["steps"]),
                         "approval_pending": task["approval_pending"],
                     }
                     for task in payload["tasks"]
@@ -403,3 +401,372 @@ def decide_approval(
     finally:
         lock.release()
     return {"run_id": run_id, "task_id": task_id, "decision": decision, "status": "resumed"}
+
+# Versioned control-plane contract consumed by frontend/src/lib/api.ts.
+# Legacy /api routes remain available for existing local tooling.
+from hashlib import sha256
+from typing import Literal
+
+
+class V1StartRunRequest(BaseModel):
+    log_days: int = Field(default=1, ge=1, le=30)
+    log_limit: int = Field(default=0, ge=0, le=10000)
+    review_mode: Literal["agent", "human"] = "agent"
+    max_attempts: int = Field(default=3, ge=1, le=5)
+
+
+class V1ApprovalDecision(BaseModel):
+    decision: Literal["approve", "reject"]
+    reason: str = Field(default="", max_length=1000)
+
+
+def _control_db():
+    """Durable idempotency, stop-request and audit metadata, separate from workflow artifacts."""
+    import sqlite3
+    runtime_dir = _config().runtime_dir
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(str(runtime_dir / "workbench-control.sqlite3"), timeout=10)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.execute("PRAGMA busy_timeout=10000")
+    connection.executescript("""
+        CREATE TABLE IF NOT EXISTS idempotency_keys (
+            key TEXT PRIMARY KEY, payload_hash TEXT NOT NULL, run_id TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS run_control (
+            run_id TEXT PRIMARY KEY, cancel_requested INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS control_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, task_id TEXT NOT NULL DEFAULT '',
+            action TEXT NOT NULL, actor TEXT NOT NULL DEFAULT 'unknown', reason TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+    """)
+    return connection
+
+
+def _audit_control(run_id: str, task_id: str, action: str, actor: str, reason: str = "") -> None:
+    connection = _control_db()
+    try:
+        connection.execute(
+            "INSERT INTO control_audit(run_id,task_id,action,actor,reason,created_at) VALUES(?,?,?,?,?,?)",
+            (run_id, task_id, action, actor[:160], reason[:1000], datetime.now(timezone.utc).isoformat()),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _v1_status(value: str) -> str:
+    status = (value or "").lower()
+    aliases = {"pending": "queued", "accepted": "queued", "completed": "succeeded", "success": "succeeded"}
+    return aliases.get(status, status if status in {
+        "queued", "running", "waiting_approval", "succeeded", "partial_failed", "failed", "cancelled",
+        "cancel_requested",
+    } else "failed")
+
+
+def _v1_run_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    summary = payload.get("summary") or {}
+    created = payload.get("created_at") or payload.get("updated_at")
+    return {
+        "run_id": str(payload["run_id"]), "status": _v1_status(str(payload.get("status") or "")),
+        "started_at": created, "finished_at": payload.get("finished_at"),
+        "task_count": int(summary.get("tasks_total") or len(payload.get("tasks") or [])),
+        "succeeded_tasks": int(summary.get("tasks_success") or 0),
+        "failed_tasks": int(summary.get("tasks_failed") or 0),
+        "waiting_tasks": int(summary.get("tasks_waiting_approval") or 0),
+        "operator": payload.get("operator") or "系统", "created_at": created, "updated_at": payload.get("updated_at") or created,
+    }
+
+
+def _parse_time(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _v1_detail(run_id: str) -> dict[str, Any]:
+    store = _store()
+    payload = _run_payload(store, _safe_id(run_id))
+    run_meta = _read_json(store.run_dir(run_id) / "run.json", {})
+    summary = _v1_run_summary(payload)
+    steps = list(payload.get("steps") or [])
+    tasks, artifacts = [], []
+    for step in steps:
+        for ref in step.get("artifacts") or []:
+            artifacts.append({
+                "name": ref.get("name") or "artifact", "path": ref.get("path") or "",
+                "media_type": ref.get("media_type") or "application/json",
+                "description": step.get("name") or "", "size_bytes": None,
+            })
+    for task in payload.get("tasks") or []:
+        result = str(task.get("status") or "PENDING")
+        tasks.append({
+            "task_id": task.get("task_id", ""), "carrier": task.get("carrier", ""),
+            "biztype": task.get("biztype", ""), "result": result, "terminal_status": result.lower(),
+            "steps": task.get("steps") or [],
+        })
+        for step in task.get("steps") or []:
+            for ref in step.get("artifacts") or []:
+                artifacts.append({
+                    "name": ref.get("name") or "artifact", "path": ref.get("path") or "",
+                    "media_type": ref.get("media_type") or "application/json",
+                    "description": f'{task.get("task_id", "")} · {step.get("name", "")}',
+                    "size_bytes": None, "task_id": task.get("task_id", ""),
+                })
+    resumable, next_nodes = False, []
+    try:
+        from app.workflow.wiring import build_graph
+        graph = build_graph(store=store)
+        snapshot = graph.get_state({"configurable": {"thread_id": run_id}})
+        next_nodes = [str(item) for item in (getattr(snapshot, "next", ()) or ())]
+        resumable = bool(next_nodes) and not any(task.get("approval_pending") for task in payload.get("tasks") or [])
+    except Exception:
+        logger.debug("无法读取执行 checkpoint run_id=%s", run_id, exc_info=True)
+    status = _v1_status(str(payload.get("status") or ""))
+    connection = _control_db()
+    try:
+        row = connection.execute("SELECT cancel_requested FROM run_control WHERE run_id=?", (run_id,)).fetchone()
+        if row and row["cancel_requested"] and status in {"queued", "running"}:
+            status = "cancel_requested"
+    finally:
+        connection.close()
+    return {
+        **summary, "status": status,
+        "config": {
+            "log_days": run_meta.get("log_days", 1), "log_limit": run_meta.get("log_limit", 0),
+            "review_mode": run_meta.get("review_mode", "agent"), "max_attempts": run_meta.get("max_attempts", 3),
+        },
+        "steps": steps, "tasks": tasks, "artifacts": artifacts,
+        "checkpoint": {"resumable": resumable, "next_nodes": next_nodes},
+    }
+
+
+@app.get("/api/v1/health")
+def v1_health(_: None = Depends(_authorize)) -> dict[str, Any]:
+    return health()
+
+
+@app.get("/api/v1/dashboard/summary")
+def v1_dashboard(_: None = Depends(_authorize)) -> dict[str, Any]:
+    store = _store()
+    summaries = []
+    for run_id in _all_run_ids(store):
+        try:
+            summaries.append(_v1_run_summary(_run_payload(store, run_id)))
+        except (OSError, ValueError, HTTPException):
+            continue
+    now = datetime.now(timezone.utc)
+    day_start = now - timedelta(hours=24)
+    week_start = now.date() - timedelta(days=6)
+    recent = [item for item in summaries if _parse_time(item.get("started_at")) and _parse_time(item.get("started_at")) >= day_start]
+    daily = {}
+    for offset in range(7):
+        day = (week_start + timedelta(days=offset)).isoformat()
+        daily[day] = {"date": day, "succeeded": 0, "failed": 0}
+    for item in summaries:
+        created = _parse_time(item.get("started_at"))
+        if created and created.date().isoformat() in daily:
+            daily[created.date().isoformat()]["succeeded"] += item["succeeded_tasks"]
+            daily[created.date().isoformat()]["failed"] += item["failed_tasks"]
+    recent_week = [item for item in summaries if (created := _parse_time(item.get("started_at"))) and created.date() >= week_start]
+    total = sum(item["succeeded_tasks"] + item["failed_tasks"] for item in recent_week)
+    successes = sum(item["succeeded_tasks"] for item in recent_week)
+    return {
+        "active_runs": sum(item["status"] in {"queued", "running", "cancel_requested"} for item in summaries),
+        "waiting_approvals": sum(item["waiting_tasks"] for item in summaries),
+        "succeeded_24h": sum(item["succeeded_tasks"] for item in recent),
+        "failed_24h": sum(item["failed_tasks"] for item in recent),
+        "success_rate_7d": successes / total if total else 0.0,
+        "recent_runs": summaries[:8], "daily_trend": list(daily.values()),
+    }
+
+
+@app.get("/api/v1/runs")
+def v1_list_runs(
+    page: int = Query(default=1, ge=1), page_size: int = Query(default=20, ge=1, le=100),
+    status: str | None = None, keyword: str | None = Query(default=None, max_length=160),
+    from_: str | None = Query(default=None, alias="from", max_length=40),
+    to: str | None = Query(default=None, max_length=40), _: None = Depends(_authorize),
+) -> dict[str, Any]:
+    store = _store()
+    items = []
+    from_time, to_time = _parse_time(from_), _parse_time(to)
+    for run_id in _all_run_ids(store):
+        try:
+            item = _v1_run_summary(_run_payload(store, run_id))
+        except (OSError, ValueError, HTTPException):
+            continue
+        if status and item["status"] != status:
+            continue
+        if keyword and keyword.casefold() not in run_id.casefold():
+            continue
+        created = _parse_time(item.get("started_at"))
+        if from_time and (not created or created < from_time):
+            continue
+        if to_time and (not created or created > to_time):
+            continue
+        items.append(item)
+    start = (page - 1) * page_size
+    return {"items": items[start:start + page_size], "total": len(items), "page": page, "page_size": page_size}
+
+
+@app.post("/api/v1/runs", status_code=202)
+def v1_start_run(
+    request: V1StartRunRequest, background: BackgroundTasks,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", min_length=8, max_length=200),
+    _: None = Depends(_authorize),
+) -> dict[str, Any]:
+    config = _config()
+    if config.source_repo is None:
+        raise HTTPException(status_code=409, detail="未配置 AI_REPAIR_SOURCE_REPO，不能启动生产工作流")
+    if not idempotency_key:
+        raise HTTPException(status_code=400, detail="缺少 Idempotency-Key，请为本次启动生成唯一请求键")
+    payload = request.model_dump(mode="json")
+    payload_hash = sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    run_id = uuid.uuid4().hex
+    connection = _control_db()
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        existing = connection.execute("SELECT payload_hash,run_id FROM idempotency_keys WHERE key=?", (idempotency_key,)).fetchone()
+        if existing:
+            if existing["payload_hash"] != payload_hash:
+                raise HTTPException(status_code=409, detail="相同 Idempotency-Key 不允许复用于不同请求参数")
+            return {"run_id": existing["run_id"], "status": "accepted", "idempotent_replay": True}
+        connection.execute(
+            "INSERT INTO idempotency_keys(key,payload_hash,run_id,created_at) VALUES(?,?,?,?)",
+            (idempotency_key, payload_hash, run_id, datetime.now(timezone.utc).isoformat()),
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+    with _RUN_LOCKS_GUARD:
+        if run_id in _STARTED_RUNS or _store().run_dir(run_id).exists():
+            raise HTTPException(status_code=409, detail="执行 ID 冲突，请重试")
+        _STARTED_RUNS.add(run_id)
+    background.add_task(_run_workflow_background_v1, run_id, payload)
+    _audit_control(run_id, "", "run.start_requested", "api", json.dumps(payload, ensure_ascii=False))
+    return {"run_id": run_id, "status": "accepted", "idempotent_replay": False}
+
+
+def _run_workflow_background_v1(run_id: str, overrides: dict[str, Any]) -> None:
+    from app.entrypoint import run_workflow
+    try:
+        run_workflow(run_id, overrides=overrides)
+    except Exception:
+        logger.exception("工作流后台执行失败 run_id=%s", run_id)
+
+
+@app.get("/api/v1/runs/{run_id}")
+def v1_get_run(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
+    return _v1_detail(run_id)
+
+
+@app.post("/api/v1/runs/{run_id}/resume", status_code=202)
+def v1_resume_run(run_id: str, background: BackgroundTasks, _: None = Depends(_authorize)) -> dict[str, Any]:
+    run_id = _safe_id(run_id)
+    detail = _v1_detail(run_id)
+    if detail["status"] not in {"running", "queued"} or not detail["checkpoint"]["resumable"]:
+        raise HTTPException(status_code=409, detail="执行当前没有可恢复的 checkpoint")
+    with _RUN_LOCKS_GUARD:
+        lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
+    if not lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="该执行正在进行其他控制操作")
+    lock.release()
+    background.add_task(_resume_workflow_background, run_id)
+    _audit_control(run_id, "", "run.resume_requested", "api")
+    return {"run_id": run_id, "status": "resume_requested"}
+
+
+def _resume_workflow_background(run_id: str) -> None:
+    try:
+        from app.workflow.wiring import build_graph
+        graph = build_graph(store=_store())
+        graph.invoke(None, config={"configurable": {"thread_id": run_id}, "recursion_limit": 40})
+    except Exception:
+        logger.exception("恢复工作流失败 run_id=%s", run_id)
+
+
+@app.post("/api/v1/runs/{run_id}/cancel", status_code=202)
+def v1_cancel_run(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
+    run_id = _safe_id(run_id)
+    detail = _v1_detail(run_id)
+    if detail["status"] not in {"running", "queued"}:
+        raise HTTPException(status_code=409, detail="执行当前不是可请求停止的状态")
+    connection = _control_db()
+    try:
+        connection.execute(
+            "INSERT INTO run_control(run_id,cancel_requested,updated_at) VALUES(?,1,?) "
+            "ON CONFLICT(run_id) DO UPDATE SET cancel_requested=1,updated_at=excluded.updated_at",
+            (run_id, datetime.now(timezone.utc).isoformat()),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    _audit_control(run_id, "", "run.cancel_requested", "api")
+    return {"run_id": run_id, "status": "cancel_requested", "message": "已记录停止请求；当前运行节点可能需要完成后才会响应"}
+
+
+@app.get("/api/v1/approvals")
+def v1_list_approvals(
+    status: str = Query(default="pending", pattern="^(pending|approved|rejected|expired)$"),
+    _: None = Depends(_authorize),
+) -> dict[str, Any]:
+    legacy = list_approvals()
+    items = []
+    for item in legacy.get("items", []):
+        if status != "pending":
+            continue
+        step = item.get("approval_step") or {}
+        output = step.get("output") if isinstance(step.get("output"), dict) else {}
+        plan = output.get("change_plan") if isinstance(output.get("change_plan"), dict) else {}
+        files = plan.get("changed_files") or plan.get("files") or []
+        if not isinstance(files, list):
+            files = []
+        run_id, task_id = str(item.get("run_id") or ""), str(item.get("task_id") or "")
+        items.append({
+            "approval_id": f"{run_id}:{task_id}", "run_id": run_id, "task_id": task_id,
+            "carrier": item.get("carrier") or "", "biztype": item.get("biztype") or "",
+            "scope": "project" if str(plan.get("scope") or "").lower() == "project" else "carrier",
+            "status": "pending",
+            "summary": str(output.get("summary") or output.get("reason") or "需要人工确认变更方案"),
+            "changed_files": [str(value) for value in files],
+            "created_at": item.get("updated_at") or datetime.now(timezone.utc).isoformat(), "expires_at": None,
+        })
+    return {"items": items, "total": len(items)}
+
+
+@app.post("/api/v1/approvals/{approval_id}/decision")
+def v1_decide_approval(
+    approval_id: str, request: V1ApprovalDecision, authorization: str | None = Header(default=None),
+    _: None = Depends(_authorize),
+) -> dict[str, Any]:
+    if ":" not in approval_id:
+        raise HTTPException(status_code=400, detail="无效的审批 ID")
+    run_id, task_id = approval_id.split(":", 1)
+    run_id, task_id = _safe_id(run_id), _safe_id(task_id)
+    actor = "bearer-token" if authorization else "local-user"
+    _audit_control(run_id, task_id, "approval." + request.decision, actor, request.reason)
+    return decide_approval(run_id, task_id, ApprovalRequest(decision=request.decision.upper()))
+
+
+@app.get("/api/v1/runs/{run_id}/artifacts")
+def v1_list_artifacts(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
+    detail = _v1_detail(run_id)
+    return {"items": detail["artifacts"], "total": len(detail["artifacts"])}
+
+
+@app.get("/api/v1/runs/{run_id}/artifacts/content")
+def v1_artifact_content(
+    run_id: str, path: str = Query(..., min_length=1, max_length=500), task_id: str = "",
+    _: None = Depends(_authorize),
+) -> JSONResponse:
+    return get_artifact_content(run_id, path, task_id)

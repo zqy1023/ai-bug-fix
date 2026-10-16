@@ -23,8 +23,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (!response.ok) {
-    const body = await response.json().catch(() => null) as { detail?: string; message?: string; code?: string } | null;
-    throw new ApiError(body?.detail ?? body?.message ?? `请求失败（HTTP ${response.status}）`, response.status, body?.code);
+    const body = await response.json().catch(() => null) as { detail?: string; message?: string; code?: string; request_id?: string } | null;
+    throw new ApiError(body?.message ?? body?.detail ?? `请求失败（HTTP ${response.status}）`, response.status, body?.code);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
@@ -75,13 +75,13 @@ export const api = {
     artifacts: [],
     checkpoint: { resumable: false, next_nodes: [] },
   } satisfies RunDetail) : request<RunDetail>(`/runs/${encodeURIComponent(runId)}`),
-  approvals: () => DEMO_MODE ? Promise.resolve([] as ApprovalItem[]) : request<ApprovalItem[]>('/approvals?status=pending'),
+  approvals: () => DEMO_MODE ? Promise.resolve([] as ApprovalItem[]) : request<{ items: ApprovalItem[]; total: number }>('/approvals?status=pending').then((response) => response.items),
   decideApproval: (approvalId: string, decision: 'approve' | 'reject', reason: string) =>
     request<void>(`/approvals/${encodeURIComponent(approvalId)}/decision`, {
       method: 'POST', body: JSON.stringify({ decision, reason }),
     }),
   startRun: (payload: { log_days: number; log_limit: number; review_mode: 'agent' | 'human'; max_attempts: number }) =>
-    request<{ run_id: string }>('/runs', { method: 'POST', body: JSON.stringify(payload) }),
+    request<{ run_id: string }>('/runs', { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify(payload) }),
   resumeRun: (runId: string) => request<void>(`/runs/${encodeURIComponent(runId)}/resume`, { method: 'POST' }),
   cancelRun: (runId: string) => request<void>(`/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST' }),
 };
