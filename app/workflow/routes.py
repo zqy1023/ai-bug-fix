@@ -99,6 +99,18 @@ def after_evidence(state: WorkflowState) -> str:
     return LOCATE
 
 
+def after_retry(state: WorkflowState) -> str:
+    """根据失败 Agent 的记录重试同一 Agent；普通验证/业务失败默认回到修复。"""
+    if str(state.get("terminal_status") or "").upper() == "CANCELLED":
+        return FINALIZE
+    target = str(state.get("retry_target") or "")
+    if target == LOCATE:
+        return LOCATE
+    if target == REVIEW:
+        return REVIEW
+    return REPAIR
+
+
 def after_claim(state: WorkflowState) -> str:
     """定位通过且成功领取修复资格后，才进入修复 Agent。隔离区已在定位前创建。"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
@@ -110,6 +122,8 @@ def after_locate(state: WorkflowState) -> str:
     """仅在证据支持的根因定位成功后，才领取本轮修复资格。"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
         return FINALIZE
+    if _result(state) == "failed":
+        return _retry_or_finalize(state)
     # 旧框架任务只做根因分析；即使 Locate 返回 LOCATED，也不能进入自动修复。
     evidence = state.get("evidence") or {}
     if evidence.get("legacy_only") or evidence.get("legacy_dependency"):
@@ -286,7 +300,7 @@ __all__ = [
     "PREPARE_CONTEXT", "RUN_PREPARE", "VALIDATE",
     "EVIDENCE", "FINALIZE", "IDENTIFY", "LOCATE", "NORMALIZE", "REGRESSION", "REPAIR",
     "REVIEW", "RETRY", "SNAPSHOT", "TASK_DISPATCH", "VERIFY", "WORKSPACE",
-    "after_apply", "after_approval", "after_delivery", "after_finalize", "after_check_changes", "after_claim", "after_prepare_context",
+    "after_apply", "after_approval", "after_delivery", "after_finalize", "after_retry", "after_check_changes", "after_claim", "after_prepare_context",
     "after_run_prepare", "after_validate_changes",
     "after_deduplicate", "after_evidence", "after_identify", "after_locate",
     "after_regression", "after_repair", "after_review", "after_source_snapshot",
