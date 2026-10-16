@@ -6,7 +6,7 @@ from typing import Any
 
 from app.domain.keys import repair_branch
 from app.infrastructure.filesystem.workspace import WorkspaceManager
-from app.workflow.spec import Dependency, StepSpec
+from app.workflow.spec import StepSpec
 from app.workflow.steps.prepare_delivery.models import DeliveryInput, DeliveryOutput
 from config.settings import settings
 from app.workflow.steps.prepare_delivery.node import run
