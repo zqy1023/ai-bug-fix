@@ -1,6 +1,6 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, Button, Card, Descriptions, Empty, Space, Spin, Table, Tabs, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Descriptions, Drawer, Empty, Modal, Space, Spin, Table, Tabs, Tag, Typography } from 'antd';
 import { ArrowLeftOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useNavigate, useParams } from 'react-router-dom';
 import dayjs from 'dayjs';
@@ -12,6 +12,8 @@ const { Title, Text } = Typography;
 function duration(value?: number | null) { if (value == null) return '—'; return value >= 1000 ? (value / 1000).toFixed(2) + ' 秒' : value.toFixed(0) + ' ms'; }
 export function RunDetailPage() {
   const { runId = '' } = useParams(); const navigate = useNavigate(); const queryClient = useQueryClient();
+  const [selectedStepName, setSelectedStepName] = useState<string>();
+  const [selectedArtifact, setSelectedArtifact] = useState<{ path: string; task_id?: string; name: string } | null>(null);
   const detail = useQuery({ queryKey: ['run', runId], queryFn: () => api.run(runId), refetchInterval: (q) => ['running', 'queued', 'waiting_approval'].includes(q.state.data?.status ?? '') ? 5000 : false });
   const resume = useMutation({ mutationFn: () => api.resumeRun(runId), onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ['run', runId] }); }, });
   const cancel = useMutation({ mutationFn: () => api.cancelRun(runId), onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ['run', runId] }); }, });
