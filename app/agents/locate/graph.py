@@ -103,11 +103,15 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
         for key in ("carrier_dir", "candidates", "symbols", "category", "extracted", "legacy_only", "legacy_reason")
         if key in evidence
     }
+    historical_knowledge = evidence.get("knowledge_cases", [])
     context = prompt_context(
         "locate",
         incoming.model_dump(),
         framework=str(framework),
-        evidence={"prepared_source_evidence": prepared_evidence},
+        evidence={
+            "prepared_source_evidence": prepared_evidence,
+            "historical_knowledge_cases": historical_knowledge,
+        },
         read_roots=roots,
         write_roots=(),
         budget={

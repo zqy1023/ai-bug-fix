@@ -55,6 +55,8 @@ class EvidenceOutput(FrozenModel):
     legacy_only: bool = False
     # legacy_reason：字段说明见该模型文档与工作流契约。
     legacy_reason: str = ""
+    # 只注入已审核发布的历史案例；本次异常仍须独立验证。
+    knowledge_cases: list[dict[str, Any]] = Field(default_factory=list)
 
 
 __all__ = ["EvidenceInput", "EvidenceOutput"]
