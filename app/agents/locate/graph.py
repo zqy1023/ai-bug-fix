@@ -95,7 +95,10 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
 
     serialized_problem = json.dumps(incoming.problem, ensure_ascii=False)
     if len(serialized_problem) > config.max_context_chars:
-        return _manual("原始问题超过 locate.max_context_chars，拒绝截断真实输入")
+        return _manual(
+            f"原始问题长度 {len(serialized_problem)} 字符，超过 locate.max_context_chars="
+            f"{config.max_context_chars}；为避免丢失真实异常上下文，本次未截断输入，也未调用模型。"
+        )
     rules = WorkspaceManager.readable_rule_paths(root)
     roots = _read_roots(root, carrier_dir, rules)
     prepared_evidence = {
@@ -120,7 +123,15 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
             "max_context_chars": config.max_context_chars,
             "max_candidate_files": config.max_candidate_files,
         },
-        source_snapshot=incoming.source_snapshot,
+        # manifest 是完整性校验清单，可能包含大量文件哈希；定位只需要框架和规模，
+        # 候选文件路径已由 prepared_source_evidence 单独提供，不应把整份 manifest 塞进 Prompt。
+        source_snapshot={
+            "framework": str(framework),
+            "file_count": int(
+                incoming.source_snapshot.get("file_count")
+                or len(incoming.source_snapshot.get("baseline_manifest") or {})
+            ),
+        },
         allowed_scope=(carrier_dir,),
         stop_conditions=("证据不足", "任务范围外", "源码快照与当前入口不一致"),
     )
@@ -131,6 +142,12 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
         workspace=str(root),
         model=model_name(runtime),
     )
+    if len(request.prompt) > config.max_context_chars:
+        return _manual(
+            f"定位 Prompt 长度 {len(request.prompt)} 字符，超过 "
+            f"locate.max_context_chars={config.max_context_chars}；"
+            "已移除与定位无关的完整源码哈希清单，剩余上下文仍超限，未调用模型。"
+        )
     raw = runtime.run(request)
     raw = raw if isinstance(raw, dict) else {}
     payload = parse_result(raw, "locate")
@@ -149,7 +166,7 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
             candidate_files=[],
             evidence_gaps=[str(error)],
             recommended_scope="manual",
-            summary="定位输出不满足证据或路径契约，停止并转人工",
+            summary=f"定位输出契约校验失败：{str(error).strip()[:500] or type(error).__name__}；停止自动修复并转人工。",
         )
     return {
         **output.model_dump(),
