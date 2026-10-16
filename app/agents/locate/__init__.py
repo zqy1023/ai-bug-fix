@@ -18,6 +18,7 @@ SPEC = AgentSpec(
     depends_on=(
         Dependency("prepare_source_snapshot", "task"),
         Dependency("prepare_evidence", "task"),
+        Dependency("prepare_workspace", "task"),
     ),
     next_step="claim_repair_slot",
     input_record=RecordView(
