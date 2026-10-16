@@ -7,7 +7,7 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../lib/api';
 import type { ApprovalItem, ManualIntervention } from '../lib/types';
 
-const { Title, Text } = Typography;
+const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
 type ManualAction = 'retry_locate' | 'continue_repair' | 'mark_done' | 'terminate';
 
