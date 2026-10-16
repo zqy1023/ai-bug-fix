@@ -580,19 +580,18 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
             })
     for task in payload.get("tasks") or []:
         result = str(task.get("status") or "PENDING")
+        report = task.get("report") if isinstance(task.get("report"), dict) else {}
+        task_steps = task.get("steps") or []
         tasks.append({
             "task_id": task.get("task_id", ""), "carrier": task.get("carrier", ""),
             "biztype": task.get("biztype", ""), "result": result, "terminal_status": result.lower(),
-            "steps": task.get("steps") or [],
+            "terminal_step": str(report.get("terminal_step") or ""),
+            "terminal_reason": str(report.get("terminal_reason") or ""),
+            "next_action": str(report.get("next_action") or ""),
+            "steps_count": len(task_steps),
+            "duration_ms": report.get("elapsed_ms"),
+            "approval_pending": bool(task.get("approval_pending")),
         })
-        for step in task.get("steps") or []:
-            for ref in step.get("artifacts") or []:
-                artifacts.append({
-                    "name": ref.get("name") or "artifact", "path": ref.get("path") or "",
-                    "media_type": ref.get("media_type") or "application/json",
-                    "description": f'{task.get("task_id", "")} · {step.get("name", "")}',
-                    "size_bytes": None, "task_id": task.get("task_id", ""),
-                })
     resumable, next_nodes = False, []
     try:
         from app.workflow.wiring import build_graph
@@ -619,6 +618,7 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
             status = "paused" if has_waiting_step else "pause_requested"
     finally:
         connection.close()
+    run_report = _read_json(store.run_dir(run_id) / "reports" / "final.json", {})
     return {
         **summary, "status": status,
         "config": {
@@ -626,6 +626,7 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
             "review_mode": run_meta.get("review_mode", "agent"), "max_attempts": run_meta.get("max_attempts", 3),
         },
         "steps": steps, "tasks": tasks, "artifacts": artifacts,
+        "run_report": run_report if isinstance(run_report, dict) else {},
         "run_error": payload.get("run_error") or {},
         "checkpoint": {"resumable": resumable, "next_nodes": next_nodes},
     }
