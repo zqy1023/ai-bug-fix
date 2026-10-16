@@ -93,9 +93,10 @@ def after_source_snapshot(state: WorkflowState) -> str:
 
 
 def after_evidence(state: WorkflowState) -> str:
+    """证据准备成功后始终进入定位分析；旧框架只限制后续修改，不跳过根因分析。"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
         return FINALIZE
-    if _result(state) != "passed" or (state.get("evidence") or {}).get("legacy_only"):
+    if _result(state) != "passed":
         return FINALIZE
     return LOCATE
 
