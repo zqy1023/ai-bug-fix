@@ -95,6 +95,14 @@ def _capture_knowledge_candidate(
         connection = sqlite3.connect(str(database), timeout=2)
         try:
             connection.execute(
+                """UPDATE knowledge_case_usage
+                   SET task_result=?, total_tokens=?, updated_at=?
+                   WHERE run_id=? AND task_id=?""",
+                (str(report.get("result") or ""), int(report.get("tokens") or 0),
+                 datetime.now(timezone.utc).isoformat(), ctx.run.run_id, data.task_id),
+            )
+            connection.commit()
+            connection.execute(
                 """INSERT OR IGNORE INTO repair_knowledge_cases
                 (case_id,title,fingerprint,carrier,biztype,root_cause,evidence,change_summary,
                  regression_passed,review_passed,status,source_run_id,source_task_id,created_at,updated_at)
