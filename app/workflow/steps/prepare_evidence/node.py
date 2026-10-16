@@ -152,7 +152,7 @@ def _legacy_reason(carrier: str, chain: list[str]) -> str:
 
 
 
-def _published_knowledge(problem: dict[str, Any], carrier: str, biztype: str, category: str, run_id: str, task_id: str) -> list[dict[str, str]]:
+def _published_knowledge(problem: dict[str, Any], carrier: str, biztype: str, category: str) -> list[dict[str, str]]:
     """读取已发布案例并做轻量确定性排序；知识检索失败不阻断主修复流程。"""
     try:
         runtime_dir = load_config().runtime_dir
@@ -259,7 +259,7 @@ def run(ctx: StepContext, data: EvidenceInput) -> EvidenceOutput:
         :max_candidates
     ]
     category = _category(data.problem)
-    knowledge_cases = _published_knowledge(data.problem, data.carrier, data.biztype, category, ctx.run.run_id, data.task_id)
+    knowledge_cases = _published_knowledge(data.problem, data.carrier, data.biztype, category)
     symbols: dict[str, list[str]] = {}
     syntax_errors: dict[str, str] = {}
     for relative in candidates:
