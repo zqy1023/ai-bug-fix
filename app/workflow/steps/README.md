@@ -1,27 +1,49 @@
 # 工作步骤
 
-目录名、`SPEC.name`、步骤记录名与调试模块名必须一致。每个步骤只声明一个输入模型、一个输出模型和 `run(ctx, data)`，不在步骤之间复制状态或合并执行。
+目录名、`SPEC.name`、步骤记录名与调试模块名必须一致。原子步骤继续独立注册、独立记录、独立调试；LangGraph 图只调度业务阶段，组合阶段内部按顺序调用原子步骤，失败或人工介入后立即停止。
 
-| 步骤                        | 层级   | 输入来源                             | 输出责任                                        |
-|---------------------------|------|----------------------------------|---------------------------------------------|
-| `discover_logs`           | run  | 已配置 ES                           | 把可重放查询随步骤记录写入 `steps.json`（不预扫）       |
-| `normalize_error`         | run  | `steps.json` 里 discover 的查询         | 校验身份字段、流式拉取并去重，计数和代表问题写入本步记录         |
-| `deduplicate_error`       | run  | `steps.json` 里 normalize 的记录      | 汇总过滤结果                                        |
-| `identify_carrier`        | run  | `steps.json` 里 normalize 的记录      | 以 `(biztype, carrier)` 唯一建任务，写本步记录 |
-| `prepare_source_snapshot` | task | 源仓库、目标 carrier                   | 保存目标源码基线及哈希 artifact                        |
-| `prepare_evidence`        | task | 真实问题、源码快照                        | 校验框架入口并准备候选源码证据；纯旧框架转人工                     |
-| `locate_agent`            | task | 问题、证据、源码只读范围                     | 仅有可核验根因证据时放行                                |
-| `claim_repair_slot`       | task | 已定位的问题指纹                         | 定位通过后原子领取本轮处理资格，避免无效任务占用资格 |
-| `prepare_workspace`       | task | 源仓库、源码快照、任务                      | 建立隔离工作区并恢复目标 carrier 基线                     |
-| `repair_agent`            | task | 问题、证据、基线                         | 在目标 carrier 写入最小修改                          |
-| `check_changes`           | task | 修改清单、快照                          | 校验路径、范围、AST 和敏感信息                           |
-| `verify_issue`            | task | 改动、问题指纹                          | 验证原始问题是否修复                                  |
-| `run_regression`          | task | 真实隔离工作区、配置命令                     | 执行准生产回归                                     |
-| `review_agent`            | task | 改动与门禁证据                          | 只读审查                                        |
-| `request_approval`        | task | 方案与授权信息                          | 保存人工决策                                      |
-| `apply_plan`              | task | 已批准方案                            | 唯一共享范围落盘通道                                  |
-| `prepare_delivery`        | task | 已验证改动                            | 生成交付结果                                      |
-| `finalize_execution`      | task | 该任务全部步骤记录                        | 生成终态报告                                      |
+## 工作流主节点
+
+| 主节点 | 内部执行 / 职责 | 通过后的下一阶段 |
+|---|---|---|
+| `discover_and_normalize` | `discover_logs → normalize_error → deduplicate_error` | `identify_carrier` |
+| `identify_carrier` | 按日志原始身份字段创建去重任务清单 | 串行任务分发 |
+| `prepare_context` | `prepare_source_snapshot → prepare_evidence` | `locate_agent` |
+| `locate_agent` | 只读定位；仅证据支持的 `LOCATED` 可继续 | `claim_repair_slot` |
+| `claim_repair_slot` | 原子领取本轮修复资格 | `prepare_workspace` |
+| `prepare_workspace` | 创建隔离工作区并清理敏感内容 | `repair_agent` |
+| `repair_agent` | 仅修改授权范围内的目标 carrier | `validate_changes` |
+| `validate_changes` | `check_changes → verify_issue`，任一步失败即停止 | `run_regression` |
+| `run_regression` | 在本地准生产 Git 环境执行回归，不提交 | `review_agent` 或审批 |
+| `review_agent` | 只读审查真实 Diff、门禁、验证和回归报告 | 交付、回修或人工处理 |
+| `request_approval` | 人工决策；拒绝进入有上限的回修循环 | `apply_plan` 或交付 |
+| `apply_plan` | 共享层方案唯一落盘通道；落盘后重新验证 | `validate_changes` |
+| `prepare_delivery` | 创建修复分支并按配置提交/推送 | `finalize_execution` |
+| `finalize_execution` | 生成终态报告并收尾 | 结束 |
+
+`retry_prepare` 是内部控制节点，不计入 12 个业务主节点。图中 12 个业务主节点保留了 Agent、安全隔离、资格占用、回归、审批、交付等必须独立审计的边界。
+
+## 原子步骤目录与职责
+
+| 原子步骤 | 层级 | 输出责任 |
+|---|---|---|
+| `discover_logs` | run | 保存实际日志查询条件 |
+| `normalize_error` | run | 校验身份字段、拉取并规范化日志，写入代表问题产物 |
+| `deduplicate_error` | run | 过滤重复与忽略项 |
+| `identify_carrier` | run | 按 `(biztype, carrier)` 创建任务，并保留问题指纹 |
+| `prepare_source_snapshot` | task | 保存目标源码基线及哈希产物 |
+| `prepare_evidence` | task | 校验框架入口并准备有限源码证据 |
+| `claim_repair_slot` | task | 定位通过后原子领取本轮资格 |
+| `prepare_workspace` | task | 建立隔离工作区并恢复目标 carrier 基线 |
+| `check_changes` | task | 校验路径、范围、AST、敏感信息并保存完整 Diff |
+| `verify_issue` | task | 验证原始问题是否修复 |
+| `run_regression` | task | 执行配置的准生产回归 |
+| `request_approval` | task | 保存人工决策 |
+| `apply_plan` | task | 落盘已批准的共享层修改 |
+| `prepare_delivery` | task | 生成修复分支与交付结果 |
+| `finalize_execution` | task | 汇总该任务的步骤记录、状态和产物 |
+
+Locate、Repair、Review Agent 仍分别是独立 Agent 子图，不与确定性步骤合并。
 
 单步入口：`python -m app.workflow.steps.<step> --run-id <real-run-id> [--task-id <task-id>]`。只读取真实记录和 artifact；不存在样例输入或替代数据路径。
 
