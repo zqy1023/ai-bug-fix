@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.workflow.spec import Dependency, StepSpec
+from app.workflow.spec import StepSpec
 from app.workflow.steps.finalize_execution.models import FinalizeInput, FinalizeOutput
 from app.workflow.steps.finalize_execution.node import run
 
@@ -52,7 +52,6 @@ SPEC = StepSpec(
     output_model=FinalizeOutput,
     input_builder=_input,
     output_patch=_patch,
-    depends_on=(Dependency("claim_repair_slot", "task"),),
 )
 
 __all__ = ["SPEC"]
