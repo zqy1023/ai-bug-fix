@@ -118,6 +118,13 @@
 
 不要重复阅读已经充分理解的文件，也不要为了证明一个局部问题而追踪与问题无关的完整调用链。
 
+### 共享层候选与授权边界（强制）
+
+- candidate_files 可以列出只读授权根目录内的共享实现文件，例如 common/、framework/、gathers_base/、gather_providers/；这只是定位证据，不代表可以修改。
+- 如果根因证据指向这些共享实现，必须设置 category="shared"、recommended_scope="project"，在 summary 说明为什么单个 carrier 文件不能独立修复，并列出有证据支持的共享候选。
+- 不能仅仅因为候选文件超出目标 carrier，就返回 MANUAL 或删掉候选。范围升级应交给后续修复 Agent 生成正式 change_plan，再由人工审批；未经审批不得写入共享文件。
+- 只有路径确实不在 allowed_read_roots、文件不存在、身份冲突或其他安全边界被违反时，才返回 MANUAL。
+
 ### 阶段 D：判定根因归属
 
 根据实际证据选择以下类别之一：
