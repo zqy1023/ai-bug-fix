@@ -895,12 +895,19 @@ def _record_background_failure(run_id: str, error: Exception) -> None:
         temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(target)
         final_path = report_dir / "final.json"
+        existing_report = _read_json(final_path, {})
+        if not isinstance(existing_report, dict):
+            existing_report = {}
         final_tmp = report_dir / "final.json.tmp"
         final_report = {
-            "report_version": 1, "report_kind": "run_final", "run_id": run_id,
+            **existing_report,
+            "report_version": max(int(existing_report.get("report_version") or 0), 1),
+            "report_kind": "run_final", "run_id": run_id,
             "result": "FAILED", "status": "FAILED", "terminal_step": payload["terminal_step"],
             "terminal_reason": payload["terminal_reason"], "next_action": payload["next_action"],
-            "finished_at": now, "task_count": 0, "task_results": [],
+            "finished_at": now,
+            "task_count": int(existing_report.get("task_count") or 0),
+            "task_results": existing_report.get("task_results") if isinstance(existing_report.get("task_results"), list) else [],
         }
         final_tmp.write_text(json.dumps(final_report, ensure_ascii=False, indent=2), encoding="utf-8")
         final_tmp.replace(final_path)
