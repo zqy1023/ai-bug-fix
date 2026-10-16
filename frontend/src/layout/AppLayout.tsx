@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   AppstoreOutlined, BookOutlined, CheckCircleOutlined, ClockCircleOutlined, CodeOutlined,
   MenuFoldOutlined, MenuUnfoldOutlined, PlusOutlined, SafetyCertificateOutlined, SearchOutlined,
@@ -15,7 +15,9 @@ export function AppLayout() {
   const location = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const params = useParams();
+  const routeParts = location.pathname.split('/').filter(Boolean);
+  const runId = routeParts[0] === 'runs' && routeParts[1] ? decodeURIComponent(routeParts[1]) : '';
+  const taskId = routeParts[2] === 'tasks' && routeParts[3] ? decodeURIComponent(routeParts[3]) : '';
   const [collapsed, setCollapsed] = useState(false);
   const [tokenDraft, setTokenDraft] = useState('');
   const [globalSearch, setGlobalSearch] = useState('');
@@ -30,15 +32,15 @@ export function AppLayout() {
     if (location.pathname === '/dashboard' || location.pathname === '/') return [...base, { title: '总览' }];
     if (location.pathname.startsWith('/runs')) {
       base.push({ title: <a onClick={() => navigate('/runs')}>执行工作区</a> });
-      if (params.runId) base.push({ title: <a onClick={() => navigate('/runs/' + encodeURIComponent(params.runId!))}>执行详情</a> });
-      if (params.taskId) base.push({ title: '任务检查' });
+      if (runId) base.push({ title: <a onClick={() => navigate('/runs/' + encodeURIComponent(runId))}>执行详情</a> });
+      if (taskId) base.push({ title: '任务检查' });
       return base;
     }
     if (location.pathname === '/approvals') return [...base, { title: '审批与人工介入' }];
     if (location.pathname === '/knowledge') return [...base, { title: '修复知识库' }];
     return [...base, { title: '工作区' }];
-  }, [location.pathname, navigate, params.runId, params.taskId]);
-  const pageTitle = location.pathname.startsWith('/runs/') ? (params.taskId ? '任务检查' : '执行详情')
+  }, [location.pathname, navigate, runId, taskId]);
+  const pageTitle = location.pathname.startsWith('/runs/') ? (taskId ? '任务检查' : '执行详情')
     : location.pathname === '/runs' ? '执行工作区'
     : location.pathname === '/approvals' ? '审批与人工介入'
     : location.pathname === '/knowledge' ? '修复知识库' : '工作台总览';
@@ -117,7 +119,7 @@ export function AppLayout() {
             <Tooltip title={health.data ? '后端健康检查成功' : health.isError ? '后端健康检查失败' : '正在检查后端'}>
               <span className="health-indicator"><i className={'status-dot ' + (health.isSuccess ? 'is-online' : health.isError ? 'is-offline' : 'is-checking')} />{health.isSuccess ? '服务在线' : health.isError ? '服务异常' : '检查中'}</span>
             </Tooltip>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/runs?new=1')}>新建执行</Button>
+            <Button type="primary" icon={<PlusOutlined />} disabled={Boolean(health.data && !health.data.source_repo_configured)} onClick={() => navigate('/runs?new=1')}>新建执行</Button>
             <Button type="text" icon={<CheckCircleOutlined />} onClick={() => navigate('/approvals')} aria-label="前往审批与人工介入" title={'待处理 ' + pendingCount + ' 项'}>
               <Badge count={pendingCount} size="small" overflowCount={99} />
             </Button>
