@@ -151,6 +151,98 @@ def _write_run_report_if_terminal(
     _write_run_report(store, run_id, final_state=final_state)
 
 
+def _task_slot_identity(slot: dict[str, Any], key: str) -> str:
+    direct = slot.get(key)
+    if direct:
+        return str(direct)
+    for value in slot.values():
+        if not isinstance(value, dict):
+            continue
+        if value.get(key):
+            return str(value[key])
+        for nested_key in ("input", "output", "result"):
+            nested = value.get(nested_key)
+            if isinstance(nested, dict) and nested.get(key):
+                return str(nested[key])
+    return ""
+
+
+def _ensure_task_final_report(
+    store: RecordStore,
+    run_id: str,
+    slot: dict[str, Any],
+    task_id: str,
+    existing: dict[str, Any],
+    *,
+    finished_at: str,
+    error: Exception | None,
+) -> dict[str, Any]:
+    """Run 终止时为每个任务补齐 final.json，包括没走到 finalize_execution 的异常路径。"""
+    all_records = store.list_steps(run_id, task_id)
+    records = [record for record in all_records if record.name != "finalize_execution"]
+    finalizer = next((record for record in reversed(all_records) if record.name == "finalize_execution"), None)
+    final_output = finalizer.output if finalizer and isinstance(finalizer.output, dict) else {}
+
+    result = str(existing.get("result") or final_output.get("delivery_status") or "").upper()
+    if result in {"COMPLETED", "SUCCEEDED"} and final_output.get("delivery_status"):
+        result = str(final_output["delivery_status"]).upper()
+    terminal_status = str(existing.get("terminal_status") or result).upper()
+
+    if not result:
+        if any(
+            isinstance(record.output, dict) and record.output.get("legacy_only")
+            for record in records
+        ) or any(str(record.result or "").upper() in {"MANUAL", "INSUFFICIENT_EVIDENCE"} for record in records):
+            result = "MANUAL"
+        elif any(record.status == "failed" or str(record.result or "").upper() in {"FAIL", "FAILED", "REJECTED"} for record in records):
+            result = "FAILED"
+        elif error is not None:
+            result = "FAILED"
+        else:
+            result = "INCOMPLETE"
+        terminal_status = result
+
+    try:
+        from app.workflow.steps.finalize_execution.node import _terminal_details
+        terminal_step, inferred_reason, inferred_action = _terminal_details(records, terminal_status or result, result)
+    except Exception:
+        logger.exception("任务终态原因推导失败 run_id=%s task_id=%s", run_id, task_id)
+        terminal_step = str(records[-1].name if records else "workflow")
+        inferred_reason = "任务已结束，但系统未能从持久化步骤记录还原具体结束原因。"
+        inferred_action = "查看最后一个步骤的输入、输出和错误，补齐处置记录后再重试或转人工。"
+
+    has_recorded_reason = bool(str(existing.get("terminal_reason") or final_output.get("terminal_reason") or "").strip())
+    terminal_reason = str(existing.get("terminal_reason") or final_output.get("terminal_reason") or inferred_reason or "").strip()
+    next_action = str(existing.get("next_action") or final_output.get("next_action") or inferred_action or "").strip()
+    if error is not None and result == "FAILED" and not has_recorded_reason:
+        terminal_reason = f"工作流在任务执行期间异常退出：{type(error).__name__}: {str(error).strip()}"[:2000]
+        next_action = "检查服务端异常堆栈、最后步骤的输入输出和任务产物；修复异常后重新执行。"
+
+    carrier = str(existing.get("carrier") or _task_slot_identity(slot, "carrier"))
+    biztype = str(existing.get("biztype") or _task_slot_identity(slot, "biztype"))
+    locate = next((record.output for record in all_records if record.name == "locate_agent" and isinstance(record.output, dict)), {})
+    repair = next((record.output for record in all_records if record.name == "repair_agent" and isinstance(record.output, dict)), {})
+    return {
+        **existing,
+        "report_version": max(int(existing.get("report_version") or 0), 2),
+        "report_kind": "task_final",
+        "task_id": task_id, "carrier": carrier, "biztype": biztype,
+        "result": result, "status": result, "terminal_status": result,
+        "terminal_step": str(existing.get("terminal_step") or final_output.get("terminal_step") or terminal_step or "workflow"),
+        "terminal_reason": terminal_reason or "任务结束，但现有记录没有提供更具体的结束原因。",
+        "next_action": next_action or "查看终态步骤的错误详情和关联产物，确认后续处置动作。",
+        "finished_at": str(existing.get("finished_at") or final_output.get("finished_at") or finished_at),
+        "elapsed_ms": existing.get("elapsed_ms") if existing.get("elapsed_ms") is not None else
+            round(sum(float(record.duration_ms or 0) for record in all_records), 2),
+        "completed_steps": existing.get("completed_steps") or [
+            record.name for record in all_records if record.status in {"succeeded", "skipped"}
+        ],
+        "root_cause": str(existing.get("root_cause") or locate.get("root_cause") or locate.get("analysis") or ""),
+        "change_summary": str(existing.get("change_summary") or repair.get("summary") or repair.get("analysis") or ""),
+        "legacy_report": bool(existing.get("legacy_report")) or not bool(existing.get("terminal_reason")),
+    }
+
+
 def _write_run_report(
     store: RecordStore,
     run_id: str,
@@ -173,16 +265,22 @@ def _write_run_report(
                 continue
             task_id = slot["task_id"]
             report_path = store.task_dir(run_id, task_id) / "reports" / "final.json"
-            report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.is_file() else {}
+            existing_report = _read_json(report_path)
+            report = _ensure_task_final_report(
+                store, run_id, slot, task_id,
+                existing_report if isinstance(existing_report, dict) else {},
+                finished_at=now, error=error,
+            )
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_json(report_path, report)
             task_results.append({
                 "task_id": task_id,
                 "carrier": str(report.get("carrier") or ""),
                 "biztype": str(report.get("biztype") or ""),
                 "result": str(report.get("result") or "INCOMPLETE"),
                 "terminal_step": str(report.get("terminal_step") or ""),
-                "terminal_reason": str(report.get("terminal_reason") or
-                    ("任务结束但缺少 reports/final.json，无法确认结果。" if not report else "终态报告未记录原因。")),
-                "next_action": str(report.get("next_action") or ""),
+                "terminal_reason": str(report.get("terminal_reason") or "任务结束，但无法生成更具体的原因。"),
+                "next_action": str(report.get("next_action") or "检查该任务最后一个步骤的输出和产物。"),
             })
 
         run_steps = store.list_steps(run_id)
