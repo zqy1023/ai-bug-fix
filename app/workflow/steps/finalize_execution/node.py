@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from app.application.audit import StepRecord
@@ -41,6 +42,13 @@ def run(ctx: StepContext, data: FinalizeInput) -> FinalizeOutput:
     }
     # 知识沉淀已从自动工作流中移除；终态报告只记录本次任务事实。
     path = ctx.store.write_artifact(ctx.run.run_id, FINAL_REPORT, report, data.task_id)
+    if data.ai_workspace_path:
+        workspace = Path(data.ai_workspace_path).resolve()
+        if workspace.is_dir():
+            report_path = (workspace / FINAL_REPORT).resolve()
+            if report_path.is_relative_to(workspace):
+                report_path.parent.mkdir(parents=True, exist_ok=True)
+                report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return FinalizeOutput(report_path=path, delivery_status=result, terminal_step=terminal_step,
                           terminal_reason=terminal_reason, next_action=next_action, finished_at=finished_at)
 
