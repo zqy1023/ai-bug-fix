@@ -68,6 +68,32 @@ def audit_metadata(
     }
 
 
+def _prompt_metrics(request: Any) -> dict[str, int]:
+    """只记录 Prompt 各组成部分的字符数，不持久化 Prompt 正文。"""
+    context = getattr(request, "prompt_context", {})
+    if not isinstance(context, dict):
+        context = {}
+
+    def size(value: Any) -> int:
+        try:
+            return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+        except (TypeError, ValueError):
+            return 0
+
+    return {
+        "system_prompt_chars": len(str(getattr(request, "system_prompt", "") or "")),
+        "task_context_chars": len(str(getattr(request, "prompt", "") or "")),
+        "problem_chars": size(context.get("problem")),
+        "source_snapshot_chars": size(context.get("source_snapshot")),
+        "evidence_chars": size(context.get("evidence")),
+        "identity_chars": size({
+            key: context.get(key)
+            for key in ("run_id", "task_id", "attempt", "service_name", "biztype", "carrier", "framework")
+            if key in context
+        }),
+    }
+
+
 def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dict[str, Any]:
     """记录一次真实 provider 请求的元数据；不持久化 prompt 正文或密钥。"""
     started = time.perf_counter()
@@ -95,8 +121,9 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
             "cache_tokens": usage.get("cache_read_input_tokens", usage.get("cache_tokens", None)),
             "total_tokens": usage.get("total_tokens", None),
             "tool_call_count": usage.get("tool_calls", None),
-            "prompt_chars": usage.get("prompt_chars"),
+            "prompt_chars": usage.get("prompt_chars", len(str(getattr(request, "system_prompt", "") or "")) + len(str(getattr(request, "prompt", "") or ""))),
             "result_chars": usage.get("result_chars"),
+            **_prompt_metrics(request),
             "events": _audit_events(raw.get("messages")),
             "events_path": "",
             "event_count": 0,
@@ -134,6 +161,8 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
             "started_at": started_at, "finished_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
             "duration_ms": round((time.perf_counter() - started) * 1000, 2),
             "status": status, "error_type": error_type,
+            "prompt_chars": len(str(getattr(request, "system_prompt", "") or "")) + len(str(getattr(request, "prompt", "") or "")),
+            **_prompt_metrics(request),
             "events": _audit_events(getattr(exc, "agent_events", [])),
             "events_path": "",
             "event_count": 0,
