@@ -988,6 +988,7 @@ def v1_model_calls(
 ) -> dict[str, Any]:
     """返回 Provider 层真实请求审计；未记录的旧运行返回空列表，不补造统计。"""
     run_id = _safe_id(run_id)
+    task_id = _safe_id(task_id) if task_id else None
     run_dir = _store().run_dir(run_id)
     if not run_dir.is_dir():
         raise HTTPException(status_code=404, detail="运行记录不存在")
@@ -995,34 +996,53 @@ def v1_model_calls(
     items: list[dict[str, Any]] = []
     if path.is_file():
         try:
-            for line in path.read_text(encoding="utf-8").splitlines():
-                if not line.strip():
-                    continue
-                try:
-                    item = json.loads(line)
-                except json.JSONDecodeError:
-                    logger.warning("忽略损坏的模型调用审计行 run_id=%s", run_id)
-                    continue
-                if not isinstance(item, dict):
-                    continue
-                if task_id and str(item.get("task_id") or "") != task_id:
-                    continue
-                if not item.get("events") and item.get("task_id"):
-                    event_path = run_dir / "tasks" / str(item["task_id"]) / "audit" / "agent_events.jsonl"
-                    if event_path.is_file():
-                        hydrated = []
-                        for event_line in event_path.read_text(encoding="utf-8").splitlines():
-                            try:
-                                event_record = json.loads(event_line)
-                            except json.JSONDecodeError:
-                                continue
-                            if isinstance(event_record, dict) and event_record.get("model_call_id") == item.get("model_call_id"):
-                                hydrated.append(event_record.get("event"))
-                        item["events"] = [event for event in hydrated if isinstance(event, dict)]
-                        item["events_path"] = f"tasks/{item['task_id']}/audit/agent_events.jsonl"
-                items.append(item)
+            # 按行读取调用元数据，避免把整个审计文件一次性复制到内存。
+            with path.open("r", encoding="utf-8") as stream:
+                for line in stream:
+                    if not line.strip():
+                        continue
+                    try:
+                        item = json.loads(line)
+                    except json.JSONDecodeError:
+                        logger.warning("忽略损坏的模型调用审计行 run_id=%s", run_id)
+                        continue
+                    if not isinstance(item, dict):
+                        continue
+                    if task_id and str(item.get("task_id") or "") != task_id:
+                        continue
+                    # Run 级默认只展示轻量元数据；只有选中具体任务时才加载该任务事件。
+                    item["events"] = []
+                    items.append(item)
         except OSError as exc:
             raise HTTPException(status_code=503, detail="模型调用审计暂时不可读取") from exc
+
+    if task_id:
+        event_path = run_dir / "tasks" / task_id / "audit" / "agent_events.jsonl"
+        if event_path.is_file():
+            events_by_call: dict[str, list[dict[str, Any]]] = {}
+            try:
+                # 每个任务事件文件只顺序读取一次，避免按每条调用重复扫描整份 JSONL。
+                with event_path.open("r", encoding="utf-8") as stream:
+                    for event_line in stream:
+                        if not event_line.strip():
+                            continue
+                        try:
+                            event_record = json.loads(event_line)
+                        except json.JSONDecodeError:
+                            continue
+                        if not isinstance(event_record, dict):
+                            continue
+                        call_id = str(event_record.get("model_call_id") or "")
+                        event = event_record.get("event")
+                        if call_id and isinstance(event, dict):
+                            events_by_call.setdefault(call_id, []).append(event)
+            except OSError as exc:
+                raise HTTPException(status_code=503, detail="Agent 事件轨迹暂时不可读取") from exc
+            for item in items:
+                call_id = str(item.get("model_call_id") or "")
+                item["events"] = events_by_call.get(call_id, [])
+                if item["events"]:
+                    item["events_path"] = f"tasks/{task_id}/audit/agent_events.jsonl"
     items.sort(key=lambda item: str(item.get("started_at") or ""))
     return {"items": items, "total": len(items), "source": "provider_audit"}
 

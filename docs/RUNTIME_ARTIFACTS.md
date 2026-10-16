@@ -49,6 +49,7 @@ runtime/
 
 - 事件按 `run_id + task_id + model_call_id` 关联，持久化到 task 的 `audit/agent_events.jsonl`；`model_calls.jsonl` 的 `event_persistence_status` 明确标记 `persisted`、`empty` 或 `failed`，不能再把空轨迹误认为已成功归档。
 - 只保留工具调用摘要、工具结果摘要和最终公开输出；模型中间分析文本不入库。
+- 工作台 Run 级模型调用列表只读取轻量元数据；选中单个任务后，才顺序读取该任务的事件文件一次，并按 `model_call_id` 关联，避免重复扫描大文件。
 - 工具输入只保留路径、查询、模式等定位字段，不保存 Prompt、文件正文、编辑前后文或命令正文。
 - 文本裁剪并对常见 Authorization、Token、Password、Secret 字段做遮蔽；这属于纵深防护，不替代工作区脱敏。
 - 一次性 SDK 流式调用中途异常时，SDK 层将已收集事件附加到异常；常驻会话发生超时或 SDK 错误时，将已收集事件随失败响应返回。审计层先保存事件，再写失败元数据。

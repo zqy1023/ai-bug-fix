@@ -116,6 +116,7 @@ export interface ModelCall {
   started_at: string; finished_at?: string; duration_ms?: number; status: string;
   input_tokens?: number | null; output_tokens?: number | null; cache_tokens?: number | null;
   total_tokens?: number | null; tool_call_count?: number | null; prompt_chars?: number | null; result_chars?: number | null; error_type?: string;
+  event_count?: number; event_persistence_status?: "persisted" | "empty" | "failed"; events_path?: string;
   events?: Array<{ type: "assistant" | "tool_use" | "tool_result"; text?: string; tool?: string; input?: Record<string, unknown>; is_error?: boolean; elapsed_ms?: number }>;
   output_preview?: string;
 }
