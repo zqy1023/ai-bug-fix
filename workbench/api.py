@@ -460,8 +460,15 @@ def _control_db():
             created_at TEXT NOT NULL
         );
     """)
-    # 旧版控制库原位升级；保留已有运行记录与取消请求。
-    columns = {row[1] for row in connection.execute("PRAGMA table_info(run_control)")}
+        CREATE TABLE IF NOT EXISTS repair_knowledge_cases (
+            case_id TEXT PRIMARY KEY, title TEXT NOT NULL, fingerprint TEXT NOT NULL DEFAULT '',
+            carrier TEXT NOT NULL DEFAULT '', biztype TEXT NOT NULL DEFAULT '', root_cause TEXT NOT NULL,
+            evidence TEXT NOT NULL DEFAULT '', change_summary TEXT NOT NULL DEFAULT '',
+            regression_passed INTEGER NOT NULL DEFAULT 0, review_passed INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'candidate', source_run_id TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        # 旧版控制库原位升级；保留已有运行记录与取消请求。\n    columns = {row[1] for row in connection.execute("PRAGMA table_info(run_control)")}
     if "pause_requested" not in columns:
         connection.execute("ALTER TABLE run_control ADD COLUMN pause_requested INTEGER NOT NULL DEFAULT 0")
         connection.commit()
@@ -966,6 +973,131 @@ def v1_decide_approval(
     actor = "bearer-token" if authorization else "local-user"
     _audit_control(run_id, task_id, "approval." + request.decision, actor, request.reason)
     return decide_approval(run_id, task_id, ApprovalRequest(decision=request.decision.upper()))
+
+
+class KnowledgeCaseCreate(BaseModel):
+    title: str = Field(min_length=3, max_length=200)
+    fingerprint: str = Field(default="", max_length=500)
+    carrier: str = Field(default="", max_length=160)
+    biztype: str = Field(default="", max_length=160)
+    root_cause: str = Field(min_length=3, max_length=4000)
+    evidence: str = Field(default="", max_length=8000)
+    change_summary: str = Field(default="", max_length=8000)
+    regression_passed: bool = False
+    review_passed: bool = False
+    source_run_id: str = Field(default="", max_length=160)
+
+
+class KnowledgeCaseStatusUpdate(BaseModel):
+    status: Literal["candidate", "published", "disabled"]
+    reason: str = Field(default="", max_length=1000)
+
+
+@app.get("/api/v1/knowledge/cases")
+def v1_list_knowledge_cases(
+    q: str = Query(default="", max_length=200),
+    status: Literal["all", "candidate", "published", "disabled"] = "all",
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    _: None = Depends(_authorize),
+) -> dict[str, Any]:
+    """List durable repair cases; published knowledge is distinct from unverified candidates."""
+    connection = _control_db()
+    try:
+        clauses: list[str] = []
+        values: list[Any] = []
+        if status != "all":
+            clauses.append("status=?")
+            values.append(status)
+        if q.strip():
+            clauses.append("(title LIKE ? OR fingerprint LIKE ? OR carrier LIKE ? OR biztype LIKE ? OR root_cause LIKE ?)")
+            needle = "%" + q.strip() + "%"
+            values.extend([needle] * 5)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        total = int(connection.execute("SELECT COUNT(*) FROM repair_knowledge_cases" + where, values).fetchone()[0])
+        rows = connection.execute(
+            "SELECT * FROM repair_knowledge_cases" + where + " ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+            [*values, page_size, (page - 1) * page_size],
+        ).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            item["regression_passed"] = bool(item["regression_passed"])
+            item["review_passed"] = bool(item["review_passed"])
+            items.append(item)
+        summary = {
+            "total": int(connection.execute("SELECT COUNT(*) FROM repair_knowledge_cases").fetchone()[0]),
+            "published": int(connection.execute("SELECT COUNT(*) FROM repair_knowledge_cases WHERE status='published'").fetchone()[0]),
+            "candidate": int(connection.execute("SELECT COUNT(*) FROM repair_knowledge_cases WHERE status='candidate'").fetchone()[0]),
+            "disabled": int(connection.execute("SELECT COUNT(*) FROM repair_knowledge_cases WHERE status='disabled'").fetchone()[0]),
+        }
+        return {"items": items, "total": total, "page": page, "page_size": page_size, "summary": summary}
+    finally:
+        connection.close()
+
+
+@app.post("/api/v1/knowledge/cases", status_code=201)
+def v1_create_knowledge_case(
+    request: KnowledgeCaseCreate,
+    authorization: str | None = Header(default=None),
+    _: None = Depends(_authorize),
+) -> dict[str, Any]:
+    """Create a candidate case. Creation never publishes knowledge automatically."""
+    now = datetime.now(timezone.utc).isoformat()
+    case_id = uuid.uuid4().hex
+    connection = _control_db()
+    try:
+        connection.execute(
+            """INSERT INTO repair_knowledge_cases
+            (case_id,title,fingerprint,carrier,biztype,root_cause,evidence,change_summary,
+             regression_passed,review_passed,status,source_run_id,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,'candidate',?,?,?)""",
+            (case_id, request.title.strip(), request.fingerprint.strip(), request.carrier.strip(),
+             request.biztype.strip(), request.root_cause.strip(), request.evidence.strip(),
+             request.change_summary.strip(), int(request.regression_passed), int(request.review_passed),
+             request.source_run_id.strip(), now, now),
+        )
+        connection.commit()
+        row = connection.execute("SELECT * FROM repair_knowledge_cases WHERE case_id=?", (case_id,)).fetchone()
+        _audit_control(request.source_run_id.strip() or "knowledge", case_id, "knowledge.case.create",
+                       "bearer-token" if authorization else "local-user", "candidate case created")
+        item = dict(row)
+        item["regression_passed"] = bool(item["regression_passed"])
+        item["review_passed"] = bool(item["review_passed"])
+        return item
+    finally:
+        connection.close()
+
+
+@app.post("/api/v1/knowledge/cases/{case_id}/status")
+def v1_update_knowledge_case_status(
+    case_id: str,
+    request: KnowledgeCaseStatusUpdate,
+    authorization: str | None = Header(default=None),
+    _: None = Depends(_authorize),
+) -> dict[str, Any]:
+    """Publish only cases whose regression and review evidence are both explicitly recorded."""
+    connection = _control_db()
+    try:
+        row = connection.execute("SELECT * FROM repair_knowledge_cases WHERE case_id=?", (case_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="知识案例不存在")
+        if request.status == "published" and not (row["regression_passed"] and row["review_passed"]):
+            raise HTTPException(status_code=409, detail="发布前必须同时具备回归通过和审查通过记录")
+        if request.status == "published" and row["status"] == "disabled":
+            raise HTTPException(status_code=409, detail="已停用案例不能直接重新发布，请先恢复为候选并重新审核")
+        now = datetime.now(timezone.utc).isoformat()
+        connection.execute("UPDATE repair_knowledge_cases SET status=?, updated_at=? WHERE case_id=?",
+                           (request.status, now, case_id))
+        connection.commit()
+        _audit_control(str(row["source_run_id"] or "knowledge"), case_id, "knowledge.case." + request.status,
+                       "bearer-token" if authorization else "local-user", request.reason)
+        updated = dict(connection.execute("SELECT * FROM repair_knowledge_cases WHERE case_id=?", (case_id,)).fetchone())
+        updated["regression_passed"] = bool(updated["regression_passed"])
+        updated["review_passed"] = bool(updated["review_passed"])
+        return updated
+    finally:
+        connection.close()
 
 
 @app.get("/api/v1/runs/{run_id}/artifacts")
