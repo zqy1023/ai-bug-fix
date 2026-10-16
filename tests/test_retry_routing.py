@@ -42,3 +42,20 @@ def test_manual_continue_resumes_the_correct_stage_without_duplicate_claim():
 
     state["decision"] = "RETRY_LOCATE"
     assert after_approval(state) == LOCATE
+
+
+def test_manual_decision_does_not_leak_into_the_next_approval_gate():
+    from app.workflow.steps.request_approval import _input
+
+    state = {
+        "decision": "CONTINUE_REPAIR",
+        "manual_intervention_required": False,
+        "manual_resume_step": "repair_agent",
+        "task_id": "task-1",
+        "task": {"carrier": "ExampleCarrier"},
+        "locate": {"status": "LOCATED", "recommended_scope": "project"},
+    }
+    approval_input = _input(state)
+
+    assert approval_input["decision"] == "PENDING"
+    assert approval_input["mode"] == "change_approval"
