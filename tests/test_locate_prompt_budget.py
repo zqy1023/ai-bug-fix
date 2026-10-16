@@ -29,7 +29,7 @@ def test_locate_contract_summary_contains_specific_failure_reason():
 
 def test_prompt_metrics_explain_sizes_without_persisting_prompt_content():
     request = SimpleNamespace(
-        system_prompt="system rules",
+        system_prompt="common rules\\n\\n---\\n\\nlocate rules",
         prompt="task payload",
         prompt_context={
             "run_id": "run-1",
@@ -47,7 +47,9 @@ def test_prompt_metrics_explain_sizes_without_persisting_prompt_content():
 
     metrics = _prompt_metrics(request)
 
-    assert metrics["system_prompt_chars"] == len("system rules")
+    assert metrics["system_prompt_chars"] == len("common rules\\n\\n---\\n\\nlocate rules")
+    assert metrics["common_rules_chars"] == len("common rules")
+    assert metrics["role_prompt_chars"] == len("locate rules")
     assert metrics["task_context_chars"] == len("task payload")
     assert metrics["problem_chars"] > 0
     assert metrics["source_snapshot_chars"] > 0
