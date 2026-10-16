@@ -318,6 +318,7 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
                 retry_reason=str(state.get("retry_reason") or ""),
                 evidence=evidence,
                 locate=dict(state.get("locate") or {}),
+                manual_continue_authorized=bool(state.get("manual_continue_authorized")),
             )
             # 任务字典平铺回子图输入：子图按 carrier / service_name 取字段。
             graph_input = {
@@ -529,6 +530,8 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
                 patch["baseline_manifest"] = {str(key): str(value) for key, value in baseline.items()}
             if final.get("baseline_dir"):
                 patch["baseline_dir"] = str(final.get("baseline_dir"))
+            # 人工继续授权只允许被当前 repair 调用消费一次。
+            patch["manual_continue_authorized"] = False
         if cancellation_requested(store.root, run_id):
             patch.update({
                 "last_result": "cancelled",
