@@ -103,7 +103,7 @@ def _capture_knowledge_candidate(
                     case_id, title[:200], fingerprint, data.carrier, data.biztype, root_cause[:4000],
                     evidence, change_summary[:8000], int(regression_passed), int(review_passed),
                     ctx.run.run_id, data.task_id, datetime.now(timezone.utc).isoformat(),
-                    __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+                    datetime.now(timezone.utc).isoformat(),
                 ),
             )
             connection.commit()
