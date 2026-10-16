@@ -90,15 +90,31 @@ class LocateOutput(FrozenModel):
 
     @model_validator(mode="after")
     def validate_located_evidence(self) -> LocateOutput:
-        if self.status == "LOCATED" and (
-            not self.root_cause.strip()
-            or not self.source_evidence
-            or not self.candidate_files
-            or self.recommended_scope == "manual"
-        ):
-            raise ValueError("LOCATED 必须包含根因、源码证据、候选文件和非 manual 范围")
+        if self.status == "LOCATED":
+            missing: list[str] = []
+            if not self.root_cause.strip():
+                missing.append("根因")
+            if not self.source_evidence:
+                missing.append("源码证据")
+            if not self.candidate_files:
+                missing.append("候选文件")
+            if self.recommended_scope == "manual":
+                missing.append("可自动处理的范围")
+            if missing:
+                # 契约不满足时安全降级，而不是抛弃整个模型输出。
+                # facts、源码证据、候选文件和根因仍保留给人工排查。
+                reason = "LOCATED 缺少必需信息：" + "、".join(missing)
+                self.status = "MANUAL"
+                self.recommended_scope = "manual"
+                self.passed = False
+                if reason not in self.evidence_gaps:
+                    self.evidence_gaps.append(reason)
+                if reason not in self.summary:
+                    self.summary = f"{self.summary.strip()}；{reason}".strip("；")
         if self.status != "LOCATED" and self.recommended_scope != "manual":
             self.recommended_scope = "manual"
+        if self.status != "LOCATED":
+            self.passed = False
         return self
 
 
