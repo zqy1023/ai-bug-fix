@@ -16,6 +16,8 @@ class FinalizeInput(FrozenModel):
     biztype: str
     # terminal_status：字段说明见该模型文档与工作流契约。
     terminal_status: str
+    # ai_workspace_path：用于为分析型任务准备只读最终报告分支。
+    ai_workspace_path: str = ""
 
 
 class FinalizeOutput(FrozenModel):
