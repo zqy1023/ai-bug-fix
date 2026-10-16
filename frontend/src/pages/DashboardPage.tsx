@@ -64,10 +64,10 @@ export function DashboardPage() {
     <section className="attention-section">
       <div className="section-heading"><div><Title level={5}>处理队列</Title><Text type="secondary">点击数字直接进入对应工作区</Text></div><Button type="text" icon={<ReloadOutlined />} loading={query.isFetching} onClick={() => query.refetch()}>刷新数据</Button></div>
       <Row gutter={[14, 14]}>
-        <Col xs={12} xl={6}><Card className="attention-card attention-blue" hoverable onClick={() => navigate('/runs')}><div className="attention-top"><PlayCircleOutlined /><span>执行中</span></div><Statistic value={data?.active_runs ?? 0} loading={query.isLoading} /><Text type="secondary">查看执行进度与异常</Text></Card></Col>
+        <Col xs={12} xl={6}><Card className="attention-card attention-blue" hoverable onClick={() => navigate('/runs?status=running')}><div className="attention-top"><PlayCircleOutlined /><span>执行中</span></div><Statistic value={data?.active_runs ?? 0} loading={query.isLoading} /><Text type="secondary">查看执行进度与异常</Text></Card></Col>
         <Col xs={12} xl={6}><Card className="attention-card attention-amber" hoverable onClick={() => navigate('/approvals')}><div className="attention-top"><SafetyCertificateOutlined /><span>待审批</span></div><Statistic value={data?.waiting_approvals ?? 0} loading={query.isLoading} /><Text type="secondary">审查变更并作出决定</Text></Card></Col>
-        <Col xs={12} xl={6}><Card className="attention-card attention-red" hoverable onClick={() => navigate('/runs')}><div className="attention-top"><ExclamationCircleOutlined /><span>24 小时失败任务</span></div><Statistic value={data?.failed_24h ?? 0} loading={query.isLoading} /><Text type="secondary">定位失败原因与后续动作</Text></Card></Col>
-        <Col xs={12} xl={6}><Card className="attention-card attention-green" hoverable onClick={() => navigate('/knowledge')}><div className="attention-top"><CheckCircleOutlined /><span>24 小时成功任务</span></div><Statistic value={data?.succeeded_24h ?? 0} loading={query.isLoading} /><Text type="secondary">查看已完成的修复结果</Text></Card></Col>
+        <Col xs={12} xl={6}><Card className="attention-card attention-red"><div className="attention-top"><ExclamationCircleOutlined /><span>24 小时失败任务</span></div><Statistic value={data?.failed_24h ?? 0} loading={query.isLoading} /><Text type="secondary">定位失败原因与后续动作</Text></Card></Col>
+        <Col xs={12} xl={6}><Card className="attention-card attention-green"><div className="attention-top"><CheckCircleOutlined /><span>24 小时成功任务</span></div><Statistic value={data?.succeeded_24h ?? 0} loading={query.isLoading} /><Text type="secondary">查看已完成的修复结果</Text></Card></Col>
       </Row>
     </section>
     <Row gutter={[16, 16]}>
