@@ -165,5 +165,5 @@ export interface KnowledgeCaseList {
   total: number;
   page: number;
   page_size: number;
-  summary: { total: number; published: number; candidate: number; disabled: number; retrievals: number };
+  summary: { total: number; published: number; candidate: number; disabled: number; retrievals: number; successful_reuses: number };
 }
