@@ -1,4 +1,4 @@
-"""领取 ``biztype + carrier`` 修复资格。"""
+"""确认同一问题的 Git 修复分支不存在未合并冲突。"""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ SPEC = StepSpec(
     output_model=ClaimOutput,
     input_builder=_input,
     output_patch=_patch,
-    depends_on=(Dependency("identify_carrier", "run"),),
+    depends_on=(Dependency("identify_carrier", "run"), Dependency("locate_agent", "task")),
     next_step="repair_agent",
 )
 
