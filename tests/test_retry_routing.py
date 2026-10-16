@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.workflow.routes import FINALIZE, RETRY, after_approval, after_check_changes
+from app.workflow.routes import APPROVE, CLAIM, FINALIZE, LOCATE, REPAIR, RETRY, after_approval, after_check_changes, after_repair
 
 
 def test_validation_failure_uses_bounded_retry_node() -> None:
@@ -13,3 +13,32 @@ def test_human_rejection_cannot_continue_to_delivery() -> None:
     assert after_approval(state) == RETRY
     state["attempt"] = 3
     assert after_approval(state) == FINALIZE
+
+
+
+def test_missing_shared_layer_plan_routes_to_human_intervention():
+    state = {
+        "scope_escalation_required": True,
+        "manual_intervention_required": True,
+        "last_result": "manual",
+        "attempt": 1,
+        "max_attempts": 3,
+    }
+    assert after_repair(state) == APPROVE
+
+
+def test_manual_continue_resumes_the_correct_stage_without_duplicate_claim():
+    state = {
+        "approval_mode": "manual_intervention",
+        "decision": "CONTINUE_REPAIR",
+        "manual_continue_allowed": True,
+        "manual_resume_step": "repair_agent",
+        "last_result": "passed",
+    }
+    assert after_approval(state) == REPAIR
+
+    state["manual_resume_step"] = ""
+    assert after_approval(state) == CLAIM
+
+    state["decision"] = "RETRY_LOCATE"
+    assert after_approval(state) == LOCATE
