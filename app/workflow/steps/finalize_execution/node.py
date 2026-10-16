@@ -46,9 +46,7 @@ def run(ctx: StepContext, data: FinalizeInput) -> FinalizeOutput:
         "change_summary": str(repair.get("summary") or repair.get("analysis") or ""),
         "completed_steps": [record.name for record in records if record.status in {"succeeded", "skipped"}],
     }
-    knowledge_case_id = _capture_knowledge_candidate(ctx, data, records, report)
-    if knowledge_case_id:
-        report["knowledge_case_id"] = knowledge_case_id
+    # 知识沉淀已从自动工作流中移除；终态报告只记录本次任务事实。
     path = ctx.store.write_artifact(ctx.run.run_id, FINAL_REPORT, report, data.task_id)
     return FinalizeOutput(report_path=path, delivery_status=result, terminal_step=terminal_step,
                           terminal_reason=terminal_reason, next_action=next_action, finished_at=finished_at)
