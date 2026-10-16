@@ -129,13 +129,12 @@ class WorkspaceManager:
         try:
             self._copy_source(source, temporary)
             baseline_root = Path(baseline_dir).resolve()
-            restored = False
-            for framework in ("gathers", "spiders"):
-                if (baseline_root / framework / self.safe_carrier_name(carrier)).is_dir():
-                    self.restore_carrier_snapshot(temporary, baseline_dir, carrier, framework)
-                    restored = True
-            if not restored:
+            carrier_dir = self.safe_carrier_name(carrier)
+            framework = "gathers" if (baseline_root / "gathers" / carrier_dir).is_dir() else "spiders"
+            if not (baseline_root / framework / carrier_dir).is_dir():
                 raise WorkspaceError("重试时基线中没有可恢复的 carrier")
+            # restore_carrier_snapshot 会一次恢复新旧两个框架，避免重复复制。
+            self.restore_carrier_snapshot(temporary, baseline_dir, carrier, framework)
             self._write_ignore(temporary)
             shutil.rmtree(root, ignore_errors=True)
             temporary.replace(root)
