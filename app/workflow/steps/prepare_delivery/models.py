@@ -12,10 +12,10 @@ class DeliveryInput(FrozenModel):
     带上"线上报的什么错、AI 怎么判、审查怎么评"，人工在 Git 上不用回查执行
     记录就能判断这次改动值不值。这里存文本结论，不重复整个上游输出。
 
-    新增门禁字段：
+    交付前门禁字段：
     - review_decision: 审查结果（PASS/FAIL/MANUAL）
-    - requires_approval: 是否需要人工审批
-    - approval_granted: 人工审批是否已通过
+    - authorized_files: 允许提交的 carrier 文件范围
+    - analysis_only: 是否只交付 final.json 分析报告
     """
 
     # task_id：字段说明见该模型文档与工作流契约。
@@ -41,10 +41,6 @@ class DeliveryInput(FrozenModel):
     # review_summary：字段说明见该模型文档与工作流契约。
     review_summary: str = ""
     review_decision: str = ""  # PASS/FAIL/MANUAL
-    # requires_approval：字段说明见该模型文档与工作流契约。
-    requires_approval: bool = False
-    # approval_granted：字段说明见该模型文档与工作流契约。
-    approval_granted: bool = False
     # analysis_only：只提交最终分析报告，不修改任何源码。
     analysis_only: bool = False
     # report_paths：AI 隔离工作区内需要随报告分支交付的审计产物。
