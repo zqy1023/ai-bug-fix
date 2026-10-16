@@ -4,7 +4,6 @@ from app.workflow.definitions import (
     PHASE_COMPOSITIONS,
     TASK_CONDITIONAL_TRANSITIONS,
     TASK_NODE_NAMES,
-    TASK_STATIC_TRANSITIONS,
 )
 from app.workflow.routes import (
     CLAIM,
