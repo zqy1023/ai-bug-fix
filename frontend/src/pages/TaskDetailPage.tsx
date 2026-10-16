@@ -1,13 +1,13 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, App, Button, Card, Descriptions, Drawer, Empty, Space, Spin, Table, Tag, Typography } from 'antd';
+import { Alert, App, Button, Card, Descriptions, Drawer, Empty, Input, Modal, Space, Spin, Table, Tag, Typography } from 'antd';
 import { ArrowLeftOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useNavigate, useParams } from 'react-router-dom';
 import dayjs from 'dayjs';
 import { api } from '../lib/api';
 import { StatusTag } from '../components/StatusTag';
 import { WorkflowGraph } from '../components/WorkflowGraph';
-import type { ModelCall, StepRecord } from '../lib/types';
+import type { ManualIntervention, ModelCall, StepRecord } from '../lib/types';
 
 const { Title, Text, Paragraph } = Typography;
 const active = ['running', 'queued', 'waiting_approval', 'pause_requested', 'paused', 'cancel_requested'];
@@ -34,13 +34,42 @@ export function TaskDetailPage() {
   const { message } = App.useApp();
   const [selectedStepName, setSelectedStepName] = useState<string>();
   const [artifactPath, setArtifactPath] = useState<{ path: string; name: string } | null>(null);
+  const [manualAction, setManualAction] = useState<'retry_locate' | 'continue_repair' | 'mark_done' | 'terminate' | null>(null);
+  const [manualReason, setManualReason] = useState('');
+  const { message } = App.useApp();
   const detail = useQuery({
     queryKey: ['task', runId, taskId],
     queryFn: () => api.task(runId, taskId),
     refetchInterval: (q) => active.includes(q.state.data?.run_status ?? '') ? 3000 : false,
   });
+  const manualQueue = useQuery({
+    queryKey: ['manual-interventions'],
+    queryFn: api.manualInterventions,
+    refetchInterval: 15000,
+  });
   const taskResponse = detail.data;
   const task = taskResponse?.task;
+  const intervention = manualQueue.data?.find((item) => item.run_id === runId && item.task_id === taskId);
+  const manualDecision = useMutation({
+    mutationFn: () => {
+      if (!intervention || !manualAction) throw new Error('当前任务没有可执行的人工处置动作');
+      return api.decideManualIntervention(intervention.intervention_id, manualAction, manualReason.trim());
+    },
+    onSuccess: async (result) => {
+      message.success(result.status === 'resolved' ? '人工处置结果已登记' : '决定已接收，工作流正在后台恢复并继续后续任务');
+      setManualAction(null);
+      setManualReason('');
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['manual-interventions'] }),
+        queryClient.invalidateQueries({ queryKey: ['approvals'] }),
+        queryClient.invalidateQueries({ queryKey: ['run', runId] }),
+        queryClient.invalidateQueries({ queryKey: ['task', runId, taskId] }),
+        queryClient.invalidateQueries({ queryKey: ['runs'] }),
+        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
+      ]);
+    },
+    onError: (error) => message.error('人工处置失败：' + (error as Error).message),
+  });
   const report = task?.report;
   const steps = task?.steps ?? [];
   const captureKnowledge = useMutation({
@@ -96,6 +125,10 @@ export function TaskDetailPage() {
       </div>
       <Space>
         <Button icon={<ReloadOutlined />} onClick={() => detail.refetch()} loading={detail.isFetching}>刷新任务</Button>
+        {intervention?.decision_options?.includes('RETRY_LOCATE') && <Button onClick={() => { setManualAction('retry_locate'); setManualReason(''); }}>重新定位</Button>}
+        {intervention?.decision_options?.includes('CONTINUE_REPAIR') && <Button type="primary" onClick={() => { setManualAction('continue_repair'); setManualReason(''); }}>批准 AI 继续修复</Button>}
+        {intervention?.decision_options?.includes('MARK_DONE') && <Button onClick={() => { setManualAction('mark_done'); setManualReason(''); }}>人工处理完毕</Button>}
+        {intervention?.decision_options?.includes('TERMINATE') && <Button danger onClick={() => { setManualAction('terminate'); setManualReason(''); }}>终止自动处理</Button>}
         <Button disabled={active.includes(taskResponse.run_status) || captureKnowledge.isPending}
           loading={captureKnowledge.isPending} onClick={() => captureKnowledge.mutate()}>沉淀知识案例</Button>
       </Space>
@@ -146,6 +179,32 @@ export function TaskDetailPage() {
           </div>) : <Empty description="没有可展示的公开事件记录" />}
         </div>}} />
     </Card>
+    <Modal
+      title={manualAction === 'retry_locate' ? '重新执行根因定位' : manualAction === 'continue_repair' ? '批准 AI 继续修复' : manualAction === 'mark_done' ? '登记人工处理完毕' : '终止自动修复'}
+      open={Boolean(manualAction)}
+      onCancel={() => !manualDecision.isPending && setManualAction(null)}
+      onOk={() => manualDecision.mutate()}
+      confirmLoading={manualDecision.isPending}
+      okText="确认处置"
+      cancelText="返回检查"
+      okButtonProps={{ danger: manualAction === 'terminate', disabled: Boolean(manualAction && manualAction !== 'retry_locate' && !manualReason.trim()) }}
+      destroyOnClose
+    >
+      <Alert
+        type={manualAction === 'terminate' ? 'warning' : 'info'}
+        showIcon
+        message={manualAction === 'continue_repair' ? '只允许在当前已验证的候选文件范围内继续' : manualAction === 'mark_done' ? '此操作记录人工结论，不会伪造 AI 修复成功' : manualAction === 'terminate' ? '将结束当前任务的自动修复流程' : '将从定位节点重新获取根因结论'}
+        style={{ marginBottom: 16 }}
+      />
+      <Input.TextArea
+        rows={4}
+        value={manualReason}
+        onChange={(event) => setManualReason(event.target.value)}
+        maxLength={1000}
+        showCount
+        placeholder={manualAction === 'retry_locate' ? '补充线索（选填）' : '填写处置依据，作为审计记录'}
+      />
+    </Modal>
     <Drawer title={'步骤详情 · ' + (step?.title || step?.name || '')} open={Boolean(selectedStepName)} onClose={() => setSelectedStepName(undefined)} width={700} destroyOnClose>
       {step ? <div className="page-stack"><Space wrap><StatusTag status={step.status} />{step.result && <Tag>{resultLabel(step.result)}</Tag>}</Space>
         <Descriptions bordered size="small" column={2}><Descriptions.Item label="步骤名">{step.name}</Descriptions.Item><Descriptions.Item label="耗时">{duration(step.duration_ms)}</Descriptions.Item>
