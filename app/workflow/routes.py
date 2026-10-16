@@ -114,13 +114,14 @@ def after_locate(state: WorkflowState) -> str:
     evidence = state.get("evidence") or {}
     if evidence.get("legacy_only") or evidence.get("legacy_dependency"):
         return FINALIZE
-    disposition = locate_disposition(str((state.get("locate") or {}).get("status") or ""))
+    locate = state.get("locate") or {}
+    if str(locate.get("recommended_scope") or "") != "carrier":
+        return FINALIZE
+    disposition = locate_disposition(str(locate.get("status") or ""))
     if disposition == "repair" and _result(state) == "passed":
         # 重新定位发生在已领取修复资格之后时，直接回到 repair，避免重复 claim 导致资格冲突。
         return REPAIR if state.get("repair_slot_claimed") else CLAIM
-    # 对定位契约、证据或模型调用中断提供真正的人工中断点；不能直接 finalize 后只留下只读记录。
-    if state.get("manual_intervention_required"):
-        return APPROVE
+    # 定位不确定或需要人工判断时只生成分析报告，不在中间节点挂起审批。
     return FINALIZE
 
 
@@ -136,11 +137,9 @@ def after_repair(state: WorkflowState) -> str:
         return FINALIZE
     # 失败也要先看升级：修复被共享层挡住时结果是 failed，但仍带 project 方案。
     # 共享层范围已升级但 Agent 没有产出可审批方案时，转入人工介入；不能悄悄重试或假装审批方案存在。
-    if state.get("manual_intervention_required"):
-        return APPROVE
-    # escalation_used 保证同一任务只升级一次，用过之后回到重试或终止。
-    if _needs_human_authorization(state):
-        return APPROVE
+    if state.get("manual_intervention_required") or _needs_human_authorization(state):
+        # 共享层/范围升级不属于允许自动修改的 carrier 局部问题。
+        return FINALIZE
     if _result(state) != "passed":
         return _retry_or_finalize(state)
     # VALIDATE 是图中的组合阶段节点；CHECK 是组合阶段内部步骤，不能作为直接路由目标。
@@ -168,7 +167,7 @@ def after_regression(state: WorkflowState) -> str:
         return FINALIZE
     if _result(state) != "passed":
         return _retry_or_finalize(state)
-    return APPROVE if state.get("review_mode") == "human" else REVIEW
+    return REVIEW
 
 
 def after_review(state: WorkflowState) -> str:
@@ -190,37 +189,12 @@ def after_review(state: WorkflowState) -> str:
     if result == "FAIL" or _result(state) == "failed":
         return _retry_or_finalize(state)
 
-    # PASS：判断是否需要人工审批
+    # 审查通过后先交付分支，人工审批统一放在交付完成之后。
     if result == "PASS":
-        if _needs_human_approval(state):
-            return APPROVE
         return DELIVER
 
     # 其他情况终止
     return FINALIZE
-
-
-def _needs_human_approval(state: WorkflowState) -> bool:
-    """判断是否需要人工审批"""
-    # 1. 共享层变更已在 repair 阶段处理过（escalation_used）
-    if state.get("escalation_used"):
-        return False
-
-    # 2. 人工审查模式
-    if state.get("review_mode") == "human":
-        return True
-
-    # 3. Review Agent 提出共享层方案
-    review_plan = (state.get("review") or {}).get("change_plan")
-    if isinstance(review_plan, dict) and str(review_plan.get("scope") or "") == "project" and bool(review_plan.get("edits")):
-        return True
-
-    # 4. 其他策略（敏感 carrier 等，可配置）
-    # carrier = state.get("carrier") or ""
-    # if carrier in settings.sensitive_carriers:
-    #     return True
-
-    return False
 
 
 def after_approval(state: WorkflowState) -> str:
@@ -246,16 +220,15 @@ def after_approval(state: WorkflowState) -> str:
     if approval_result != "passed":
         return FINALIZE
 
-    # 批准后根据 scope 决定
-    change_plan = state.get("change_plan") or {}
-    scope = str(change_plan.get("scope") or "")
+    # 最终审批只决定是否保留已交付分支供人工合并；工作流不自动合并。
+    return FINALIZE
 
-    if scope == "project":
-        # 共享层方案需要 apply，然后重新验证
-        return APPLY
 
-    # carrier 修复直接交付（repair_agent 已在隔离工作区完成修改）
-    return DELIVER
+def after_delivery(state: WorkflowState) -> str:
+    """分支交付成功后才进入唯一的最终人工审批节点。"""
+    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
+        return FINALIZE
+    return APPROVE if _result(state) == "passed" else FINALIZE
 
 
 def after_apply(state: WorkflowState) -> str:
@@ -272,7 +245,7 @@ __all__ = [
     "PREPARE_CONTEXT", "RUN_PREPARE", "VALIDATE",
     "EVIDENCE", "FINALIZE", "IDENTIFY", "LOCATE", "NORMALIZE", "REGRESSION", "REPAIR",
     "REVIEW", "RETRY", "SNAPSHOT", "TASK_DISPATCH", "VERIFY", "WORKSPACE",
-    "after_apply", "after_approval", "after_check_changes", "after_claim", "after_prepare_context",
+    "after_apply", "after_approval", "after_delivery", "after_check_changes", "after_claim", "after_prepare_context",
     "after_run_prepare", "after_validate_changes",
     "after_deduplicate", "after_evidence", "after_identify", "after_locate",
     "after_regression", "after_repair", "after_review", "after_source_snapshot",
