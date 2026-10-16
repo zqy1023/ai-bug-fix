@@ -15,9 +15,18 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
     task = dict(state.get("task") or {})
     evidence = dict(state.get("evidence") or {})
     carrier = WorkspaceManager.safe_carrier_name(str(task.get("carrier") or ""))
+    locate = dict(state.get("locate") or {})
+    legacy_reference = any(
+        str(item.get("path") or "").replace("\\", "/").startswith("spiders/")
+        for item in locate.get("source_evidence") or []
+        if isinstance(item, dict)
+    ) or any(
+        str(item).replace("\\", "/").startswith("spiders/")
+        for item in locate.get("candidate_files") or []
+    )
     report_framework = (
         "spiders"
-        if evidence.get("legacy_only") or evidence.get("legacy_dependency")
+        if evidence.get("legacy_only") or evidence.get("legacy_dependency") or legacy_reference
         else str(state.get("framework") or "gathers")
     )
     return {
