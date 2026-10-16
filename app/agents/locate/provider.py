@@ -35,8 +35,21 @@ def _is_transient_query_error(error: BaseException) -> bool:
 
 def _interrupted_call_fallback(error: BaseException, request: AgentRequest, attempts: int) -> dict[str, Any]:
     """只读定位重试耗尽后转为可审计的人工介入结果，不崩掉整轮任务。"""
+    messages = getattr(error, "agent_events", [])
+    if not isinstance(messages, list):
+        messages = []
+    try:
+        event_text = json.dumps(messages, ensure_ascii=False, default=str).casefold()
+    except Exception:
+        event_text = str(messages).casefold()
+    if "connection closed mid-response" in event_text:
+        detail = "Claude 响应流中途断开（Connection closed mid-response）"
+    elif "connection reset" in event_text:
+        detail = "Claude 连接被重置（Connection reset）"
+    else:
+        detail = str(error).strip() or type(error).__name__
     reason = (
-        f"Claude 定位请求在 {attempts} 次尝试后仍然中断：{str(error).strip() or type(error).__name__}；"
+        f"Claude 定位请求在 {attempts} 次尝试后仍然中断：{detail}；"
         "没有获得可验证的完整定位结论，可重新定位或转人工处理。"
     )[:1800]
     payload = {
@@ -45,9 +58,6 @@ def _interrupted_call_fallback(error: BaseException, request: AgentRequest, atte
         "evidence_gaps": [reason], "recommended_scope": "manual", "summary": reason,
     }
     result = json.dumps(payload, ensure_ascii=False)
-    messages = getattr(error, "agent_events", [])
-    if not isinstance(messages, list):
-        messages = []
     return {
         "passed": False, "reason": reason, "result": result, "messages": messages,
         "usage": {
