@@ -72,7 +72,7 @@ export function DashboardPage() {
     <Card title="最近执行" className="content-card" extra={<Button type="link" onClick={() => navigate('/runs')}>查看全部执行 →</Button>}>
       {query.isLoading ? <Skeleton active /> : <Table rowKey="run_id" columns={columns} dataSource={data?.recent_runs ?? []} pagination={false} locale={{ emptyText: '还没有执行记录。可以从页面右上方开始一次异常扫描。' }} />}
     </Card>
-    <ExecutionLaunchDialog open={launchOpen} onClose={() => setLaunchOpen(false)} />dal>
+    <ExecutionLaunchDialog open={launchOpen} onClose={() => setLaunchOpen(false)} />
   </div>;
 }
 
