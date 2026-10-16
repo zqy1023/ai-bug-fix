@@ -26,7 +26,6 @@ VERIFY = "verify_issue"
 REGRESSION = "run_regression"
 REVIEW = "review_agent"
 APPROVE = "request_approval"
-APPLY = "apply_plan"
 DELIVER = "prepare_delivery"
 FINALIZE = "finalize_execution"
 RETRY = "retry_prepare"
@@ -297,21 +296,12 @@ def after_finalize(state: WorkflowState) -> str:
     return DELIVER if analysis_only and state.get("ai_workspace_path") else END
 
 
-def after_apply(state: WorkflowState) -> str:
-    """共享层落盘后必须重新验证，不能沿用落盘前的回归结论。"""
-    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
-        return FINALIZE
-    if _result(state) != "passed":
-        return _retry_or_finalize(state)
-    return VALIDATE
-
-
 __all__ = [
-    "APPLY", "APPROVE", "CHECK", "CLAIM", "DEDUPLICATE", "DELIVER", "DISCOVER",
+    "APPROVE", "CHECK", "CLAIM", "DEDUPLICATE", "DELIVER", "DISCOVER",
     "PREPARE_CONTEXT", "RUN_PREPARE", "VALIDATE",
     "EVIDENCE", "FINALIZE", "IDENTIFY", "LOCATE", "NORMALIZE", "REGRESSION", "REPAIR",
     "REVIEW", "RETRY", "SNAPSHOT", "TASK_DISPATCH", "VERIFY", "WORKSPACE",
-    "after_apply", "after_approval", "after_delivery", "after_finalize", "after_retry", "after_check_changes", "after_claim", "after_prepare_context",
+    "after_approval", "after_delivery", "after_finalize", "after_retry", "after_check_changes", "after_claim", "after_prepare_context",
     "after_run_prepare", "after_validate_changes",
     "after_deduplicate", "after_evidence", "after_identify", "after_locate",
     "after_regression", "after_repair", "after_review", "after_source_snapshot",
