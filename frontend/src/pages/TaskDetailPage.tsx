@@ -144,7 +144,7 @@ export function TaskDetailPage() {
             <Tag>{event.type === 'assistant' ? 'Agent 输出' : event.type === 'tool_use' ? '工具调用 · ' + (event.tool || 'unknown') : '工具结果'}</Tag>
             <pre className="json-panel">{event.type === 'tool_use' ? JSON.stringify(event.input ?? {}, null, 2) : event.text || '无可展示文本'}</pre>
           </div>) : <Empty description="没有可展示的公开事件记录" />}
-        </div>} />
+        </div>}} />
     </Card>
     <Drawer title={'步骤详情 · ' + (step?.title || step?.name || '')} open={Boolean(selectedStepName)} onClose={() => setSelectedStepName(undefined)} width={700} destroyOnClose>
       {step ? <div className="page-stack"><Space wrap><StatusTag status={step.status} />{step.result && <Tag>{resultLabel(step.result)}</Tag>}</Space>
