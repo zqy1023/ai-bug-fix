@@ -1,10 +1,14 @@
 {
   "provider": "claude_query",
   "writable": false,
-  "tools": ["Read", "Glob", "Grep"],
-  "max_turns": 12,
-  "max_tool_calls": 20,
-  "max_context_chars": 24000,
-  "max_candidate_files": 8,
-  "timeout_seconds": 900
+  "tools": [
+    "Read",
+    "Glob",
+    "Grep"
+  ],
+  "max_turns": 8,
+  "max_tool_calls": 12,
+  "max_context_chars": 18000,
+  "max_candidate_files": 6,
+  "timeout_seconds": 480
 }

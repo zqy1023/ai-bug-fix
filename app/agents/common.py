@@ -94,6 +94,10 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
             "cache_tokens": usage.get("cache_read_input_tokens", usage.get("cache_tokens", None)),
             "total_tokens": usage.get("total_tokens", None),
             "tool_call_count": usage.get("tool_calls", None),
+            "prompt_chars": usage.get("prompt_chars"),
+            "result_chars": usage.get("result_chars"),
+            "events": _audit_events(raw.get("messages")),
+            "output_preview": raw_result(raw)[:4000],
             "error_type": str(raw.get("reason") or "")[:300] if raw.get("passed") is False else "",
             "finished_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
         }
@@ -116,6 +120,34 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
         }
         _persist_model_call(record)
         raise
+
+
+def _audit_events(value: Any) -> list[dict[str, Any]]:
+    """保留可审计的公开对话事件；不记录系统提示词或隐藏思考链。"""
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in value[:100]:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("type") or "")
+        if kind == "assistant":
+            text = str(item.get("text") or "").strip()
+            if text:
+                result.append({"type": "assistant", "text": text[:2000]})
+        elif kind == "tool_use":
+            result.append({
+                "type": "tool_use",
+                "tool": str(item.get("tool") or "unknown")[:80],
+                "input": item.get("input") if isinstance(item.get("input"), dict) else {},
+            })
+        elif kind == "tool_result":
+            result.append({
+                "type": "tool_result",
+                "is_error": bool(item.get("is_error")),
+                "text": str(item.get("text") or "")[:800],
+            })
+    return result
 
 
 def _persist_model_call(record: dict[str, Any]) -> None:

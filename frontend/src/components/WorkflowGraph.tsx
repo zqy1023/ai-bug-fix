@@ -57,12 +57,20 @@ function nodeStyle(status?: StepStatus): CSSProperties {
   return { border: '1px solid ' + (palette?.border ?? '#d7dce5'), background: palette?.background ?? '#fff', color: palette?.color ?? '#344054', borderRadius: 8, padding: 10, width: 142, fontSize: 12, textAlign: 'center', boxShadow: '0 2px 6px rgba(20, 35, 70, .04)' };
 }
 
+function statusLabel(status?: StepStatus): string {
+  const labels: Record<string, string> = {
+    pending: '等待执行', running: '执行中', waiting: '等待人工处理',
+    succeeded: '已完成', failed: '执行失败', skipped: '已跳过',
+  };
+  return labels[status ?? ''] ?? '未执行';
+}
+
 export function WorkflowGraph({ steps, selectedStep, onSelectStep }: { steps: StepRecord[]; selectedStep?: string; onSelectStep?: (name: string) => void }) {
   const { nodes, edges } = useMemo(() => {
     const records = new Map(steps.map((step) => [step.name, step]));
     const builtNodes: Node[] = layout.map(({ id, label, x, y }) => {
       const record = records.get(id);
-      return { id, position: { x, y }, data: { label: <div><div>{label}</div><small>{record ? record.status : '未执行'}</small></div> }, style: { ...nodeStyle(record?.status), borderWidth: selectedStep === id ? 2 : 1, borderColor: selectedStep === id ? '#456de0' : undefined, boxShadow: selectedStep === id ? '0 0 0 3px rgba(69,109,224,.14)' : undefined }, };
+      return { id, position: { x, y }, data: { label: <div><div>{label}</div><small>{statusLabel(record?.status)}</small></div> }, style: { ...nodeStyle(record?.status), borderWidth: selectedStep === id ? 2 : 1, borderColor: selectedStep === id ? '#456de0' : undefined, boxShadow: selectedStep === id ? '0 0 0 3px rgba(69,109,224,.14)' : undefined }, };
     });
     const builtEdges: Edge[] = transitions.map(([source, target, label], index) => ({
       id: source + '-' + target + '-' + index,

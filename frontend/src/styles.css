@@ -94,3 +94,17 @@ a { cursor: pointer; }
   .step-expanded { grid-template-columns: minmax(0, 1fr); } .workflow-canvas { height: 360px; }
   .content-card .ant-card-body { padding: 14px; } .app-footer { font-size: 10px; }
 }
+
+
+/* Agent audit timeline and task-level workflow inspection */
+.clickable-row { cursor: pointer; }
+.selected-task-row > td { background: #eef3ff !important; }
+.agent-trace { display: flex; flex-direction: column; gap: 12px; padding: 6px 2px 12px; }
+.agent-event-list { display: flex; flex-direction: column; gap: 10px; }
+.agent-event { border: 1px solid #e4e8f0; border-radius: 9px; padding: 12px; background: #fff; }
+.agent-event-tool_use { border-left: 3px solid #597de8; }
+.agent-event-tool_result { border-left: 3px solid #98a2b3; }
+.agent-event-assistant { border-left: 3px solid #8c6de8; }
+.agent-event-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.agent-event .json-panel { margin-top: 6px; max-height: 220px; }
+.agent-trace h5.ant-typography { margin: 8px 0 0; }

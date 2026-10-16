@@ -1,4 +1,4 @@
-import type { ApprovalItem, DashboardSummary, ModelCall, PageResult, RunDetail, RunQuery, RunSummary, ControlAuditItem } from './types';
+import type { ApprovalItem, DashboardSummary, ManualIntervention, ModelCall, PageResult, RunDetail, RunQuery, RunSummary, ControlAuditItem } from './types';
 
 const API_BASE = '/api/v1';
 let apiToken = '';
@@ -53,6 +53,7 @@ export const api = {
   },
   controlAudit: (runId: string) => request<{ items: ControlAuditItem[]; total: number }>(`/runs/${encodeURIComponent(runId)}/control-audit`),
   approvals: () => request<{ items: ApprovalItem[]; total: number }>('/approvals?status=pending').then((response) => response.items),
+  manualInterventions: () => request<{ items: ManualIntervention[]; total: number }>('/manual-interventions').then((response) => response.items),
   decideApproval: (approvalId: string, decision: 'approve' | 'reject', reason: string) =>
     request<{ run_id: string; task_id: string; decision: string; status: string }>(`/approvals/${encodeURIComponent(approvalId)}/decision`, {
       method: 'POST', body: JSON.stringify({ decision, reason }),

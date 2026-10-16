@@ -80,6 +80,18 @@ export interface ApprovalItem {
   expires_at?: string | null;
 }
 
+export interface ManualIntervention {
+  intervention_id: string;
+  run_id: string;
+  task_id: string;
+  carrier: string;
+  biztype: string;
+  step: string;
+  status: 'open';
+  summary: string;
+  created_at: string;
+}
+
 export interface RunQuery {
   page: number;
   page_size: number;
@@ -101,7 +113,9 @@ export interface ModelCall {
   provider?: string; model: string; prompt_version?: string; prompt_hash?: string;
   started_at: string; finished_at?: string; duration_ms?: number; status: string;
   input_tokens?: number | null; output_tokens?: number | null; cache_tokens?: number | null;
-  total_tokens?: number | null; tool_call_count?: number | null; error_type?: string;
+  total_tokens?: number | null; tool_call_count?: number | null; prompt_chars?: number | null; result_chars?: number | null; error_type?: string;
+  events?: Array<{ type: "assistant" | "tool_use" | "tool_result"; text?: string; tool?: string; input?: Record<string, unknown>; is_error?: boolean; elapsed_ms?: number }>;
+  output_preview?: string;
 }
 export interface ControlAuditItem {
   id: number; run_id: string; task_id: string; action: string; actor: string; reason: string; created_at: string;

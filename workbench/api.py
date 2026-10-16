@@ -744,6 +744,54 @@ def v1_list_approvals(
     return {"items": items, "total": len(items)}
 
 
+@app.get("/api/v1/manual-interventions")
+def v1_list_manual_interventions(_: None = Depends(_authorize)) -> dict[str, Any]:
+    """列出已终止自动流程、需要人工判断的任务；不把它们伪装成可批准的变更方案。"""
+    store = _store()
+    items: list[dict[str, Any]] = []
+    for run_id in _all_run_ids(store):
+        try:
+            payload = _run_payload(store, run_id)
+        except (HTTPException, OSError, ValueError):
+            continue
+        for task in payload.get("tasks") or []:
+            if task.get("approval_pending"):
+                continue
+            steps = task.get("steps") or []
+            manual_step: dict[str, Any] | None = None
+            reason = ""
+            for step in steps:
+                output = step.get("output") if isinstance(step.get("output"), dict) else {}
+                name = str(step.get("name") or "")
+                is_manual = (
+                    (name == "locate_agent" and str(output.get("status") or "").upper() == "MANUAL")
+                    or (name == "review_agent" and str(output.get("verdict") or "").upper() == "MANUAL")
+                    or str(step.get("result") or "").lower() == "manual"
+                )
+                if is_manual:
+                    manual_step = step
+                    reason = str(output.get("summary") or output.get("reason") or step.get("summary") or "自动流程无法安全继续，需要人工排查")
+                    break
+            terminal = str(task.get("status") or "").upper()
+            if manual_step is None and terminal != "MANUAL":
+                continue
+            if manual_step is None:
+                manual_step = next((step for step in reversed(steps) if step.get("name") == "finalize_execution"), {})
+                reason = str((manual_step.get("output") or {}).get("summary") or "任务最终结论为 MANUAL，需要人工排查")
+            items.append({
+                "intervention_id": f"{run_id}:{task.get('task_id', '')}",
+                "run_id": run_id,
+                "task_id": str(task.get("task_id") or ""),
+                "carrier": str(task.get("carrier") or ""),
+                "biztype": str(task.get("biztype") or ""),
+                "step": str(manual_step.get("name") or "finalize_execution"),
+                "status": "open",
+                "summary": reason[:2000],
+                "created_at": str(payload.get("updated_at") or payload.get("created_at") or ""),
+            })
+    return {"items": items, "total": len(items)}
+
+
 @app.post("/api/v1/approvals/{approval_id}/decision")
 def v1_decide_approval(
     approval_id: str, request: V1ApprovalDecision, authorization: str | None = Header(default=None),
