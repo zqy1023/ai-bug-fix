@@ -4,9 +4,9 @@ import {
   AppstoreOutlined, CheckCircleOutlined, ClockCircleOutlined, CodeOutlined,
   MenuFoldOutlined, MenuUnfoldOutlined, SafetyCertificateOutlined,
 } from '@ant-design/icons';
-import { Badge, Button, Layout, Menu, Space, Tag, Tooltip, Typography } from 'antd';
-import { useQuery } from '@tanstack/react-query';
-import { api } from '../lib/api';
+import { Badge, Button, Input, Layout, Menu, Modal, Space, Tag, Tooltip, Typography } from 'antd';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { api, ApiError, setApiToken } from '../lib/api';
 
 const { Header, Sider, Content, Footer } = Layout;
 const { Text } = Typography;
@@ -20,13 +20,29 @@ const routeMeta = [
 export function AppLayout() {
   const location = useLocation();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [collapsed, setCollapsed] = useState(false);
+  const [tokenDraft, setTokenDraft] = useState('');
   const selected = location.pathname.startsWith('/runs/') ? '/runs' : location.pathname;
   const current = routeMeta.find((item) => item.key === selected) ?? { title: '执行详情', eyebrow: 'RUN INSPECTOR' };
   const health = useQuery({ queryKey: ['workbench-health'], queryFn: api.health, refetchInterval: 30000, retry: 1 });
   const approvals = useQuery({ queryKey: ['approvals'], queryFn: api.approvals, refetchInterval: 15000, retry: 1 });
+  const authRequired = health.error instanceof ApiError && health.error.status === 401;
+  const submitToken = async () => {
+    if (!tokenDraft.trim()) return;
+    setApiToken(tokenDraft);
+    setTokenDraft('');
+    await queryClient.invalidateQueries();
+    await health.refetch();
+  };
 
-  return <Layout className="app-shell">
+  return <>
+    <Modal title="工作台身份验证" open={authRequired} closable={false} maskClosable={false} keyboard={false} okText="验证并连接" cancelButtonProps={{ style: { display: 'none' } }} onOk={submitToken} okButtonProps={{ disabled: !tokenDraft.trim(), loading: health.isFetching }}>
+      <p>后端已启用 Bearer Token 认证。请输入工作台访问令牌后继续。</p>
+      <Input.Password autoFocus value={tokenDraft} onChange={(event) => setTokenDraft(event.target.value)} onPressEnter={submitToken} placeholder="工作台访问令牌" />
+      <Text type="secondary" style={{ display: 'block', marginTop: 10, fontSize: 12 }}>令牌只保存在当前页面内存中，不写入浏览器存储或前端构建文件。刷新页面后需要重新验证。</Text>
+    </Modal>
+    <Layout className="app-shell">
     <Sider collapsible collapsed={collapsed} trigger={null} width={248} collapsedWidth={76} className="app-sider">
       <div className="brand">
         <div className="brand-mark"><CodeOutlined /></div>
@@ -66,5 +82,6 @@ export function AppLayout() {
         <span>节点记录 · 模型审计 · 回归产物 · 人工审批</span>
       </Footer>
     </Layout>
-  </Layout>;
+    </Layout>
+  </>;
 }
