@@ -277,8 +277,15 @@ def _validate_output_paths(
     for value in output.candidate_files:
         relative = _relative_file(root, value)
         target = (root / relative).resolve()
-        if not target.is_relative_to(carrier_root):
+        if target.is_relative_to(carrier_root):
+            continue
+        # 共享层根因不是非法定位：只要模型明确声明 project 范围且候选仍在允许的只读根目录，
+        # 就应保留根因证据交给 repair_agent 生成 change_plan，随后走 request_approval/apply_plan。
+        # 不允许用 project 声明绕过只读根目录，也不允许 carrier 范围偷偷包含共享文件。
+        if output.recommended_scope != "project":
             raise ValueError(f"模型输出候选文件超出目标 carrier: {value}")
+        if not any(target == base or target.is_relative_to(base) for base in allowed):
+            raise ValueError(f"共享层候选文件超出只读证据范围: {value}")
     for item in output.source_evidence:
         relative = _relative_file(root, item.path)
         target = (root / relative).resolve()
