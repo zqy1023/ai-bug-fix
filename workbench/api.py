@@ -1168,7 +1168,7 @@ def v1_capture_knowledge_from_task(
             """INSERT INTO repair_knowledge_cases
             (case_id,title,fingerprint,carrier,biztype,root_cause,evidence,change_summary,
              regression_passed,review_passed,status,source_run_id,source_task_id,created_at,updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,'candidate',?,?,?,?,?)""",
+            VALUES(?,?,?,?,?,?,?,?,?,?,'candidate',?,?,?,?)""",
             (case_id, title[:200], fingerprint, carrier, biztype, root_cause[:4000],
              json.dumps(evidence_payload, ensure_ascii=False)[:8000], change_summary[:8000],
              int(regression_passed), int(review_passed), run_id, task_id, now, now),
