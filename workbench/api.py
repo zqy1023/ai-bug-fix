@@ -1095,6 +1095,95 @@ def v1_create_knowledge_case(
         connection.close()
 
 
+@app.post("/api/v1/knowledge/cases/from-run/{run_id}/{task_id}", status_code=201)
+def v1_capture_knowledge_from_task(
+    run_id: str,
+    task_id: str,
+    authorization: str | None = Header(default=None),
+    _: None = Depends(_authorize),
+) -> dict[str, Any]:
+    """Capture a task's real reports as an unverified candidate; never auto-publish."""
+    run_id = _safe_id(run_id)
+    task_id = _safe_id(task_id)
+    detail = _v1_detail(run_id)
+    task = next((item for item in detail.get("tasks", []) if str(item.get("task_id") or "") == task_id), None)
+    if task is None:
+        raise HTTPException(status_code=404, detail="执行中不存在指定任务")
+    connection = _control_db()
+    try:
+        existing = connection.execute(
+            "SELECT * FROM repair_knowledge_cases WHERE source_run_id=? AND source_task_id=? LIMIT 1",
+            (run_id, task_id),
+        ).fetchone()
+        if existing is not None:
+            item = dict(existing)
+            item["regression_passed"] = bool(item["regression_passed"])
+            item["review_passed"] = bool(item["review_passed"])
+            return item
+
+        steps = task.get("steps") if isinstance(task.get("steps"), list) else []
+        locate_output: dict[str, Any] = {}
+        repair_output: dict[str, Any] = {}
+        regression_passed = False
+        review_passed = False
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            name = str(step.get("name") or "")
+            output = step.get("output") if isinstance(step.get("output"), dict) else {}
+            if name == "locate_agent":
+                locate_output = output
+            elif name == "repair_agent":
+                repair_output = output
+            elif name == "run_regression":
+                regression_passed = (
+                    str(step.get("result") or "").lower() in {"passed", "succeeded"}
+                    or output.get("passed") is True
+                    or str(output.get("status") or "").upper() in {"PASS", "PASSED", "SUCCESS", "SUCCEEDED"}
+                )
+            elif name == "review_agent":
+                review_passed = str(output.get("verdict") or output.get("status") or "").upper() == "PASS"
+
+        report = task.get("report") if isinstance(task.get("report"), dict) else {}
+        root_cause = str(locate_output.get("root_cause") or report.get("root_cause") or "").strip()
+        if not root_cause:
+            root_cause = "尚未形成可确认的根因结论；请结合本次执行证据补充"
+        evidence_payload = {
+            "facts": locate_output.get("facts", []),
+            "source_evidence": locate_output.get("source_evidence", []),
+            "evidence_gaps": locate_output.get("evidence_gaps", []),
+            "problem": task.get("problem", ""),
+        }
+        change_summary = str(repair_output.get("summary") or repair_output.get("analysis") or report.get("summary") or "").strip()
+        changed_files = repair_output.get("changed_files", [])
+        if changed_files:
+            change_summary += "\n变更文件：" + ", ".join(str(item) for item in changed_files[:30])
+        carrier = str(task.get("carrier") or "")
+        biztype = str(task.get("biztype") or "")
+        title = f"{carrier or '未知运输商'} / {biztype or '未知业务类型'}：{root_cause[:120]}"
+        fingerprint = str(task.get("problem") or "")[:500]
+        now = datetime.now(timezone.utc).isoformat()
+        case_id = uuid.uuid4().hex
+        connection.execute(
+            """INSERT INTO repair_knowledge_cases
+            (case_id,title,fingerprint,carrier,biztype,root_cause,evidence,change_summary,
+             regression_passed,review_passed,status,source_run_id,source_task_id,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,'candidate',?,?,?,?,?)""",
+            (case_id, title[:200], fingerprint, carrier, biztype, root_cause[:4000],
+             json.dumps(evidence_payload, ensure_ascii=False)[:8000], change_summary[:8000],
+             int(regression_passed), int(review_passed), run_id, task_id, now, now),
+        )
+        connection.commit()
+        _audit_control(run_id, task_id, "knowledge.case.capture", "bearer-token" if authorization else "local-user",
+                       "captured from persisted task report; remains candidate")
+        item = dict(connection.execute("SELECT * FROM repair_knowledge_cases WHERE case_id=?", (case_id,)).fetchone())
+        item["regression_passed"] = bool(item["regression_passed"])
+        item["review_passed"] = bool(item["review_passed"])
+        return item
+    finally:
+        connection.close()
+
+
 @app.post("/api/v1/knowledge/cases/{case_id}/status")
 def v1_update_knowledge_case_status(
     case_id: str,
