@@ -109,6 +109,8 @@ def after_retry(state: WorkflowState) -> str:
         return LOCATE
     if target == REVIEW:
         return REVIEW
+    if target == "__retry_reset_failed__":
+        return FINALIZE
     return REPAIR
 
 
