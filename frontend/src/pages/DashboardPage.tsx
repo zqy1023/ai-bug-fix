@@ -16,10 +16,11 @@ function formatTime(value?: string | null) {
   const parsed = dayjs(value);
   return parsed.isValid() ? parsed.format('MM-DD HH:mm:ss') : value;
 }
-function priorityFor(status: RunSummary['status']) {
-  if (status === 'waiting_approval') return { label: '需要决策', tone: 'priority-amber' };
-  if (status === 'failed' || status === 'partial_failed') return { label: '需要排查', tone: 'priority-red' };
-  if (status === 'running' || status === 'queued' || status === 'pause_requested') return { label: '正在执行', tone: 'priority-blue' };
+function priorityFor(run: RunSummary) {
+  if (run.status === 'waiting_approval') return { label: '需要决策', tone: 'priority-amber' };
+  if (run.status === 'failed' || run.status === 'partial_failed') return { label: '需要排查', tone: 'priority-red' };
+  if (['succeeded', 'cancelled'].includes(run.status) && run.manual_tasks > 0) return { label: '需要判断', tone: 'priority-amber' };
+  if (run.status === 'running' || run.status === 'queued' || run.status === 'pause_requested') return { label: '正在执行', tone: 'priority-blue' };
   return { label: '已归档', tone: 'priority-neutral' };
 }
 
@@ -31,7 +32,10 @@ export function DashboardPage() {
   const approvals = useQuery({ queryKey: ['approvals'], queryFn: api.approvals, refetchInterval: 15000, retry: 1 });
   const data = query.data;
   const recentRuns = data?.recent_runs ?? [];
-  const needsAttention = recentRuns.filter((run) => ['waiting_approval', 'failed', 'partial_failed'].includes(run.status));
+  const needsAttention = recentRuns.filter((run) =>
+    ['waiting_approval', 'failed', 'partial_failed'].includes(run.status) ||
+    (['succeeded', 'cancelled'].includes(run.status) && run.manual_tasks > 0),
+  );
 
   const chartOption = {
     animationDuration: 350,
@@ -60,12 +64,13 @@ export function DashboardPage() {
     {
       title: '处理进度', key: 'progress',
       render: (_: unknown, row: RunSummary) => {
-        const ratio = row.task_count > 0 ? Math.min(100, Math.round(row.succeeded_tasks / row.task_count * 100)) : 0;
-        return <div className="run-progress-cell"><div><span>{row.succeeded_tasks}/{row.task_count} 已完成</span><span>{ratio}%</span></div><Progress percent={ratio} showInfo={false} size="small" /></div>;
+        const terminalTasks = row.succeeded_tasks + row.failed_tasks + row.manual_tasks;
+        const ratio = row.task_count > 0 ? Math.min(100, Math.round(terminalTasks / row.task_count * 100)) : 0;
+        return <div className="run-progress-cell"><div><span>{terminalTasks}/{row.task_count} 已结束</span><span>{ratio}%</span></div><Progress percent={ratio} showInfo={false} size="small" /></div>;
       },
     },
     { title: '启动时间', dataIndex: 'started_at', key: 'started_at', render: formatTime },
-    { title: '处理状态', key: 'attention', render: (_: unknown, row: RunSummary) => { const priority = priorityFor(row.status); return <span className={'priority-pill ' + priority.tone}>{priority.label}</span>; } },
+    { title: '处理状态', key: 'attention', render: (_: unknown, row: RunSummary) => { const priority = priorityFor(row); return <span className={'priority-pill ' + priority.tone}>{priority.label}</span>; } },
     { title: '', key: 'action', render: (_: unknown, row: RunSummary) => <Button type="text" icon={<ArrowRightOutlined />} onClick={() => navigate('/runs/' + encodeURIComponent(row.run_id))}>查看</Button> },
   ];
 
@@ -124,7 +129,7 @@ export function DashboardPage() {
                 const priority = priorityFor(run.status);
                 return <button className="triage-item" key={run.run_id} onClick={() => navigate('/runs/' + encodeURIComponent(run.run_id))}>
                   <span className={'triage-status-icon ' + priority.tone}>{run.status === 'waiting_approval' ? <SafetyCertificateOutlined /> : <ExclamationCircleOutlined />}</span>
-                  <span className="triage-item-main"><strong>{run.run_id}</strong><span>{run.status === 'waiting_approval' ? '执行已进入最终审批阶段' : run.status === 'partial_failed' ? '本轮存在未成功完成的任务' : '执行失败，需要检查终态报告与步骤记录'}</span></span>
+                  <span className="triage-item-main"><strong>{run.run_id}</strong><span>{run.status === 'waiting_approval' ? '执行已进入最终交付审批阶段' : run.status === 'partial_failed' ? '本轮存在未成功完成的任务' : run.status === 'failed' ? '执行失败，需要检查终态报告与步骤记录' : '本轮有 ' + run.manual_tasks + ' 个任务以需人工判断收敛'}</span></span>
                   <span className="triage-item-meta"><StatusTag status={run.status} /><small>{formatTime(run.started_at)}</small></span><ArrowRightOutlined className="triage-arrow" />
                 </button>;
               })}</div>

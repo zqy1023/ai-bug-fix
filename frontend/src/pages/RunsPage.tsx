@@ -81,13 +81,13 @@ export function RunsPage() {
       title: '任务进度',
       key: 'progress',
       render: (_: unknown, row: RunSummary) => {
-        const done = row.succeeded_tasks + row.failed_tasks;
+        const done = row.succeeded_tasks + row.failed_tasks + row.manual_tasks;
         const percent = row.task_count > 0 ? Math.min(100, Math.round(done / row.task_count * 100)) : 0;
         return (
           <div className="run-progress-cell">
             <div><span>{done} / {row.task_count} 已结束</span><span>{percent}%</span></div>
             <Progress percent={percent} showInfo={false} size="small" />
-            <small className="run-progress-detail"><span className="text-success">{row.succeeded_tasks} 成功</span><span className="text-danger">{row.failed_tasks} 失败</span><span>{row.waiting_tasks} 待处理</span></small>
+            <small className="run-progress-detail"><span className="text-success">{row.succeeded_tasks} 成功</span><span className="text-danger">{row.failed_tasks} 失败</span><span>{row.manual_tasks} 需人工判断</span><span>{row.waiting_tasks} 等待中</span></small>
           </div>
         );
       },
