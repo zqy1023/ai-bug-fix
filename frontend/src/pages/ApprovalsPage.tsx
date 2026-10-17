@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, App as AntApp, Button, Card, Descriptions, Empty, Input, Modal, Paragraph, Space, Table, Tag, Typography } from 'antd';
+import { Alert, App as AntApp, Button, Card, Descriptions, Empty, Input, Modal, Space, Table, Tag, Typography } from 'antd';
 import { CheckOutlined, ClockCircleOutlined, ReloadOutlined, SafetyCertificateOutlined, StopOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useNavigate } from 'react-router-dom';
@@ -8,7 +8,7 @@ import { api } from '../lib/api';
 import { StatusTag } from '../components/StatusTag';
 import type { ApprovalItem } from '../lib/types';
 
-const { Title, Text } = Typography;
+const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
 function formatDate(value?: string | null) {
   if (!value) return '—';
