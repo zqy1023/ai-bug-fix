@@ -111,7 +111,7 @@ export function AppLayout() {
                 <span className="health-indicator"><i className={'status-dot ' + (health.isSuccess ? 'is-online' : health.isError ? 'is-offline' : 'is-checking')} />
                   {health.isSuccess ? '服务在线' : health.isError ? '服务异常' : '检查中'}</span>
               </Tooltip>
-              <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/runs?new=1')}>新建扫描</Button>
+              <Button type="primary" icon={<PlusOutlined />} disabled={Boolean(health.data && !health.data.source_repo_configured)} onClick={() => navigate('/runs?new=1')}>新建扫描</Button>
               <Tooltip title={pendingCount ? pendingCount + ' 项待最终审批' : '暂无待审批'}>
                 <Button className="approval-shortcut" type="text" icon={<CheckCircleOutlined />} onClick={() => navigate('/approvals')}>
                   <Badge count={pendingCount} size="small" overflowCount={99} />
