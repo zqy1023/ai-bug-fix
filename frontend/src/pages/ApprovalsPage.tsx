@@ -1,276 +1,172 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, App, Button, Card, Input, Modal, Space, Table, Tabs, Tag, Typography } from 'antd';
-import { CheckOutlined, CloseOutlined, ReloadOutlined } from '@ant-design/icons';
+import { Alert, App as AntApp, Button, Card, Descriptions, Empty, Input, Modal, Space, Table, Tag, Typography } from 'antd';
+import { CheckOutlined, ClockCircleOutlined, ReloadOutlined, SafetyCertificateOutlined, StopOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../lib/api';
-import type { ApprovalItem, ManualIntervention } from '../lib/types';
+import { StatusTag } from '../components/StatusTag';
+import type { ApprovalItem } from '../lib/types';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
-type ManualAction = 'retry_locate' | 'continue_repair' | 'mark_done' | 'terminate';
-
-const manualActionLabels: Record<ManualAction, string> = {
-  retry_locate: '重新定位',
-  continue_repair: '批准 AI 继续修复',
-  mark_done: '人工处理完毕',
-  terminate: '终止自动处理',
-};
-
-const manualActionDescriptions: Record<ManualAction, string> = {
-  retry_locate: '工作流会从根因定位节点继续。已有失败记录和 Agent 事件会保留。',
-  continue_repair: '这会允许流程进入修复链路，但不会放宽文件权限，也不会跳过修改门禁、问题验证、回归和审查。',
-  mark_done: '记录人工已在线下处理完毕。该操作不会伪造自动修复成功，也不会自动修改代码。',
-  terminate: '记录人工决定终止该任务的自动修复。',
-};
+function formatDate(value?: string | null) {
+  if (!value) return '—';
+  const parsed = dayjs(value);
+  return parsed.isValid() ? parsed.format('YYYY-MM-DD HH:mm:ss') : value;
+}
 
 export function ApprovalsPage() {
-  const { message } = App.useApp();
-  const queryClient = useQueryClient();
+  const { message } = AntApp.useApp();
   const navigate = useNavigate();
-
+  const queryClient = useQueryClient();
   const [selected, setSelected] = useState<ApprovalItem | null>(null);
   const [decision, setDecision] = useState<'approve' | 'reject'>('approve');
   const [reason, setReason] = useState('');
-  const [manualSelected, setManualSelected] = useState<ManualIntervention | null>(null);
-  const [manualDecision, setManualDecision] = useState<ManualAction>('retry_locate');
-  const [manualReason, setManualReason] = useState('');
-
   const approvals = useQuery({ queryKey: ['approvals'], queryFn: api.approvals, refetchInterval: 15000 });
-  const manual = useQuery({ queryKey: ['manual-interventions'], queryFn: api.manualInterventions, refetchInterval: 15000 });
 
-  const refreshQueues = async () => {
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ['approvals'] }),
-      queryClient.invalidateQueries({ queryKey: ['manual-interventions'] }),
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
-      queryClient.invalidateQueries({ queryKey: ['runs'] }),
-      queryClient.invalidateQueries({ queryKey: ['run'] }),
-      queryClient.invalidateQueries({ queryKey: ['task'] }),
-    ]);
-  };
-
-  const mutation = useMutation({
-    mutationFn: () => api.decideApproval(selected!.approval_id, decision, reason.trim()),
+  const decide = useMutation({
+    mutationFn: () => {
+      if (!selected) throw new Error('请先选择待审批交付');
+      if (decision === 'reject' && !reason.trim()) throw new Error('拒绝时必须填写理由');
+      return api.decideApproval(selected.approval_id, decision, reason.trim());
+    },
     onSuccess: async () => {
-      message.success(decision === 'approve' ? '审批已接收，工作流正在后台继续执行' : '拒绝决定已接收，工作流正在后台处理');
+      const runId = selected?.run_id;
+      const taskId = selected?.task_id;
+      message.success(decision === 'approve' ? '已批准交付审批' : '已拒绝交付审批');
       setSelected(null);
       setReason('');
-      await refreshQueues();
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['approvals'] }),
+        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
+        queryClient.invalidateQueries({ queryKey: ['runs'] }),
+        ...(runId ? [queryClient.invalidateQueries({ queryKey: ['run', runId] })] : []),
+        ...(runId && taskId ? [queryClient.invalidateQueries({ queryKey: ['task', runId, taskId] })] : []),
+      ]);
     },
-    onError: (error) => message.error('审批提交失败：' + (error as Error).message),
+    onError: (error) => message.error('提交审批失败：' + (error as Error).message),
   });
 
-  const manualMutation = useMutation({
-    mutationFn: () => api.decideManualIntervention(manualSelected!.intervention_id, manualDecision, manualReason.trim()),
-    onSuccess: async (result) => {
-      message.success(result.status === 'resolved' ? '人工处置结果已记录' : '人工决定已接收，工作流正在后台恢复并继续后续任务');
-      setManualSelected(null);
-      setManualReason('');
-      await refreshQueues();
-    },
-    onError: (error) => message.error('人工处置提交失败：' + (error as Error).message),
-  });
-
-  const openManualAction = (row: ManualIntervention, action: ManualAction) => {
-    setManualSelected(row);
-    setManualDecision(action);
-    setManualReason('');
+  const openDecision = (item: ApprovalItem, next: 'approve' | 'reject') => {
+    setSelected(item);
+    setDecision(next);
+    setReason('');
   };
 
   const columns = [
     {
-      title: '运输商',
-      dataIndex: 'carrier',
-      key: 'carrier',
-      render: (v: string, row: ApprovalItem) => <div><strong>{v}</strong><div className="secondary-small">{row.biztype}</div></div>,
+      title: '待审批交付',
+      key: 'delivery',
+      render: (_: unknown, item: ApprovalItem) => (
+        <button className="table-identity approval-identity" onClick={() => setSelected(item)}>
+          <span className="approval-row-mark"><SafetyCertificateOutlined /></span>
+          <span><strong>{item.carrier} <span className="identity-separator">/</span> {item.biztype}</strong><small>{item.summary || item.task_id}</small></span>
+        </button>
+      ),
     },
     {
-      title: '变更范围',
-      dataIndex: 'scope',
-      key: 'scope',
-      render: (v: string) => <Tag color={v === 'project' ? 'purple' : 'blue'}>{v === 'project' ? '共享层变更' : '运输商内变更'}</Tag>,
+      title: '执行轮次',
+      dataIndex: 'run_id',
+      key: 'run_id',
+      render: (value: string, item: ApprovalItem) => (
+        <div className="approval-run-id">
+          <a onClick={() => navigate('/runs/' + encodeURIComponent(value))}>{value}</a>
+          <small>任务 {item.task_id}</small>
+        </div>
+      ),
     },
-    { title: '修复摘要', dataIndex: 'summary', key: 'summary', width: '34%' },
-    { title: '变更文件', dataIndex: 'changed_files', key: 'changed_files', render: (v: string[]) => (v?.length ?? 0) + ' 个文件' },
-    {
-      title: '创建时间',
-      dataIndex: 'created_at',
-      key: 'created_at',
-      render: (v: string) => dayjs(v).isValid() ? dayjs(v).format('YYYY-MM-DD HH:mm:ss') : '—',
-    },
-    {
-      title: '操作',
-      key: 'action',
-      render: (_: unknown, row: ApprovalItem) => <Space wrap>
-        <Button size="small" onClick={() => navigate('/runs/' + encodeURIComponent(row.run_id) + '?task_id=' + encodeURIComponent(row.task_id))}>查看执行证据</Button>
-        <Button size="small" type="primary" icon={<CheckOutlined />} onClick={() => { setSelected(row); setDecision('approve'); setReason(''); }}>审批</Button>
-        <Button size="small" danger icon={<CloseOutlined />} onClick={() => { setSelected(row); setDecision('reject'); setReason(''); }}>拒绝</Button>
-      </Space>,
-    },
-  ];
-
-  const manualColumns = [
-    {
-      title: '运输商',
-      dataIndex: 'carrier',
-      key: 'carrier',
-      render: (v: string, row: ManualIntervention) => <div><strong>{v || '未知运输商'}</strong><div className="secondary-small">{row.biztype}</div></div>,
-    },
-    {
-      title: '触发节点',
-      dataIndex: 'step',
-      key: 'step',
-      render: (v: string) => ({ locate_agent: '根因定位', review_agent: '变更审查', prepare_evidence: '证据准备', repair_agent: 'AI 修复', finalize_execution: '执行收尾' } as Record<string, string>)[v] ?? v,
-    },
-    { title: '介入原因', dataIndex: 'summary', key: 'summary', width: '34%' },
-    {
-      title: '状态',
-      dataIndex: 'status',
-      key: 'status',
-      render: (v: ManualIntervention['status']) => <Tag color={v === 'waiting_decision' ? 'gold' : 'default'}>{v === 'waiting_decision' ? '等待人工决定' : '等待处置登记'}</Tag>,
-    },
-    {
-      title: '创建时间',
-      dataIndex: 'created_at',
-      key: 'created_at',
-      render: (v: string) => dayjs(v).isValid() ? dayjs(v).format('YYYY-MM-DD HH:mm:ss') : '—',
-    },
+    { title: '变更范围', dataIndex: 'scope', key: 'scope', render: (value: ApprovalItem['scope']) => <Tag color={value === 'carrier' ? 'blue' : 'orange'}>{value === 'carrier' ? '运输商范围' : '项目 / 共享范围'}</Tag> },
+    { title: '交付状态', dataIndex: 'status', key: 'status', render: (value: ApprovalItem['status']) => <StatusTag status={value} /> },
+    { title: '创建时间', dataIndex: 'created_at', key: 'created_at', render: formatDate },
     {
       title: '操作',
       key: 'action',
-      render: (_: unknown, row: ManualIntervention) => {
-        const options = row.decision_options ?? [];
-        return <Space wrap>
-          <Button size="small" onClick={() => navigate('/runs/' + encodeURIComponent(row.run_id) + '/tasks/' + encodeURIComponent(row.task_id))}>查看证据</Button>
-          {options.includes('RETRY_LOCATE') && <Button size="small" onClick={() => openManualAction(row, 'retry_locate')}>重新定位</Button>}
-          {options.includes('CONTINUE_REPAIR') && <Button size="small" type="primary" onClick={() => openManualAction(row, 'continue_repair')}>批准 AI 继续修复</Button>}
-          {options.includes('MARK_DONE') && <Button size="small" onClick={() => openManualAction(row, 'mark_done')}>人工处理完毕</Button>}
-          {options.includes('TERMINATE') && <Button size="small" danger onClick={() => openManualAction(row, 'terminate')}>终止自动处理</Button>}
-        </Space>;
-      },
+      render: (_: unknown, item: ApprovalItem) => (
+        <Space size={4}>
+          <Button type="link" onClick={() => setSelected(item)}>审查</Button>
+          <Button type="primary" size="small" icon={<CheckOutlined />} onClick={() => openDecision(item, 'approve')}>批准</Button>
+          <Button danger type="text" size="small" icon={<StopOutlined />} onClick={() => openDecision(item, 'reject')}>拒绝</Button>
+        </Space>
+      ),
     },
   ];
 
-  const manualReasonRequired = manualDecision !== 'retry_locate';
-  return <div className="page-stack">
-    <div className="page-heading">
-      <div>
-        <Title level={3}>人工审批与介入</Title>
-        <Text type="secondary">方案审批只授权当前变更；人工介入可重新定位、在证据充分时批准继续修复、记录线下处理完毕或终止。</Text>
+  return (
+    <div className="page-stack approvals-page">
+      <div className="page-heading">
+        <div>
+          <Title level={3}>最终审批</Title>
+          <Text type="secondary">只处理已经完成验证、回归、审查并准备交付的方案。批准或拒绝将由服务端做状态、权限和审计校验。</Text>
+        </div>
+        <Button icon={<ReloadOutlined />} loading={approvals.isFetching} onClick={() => approvals.refetch()}>刷新队列</Button>
       </div>
-      <Button icon={<ReloadOutlined />} onClick={() => { void approvals.refetch(); void manual.refetch(); }} loading={approvals.isFetching || manual.isFetching}>刷新</Button>
-    </div>
-    {approvals.isError && <Alert type="error" showIcon message="审批列表加载失败" description={(approvals.error as Error).message} action={<Button type="link" onClick={() => approvals.refetch()}>重试</Button>} />}
-    <Tabs items={[
-      {
-        key: 'approvals',
-        label: '待审批方案（' + (approvals.data?.length ?? 0) + '）',
-        children: <Card className="content-card" title="待审批变更方案">
-          <Alert type="info" showIcon message="批准不代表跳过验证" description="审批只允许当前方案进入后续流程。共享层方案仍须经过 apply_plan、变更门禁、问题验证、回归与审查；不会自动合并。" style={{ marginBottom: 16 }} />
-          <Table rowKey="approval_id" loading={approvals.isLoading} columns={columns} dataSource={approvals.data ?? []} pagination={{ pageSize: 10, showTotal: (total) => '共 ' + total + ' 条' }} locale={{ emptyText: '当前没有待处理审批' }} />
-        </Card>,
-      },
-      {
-        key: 'manual',
-        label: '人工介入（' + (manual.data?.length ?? 0) + '）',
-        children: <Card className="content-card" title="需要人工决定的任务">
-          <Alert type="info" showIcon message="人工介入不等于变更审批" description="挂起中的定位任务可以选择重新定位；只有保留完整根因、源码证据和合法候选文件时，才会开放“批准 AI 继续修复”。历史终态任务无法原地续跑，只能登记人工处理完毕或终止。" style={{ marginBottom: 16 }} />
-          {manual.isError && <Alert type="error" showIcon message="人工介入队列加载失败" description={(manual.error as Error).message} />}
-          <Table rowKey="intervention_id" loading={manual.isLoading} dataSource={manual.data ?? []} pagination={{ pageSize: 10 }} locale={{ emptyText: '当前没有待人工介入任务' }} columns={manualColumns} />
-        </Card>,
-      },
-    ]} />
 
-    <Modal
-      title={decision === 'approve' ? '确认批准变更方案' : '确认拒绝变更方案'}
-      open={Boolean(selected)}
-      onCancel={() => !mutation.isPending && setSelected(null)}
-      onOk={() => mutation.mutate()}
-      confirmLoading={mutation.isPending}
-      okText={decision === 'approve' ? '确认批准' : '确认拒绝'}
-      okButtonProps={{ danger: decision === 'reject', disabled: decision === 'reject' && !reason.trim() }}
-      cancelText="返回检查"
-      destroyOnClose
-    >
-      {selected && <>
-        <Alert type={decision === 'approve' ? 'warning' : 'error'} showIcon message={decision === 'approve' ? '批准不代表跳过验证或自动合并' : '拒绝后工作流按既定重试与终止规则处理'} className="modal-alert" />
-        <div className="approval-summary">
-          <div><Text type="secondary">运输商 / 业务类型</Text><div><strong>{selected.carrier}</strong> · {selected.biztype}</div></div>
-          <div><Text type="secondary">变更范围</Text><div>{selected.scope === 'project' ? '共享项目代码（高风险，确认影响范围）' : '单个运输商范围'}</div></div>
-          <div><Text type="secondary">来源执行 / 任务</Text><div><code>{selected.run_id}</code><div><code>{selected.task_id}</code></div><Button type="link" style={{ paddingInline: 0 }} onClick={() => navigate('/runs/' + encodeURIComponent(selected.run_id) + '/tasks/' + encodeURIComponent(selected.task_id))}>打开任务详情，检查根因、节点与验证报告</Button></div></div>
-          <div><Text type="secondary">变更文件（{selected.changed_files.length}）</Text><ul>{selected.changed_files.map((file) => <li key={file}><code>{file}</code></li>)}</ul></div>
-          <div><Text type="secondary">方案摘要</Text><p>{selected.summary}</p></div>
-          {selected.change_plan && <div className="change-plan-detail">
-            <Text type="secondary">结构化变更方案</Text>
-            <div className="change-plan-meta">
-              <Tag color={selected.change_plan.scope === 'project' ? 'purple' : 'blue'}>{selected.change_plan.scope === 'project' ? '共享层方案' : '运输商内方案'}</Tag>
-              {selected.change_plan.requires_human_authorization && <Tag color="gold">需要人工授权</Tag>}
-            </div>
-            {selected.change_plan.rationale && <Paragraph>{selected.change_plan.rationale}</Paragraph>}
-            {selected.change_plan.edits.length > 0
-              ? <Table
-                  size="small"
-                  rowKey={(edit) => edit.path}
-                  pagination={false}
-                  dataSource={selected.change_plan.edits}
-                  columns={[
-                    { title: '目标文件', dataIndex: 'path', key: 'path', render: (path: string) => <code>{path}</code> },
-                    { title: '动作', dataIndex: 'action', key: 'action', render: (action: string) => ({ create: '新建', update: '修改', delete: '删除' } as Record<string, string>)[action] ?? action },
-                    { title: '方案说明', dataIndex: 'note', key: 'note', render: (note: string) => note || '—' },
-                  ]}
-                />
-              : <Text type="secondary">当前记录没有结构化文件编辑项。为避免错误授权，请先返回任务详情核对修复 Agent 产物。</Text>}
-          </div>}
-          {selected.expires_at && <div><Text type="secondary">审批截止时间</Text><div>{dayjs(selected.expires_at).isValid() ? dayjs(selected.expires_at).format('YYYY-MM-DD HH:mm:ss') : selected.expires_at}</div></div>}
-        </div>
-        <label className="form-label">{decision === 'approve' ? '审批意见（选填）' : '拒绝原因（必填）'}</label>
-        <TextArea rows={3} value={reason} onChange={(e) => setReason(e.target.value)} maxLength={1000} showCount placeholder={decision === 'approve' ? '记录审批依据，便于审计追踪' : '请说明拒绝原因，以便后续修复和审查'} />
-      </>}
-    </Modal>
+      <div className="approval-policy-strip">
+        <span className="policy-icon"><SafetyCertificateOutlined /></span>
+        <div><strong>审批只发生在交付门禁</strong><span>根因定位、修复和回归过程不在这里手动接管；证据不足或共享层风险会按工作流规则独立收敛。</span></div>
+      </div>
 
-    <Modal
-      title={manualSelected ? manualActionLabels[manualDecision] : '人工处置'}
-      open={Boolean(manualSelected)}
-      onCancel={() => !manualMutation.isPending && setManualSelected(null)}
-      onOk={() => manualMutation.mutate()}
-      confirmLoading={manualMutation.isPending}
-      okText={manualActionLabels[manualDecision]}
-      okButtonProps={{ danger: manualDecision === 'terminate', disabled: manualReasonRequired && !manualReason.trim() }}
-      cancelText="返回检查"
-      destroyOnClose
-      width={720}
-    >
-      {manualSelected && <>
-        <Alert
-          type={manualDecision === 'continue_repair' ? 'warning' : manualDecision === 'terminate' ? 'error' : 'info'}
-          showIcon
-          message={manualActionLabels[manualDecision]}
-          description={manualActionDescriptions[manualDecision]}
-          style={{ marginBottom: 16 }}
-        />
-        <div className="approval-summary">
-          <div><Text type="secondary">运输商 / 业务类型</Text><div><strong>{manualSelected.carrier || '未知运输商'}</strong> · {manualSelected.biztype || '未知业务类型'}</div></div>
-          <div><Text type="secondary">执行 / 任务</Text><div><code>{manualSelected.run_id}</code><div><code>{manualSelected.task_id}</code></div></div></div>
-          <div><Text type="secondary">介入原因</Text><Paragraph style={{ whiteSpace: 'pre-wrap' }}>{manualSelected.summary}</Paragraph></div>
-          {manualSelected.root_cause && <div><Text type="secondary">当前根因结论</Text><Paragraph style={{ whiteSpace: 'pre-wrap' }}>{manualSelected.root_cause}</Paragraph></div>}
-          <div><Text type="secondary">候选文件（{manualSelected.candidate_files?.length ?? 0}）</Text>
-            {manualSelected.candidate_files?.length
-              ? <ul>{manualSelected.candidate_files.map((file) => <li key={file}><code>{file}</code></li>)}</ul>
-              : <Paragraph type="secondary">没有可确认的候选文件；系统不会因人工操作自动扩大写入权限。</Paragraph>}
+      {approvals.isError && <Alert type="error" showIcon message="无法读取审批队列" description={(approvals.error as Error).message} action={<Button type="link" onClick={() => approvals.refetch()}>重试</Button>} />}
+      <div className="approval-queue-header">
+        <div><Title level={4}>待决策交付</Title><Text type="secondary">当前用户有权处理的待审批项</Text></div>
+        <span className="approval-count"><strong>{approvals.data?.length ?? 0}</strong> 项待处理</span>
+      </div>
+
+      <Card className="content-card approval-table-card">
+        {approvals.isLoading ? <div className="approval-loading"><ClockCircleOutlined /><span>正在加载待审批交付…</span></div> : (
+          <Table rowKey="approval_id" columns={columns} dataSource={approvals.data ?? []}
+            pagination={{ pageSize: 10, showSizeChanger: false, showTotal: (total) => '共 ' + total + ' 项待审批' }}
+            locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有待审批交付" /> }} scroll={{ x: 900 }} />
+        )}
+      </Card>
+
+      <Modal
+        title={decision === 'approve' ? '批准交付方案' : '拒绝交付方案'}
+        open={Boolean(selected)}
+        onCancel={() => { if (!decide.isPending) { setSelected(null); setReason(''); } }}
+        onOk={() => decide.mutate()}
+        confirmLoading={decide.isPending}
+        okText={decision === 'approve' ? '确认批准' : '确认拒绝'}
+        cancelText="返回"
+        okButtonProps={{ danger: decision === 'reject', disabled: decision === 'reject' && !reason.trim() }}
+        width={760}
+        destroyOnClose
+      >
+        {selected && <div className="approval-review">
+          <div className="approval-review-heading">
+            <span className="approval-review-icon"><SafetyCertificateOutlined /></span>
+            <div><strong>{selected.carrier} / {selected.biztype}</strong><span>{selected.summary || '等待最终交付审批'}</span></div>
           </div>
-        </div>
-        <label className="form-label">{manualReasonRequired ? '处置说明（必填）' : '重新定位说明（选填）'}</label>
-        <TextArea
-          rows={3}
-          value={manualReason}
-          onChange={(e) => setManualReason(e.target.value)}
-          maxLength={1000}
-          showCount
-          placeholder={manualDecision === 'continue_repair' ? '说明为何确认现有证据足以继续修复' : manualDecision === 'mark_done' ? '记录人工如何处理及必要的验证证据' : manualDecision === 'terminate' ? '说明终止自动修复的原因' : '可以补充人工观察到的线索'}
-        />
-      </>}
-    </Modal>
-  </div>;
+          <Descriptions bordered size="small" column={{ xs: 1, sm: 2 }}>
+            <Descriptions.Item label="执行轮次"><a onClick={() => navigate('/runs/' + encodeURIComponent(selected.run_id))}>{selected.run_id}</a></Descriptions.Item>
+            <Descriptions.Item label="任务 ID">{selected.task_id}</Descriptions.Item>
+            <Descriptions.Item label="变更范围">{selected.scope === 'carrier' ? '运输商目录' : '项目 / 共享范围'}</Descriptions.Item>
+            <Descriptions.Item label="申请时间">{formatDate(selected.created_at)}</Descriptions.Item>
+            <Descriptions.Item label="审批到期时间">{formatDate(selected.expires_at)}</Descriptions.Item>
+            <Descriptions.Item label="变更文件数">{selected.changed_files?.length ?? 0}</Descriptions.Item>
+          </Descriptions>
+
+          {selected.change_plan && <div className="approval-plan-block">
+            <div className="approval-section-title">方案说明</div>
+            <Paragraph>{selected.change_plan.rationale || '未提供额外方案说明。'}</Paragraph>
+            {selected.change_plan.requires_human_authorization && <Alert type="warning" showIcon message="此方案需要人工授权" description="请确认变更范围和影响后，再决定是否批准。" />}
+            {!!selected.change_plan.edits?.length && <div className="approval-file-list">{selected.change_plan.edits.map((edit) => (
+              <div className="approval-file-row" key={edit.path}><code>{edit.path}</code><Tag>{edit.action}</Tag><Text type="secondary">{edit.note}</Text></div>
+            ))}</div>}
+          </div>}
+
+          <div className="approval-plan-block">
+            <div className="approval-section-title">交付变更文件</div>
+            {selected.changed_files?.length ? <div className="approval-file-list">{selected.changed_files.map((path) => <div className="approval-file-row" key={path}><code>{path}</code></div>)}</div> : <Text type="secondary">后端未返回变更文件列表。请先进入执行详情确认交付信息。</Text>}
+          </div>
+          <div className="approval-reason-field">
+            <label htmlFor="approval-reason">{decision === 'reject' ? '拒绝理由（必填）' : '审批说明（可选）'}</label>
+            <TextArea id="approval-reason" value={reason} onChange={(event) => setReason(event.target.value)} rows={3} maxLength={2000} showCount placeholder={decision === 'reject' ? '说明不批准的原因，以便后续重试和审计' : '记录批准理由或风险备注'} />
+          </div>
+          <Text type="secondary" className="approval-warning">此操作会改变服务端审批状态并写入审计记录。它不等同于将代码合并到目标分支。</Text>
+        </div>}
+      </Modal>
+    </div>
+  );
 }

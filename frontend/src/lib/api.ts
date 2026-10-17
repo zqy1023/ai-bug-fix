@@ -1,8 +1,7 @@
-import type { ApprovalItem, DashboardSummary, ManualIntervention, ModelCall, PageResult, RunDetail, RunQuery, RunSummary, ControlAuditItem, KnowledgeCase, KnowledgeCaseCreate, KnowledgeCaseList, KnowledgeCaseStatus } from './types';
+import type { ApprovalItem, DashboardSummary, ModelCall, PageResult, RunDetail, RunQuery, RunSummary, ControlAuditItem, KnowledgeCase, KnowledgeCaseCreate, KnowledgeCaseList, KnowledgeCaseStatus } from './types';
 
 const API_BASE = '/api/v1';
 let apiToken = '';
-
 export function setApiToken(token: string) { apiToken = token.trim(); }
 function authorizationHeaders(): Record<string, string> { return apiToken ? { Authorization: 'Bearer ' + apiToken } : {}; }
 
@@ -11,15 +10,14 @@ export class ApiError extends Error {
     super(message); this.name = 'ApiError';
   }
 }
-
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetch(API_BASE + path, {
     ...init, credentials: 'same-origin',
     headers: { Accept: 'application/json', ...authorizationHeaders(), ...(init?.body ? { 'Content-Type': 'application/json' } : {}), ...init?.headers },
   });
   if (!response.ok) {
     const body = await response.json().catch(() => null) as { detail?: string; message?: string; code?: string } | null;
-    throw new ApiError(body?.message ?? body?.detail ?? `请求失败（HTTP ${response.status}）`, response.status, body?.code);
+    throw new ApiError(body?.message ?? body?.detail ?? '请求失败（HTTP ' + response.status + '）', response.status, body?.code);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
@@ -28,63 +26,40 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: async () => {
     const response = await fetch('/api/health', { headers: { Accept: 'application/json', ...authorizationHeaders() }, credentials: 'same-origin' });
-    if (!response.ok) throw new ApiError(`健康检查失败（HTTP ${response.status}）`, response.status);
-    return response.json() as Promise<{
-      status: string; service: string; version: string; runtime_dir_configured: boolean;
-      source_repo_configured: boolean; api_token_required: boolean; timestamp: string;
-    }>;
+    if (!response.ok) throw new ApiError('健康检查失败（HTTP ' + response.status + '）', response.status);
+    return response.json() as Promise<{ status: string; service: string; version: string; runtime_dir_configured: boolean; source_repo_configured: boolean; api_token_required: boolean; timestamp: string }>;
   },
   dashboard: () => request<DashboardSummary>('/dashboard/summary'),
   knowledgeCases: (query: { q?: string; status?: 'all' | KnowledgeCaseStatus; page?: number; page_size?: number }) => {
     const params = new URLSearchParams();
     Object.entries(query).forEach(([key, value]) => { if (value !== undefined && value !== '') params.set(key, String(value)); });
-    return request<KnowledgeCaseList>(`/knowledge/cases?${params.toString()}`);
+    return request<KnowledgeCaseList>('/knowledge/cases?' + params.toString());
   },
-  createKnowledgeCase: (payload: KnowledgeCaseCreate) =>
-    request<KnowledgeCase>('/knowledge/cases', { method: 'POST', body: JSON.stringify(payload) }),
-  captureKnowledgeFromTask: (runId: string, taskId: string) =>
-    request<KnowledgeCase>(`/knowledge/cases/from-run/${encodeURIComponent(runId)}/${encodeURIComponent(taskId)}`, { method: 'POST' }),
-  updateKnowledgeCaseStatus: (caseId: string, status: KnowledgeCaseStatus, reason = '') =>
-    request<KnowledgeCase>(`/knowledge/cases/${encodeURIComponent(caseId)}/status`, {
-      method: 'POST', body: JSON.stringify({ status, reason }),
-    }),
+  createKnowledgeCase: (payload: KnowledgeCaseCreate) => request<KnowledgeCase>('/knowledge/cases', { method: 'POST', body: JSON.stringify(payload) }),
+  captureKnowledgeFromTask: (runId: string, taskId: string) => request<KnowledgeCase>('/knowledge/cases/from-run/' + encodeURIComponent(runId) + '/' + encodeURIComponent(taskId), { method: 'POST' }),
+  updateKnowledgeCaseStatus: (caseId: string, status: KnowledgeCaseStatus, reason = '') => request<KnowledgeCase>('/knowledge/cases/' + encodeURIComponent(caseId) + '/status', { method: 'POST', body: JSON.stringify({ status, reason }) }),
   runs: (query: RunQuery) => {
     const params = new URLSearchParams();
     Object.entries(query).forEach(([key, value]) => { if (value !== undefined && value !== '') params.set(key, String(value)); });
-    return request<PageResult<RunSummary>>(`/runs?${params.toString()}`);
+    return request<PageResult<RunSummary>>('/runs?' + params.toString());
   },
-  run: (runId: string) => request<RunDetail>(`/runs/${encodeURIComponent(runId)}`),
-  task: (runId: string, taskId: string) => request<import('./types').TaskDetailResponse>(
-    `/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}`,
-  ),
+  run: (runId: string) => request<RunDetail>('/runs/' + encodeURIComponent(runId)),
+  task: (runId: string, taskId: string) => request<import('./types').TaskDetailResponse>('/runs/' + encodeURIComponent(runId) + '/tasks/' + encodeURIComponent(taskId)),
   artifactContent: (runId: string, path: string, taskId?: string) => {
     const params = new URLSearchParams({ path });
     if (taskId) params.set('task_id', taskId);
-    return request<{ path: string; task_id: string; content: unknown }>(`/runs/${encodeURIComponent(runId)}/artifacts/content?${params.toString()}`);
+    return request<{ path: string; task_id: string; content: unknown }>('/runs/' + encodeURIComponent(runId) + '/artifacts/content?' + params.toString());
   },
   modelCalls: (runId: string, taskId?: string) => {
     const params = new URLSearchParams();
     if (taskId) params.set('task_id', taskId);
-    return request<{ items: ModelCall[]; total: number; source: string }>(`/runs/${encodeURIComponent(runId)}/model-calls?${params.toString()}`);
+    return request<{ items: ModelCall[]; total: number; source: string }>('/runs/' + encodeURIComponent(runId) + '/model-calls?' + params.toString());
   },
-  controlAudit: (runId: string) => request<{ items: ControlAuditItem[]; total: number }>(`/runs/${encodeURIComponent(runId)}/control-audit`),
+  controlAudit: (runId: string) => request<{ items: ControlAuditItem[]; total: number }>('/runs/' + encodeURIComponent(runId) + '/control-audit'),
   approvals: () => request<{ items: ApprovalItem[]; total: number }>('/approvals?status=pending').then((response) => response.items),
-  manualInterventions: () => request<{ items: ManualIntervention[]; total: number }>('/manual-interventions').then((response) => response.items),
-  decideApproval: (approvalId: string, decision: 'approve' | 'reject', reason: string) =>
-    request<{ run_id: string; task_id: string; decision: string; status: string }>(`/approvals/${encodeURIComponent(approvalId)}/decision`, {
-      method: 'POST', body: JSON.stringify({ decision, reason }),
-    }),
-  decideManualIntervention: (
-    interventionId: string,
-    decision: 'retry_locate' | 'continue_repair' | 'mark_done' | 'terminate',
-    reason: string,
-  ) => request<{ run_id: string; task_id: string; decision: string; status: string }>(
-    `/manual-interventions/${encodeURIComponent(interventionId)}/decision`,
-    { method: 'POST', body: JSON.stringify({ decision, reason }) },
-  ),
-  startRun: (payload: { log_days: number; log_limit: number; review_mode: 'agent' | 'human'; max_attempts: number }) =>
-    request<{ run_id: string; status: string }>('/runs', { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify(payload) }),
-  pauseRun: (runId: string) => request<{ status: string; message: string }>(`/runs/${encodeURIComponent(runId)}/pause`, { method: 'POST' }),
-  resumeRun: (runId: string) => request<{ status: string }>(`/runs/${encodeURIComponent(runId)}/resume`, { method: 'POST' }),
-  cancelRun: (runId: string) => request<{ status: string; message: string }>(`/runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST' }),
+  decideApproval: (approvalId: string, decision: 'approve' | 'reject', reason: string) => request<{ run_id: string; task_id: string; decision: string; status: string }>('/approvals/' + encodeURIComponent(approvalId) + '/decision', { method: 'POST', body: JSON.stringify({ decision, reason }) }),
+  startRun: (payload: { log_days: number; log_limit: number; review_mode: 'agent' | 'human'; max_attempts: number }) => request<{ run_id: string; status: string }>('/runs', { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify(payload) }),
+  pauseRun: (runId: string) => request<{ status: string; message: string }>('/runs/' + encodeURIComponent(runId) + '/pause', { method: 'POST' }),
+  resumeRun: (runId: string) => request<{ status: string }>('/runs/' + encodeURIComponent(runId) + '/resume', { method: 'POST' }),
+  cancelRun: (runId: string) => request<{ status: string; message: string }>('/runs/' + encodeURIComponent(runId) + '/cancel', { method: 'POST' }),
 };
