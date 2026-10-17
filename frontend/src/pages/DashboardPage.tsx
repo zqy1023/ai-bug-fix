@@ -126,7 +126,7 @@ export function DashboardPage() {
           <Card className="content-card triage-card" title={<div className="card-title-group"><span>需要关注</span><Text type="secondary">从最近执行中识别的待处理项</Text></div>} extra={<Button type="link" onClick={() => navigate('/runs')}>所有执行 <ArrowRightOutlined /></Button>}>
             {query.isLoading ? <Skeleton active paragraph={{ rows: 5 }} /> : needsAttention.length ? (
               <div className="triage-list">{needsAttention.slice(0, 5).map((run) => {
-                const priority = priorityFor(run.status);
+                const priority = priorityFor(run);
                 return <button className="triage-item" key={run.run_id} onClick={() => navigate('/runs/' + encodeURIComponent(run.run_id))}>
                   <span className={'triage-status-icon ' + priority.tone}>{run.status === 'waiting_approval' ? <SafetyCertificateOutlined /> : <ExclamationCircleOutlined />}</span>
                   <span className="triage-item-main"><strong>{run.run_id}</strong><span>{run.status === 'waiting_approval' ? '执行已进入最终交付审批阶段' : run.status === 'partial_failed' ? '本轮存在未成功完成的任务' : run.status === 'failed' ? '执行失败，需要检查终态报告与步骤记录' : '本轮有 ' + run.manual_tasks + ' 个任务以需人工判断收敛'}</span></span>
