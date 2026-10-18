@@ -5,7 +5,6 @@ import { RunsPage } from '../pages/RunsPage';
 import { RunDetailPage } from '../pages/RunDetailPage';
 import { TaskDetailPage } from '../pages/TaskDetailPage';
 import { ApprovalsPage } from '../pages/ApprovalsPage';
-import { KnowledgePage } from '../pages/KnowledgePage';
 import { NotFoundPage } from '../pages/NotFoundPage';
 export function AppRouter() {
   return <BrowserRouter><Routes><Route element={<AppLayout />}>
@@ -15,7 +14,6 @@ export function AppRouter() {
     <Route path="/runs/:runId/tasks/:taskId" element={<TaskDetailPage />} />
     <Route path="/runs/:runId" element={<RunDetailPage />} />
     <Route path="/approvals" element={<ApprovalsPage />} />
-    <Route path="/knowledge" element={<KnowledgePage />} />
     <Route path="*" element={<NotFoundPage />} />
   </Route></Routes></BrowserRouter>;
 }
