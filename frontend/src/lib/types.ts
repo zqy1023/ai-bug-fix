@@ -59,17 +59,3 @@ export interface ModelCall {
 }
 export interface ControlAuditItem { id: number; run_id: string; task_id: string; action: string; actor: string; reason: string; created_at: string; }
 export interface ApiErrorShape { code: string; message: string; request_id?: string; }
-export type KnowledgeCaseStatus = 'candidate' | 'published' | 'disabled';
-export interface KnowledgeCase {
-  case_id: string; title: string; fingerprint: string; carrier: string; biztype: string; root_cause: string; evidence: string;
-  change_summary: string; regression_passed: boolean; review_passed: boolean; status: KnowledgeCaseStatus; source_run_id: string;
-  source_task_id: string; usage_count: number; last_used_at?: string | null; created_at: string; updated_at: string;
-}
-export interface KnowledgeCaseCreate {
-  title: string; fingerprint?: string; carrier?: string; biztype?: string; root_cause: string; evidence?: string;
-  change_summary?: string; source_run_id?: string; source_task_id?: string;
-}
-export interface KnowledgeCaseList {
-  items: KnowledgeCase[]; total: number; page: number; page_size: number;
-  summary: { total: number; published: number; candidate: number; disabled: number; retrievals: number; successful_reuses: number };
-}

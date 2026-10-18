@@ -403,3 +403,237 @@ a { color: #456de0; cursor: pointer; }
   .runs-filter-controls .ant-input-affix-wrapper, .runs-filter-controls .ant-select { width:100%; }
   .runs-table-meta { align-items:flex-start; flex-direction:column; }
 }
+
+
+/* Sketch-acceptance dashboard: layout and visual hierarchy follow the approved reference image. */
+.sketch-dashboard { gap: 14px; max-width: 1800px; padding-bottom: 18px; }
+.sketch-page-heading { display:flex; align-items:center; justify-content:space-between; gap:18px; min-height:58px; }
+.sketch-page-heading h2.ant-typography { margin:0 0 4px; color:#17233c; font-size:25px; font-weight:780; letter-spacing:-.5px; }
+.sketch-page-heading > div:first-child > .ant-typography { font-size:12px; color:#77859b; }
+.sketch-heading-actions { display:flex; align-items:center; gap:9px; flex-shrink:0; }
+.sketch-heading-actions > span { margin-right:6px; color:#8390a5; font-size:10px; }
+.sketch-heading-actions .ant-btn { height:34px; font-size:11px; }
+.sketch-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:13px; }
+.sketch-metric { position:relative; min-width:0; overflow:hidden; border-radius:5px !important; box-shadow:none !important; }
+.sketch-metric .ant-card-body { position:relative; min-height:113px; padding:15px 17px 13px; }
+.sketch-metric-top { display:flex; align-items:center; gap:8px; color:#526078; font-size:11px; }
+.metric-dot { display:inline-block; width:8px; height:8px; border-radius:50%; }
+.metric-dot.blue { background:#2768f6; } .metric-dot.amber { background:#f3a000; } .metric-dot.red { background:#ff4d57; } .metric-dot.green { background:#14b87a; }
+.sketch-metric .ant-statistic { margin-top:7px; }
+.sketch-metric .ant-statistic-content { color:#15213b; font-size:29px; font-weight:760; line-height:1.05; }
+.sketch-metric-foot { margin-top:7px; color:#8895aa; font-size:10px; }
+.metric-spark { position:absolute; right:15px; bottom:23px; font-size:25px; letter-spacing:-6px; opacity:.78; transform:rotate(-8deg); }
+.spark-blue { color:#3274ff; } .spark-amber { color:#f0a000; } .spark-red { color:#ff505b; } .spark-green { color:#0ab981; }
+.sketch-main-grid { display:grid; grid-template-columns:minmax(0,1.95fr) minmax(300px,.85fr); align-items:start; gap:13px; }
+.sketch-queue-card, .sketch-pipeline-card, .sketch-decision-card, .sketch-evidence-card { min-width:0; border-radius:5px !important; box-shadow:none !important; }
+.sketch-queue-card .ant-card-head, .sketch-pipeline-card .ant-card-head, .sketch-decision-card .ant-card-head, .sketch-evidence-card .ant-card-head { min-height:51px; padding:0 16px; }
+.sketch-queue-card .ant-card-head-title, .sketch-pipeline-card .ant-card-head-title, .sketch-decision-card .ant-card-head-title, .sketch-evidence-card .ant-card-head-title { padding:12px 0; }
+.sketch-queue-card .ant-card-body { padding:0 8px 8px; }
+.sketch-card-title { display:flex; flex-direction:column; gap:3px; min-width:0; }
+.sketch-card-title > strong { color:#1d2a43; font-size:13px; font-weight:760; }
+.sketch-card-title > span { color:#8491a7; font-size:10px; font-weight:400; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sketch-queue-filters { display:flex; align-items:center; flex-wrap:wrap; gap:7px; padding:10px 6px 12px; }
+.sketch-queue-filters .ant-btn { height:29px; padding-inline:12px; font-size:10px; }
+.sketch-queue-filters .ant-btn span { margin-left:3px; }
+.sketch-filter-spacer { flex:1; }
+.sketch-queue-card .ant-table-wrapper .ant-table-thead > tr > th { padding:10px 9px; font-size:10px; white-space:nowrap; }
+.sketch-queue-card .ant-table-wrapper .ant-table-tbody > tr > td { padding:9px; font-size:10px; }
+.sketch-queue-card .ant-table-tbody > tr { cursor:pointer; }
+.sketch-queue-card .ant-table-tbody > tr.sketch-selected-row > td { background:#edf4ff !important; }
+.sketch-queue-card .ant-table-tbody > tr.sketch-selected-row > td:first-child { box-shadow:inset 3px 0 #2868f6; }
+.sketch-identity { display:flex; align-items:center; gap:9px; min-width:170px; padding:0; border:0; background:none; text-align:left; cursor:pointer; }
+.carrier-monogram { display:grid; place-items:center; flex:0 0 34px; width:34px; height:34px; border-radius:50%; color:white; font-size:12px; font-weight:800; }
+.carrier-blue { background:linear-gradient(145deg,#3b8dff,#1556e8); } .carrier-red { background:linear-gradient(145deg,#ff6868,#e52c3a); } .carrier-purple { background:linear-gradient(145deg,#8657ed,#5a25bd); }
+.sketch-identity-copy { display:flex; flex-direction:column; gap:4px; min-width:0; }
+.sketch-identity-copy strong { max-width:210px; overflow:hidden; color:#26354e; font-size:10px; font-weight:700; text-overflow:ellipsis; white-space:nowrap; }
+.sketch-identity-copy small { color:#8290a6; font-size:9px; line-height:1.45; }
+.sketch-right-rail { display:flex; flex-direction:column; gap:13px; min-width:0; }
+.sketch-pipeline-card .ant-card-body { padding:7px 16px 12px; }
+.sketch-pipeline { display:flex; flex-direction:column; }
+.sketch-pipeline-step { position:relative; display:grid; grid-template-columns:23px minmax(0,1fr) auto; align-items:start; gap:9px; min-height:49px; padding:8px 0 10px; }
+.sketch-pipeline-step:not(:last-child)::after { position:absolute; top:29px; bottom:-2px; left:10px; width:2px; background:#e6ebf3; content:""; }
+.pipeline-marker { z-index:1; display:grid; place-items:center; width:22px; height:22px; border:1px solid #e0e6ef; border-radius:50%; background:#f0f3f8; color:#9aa6b8; font-size:10px; }
+.step-succeeded .pipeline-marker { border-color:#18b87a; background:#18b87a; color:#fff; }
+.step-running .pipeline-marker { border:4px solid #dce8ff; background:#2868f6; color:#fff; }
+.step-failed .pipeline-marker { border-color:#f04d58; background:#f04d58; color:#fff; }
+.step-waiting .pipeline-marker { border-color:#f0b23d; background:#fff5dd; color:#bf8100; }
+.pipeline-step-copy { display:flex; flex-direction:column; gap:4px; min-width:0; padding-top:2px; }
+.pipeline-step-copy strong { color:#27364d; font-size:10px; font-weight:690; }
+.pipeline-step-copy small { display:-webkit-box; overflow:hidden; color:#8390a5; font-size:9px; line-height:1.45; -webkit-box-orient:vertical; -webkit-line-clamp:2; }
+.step-running .pipeline-step-copy strong { color:#2365f5; }
+.pipeline-step-time { padding-top:4px; color:#8794aa; font-size:9px; white-space:nowrap; }
+.step-running .pipeline-step-time { color:#2868f6; }
+.sketch-decision-card .ant-card-body { padding:0 15px; }
+.sketch-decision-item { display:flex; align-items:flex-start; gap:9px; width:100%; padding:13px 0; border:0; border-bottom:1px solid #edf0f5; background:#fff; text-align:left; cursor:pointer; }
+.sketch-decision-item:last-child { border-bottom:0; }
+.decision-badge { display:grid; place-items:center; flex:0 0 25px; height:25px; border-radius:50%; background:#fff2d6; color:#dc9300; font-size:11px; }
+.sketch-decision-item > span:nth-child(2) { display:flex; flex:1; flex-direction:column; gap:5px; min-width:0; }
+.sketch-decision-item strong { color:#2b3950; font-size:10px; }
+.sketch-decision-item small { color:#8491a6; font-size:9px; line-height:1.5; }
+.sketch-decision-item em { color:#9aa5b6; font-size:9px; font-style:normal; }
+.sketch-decision-item > .anticon { margin-top:7px; color:#4d79e8; font-size:10px; }
+.sketch-evidence-card .ant-card-body { padding:13px 15px; }
+.sketch-evidence-layout { display:grid; grid-template-columns:minmax(0,1.65fr) minmax(230px,.8fr); }
+.sketch-evidence-main { padding-right:17px; }
+.sketch-evidence-callout { display:flex; align-items:flex-start; gap:9px; margin-bottom:13px; padding:10px 11px; border:1px solid #d9e7ff; border-radius:4px; background:#f5f9ff; color:#4d6284; font-size:10px; line-height:1.65; overflow-wrap:anywhere; }
+.sketch-evidence-callout > .anticon { margin-top:2px; color:#2871f7; }
+.sketch-evidence-main > strong { display:block; margin-bottom:8px; color:#33435d; font-size:10px; }
+.sketch-evidence-chips { display:flex; flex-wrap:wrap; gap:7px; }
+.sketch-evidence-chips span { padding:6px 8px; border:1px solid #e0e8f5; border-radius:4px; background:#f8faff; color:#63738d; font-size:9px; }
+.sketch-evidence-facts { display:flex; flex-direction:column; gap:11px; padding:1px 0 0 17px; border-left:1px solid #edf0f5; }
+.sketch-evidence-facts > div { display:grid; grid-template-columns:85px minmax(0,1fr); gap:8px; align-items:start; }
+.sketch-evidence-facts > div > span { color:#8995a9; font-size:9px; }
+.sketch-evidence-facts > div > strong { overflow-wrap:anywhere; color:#33435b; font-size:9px; font-weight:600; }
+.sketch-evidence-facts .ant-btn { align-self:flex-start; margin-top:2px; font-size:10px; }
+@media (max-width:1250px) {
+  .sketch-main-grid { grid-template-columns:minmax(0,1fr); }
+  .sketch-right-rail { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); align-items:start; }
+}
+@media (max-width:900px) {
+  .sketch-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .sketch-heading-actions > span { display:none; }
+  .sketch-evidence-layout { grid-template-columns:minmax(0,1fr); gap:14px; }
+  .sketch-evidence-main { padding-right:0; }
+  .sketch-evidence-facts { padding:13px 0 0; border-top:1px solid #edf0f5; border-left:0; }
+}
+@media (max-width:640px) {
+  .sketch-page-heading { align-items:flex-start; flex-direction:column; }
+  .sketch-heading-actions { width:100%; justify-content:flex-end; }
+  .sketch-metrics { gap:8px; }
+  .sketch-metric .ant-card-body { padding:12px; min-height:106px; }
+  .sketch-metric .ant-statistic-content { font-size:25px; }
+  .metric-spark { right:9px; bottom:20px; font-size:18px; }
+  .sketch-right-rail { display:flex; }
+  .sketch-queue-filters { gap:5px; }
+  .sketch-queue-filters .ant-btn { padding-inline:8px; }
+  .sketch-queue-card .ant-table-wrapper .ant-table-thead > tr > th,
+  .sketch-queue-card .ant-table-wrapper .ant-table-tbody > tr > td { padding:8px 6px; }
+  .sketch-identity { min-width:135px; gap:6px; }
+  .carrier-monogram { flex-basis:28px; width:28px; height:28px; }
+  .sketch-identity-copy strong { max-width:135px; }
+}
+
+
+/* Screenshot acceptance pass: rebuild the shell proportions, fixed navigation, toolbar and dashboard grid. */
+:root { --wb-canvas:#f5f7fb; --wb-line:#e4eaf3; --wb-primary:#1764ff; }
+html,body,#root { min-height:100%; }
+body { margin:0; background:#f5f7fb; }
+.app-shell.sketch-shell { min-height:100vh; background:#f5f7fb; }
+.sketch-sider.ant-layout-sider { position:fixed; z-index:30; inset:0 auto 0 0; height:100vh; overflow:hidden; background:linear-gradient(180deg,#101b31 0%,#10182a 100%) !important; border-right:1px solid #1c2b45; }
+.sketch-brand { height:58px; margin:0; padding:0 22px; display:flex; align-items:center; gap:12px; }
+.sketch-brand .brand-mark { display:grid; place-items:center; width:31px; height:31px; border-radius:8px; color:#fff; background:linear-gradient(135deg,#3d8cff,#0d52df); font-size:19px; }
+.sketch-brand .brand-copy strong { color:#fff; font-size:19px; font-weight:780; letter-spacing:.2px; }
+.workspace-switcher { display:flex; align-items:center; gap:10px; width:calc(100% - 30px); height:45px; margin:8px 15px 22px; padding:0 13px; border:1px solid #2b3a56; border-radius:7px; background:#111e34; color:#e8eef9; text-align:left; cursor:pointer; }
+.workspace-switcher .status-dot { flex:0 0 10px; width:10px; height:10px; }
+.workspace-switcher strong { flex:1; font-size:12px; font-weight:650; }
+.workspace-chevron { color:#a7b5cb; font-size:17px; line-height:1; }
+.sketch-menu.ant-menu { padding:0 9px; border-inline-end:0 !important; background:transparent !important; color:#d2dcee; }
+.sketch-menu.ant-menu .ant-menu-item { display:flex; align-items:center; gap:12px; width:100%; height:42px; margin:0 0 4px; padding-inline:16px !important; border-radius:5px; color:#d1dced; font-size:13px; }
+.sketch-menu.ant-menu .ant-menu-item .ant-menu-item-icon { color:#c8d6ec; font-size:18px; }
+.sketch-menu.ant-menu .ant-menu-item-selected { color:white !important; background:#225fe0 !important; box-shadow:0 2px 7px #07132c44; }
+.sketch-menu.ant-menu .ant-menu-item-selected .ant-menu-item-icon { color:white; }
+.sketch-menu.ant-menu .ant-menu-item-divider { margin:14px 15px; border-color:#2c3950; }
+.sketch-menu .menu-label { display:flex; align-items:center; justify-content:space-between; gap:12px; width:100%; }
+.sketch-menu .ant-badge-count { min-width:25px; height:21px; line-height:21px; border-radius:11px; background:#ff4d4f; box-shadow:none; font-size:11px; }
+.sketch-menu .ant-menu-item:nth-child(4) .ant-badge-count { background:#f3a000; }
+.sketch-sider-bottom { position:absolute; right:0; bottom:0; left:0; padding:18px 30px 22px; border:0; }
+.sketch-sider-bottom .sider-runtime { gap:12px; }
+.sketch-sider-bottom .sider-runtime strong { color:#e4ebf7; font-size:12px; font-weight:600; }
+.sketch-sider-bottom .status-dot { width:10px; height:10px; }
+.sketch-main-layout.ant-layout { min-width:0; min-height:100vh; margin-left:249px; background:#f5f7fb; }
+.sketch-header.ant-layout-header { position:sticky; top:0; z-index:20; display:flex; align-items:center; justify-content:space-between; height:58px; padding:0 24px 0 27px; border-bottom:1px solid #e6ebf3; background:#fff; line-height:normal; }
+.sketch-breadcrumb .ant-breadcrumb { font-size:12px; }
+.sketch-breadcrumb .ant-breadcrumb-link { color:#64748b; }
+.sketch-breadcrumb .ant-breadcrumb li:last-child .ant-breadcrumb-link { color:#17243e; font-weight:650; }
+.sketch-header-right { display:flex; align-items:center; gap:18px; }
+.sketch-search.ant-input-affix-wrapper { width:373px; height:39px; border-color:#dce4f1; border-radius:6px; box-shadow:0 1px 2px #14274a05; }
+.sketch-search .ant-input { font-size:12px; }
+.sketch-search .ant-input-prefix { color:#62748f; font-size:16px; }
+.sketch-notification.ant-btn { position:relative; width:36px; height:36px; color:#526784; font-size:18px; }
+.sketch-user { display:flex; align-items:center; gap:10px; padding:0; border:0; background:transparent; color:#1d2a43; cursor:pointer; }
+.sketch-user > span:first-child { display:grid; place-items:center; width:35px; height:35px; border-radius:50%; background:#456bb1; color:#fff; font-size:12px; font-weight:700; }
+.sketch-user strong { font-size:12px; font-weight:600; }
+.sketch-page-content.ant-layout-content { padding:17px 19px 18px 23px; min-height:calc(100vh - 58px); }
+.sketch-dashboard { max-width:none; gap:14px; }
+.sketch-page-heading { min-height:55px; }
+.sketch-page-heading h2.ant-typography { font-size:23px; font-weight:780; letter-spacing:-.5px; color:#14213b; }
+.sketch-page-heading > div:first-child > .ant-typography { font-size:12px; color:#687995; }
+.sketch-heading-actions { gap:10px; }
+.sketch-heading-actions > span { font-size:11px; color:#647796; }
+.sketch-heading-actions .ant-btn { height:37px; border-radius:5px; font-size:11px; }
+.sketch-heading-actions .ant-btn-primary { background:#1764ff; box-shadow:0 2px 5px #1764ff30; }
+.sketch-metrics { grid-template-columns:repeat(4,minmax(0,1fr)); gap:13px; }
+.sketch-metric.ant-card { border:1px solid #e2e9f3; border-radius:5px !important; background:#fff; }
+.sketch-metric .ant-card-body { min-height:113px; padding:13px 17px 12px; }
+.sketch-metric-top { gap:10px; font-size:12px; color:#17243d; }
+.sketch-metric .ant-statistic { margin-top:7px; }
+.sketch-metric .ant-statistic-content { font-size:29px; font-weight:760; line-height:1.05; color:#14213b; }
+.sketch-metric-foot { margin-top:7px; color:#7b8ba5; font-size:10px; }
+.metric-spark { right:15px; bottom:20px; font-size:24px; }
+.sketch-main-grid { grid-template-columns:minmax(0,1.96fr) minmax(290px,.82fr); gap:13px; }
+.sketch-queue-card.ant-card,.sketch-pipeline-card.ant-card,.sketch-decision-card.ant-card,.sketch-evidence-card.ant-card { border:1px solid #e2e9f3; border-radius:5px !important; background:#fff; }
+.sketch-queue-card .ant-card-head,.sketch-pipeline-card .ant-card-head,.sketch-decision-card .ant-card-head,.sketch-evidence-card .ant-card-head { min-height:47px; padding:0 16px; border-bottom:1px solid #e8edf5; }
+.sketch-card-title > strong { font-size:14px; color:#17243e; }
+.sketch-card-title > span { font-size:10px; }
+.sketch-queue-card .ant-card-body { padding:0 7px 7px; }
+.sketch-queue-filters { padding:8px 9px 11px; border-bottom:1px solid #edf1f7; }
+.sketch-queue-filters .ant-btn { height:32px; padding-inline:13px; border-color:#dfe6f1; color:#3e506e; font-size:11px; }
+.sketch-queue-filters .ant-btn-primary { border-color:#1764ff; background:#1764ff; color:white; }
+.sketch-queue-card .ant-table-wrapper .ant-table { background:white; }
+.sketch-queue-card .ant-table-wrapper .ant-table-thead > tr > th { padding:11px 9px; background:#f7f9fc; color:#33435e; font-size:10px; font-weight:700; }
+.sketch-queue-card .ant-table-wrapper .ant-table-tbody > tr > td { padding:10px 9px; border-bottom:1px solid #e9eef6; font-size:10px; color:#263652; }
+.sketch-queue-card .ant-table-tbody > tr.sketch-selected-row > td { background:#edf4ff !important; }
+.sketch-queue-card .ant-table-tbody > tr.sketch-selected-row > td:first-child { box-shadow:inset 3px 0 #1764ff; }
+.sketch-identity { gap:10px; }
+.carrier-monogram { flex-basis:38px; width:38px; height:38px; font-size:13px; }
+.sketch-identity-copy strong { font-size:11px; color:#17243e; }
+.sketch-identity-copy small { font-size:9px; }
+.sketch-right-rail { gap:13px; }
+.sketch-pipeline-card .ant-card-body { padding:6px 16px 9px; }
+.sketch-pipeline-step { min-height:43px; padding:7px 0 8px; grid-template-columns:23px minmax(0,1fr) auto; }
+.pipeline-step-copy strong { font-size:11px; }
+.pipeline-step-copy small { font-size:9px; }
+.sketch-decision-card .ant-card-body { padding:0 16px; }
+.sketch-decision-item { padding:12px 0; }
+.sketch-evidence-card .ant-card-body { padding:13px 15px; }
+@media (max-width:1200px) {
+ .sketch-main-grid { grid-template-columns:minmax(0,1fr); }
+ .sketch-right-rail { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); }
+ .sketch-search.ant-input-affix-wrapper { width:290px; }
+}
+@media (max-width:800px) {
+ .sketch-sider.ant-layout-sider { width:68px !important; min-width:68px !important; max-width:68px !important; }
+ .sketch-brand { padding:0 18px; } .sketch-brand .brand-copy,.workspace-switcher strong,.workspace-switcher .workspace-chevron,.sketch-menu .ant-menu-title-content,.sketch-sider-bottom .sider-runtime div { display:none; }
+ .workspace-switcher { justify-content:center; width:44px; margin:8px 12px 20px; padding:0; }
+ .sketch-menu.ant-menu { padding:0 8px; } .sketch-menu.ant-menu .ant-menu-item { justify-content:center; padding-inline:0 !important; }
+ .sketch-menu .ant-menu-item-icon { margin-inline-end:0 !important; }
+ .sketch-sider-bottom { padding:18px 29px; }
+ .sketch-main-layout.ant-layout { margin-left:68px; }
+ .sketch-header.ant-layout-header { padding:0 12px; }
+ .sketch-breadcrumb { display:none; }
+ .sketch-header-right { gap:5px; }
+ .sketch-search.ant-input-affix-wrapper { width:min(48vw,290px); }
+ .sketch-user strong,.sketch-user .workspace-chevron { display:none; }
+ .sketch-page-content.ant-layout-content { padding:12px; }
+ .sketch-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+@media (max-width:560px) {
+ .sketch-heading-actions { justify-content:flex-start; flex-wrap:wrap; }
+ .sketch-heading-actions > span { display:none; }
+ .sketch-metrics { gap:8px; }
+ .sketch-main-grid { display:flex; flex-direction:column; }
+ .sketch-right-rail { display:flex; width:100%; }
+ .sketch-evidence-layout { grid-template-columns:minmax(0,1fr); gap:12px; }
+ .sketch-evidence-main { padding-right:0; }
+ .sketch-evidence-facts { padding:12px 0 0; border-top:1px solid #edf0f5; border-left:0; }
+ .sketch-search.ant-input-affix-wrapper { width:48vw; }
+ .sketch-notification { display:none; }
+}
+
+
+/* Workflow-only control surface: remove styles tied to fake profile/workspace controls. */
+.workspace-label { cursor:default; user-select:none; }
+.sketch-approval-entry.ant-btn { display:flex; align-items:center; gap:9px; height:36px; border-radius:6px; border-color:#dfe6f1; color:#263752; font-size:12px; }
+.sketch-approval-entry.ant-btn-primary { color:#fff; background:#1764ff; border-color:#1764ff; }
+.sketch-approval-entry .ant-badge { margin-left:1px; }
+.sketch-approval-entry .ant-badge-count { box-shadow:none; }

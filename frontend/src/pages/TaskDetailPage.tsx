@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, App as AntApp, Button, Card, Descriptions, Empty, Progress, Space, Spin, Table, Tabs, Tag, Typography } from 'antd';
-import { ArrowLeftOutlined, BookOutlined, FileTextOutlined, ReloadOutlined } from '@ant-design/icons';
+import { useQuery } from '@tanstack/react-query';
+import { Alert, Button, Card, Descriptions, Empty, Progress, Space, Spin, Table, Tabs, Tag, Typography } from 'antd';
+import { ArrowLeftOutlined, FileTextOutlined, ReloadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../lib/api';
@@ -35,8 +35,6 @@ function resultText(value?: string | null) {
 export function TaskDetailPage() {
   const { runId = '', taskId = '' } = useParams();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  const { message } = AntApp.useApp();
   const [activeTab, setActiveTab] = useState('steps');
   const [selectedStepName, setSelectedStepName] = useState<string>();
   const [selectedArtifact, setSelectedArtifact] = useState<ArtifactRef | null>(null);
@@ -68,15 +66,6 @@ export function TaskDetailPage() {
     queryFn: () => api.artifactContent(runId, selectedArtifact!.path, taskId),
     enabled: Boolean(selectedArtifact),
   });
-  const captureKnowledge = useMutation({
-    mutationFn: () => api.captureKnowledgeFromTask(runId, taskId),
-    onSuccess: async () => {
-      message.success('已登记为候选知识，发布前仍需经过知识门禁');
-      await queryClient.invalidateQueries({ queryKey: ['knowledge-cases'] });
-    },
-    onError: (error) => message.error('登记知识案例失败：' + (error as Error).message),
-  });
-
   if (detail.isLoading) return <div className="page-loading"><Spin size="large" /><Text type="secondary">正在加载任务诊断…</Text></div>;
   if (detail.isError || !payload || !task) return (
     <div className="page-stack">
@@ -127,7 +116,6 @@ export function TaskDetailPage() {
         </div>
         <Space wrap>
           <Button icon={<ReloadOutlined />} onClick={() => detail.refetch()} loading={detail.isFetching}>刷新诊断</Button>
-          <Button icon={<BookOutlined />} disabled={activeRun || captureKnowledge.isPending} loading={captureKnowledge.isPending} onClick={() => captureKnowledge.mutate()}>登记知识候选</Button>
         </Space>
       </div>
 
