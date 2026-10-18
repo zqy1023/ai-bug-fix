@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { ClockCircleOutlined, CodeOutlined, HomeFilled, SafetyCertificateOutlined, SearchOutlined } from '@ant-design/icons';
+import { ClockCircleOutlined, CodeOutlined, FileSearchOutlined, HomeFilled, SafetyCertificateOutlined, SearchOutlined } from '@ant-design/icons';
 import { Badge, Breadcrumb, Button, Input, Layout, Menu, Modal, Typography } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, api, setApiToken } from '../lib/api';
@@ -23,9 +23,9 @@ export function AppLayout() {
   const pendingCount = approvals.data?.length ?? 0;
   const dashboard = useQuery({ queryKey: ['dashboard'], queryFn: api.dashboard, refetchInterval: 15000, retry: 1 });
   const activeRunCount = dashboard.data?.active_runs ?? 0;
-  const selected = location.pathname.startsWith('/runs') ? '/runs' : location.pathname;
+  const selected = location.pathname.startsWith('/runs') ? '/runs' : location.pathname === '/audit' ? '/audit' : location.pathname;
   const pageTitle = location.pathname.startsWith('/runs/') ? (taskId ? '任务审计' : '运行详情')
-    : location.pathname === '/runs' ? '运行队列' : location.pathname === '/approvals' ? '待审批'
+    : location.pathname === '/runs' ? '运行队列' : location.pathname === '/audit' ? '任务审计' : location.pathname === '/approvals' ? '待审批'
     : '运行概览';
   const crumbs = useMemo(() => {
     const items: { title: ReactNode }[] = [{ title: <a onClick={() => navigate('/dashboard')}>工作台</a> }];
@@ -37,6 +37,7 @@ export function AppLayout() {
       return items;
     }
     if (location.pathname === '/approvals') return [...items, { title: '待审批' }];
+    if (location.pathname === '/audit') return [...items, { title: '任务审计' }];
     return [...items, { title: pageTitle }];
   }, [location.pathname, navigate, runId, taskId, pageTitle]);
   const submitToken = async () => {
@@ -75,6 +76,7 @@ export function AppLayout() {
           items={[
             { key: '/dashboard', icon: <HomeFilled />, label: '工作台' },
             { key: '/runs', icon: <ClockCircleOutlined />, label: <span className="menu-label"><span>运行队列</span><Badge count={activeRunCount} overflowCount={99} /></span> },
+            { key: '/audit', icon: <FileSearchOutlined />, label: '任务审计' },
             
             { key: '/approvals', icon: <SafetyCertificateOutlined />, label: <span className="menu-label"><span>待审批</span><Badge count={pendingCount} overflowCount={99} /></span> },
             { type: 'divider' },
