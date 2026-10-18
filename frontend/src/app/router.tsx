@@ -4,6 +4,7 @@ import { DashboardPage } from '../pages/DashboardPage';
 import { RunsPage } from '../pages/RunsPage';
 import { RunDetailPage } from '../pages/RunDetailPage';
 import { TaskDetailPage } from '../pages/TaskDetailPage';
+import { TaskAuditPage } from '../pages/TaskAuditPage';
 import { ApprovalsPage } from '../pages/ApprovalsPage';
 import { NotFoundPage } from '../pages/NotFoundPage';
 export function AppRouter() {
@@ -11,6 +12,7 @@ export function AppRouter() {
     <Route index element={<Navigate to="/dashboard" replace />} />
     <Route path="/dashboard" element={<DashboardPage />} />
     <Route path="/runs" element={<RunsPage />} />
+    <Route path="/audit" element={<TaskAuditPage />} />
     <Route path="/runs/:runId/tasks/:taskId" element={<TaskDetailPage />} />
     <Route path="/runs/:runId" element={<RunDetailPage />} />
     <Route path="/approvals" element={<ApprovalsPage />} />
