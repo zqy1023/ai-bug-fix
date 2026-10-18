@@ -19,9 +19,20 @@ export function RunDetailPage() {
   const [selectedStepName, setSelectedStepName] = useState<string>();
   const [activeTab, setActiveTab] = useState('steps');
   const [selectedArtifact, setSelectedArtifact] = useState<{ path: string; task_id?: string; name: string } | null>(null);
-  const detail = useQuery({ queryKey: ['run', runId], queryFn: () => api.run(runId), refetchInterval: (q) => ['running', 'queued', 'waiting_approval', 'pause_requested', 'paused', 'cancel_requested'].includes(q.state.data?.status ?? '') ? 3000 : false });
+  const [resumeAwaitingTransition, setResumeAwaitingTransition] = useState(false);
+  const detail = useQuery({ queryKey: ['run', runId], queryFn: () => api.run(runId), refetchInterval: (q) => (resumeAwaitingTransition || ['running', 'queued', 'waiting_approval', 'pause_requested', 'paused', 'cancel_requested'].includes(q.state.data?.status ?? '')) ? 3000 : false });
   const pause = useMutation({ mutationFn: () => api.pauseRun(runId), onSuccess: async (result) => { message.info(result.message || '已提交暂停请求'); await queryClient.invalidateQueries({ queryKey: ['run', runId] }); }, onError: (error) => message.error('暂停请求失败：' + (error as Error).message) });
-  const resume = useMutation({ mutationFn: () => api.resumeRun(runId), onSuccess: async () => { message.success('已提交恢复请求'); await queryClient.invalidateQueries({ queryKey: ['run', runId] }); }, onError: (error) => message.error('恢复执行失败：' + (error as Error).message) });
+  const resume = useMutation({ mutationFn: () => api.resumeRun(runId), onSuccess: async (result) => { setResumeAwaitingTransition(true); message.success(result.status === 'resume_requested' ? (result.message || '已提交检查点恢复，正在等待工作流状态更新') : '恢复请求已返回'); await queryClient.invalidateQueries({ queryKey: ['run', runId] }); }, onError: (error) => message.error('恢复执行失败：' + (error as Error).message) });
+  useEffect(() => {
+    if (!resumeAwaitingTransition) return;
+    if (detail.data && !['failed', 'paused'].includes(detail.data.status)) {
+      setResumeAwaitingTransition(false);
+      return;
+    }
+    // API 的 202 仅表示已排队；继续轮询一段时间，避免页面停留在旧的 failed/paused 快照。
+    const timeout = window.setTimeout(() => setResumeAwaitingTransition(false), 60_000);
+    return () => window.clearTimeout(timeout);
+  }, [resumeAwaitingTransition, detail.data?.status]);
   const cancel = useMutation({ mutationFn: () => api.cancelRun(runId), onSuccess: async (result) => { message.warning(result.message || '已提交停止请求；后台任务可能需要时间响应'); await queryClient.invalidateQueries({ queryKey: ['run', runId] }); }, onError: (error) => message.error('停止请求失败：' + (error as Error).message) });
   // 同一时刻只允许一个控制动作，避免暂停/恢复/停止请求互相竞争。
   const controlPending = pause.isPending || resume.isPending || cancel.isPending;

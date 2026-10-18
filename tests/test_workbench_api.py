@@ -4,6 +4,20 @@ import workbench.api as workbench_api
 from workbench.api import app
 
 
+
+def test_v1_resume_rejects_non_resumable_checkpoint_and_releases_lock(monkeypatch):
+    client = TestClient(app)
+    monkeypatch.setattr(workbench_api, "_v1_detail", lambda run_id: {
+        "run_id": run_id, "status": "failed", "checkpoint": {"resumable": False}
+    })
+    response = client.post("/api/v1/runs/resume-demo/resume")
+    assert response.status_code == 409
+    with workbench_api._RUN_LOCKS_GUARD:
+        lock = workbench_api._RUN_LOCKS["resume-demo"]
+    assert lock.acquire(blocking=False)
+    lock.release()
+
+
 def test_health_endpoint_is_available():
     client = TestClient(app)
     response = client.get("/api/health")
