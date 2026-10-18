@@ -30,9 +30,6 @@ export const api = {
     return response.json() as Promise<{ status: string; service: string; version: string; runtime_dir_configured: boolean; source_repo_configured: boolean; api_token_required: boolean; timestamp: string }>;
   },
   dashboard: () => request<DashboardSummary>('/dashboard/summary'),
-    const params = new URLSearchParams();
-    Object.entries(query).forEach(([key, value]) => { if (value !== undefined && value !== '') params.set(key, String(value)); });
-  },
   runs: (query: RunQuery) => {
     const params = new URLSearchParams();
     Object.entries(query).forEach(([key, value]) => { if (value !== undefined && value !== '') params.set(key, String(value)); });
