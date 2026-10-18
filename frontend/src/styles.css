@@ -512,3 +512,120 @@ a { color: #456de0; cursor: pointer; }
   .carrier-monogram { flex-basis:28px; width:28px; height:28px; }
   .sketch-identity-copy strong { max-width:135px; }
 }
+
+
+/* Screenshot acceptance pass: rebuild the shell proportions, fixed navigation, toolbar and dashboard grid. */
+:root { --wb-canvas:#f5f7fb; --wb-line:#e4eaf3; --wb-primary:#1764ff; }
+html,body,#root { min-height:100%; }
+body { margin:0; background:#f5f7fb; }
+.app-shell.sketch-shell { min-height:100vh; background:#f5f7fb; }
+.sketch-sider.ant-layout-sider { position:fixed; z-index:30; inset:0 auto 0 0; height:100vh; overflow:hidden; background:linear-gradient(180deg,#101b31 0%,#10182a 100%) !important; border-right:1px solid #1c2b45; }
+.sketch-brand { height:58px; margin:0; padding:0 22px; display:flex; align-items:center; gap:12px; }
+.sketch-brand .brand-mark { display:grid; place-items:center; width:31px; height:31px; border-radius:8px; color:#fff; background:linear-gradient(135deg,#3d8cff,#0d52df); font-size:19px; }
+.sketch-brand .brand-copy strong { color:#fff; font-size:19px; font-weight:780; letter-spacing:.2px; }
+.workspace-switcher { display:flex; align-items:center; gap:10px; width:calc(100% - 30px); height:45px; margin:8px 15px 22px; padding:0 13px; border:1px solid #2b3a56; border-radius:7px; background:#111e34; color:#e8eef9; text-align:left; cursor:pointer; }
+.workspace-switcher .status-dot { flex:0 0 10px; width:10px; height:10px; }
+.workspace-switcher strong { flex:1; font-size:12px; font-weight:650; }
+.workspace-chevron { color:#a7b5cb; font-size:17px; line-height:1; }
+.sketch-menu.ant-menu { padding:0 9px; border-inline-end:0 !important; background:transparent !important; color:#d2dcee; }
+.sketch-menu.ant-menu .ant-menu-item { display:flex; align-items:center; gap:12px; width:100%; height:42px; margin:0 0 4px; padding-inline:16px !important; border-radius:5px; color:#d1dced; font-size:13px; }
+.sketch-menu.ant-menu .ant-menu-item .ant-menu-item-icon { color:#c8d6ec; font-size:18px; }
+.sketch-menu.ant-menu .ant-menu-item-selected { color:white !important; background:#225fe0 !important; box-shadow:0 2px 7px #07132c44; }
+.sketch-menu.ant-menu .ant-menu-item-selected .ant-menu-item-icon { color:white; }
+.sketch-menu.ant-menu .ant-menu-item-divider { margin:14px 15px; border-color:#2c3950; }
+.sketch-menu .menu-label { display:flex; align-items:center; justify-content:space-between; gap:12px; width:100%; }
+.sketch-menu .ant-badge-count { min-width:25px; height:21px; line-height:21px; border-radius:11px; background:#ff4d4f; box-shadow:none; font-size:11px; }
+.sketch-menu .ant-menu-item:nth-child(4) .ant-badge-count { background:#f3a000; }
+.sketch-sider-bottom { position:absolute; right:0; bottom:0; left:0; padding:18px 30px 22px; border:0; }
+.sketch-sider-bottom .sider-runtime { gap:12px; }
+.sketch-sider-bottom .sider-runtime strong { color:#e4ebf7; font-size:12px; font-weight:600; }
+.sketch-sider-bottom .status-dot { width:10px; height:10px; }
+.sketch-main-layout.ant-layout { min-width:0; min-height:100vh; margin-left:249px; background:#f5f7fb; }
+.sketch-header.ant-layout-header { position:sticky; top:0; z-index:20; display:flex; align-items:center; justify-content:space-between; height:58px; padding:0 24px 0 27px; border-bottom:1px solid #e6ebf3; background:#fff; line-height:normal; }
+.sketch-breadcrumb .ant-breadcrumb { font-size:12px; }
+.sketch-breadcrumb .ant-breadcrumb-link { color:#64748b; }
+.sketch-breadcrumb .ant-breadcrumb li:last-child .ant-breadcrumb-link { color:#17243e; font-weight:650; }
+.sketch-header-right { display:flex; align-items:center; gap:18px; }
+.sketch-search.ant-input-affix-wrapper { width:373px; height:39px; border-color:#dce4f1; border-radius:6px; box-shadow:0 1px 2px #14274a05; }
+.sketch-search .ant-input { font-size:12px; }
+.sketch-search .ant-input-prefix { color:#62748f; font-size:16px; }
+.sketch-notification.ant-btn { position:relative; width:36px; height:36px; color:#526784; font-size:18px; }
+.sketch-user { display:flex; align-items:center; gap:10px; padding:0; border:0; background:transparent; color:#1d2a43; cursor:pointer; }
+.sketch-user > span:first-child { display:grid; place-items:center; width:35px; height:35px; border-radius:50%; background:#456bb1; color:#fff; font-size:12px; font-weight:700; }
+.sketch-user strong { font-size:12px; font-weight:600; }
+.sketch-page-content.ant-layout-content { padding:17px 19px 18px 23px; min-height:calc(100vh - 58px); }
+.sketch-dashboard { max-width:none; gap:14px; }
+.sketch-page-heading { min-height:55px; }
+.sketch-page-heading h2.ant-typography { font-size:23px; font-weight:780; letter-spacing:-.5px; color:#14213b; }
+.sketch-page-heading > div:first-child > .ant-typography { font-size:12px; color:#687995; }
+.sketch-heading-actions { gap:10px; }
+.sketch-heading-actions > span { font-size:11px; color:#647796; }
+.sketch-heading-actions .ant-btn { height:37px; border-radius:5px; font-size:11px; }
+.sketch-heading-actions .ant-btn-primary { background:#1764ff; box-shadow:0 2px 5px #1764ff30; }
+.sketch-metrics { grid-template-columns:repeat(4,minmax(0,1fr)); gap:13px; }
+.sketch-metric.ant-card { border:1px solid #e2e9f3; border-radius:5px !important; background:#fff; }
+.sketch-metric .ant-card-body { min-height:113px; padding:13px 17px 12px; }
+.sketch-metric-top { gap:10px; font-size:12px; color:#17243d; }
+.sketch-metric .ant-statistic { margin-top:7px; }
+.sketch-metric .ant-statistic-content { font-size:29px; font-weight:760; line-height:1.05; color:#14213b; }
+.sketch-metric-foot { margin-top:7px; color:#7b8ba5; font-size:10px; }
+.metric-spark { right:15px; bottom:20px; font-size:24px; }
+.sketch-main-grid { grid-template-columns:minmax(0,1.96fr) minmax(290px,.82fr); gap:13px; }
+.sketch-queue-card.ant-card,.sketch-pipeline-card.ant-card,.sketch-decision-card.ant-card,.sketch-evidence-card.ant-card { border:1px solid #e2e9f3; border-radius:5px !important; background:#fff; }
+.sketch-queue-card .ant-card-head,.sketch-pipeline-card .ant-card-head,.sketch-decision-card .ant-card-head,.sketch-evidence-card .ant-card-head { min-height:47px; padding:0 16px; border-bottom:1px solid #e8edf5; }
+.sketch-card-title > strong { font-size:14px; color:#17243e; }
+.sketch-card-title > span { font-size:10px; }
+.sketch-queue-card .ant-card-body { padding:0 7px 7px; }
+.sketch-queue-filters { padding:8px 9px 11px; border-bottom:1px solid #edf1f7; }
+.sketch-queue-filters .ant-btn { height:32px; padding-inline:13px; border-color:#dfe6f1; color:#3e506e; font-size:11px; }
+.sketch-queue-filters .ant-btn-primary { border-color:#1764ff; background:#1764ff; color:white; }
+.sketch-queue-card .ant-table-wrapper .ant-table { background:white; }
+.sketch-queue-card .ant-table-wrapper .ant-table-thead > tr > th { padding:11px 9px; background:#f7f9fc; color:#33435e; font-size:10px; font-weight:700; }
+.sketch-queue-card .ant-table-wrapper .ant-table-tbody > tr > td { padding:10px 9px; border-bottom:1px solid #e9eef6; font-size:10px; color:#263652; }
+.sketch-queue-card .ant-table-tbody > tr.sketch-selected-row > td { background:#edf4ff !important; }
+.sketch-queue-card .ant-table-tbody > tr.sketch-selected-row > td:first-child { box-shadow:inset 3px 0 #1764ff; }
+.sketch-identity { gap:10px; }
+.carrier-monogram { flex-basis:38px; width:38px; height:38px; font-size:13px; }
+.sketch-identity-copy strong { font-size:11px; color:#17243e; }
+.sketch-identity-copy small { font-size:9px; }
+.sketch-right-rail { gap:13px; }
+.sketch-pipeline-card .ant-card-body { padding:6px 16px 9px; }
+.sketch-pipeline-step { min-height:43px; padding:7px 0 8px; grid-template-columns:23px minmax(0,1fr) auto; }
+.pipeline-step-copy strong { font-size:11px; }
+.pipeline-step-copy small { font-size:9px; }
+.sketch-decision-card .ant-card-body { padding:0 16px; }
+.sketch-decision-item { padding:12px 0; }
+.sketch-evidence-card .ant-card-body { padding:13px 15px; }
+@media (max-width:1200px) {
+ .sketch-main-grid { grid-template-columns:minmax(0,1fr); }
+ .sketch-right-rail { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); }
+ .sketch-search.ant-input-affix-wrapper { width:290px; }
+}
+@media (max-width:800px) {
+ .sketch-sider.ant-layout-sider { width:68px !important; min-width:68px !important; max-width:68px !important; }
+ .sketch-brand { padding:0 18px; } .sketch-brand .brand-copy,.workspace-switcher strong,.workspace-switcher .workspace-chevron,.sketch-menu .ant-menu-title-content,.sketch-sider-bottom .sider-runtime div { display:none; }
+ .workspace-switcher { justify-content:center; width:44px; margin:8px 12px 20px; padding:0; }
+ .sketch-menu.ant-menu { padding:0 8px; } .sketch-menu.ant-menu .ant-menu-item { justify-content:center; padding-inline:0 !important; }
+ .sketch-menu .ant-menu-item-icon { margin-inline-end:0 !important; }
+ .sketch-sider-bottom { padding:18px 29px; }
+ .sketch-main-layout.ant-layout { margin-left:68px; }
+ .sketch-header.ant-layout-header { padding:0 12px; }
+ .sketch-breadcrumb { display:none; }
+ .sketch-header-right { gap:5px; }
+ .sketch-search.ant-input-affix-wrapper { width:min(48vw,290px); }
+ .sketch-user strong,.sketch-user .workspace-chevron { display:none; }
+ .sketch-page-content.ant-layout-content { padding:12px; }
+ .sketch-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+@media (max-width:560px) {
+ .sketch-heading-actions { justify-content:flex-start; flex-wrap:wrap; }
+ .sketch-heading-actions > span { display:none; }
+ .sketch-metrics { gap:8px; }
+ .sketch-main-grid { display:flex; flex-direction:column; }
+ .sketch-right-rail { display:flex; width:100%; }
+ .sketch-evidence-layout { grid-template-columns:minmax(0,1fr); gap:12px; }
+ .sketch-evidence-main { padding-right:0; }
+ .sketch-evidence-facts { padding:12px 0 0; border-top:1px solid #edf0f5; border-left:0; }
+ .sketch-search.ant-input-affix-wrapper { width:48vw; }
+ .sketch-notification { display:none; }
+}
