@@ -1036,30 +1036,38 @@ def v1_pause_run(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
 @app.post("/api/v1/runs/{run_id}/resume", status_code=202)
 def v1_resume_run(run_id: str, background: BackgroundTasks, _: None = Depends(_authorize)) -> dict[str, Any]:
     run_id = _safe_id(run_id)
-    detail = _v1_detail(run_id)
-    if detail["status"] not in {"running", "queued", "paused", "failed"} or not detail["checkpoint"]["resumable"]:
-        raise HTTPException(status_code=409, detail="执行当前没有可恢复的 checkpoint")
     with _RUN_LOCKS_GUARD:
         lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
     if not lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="该执行正在进行其他控制操作")
+
+    # 检查点和状态必须在取得执行锁后重新读取，避免并发控制请求在校验后改变状态。
     try:
+        detail = _v1_detail(run_id)
+        if detail["status"] not in {"running", "queued", "paused", "failed"} or not detail["checkpoint"]["resumable"]:
+            raise HTTPException(status_code=409, detail="执行当前没有可恢复的 checkpoint")
         connection = _control_db()
+        try:
+            connection.execute(
+                "INSERT INTO run_control(run_id,pause_requested,cancel_requested,updated_at) VALUES(?,0,0,?) "
+                "ON CONFLICT(run_id) DO UPDATE SET pause_requested=0,cancel_requested=0,updated_at=excluded.updated_at",
+                (run_id, datetime.now(timezone.utc).isoformat()),
+            )
+            connection.commit()
+        finally:
+            connection.close()
     except Exception:
         lock.release()
         raise
+
     try:
-        connection.execute(
-            "INSERT INTO run_control(run_id,pause_requested,cancel_requested,updated_at) VALUES(?,0,0,?) "
-            "ON CONFLICT(run_id) DO UPDATE SET pause_requested=0,updated_at=excluded.updated_at",
-            (run_id, datetime.now(timezone.utc).isoformat()),
-        )
-        connection.commit()
-    finally:
-        connection.close()
+        _audit_control(run_id, "", "run.resume_requested", "api")
+    except Exception:
+        lock.release()
+        logger.exception("写入恢复操作审计失败 run_id=%s", run_id)
+        raise HTTPException(status_code=503, detail="恢复未提交：写入控制审计失败")
     background.add_task(_resume_workflow_background, run_id, lock)
-    _audit_control(run_id, "", "run.resume_requested", "api")
-    return {"run_id": run_id, "status": "resume_requested"}
+    return {"run_id": run_id, "status": "resume_requested", "message": "已提交检查点恢复；请观察运行状态变化"}
 
 
 def _resume_workflow_background(
