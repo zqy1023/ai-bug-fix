@@ -221,6 +221,8 @@ def bind(
         ):
             # 业务 FAIL/MANUAL 仍需把结构化结论回写路由状态；只有执行异常才丢弃普通输出。
             patch = spec.patch(result.output)
+            # 清除上一次 Agent 异常留下的目标，防止后续验证失败误重试旧 Agent。
+            patch["retry_target"] = ""
         else:
             # Agent 调用异常时只回写白名单内的重试元数据，不把异常输出当成业务结果。
             # 否则 after_retry 看不到 retry_target，定位失败会错误地回到 repair_agent。
