@@ -169,6 +169,17 @@ def run_stage(
     )
 
 
+def _failure_route_patch(result: StepResult) -> dict[str, Any]:
+    """仅将 Agent 失败所需的路由元数据写回图状态。"""
+    if result.failure is None:
+        return {}
+    target = str(result.output.get("retry_target") or "")
+    if target not in {"locate_agent", "repair_agent", "review_agent"}:
+        return {}
+    reason = str(result.output.get("failure_reason") or result.failure.reason)
+    return {"retry_target": target, "retry_reason": reason[:2000]}
+
+
 def _views(spec: StepSpec) -> dict[str, Any]:
     """落盘投影声明。运行时数据流不受影响。"""
     return {"input_view": spec.input_record, "output_view": spec.output_record}
@@ -210,8 +221,13 @@ def bind(
         ):
             # 业务 FAIL/MANUAL 仍需把结构化结论回写路由状态；只有执行异常才丢弃普通输出。
             patch = spec.patch(result.output)
+            # 清除上一次 Agent 异常留下的目标，防止后续验证失败误重试旧 Agent。
+            patch["retry_target"] = ""
         else:
-            patch = {}
+            # Agent 调用异常时只回写白名单内的重试元数据，不把异常输出当成业务结果。
+            # 否则 after_retry 看不到 retry_target，定位失败会错误地回到 repair_agent。
+            patch = _failure_route_patch(result)
+
         return {
             **patch,
             "last_result": "cancelled" if cancelled else result.status,
