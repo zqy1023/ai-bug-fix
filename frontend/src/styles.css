@@ -629,3 +629,11 @@ body { margin:0; background:#f5f7fb; }
  .sketch-search.ant-input-affix-wrapper { width:48vw; }
  .sketch-notification { display:none; }
 }
+
+
+/* Workflow-only control surface: remove styles tied to fake profile/workspace controls. */
+.workspace-label { cursor:default; user-select:none; }
+.sketch-approval-entry.ant-btn { display:flex; align-items:center; gap:9px; height:36px; border-radius:6px; border-color:#dfe6f1; color:#263752; font-size:12px; }
+.sketch-approval-entry.ant-btn-primary { color:#fff; background:#1764ff; border-color:#1764ff; }
+.sketch-approval-entry .ant-badge { margin-left:1px; }
+.sketch-approval-entry .ant-badge-count { box-shadow:none; }
