@@ -52,6 +52,6 @@ export const api = {
   decideApproval: (approvalId: string, decision: 'approve' | 'reject', reason: string) => request<{ run_id: string; task_id: string; decision: string; status: string }>('/approvals/' + encodeURIComponent(approvalId) + '/decision', { method: 'POST', body: JSON.stringify({ decision, reason }) }),
   startRun: (payload: { log_days: number; log_limit: number; review_mode: 'agent' | 'human'; max_attempts: number }) => request<{ run_id: string; status: string }>('/runs', { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify(payload) }),
   pauseRun: (runId: string) => request<{ status: string; message: string }>('/runs/' + encodeURIComponent(runId) + '/pause', { method: 'POST' }),
-  resumeRun: (runId: string) => request<{ status: string }>('/runs/' + encodeURIComponent(runId) + '/resume', { method: 'POST' }),
+  resumeRun: (runId: string) => request<{ status: string; message?: string }>('/runs/' + encodeURIComponent(runId) + '/resume', { method: 'POST' }),
   cancelRun: (runId: string) => request<{ status: string; message: string }>('/runs/' + encodeURIComponent(runId) + '/cancel', { method: 'POST' }),
 };
