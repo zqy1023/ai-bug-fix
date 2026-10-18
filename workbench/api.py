@@ -59,6 +59,10 @@ class ApprovalRequest(BaseModel):
     reason: str = ""
 
 
+class RetryStepRequest(BaseModel):
+    reason: str = Field(default="人工重试失败节点", max_length=500)
+
+
 def _authorize(authorization: str | None = Header(default=None)) -> None:
     token = os.getenv("WORKBENCH_API_TOKEN", "").strip()
     if not token:
@@ -952,6 +956,45 @@ def v1_get_run(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
     return _v1_detail(run_id)
 
 
+def _pending_checkpoint_nodes(snapshot: Any, seen: set[int] | None = None) -> set[str]:
+    """递归读取父图/嵌套任务子图的待执行节点；不把已完成的节点误判为可重试。"""
+    if snapshot is None:
+        return set()
+    seen = seen or set()
+    marker = id(snapshot)
+    if marker in seen:
+        return set()
+    seen.add(marker)
+    nodes = {str(name) for name in (getattr(snapshot, "next", ()) or ())}
+    for task in (getattr(snapshot, "tasks", ()) or ()):
+        nested = getattr(task, "state", None)
+        if nested is not None and not isinstance(nested, (str, bytes, dict)):
+            nodes.update(_pending_checkpoint_nodes(nested, seen))
+    return nodes
+
+
+def _retryable_step_names(run_id: str, store: RecordStore, steps: list[dict[str, Any]]) -> list[str]:
+    """只有 checkpoint 明确把该失败节点列为待执行时，才开放节点级重试。"""
+    failed = {
+        str(step.get("name") or "")
+        for step in steps
+        if step.get("status") == "failed" and str(step.get("name") or "")
+    }
+    if not failed:
+        return []
+    try:
+        from app.workflow.wiring import build_graph
+        graph = build_graph(store=store)
+        snapshot = graph.get_state(
+            {"configurable": {"thread_id": run_id}},
+            subgraphs=True,
+        )
+        return sorted(failed.intersection(_pending_checkpoint_nodes(snapshot)))
+    except Exception:
+        logger.debug("无法读取节点级重试 checkpoint run_id=%s", run_id, exc_info=True)
+        return []
+
+
 @app.get("/api/v1/runs/{run_id}/tasks/{task_id}")
 def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
     """只返回一个任务的详情，避免 Run 页面携带并渲染所有任务的步骤与产物。"""
@@ -995,9 +1038,12 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
             "size_bytes": None, "task_id": task_id,
         })
     run_meta = _read_json(store.run_dir(run_id) / "run.json", {})
+    run_status = _v1_run_summary(payload)["status"]
+    retryable_steps = _retryable_step_names(run_id, store, steps) if run_status == "failed" and not source.get("approval_pending") else []
     return {
         "run_id": run_id,
-        "run_status": _v1_run_summary(payload)["status"],
+        "run_status": run_status,
+        "retryable_steps": retryable_steps,
         "task": {
             "task_id": task_id, "carrier": source.get("carrier", ""),
             "biztype": source.get("biztype", ""), "result": source.get("status", "PENDING"),
