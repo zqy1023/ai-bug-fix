@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Alert, Button, Card, Empty, Progress, Skeleton, Statistic, Table, Typography } from 'antd';
-import { ArrowRightOutlined, CheckCircleFilled, ClockCircleOutlined, ExclamationCircleFilled, PlusOutlined, ReloadOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
+import { Alert, Button, Card, Empty, Skeleton, Statistic, Table, Typography } from 'antd';
+import { ArrowRightOutlined, CheckCircleFilled, ExclamationCircleFilled, PlusOutlined, ReloadOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../lib/api';
@@ -41,13 +41,6 @@ const workflowLabels: Record<string, string> = {
   run_regression: '回归验证', review_agent: '代码审查', request_approval: '最终审批',
   apply_plan: '应用交付方案', prepare_delivery: '准备交付', finalize_execution: '完成与报告',
 };
-function priority(run: RunSummary) {
-  if (run.status === 'waiting_approval') return { label: '待审批', tone: 'queue-amber' };
-  if (run.status === 'failed' || run.status === 'partial_failed') return { label: '失败', tone: 'queue-red' };
-  if (run.status === 'running' || run.status === 'queued' || run.status === 'pause_requested') return { label: '运行中', tone: 'queue-green' };
-  if (run.manual_tasks > 0) return { label: '需判断', tone: 'queue-blue' };
-  return { label: statusLabel[run.status] || run.status, tone: 'queue-muted' };
-}
 
 export function DashboardPage() {
   const navigate = useNavigate();
@@ -80,7 +73,7 @@ export function DashboardPage() {
   return <div className="page-stack sketch-dashboard">
     <div className="sketch-page-heading">
       <div><Title level={2}>运行工作台</Title><Text>从异常发现到交付审批，集中处理每一条修复任务。</Text></div>
-      <div className="sketch-heading-actions"><span>最近更新 {time(summary.data?.recent_runs?.[0]?.started_at)}</span><Button icon={<ReloadOutlined />} onClick={() => { void summary.refetch(); void runsQuery.refetch(); void selectedRun.refetch(); }} loading={summary.isFetching || runsQuery.isFetching}>刷新</Button><Button type="primary" icon={<PlusOutlined />} disabled={Boolean(health.data && !health.data.source_repo_configured)} onClick={() => setLaunchOpen(true)}>新建扫描</Button></div>
+      <div className="sketch-heading-actions"><span>最近更新 {time(summary.data?.recent_runs?.[0]?.started_at)}</span><Button icon={<ReloadOutlined />} onClick={() => { void summary.refetch(); void runsQuery.refetch(); if (selectedId) void selectedRun.refetch(); }} loading={summary.isFetching || runsQuery.isFetching}>刷新</Button><Button type="primary" icon={<PlusOutlined />} disabled={Boolean(health.data && !health.data.source_repo_configured)} onClick={() => setLaunchOpen(true)}>新建扫描</Button></div>
     </div>
     {health.isError && <Alert showIcon type="error" message="工作流服务连接失败" description={(health.error as Error).message} action={<Button type="link" onClick={() => health.refetch()}>重试</Button>} />}
     {health.data && !health.data.source_repo_configured && <Alert showIcon type="warning" message="源代码仓库尚未配置" description="服务已连接，但尚未配置可用于修复的源仓库。启动扫描前请先完成后端配置。" />}
