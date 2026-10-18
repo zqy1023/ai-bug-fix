@@ -1058,6 +1058,70 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
     }
 
 
+@app.post("/api/v1/runs/{run_id}/tasks/{task_id}/steps/{step_name}/retry", status_code=202)
+def v1_retry_failed_step(
+    run_id: str,
+    task_id: str,
+    step_name: str,
+    request: RetryStepRequest,
+    background: BackgroundTasks,
+    authorization: str | None = Header(default=None),
+    _: None = Depends(_authorize),
+) -> dict[str, Any]:
+    """重试 checkpoint 中仍处于 pending 的失败节点；成功后由原图继续正常路由。"""
+    run_id, task_id, step_name = _safe_id(run_id), _safe_id(task_id), _safe_id(step_name)
+    with _RUN_LOCKS_GUARD:
+        lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
+    if not lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="该执行正在进行其他控制操作")
+    try:
+        store = _store()
+        payload = _run_payload(store, run_id)
+        source = next((item for item in payload.get("tasks", []) if item.get("task_id") == task_id), None)
+        if source is None:
+            raise HTTPException(status_code=404, detail="该执行中不存在此任务")
+        if str(payload.get("status") or "").lower() != "failed":
+            raise HTTPException(status_code=409, detail="只有执行失败的 Run 可以进行节点级重试")
+        if source.get("approval_pending"):
+            raise HTTPException(status_code=409, detail="任务正在等待人工审批，不能同时重试节点")
+        step = next((item for item in reversed(source.get("steps") or []) if item.get("name") == step_name), None)
+        if not step or step.get("status") != "failed":
+            raise HTTPException(status_code=409, detail="指定节点没有失败记录，拒绝重试")
+        retryable = _retryable_step_names(run_id, store, list(source.get("steps") or []))
+        if step_name not in retryable:
+            raise HTTPException(
+                status_code=409,
+                detail="该节点不是 LangGraph checkpoint 中待重新执行的节点；为避免跳过依赖或重复执行副作用，未提交重试",
+            )
+        connection = _control_db()
+        try:
+            connection.execute(
+                "INSERT INTO run_control(run_id,pause_requested,cancel_requested,updated_at) VALUES(?,0,0,?) "
+                "ON CONFLICT(run_id) DO UPDATE SET pause_requested=0,cancel_requested=0,updated_at=excluded.updated_at",
+                (run_id, datetime.now(timezone.utc).isoformat()),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        actor = "bearer-token" if authorization else "local-user"
+        _audit_control(run_id, task_id, "step.retry_requested:" + step_name, actor, request.reason)
+    except HTTPException:
+        lock.release()
+        raise
+    except Exception as exc:
+        lock.release()
+        logger.exception("提交失败节点重试失败 run_id=%s task_id=%s step=%s", run_id, task_id, step_name)
+        raise HTTPException(status_code=503, detail="无法验证或提交节点重试，请检查服务端日志") from exc
+    background.add_task(_resume_workflow_background, run_id, lock)
+    return {
+        "run_id": run_id,
+        "task_id": task_id,
+        "step_name": step_name,
+        "status": "retry_requested",
+        "message": "已提交该失败节点重试；节点成功后工作流将按原有路由继续执行",
+    }
+
+
 @app.post("/api/v1/runs/{run_id}/pause", status_code=202)
 def v1_pause_run(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
     """请求在下一个节点边界暂停；节点完成前返回 pause_requested，而非谎报已暂停。"""
