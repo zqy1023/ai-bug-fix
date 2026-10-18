@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { AppstoreOutlined, BookOutlined, BellOutlined, CheckCircleOutlined, ClockCircleOutlined, CodeOutlined, FileSearchOutlined, HomeFilled, PlusOutlined, SafetyCertificateOutlined, SearchOutlined, SettingOutlined } from '@ant-design/icons';
+import { AppstoreOutlined, BellOutlined, CheckCircleOutlined, ClockCircleOutlined, CodeOutlined, FileSearchOutlined, HomeFilled, PlusOutlined, SafetyCertificateOutlined, SearchOutlined, SettingOutlined } from '@ant-design/icons';
 import { Badge, Breadcrumb, Button, Input, Layout, Menu, Modal, Tooltip, Typography } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, api, setApiToken } from '../lib/api';
@@ -26,7 +26,7 @@ export function AppLayout() {
   const selected = location.pathname.startsWith('/runs') ? '/runs' : location.pathname;
   const pageTitle = location.pathname.startsWith('/runs/') ? (taskId ? '任务审计' : '运行详情')
     : location.pathname === '/runs' ? '运行队列' : location.pathname === '/approvals' ? '待审批'
-    : location.pathname === '/knowledge' ? '知识中心' : location.pathname === '/settings' ? '系统状态' : '运行概览';
+    : location.pathname === '/settings' ? '系统状态' : '运行概览';
   const crumbs = useMemo(() => {
     const items: { title: ReactNode }[] = [{ title: <a onClick={() => navigate('/dashboard')}>工作台</a> }];
     if (location.pathname === '/' || location.pathname === '/dashboard') return [...items, { title: '运行概览' }];
@@ -37,7 +37,6 @@ export function AppLayout() {
       return items;
     }
     if (location.pathname === '/approvals') return [...items, { title: '待审批' }];
-    if (location.pathname === '/knowledge') return [...items, { title: '知识中心' }];
     return [...items, { title: pageTitle }];
   }, [location.pathname, navigate, runId, taskId, pageTitle]);
   const submitToken = async () => {
@@ -83,7 +82,6 @@ export function AppLayout() {
             { key: '/runs/audit', icon: <FileSearchOutlined />, label: '任务审计', disabled: true },
             { key: '/approvals', icon: <SafetyCertificateOutlined />, label: <span className="menu-label"><span>待审批</span><Badge count={pendingCount} overflowCount={99} /></span> },
             { type: 'divider' },
-            { key: '/knowledge', icon: <BookOutlined />, label: '知识中心' },
             { key: '/settings', icon: <SettingOutlined />, label: '系统状态', disabled: true },
           ]}
           onClick={({ key }) => navigate(key)} />
@@ -100,7 +98,7 @@ export function AppLayout() {
             <Tooltip title={pendingCount ? pendingCount + ' 项待审批' : '暂无待审批'}>
               <Button className="sketch-notification" type="text" icon={<Badge dot={pendingCount > 0}><BellOutlined /></Badge>} onClick={() => navigate('/approvals')} aria-label="通知" />
             </Tooltip>
-            <button className="sketch-user" onClick={() => navigate('/knowledge')}><span>JD</span><strong>张三</strong><span className="workspace-chevron">⌄</span></button>
+            <button className="sketch-user" onClick={() => navigate('/dashboard')}><span>JD</span><strong>张三</strong><span className="workspace-chevron">⌄</span></button>
           </div>
         </Header>
         <Content className="page-content sketch-page-content"><Outlet /></Content>
