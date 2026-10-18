@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { CheckCircleOutlined, ClockCircleOutlined, CodeOutlined, HomeFilled, PlusOutlined, SafetyCertificateOutlined, SearchOutlined,  } from '@ant-design/icons';
+import { ClockCircleOutlined, CodeOutlined, HomeFilled, SafetyCertificateOutlined, SearchOutlined } from '@ant-design/icons';
 import { Badge, Breadcrumb, Button, Input, Layout, Menu, Modal, Typography } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, api, setApiToken } from '../lib/api';
