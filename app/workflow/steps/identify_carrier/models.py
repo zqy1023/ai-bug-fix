@@ -30,6 +30,9 @@ class IdentifyCarrierInput(FrozenModel):
 
     # run_id：字段说明见该模型文档与工作流契约。
     run_id: str
+    # 可选的 Task 重跑范围；由新 Run 在识别阶段按原始业务身份过滤。
+    task_filter_carrier: str = ""
+    task_filter_biztype: str = ""
 
 
 class IdentifyCarrierOutput(FrozenModel):
