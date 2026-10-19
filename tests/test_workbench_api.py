@@ -4,20 +4,6 @@ import workbench.api as workbench_api
 from workbench.api import app
 
 
-
-def test_v1_resume_rejects_non_resumable_checkpoint_and_releases_lock(monkeypatch):
-    client = TestClient(app)
-    monkeypatch.setattr(workbench_api, "_v1_detail", lambda run_id: {
-        "run_id": run_id, "status": "failed", "checkpoint": {"resumable": False}
-    })
-    response = client.post("/api/v1/runs/resume-demo/resume")
-    assert response.status_code == 409
-    with workbench_api._RUN_LOCKS_GUARD:
-        lock = workbench_api._RUN_LOCKS["resume-demo"]
-    assert lock.acquire(blocking=False)
-    lock.release()
-
-
 def test_health_endpoint_is_available():
     client = TestClient(app)
     response = client.get("/api/health")
@@ -56,6 +42,86 @@ def test_v1_start_requires_idempotency_key():
     })
     assert response.status_code in {400, 409, 503}
 
+
+
+def test_manual_failed_node_retry_schedules_only_checkpoint_pending_node(monkeypatch):
+    from types import SimpleNamespace
+
+    class FakeConnection:
+        def execute(self, *_args, **_kwargs):
+            return self
+        def commit(self):
+            pass
+        def close(self):
+            pass
+
+    class CapturingBackground:
+        def __init__(self):
+            self.tasks = []
+        def add_task(self, fn, *args, **kwargs):
+            self.tasks.append((fn, args, kwargs))
+
+    monkeypatch.setattr(workbench_api, "_store", lambda: object())
+    monkeypatch.setattr(workbench_api, "_run_payload", lambda *_args: {
+        "status": "failed",
+        "tasks": [{
+            "task_id": "task-1",
+            "status": "FAILED",
+            "approval_pending": False,
+            "steps": [{"name": "repair_agent", "status": "failed"}],
+        }],
+    })
+    monkeypatch.setattr(workbench_api, "_retryable_step_names", lambda *_args: ["repair_agent"])
+    monkeypatch.setattr(workbench_api, "_control_db", lambda: FakeConnection())
+    monkeypatch.setattr(workbench_api, "_audit_control", lambda *_args, **_kwargs: None)
+    background = CapturingBackground()
+
+    result = workbench_api.v1_retry_failed_step(
+        "run-retry-test", "task-1", "repair_agent",
+        workbench_api.RetryStepRequest(reason="人工确认后重试"),
+        background, None,
+    )
+
+    assert result["status"] == "retry_requested"
+    assert result["step_name"] == "repair_agent"
+    assert len(background.tasks) == 1
+    assert background.tasks[0][0] is workbench_api._resume_workflow_background
+    # The captured background scheduler does not execute the callback.
+    lock = background.tasks[0][1][1]
+    assert lock.acquire(blocking=False) is False
+    lock.release()
+
+
+def test_manual_failed_node_retry_rejects_node_not_pending_in_checkpoint(monkeypatch):
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(workbench_api, "_store", lambda: object())
+    monkeypatch.setattr(workbench_api, "_run_payload", lambda *_args: {
+        "status": "failed",
+        "tasks": [{
+            "task_id": "task-2",
+            "status": "FAILED",
+            "approval_pending": False,
+            "steps": [{"name": "repair_agent", "status": "failed"}],
+        }],
+    })
+    monkeypatch.setattr(workbench_api, "_retryable_step_names", lambda *_args: [])
+    background = type("Background", (), {"add_task": lambda *_args, **_kwargs: None})()
+
+    try:
+        workbench_api.v1_retry_failed_step(
+            "run-retry-test-2", "task-2", "repair_agent",
+            workbench_api.RetryStepRequest(), background, None,
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 409
+        assert "checkpoint" in exc.detail
+    else:
+        raise AssertionError("retry must be rejected when checkpoint does not point at the failed node")
+    with workbench_api._RUN_LOCKS_GUARD:
+        lock = workbench_api._RUN_LOCKS["run-retry-test-2"]
+    assert lock.acquire(blocking=False)
+    lock.release()
 
 
 def test_model_call_audit_endpoint_requires_existing_run():
