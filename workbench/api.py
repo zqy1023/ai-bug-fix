@@ -744,6 +744,8 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
         "config": {
             "log_days": run_meta.get("log_days", 1), "log_limit": run_meta.get("log_limit", 0),
             "review_mode": run_meta.get("review_mode", "agent"), "max_attempts": run_meta.get("max_attempts", 3),
+            "task_filter_carrier": run_meta.get("task_filter_carrier", ""),
+            "task_filter_biztype": run_meta.get("task_filter_biztype", ""),
         },
         "steps": steps, "tasks": tasks, "artifacts": artifacts,
         "run_report": run_report if isinstance(run_report, dict) else {},
@@ -1011,6 +1013,8 @@ def v1_rerun_run(
         log_limit=int(config.get("log_limit") or 0),
         review_mode=config.get("review_mode") if config.get("review_mode") in {"agent", "human"} else "agent",
         max_attempts=int(config.get("max_attempts") or 3),
+        task_filter_carrier=str(config.get("task_filter_carrier") or ""),
+        task_filter_biztype=str(config.get("task_filter_biztype") or ""),
     )
     result = v1_start_run(
         request, background,
@@ -1083,6 +1087,8 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
         "config": {
             "log_days": run_meta.get("log_days", 1), "log_limit": run_meta.get("log_limit", 0),
             "review_mode": run_meta.get("review_mode", "agent"), "max_attempts": run_meta.get("max_attempts", 3),
+            "task_filter_carrier": run_meta.get("task_filter_carrier", ""),
+            "task_filter_biztype": run_meta.get("task_filter_biztype", ""),
         },
     }
 
