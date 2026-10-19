@@ -7,8 +7,6 @@
 ```text
 runtime/
 ├── workflow-checkpoints.sqlite3
-├── eligibility.sqlite3
-├── eligibility.json                    # 旧版本迁移来源
 ├── workbench-control.sqlite3
 └── runs/<run_id>/
     ├── run.json
@@ -40,10 +38,9 @@ runtime/
 | `runs/<run_id>/reports/run_failure.json` | 后台执行线程的未捕获异常摘要 | 仅发生此类异常时生成 |
 | `runs/<run_id>/tasks/<task_id>/**` 中的其他 JSON | 证据、源码 diff、验证、回归和交付等节点产物 | 按节点声明的相对路径生成，`steps.json` 保存引用 |
 | `runtime/workbench-control.sqlite3` | 启动幂等信息、暂停/取消请求和控制操作审计 | 工作台控制 API 更新 |
-| `runtime/eligibility.sqlite3` | SQLite 唯一约束，确保同一 Run 中同一承运商问题只领取一次修复资格 | 领取资格时事务写入；旧版 `eligibility.json` 仅用于迁移 |
 | `runtime/workflow-checkpoints.sqlite3` | LangGraph 持久化状态和 interrupt/checkpoint | 图执行过程中更新，支持审批/暂停后恢复 |
 
-`JSON` 是结构化快照或最终结果；`JSONL` 是追加式日志，每行都是独立 JSON 对象，不能把整个文件直接作为单个 JSON 文档解析。SQLite 用于控制状态、修复资格和 LangGraph 检查点，不能代替审计文件。
+`JSON` 是结构化快照或最终结果；`JSONL` 是追加式日志，每行都是独立 JSON 对象，不能把整个文件直接作为单个 JSON 文档解析。SQLite 用于控制状态和 LangGraph 检查点，不能代替审计文件。
 
 ## Agent 事件过滤与内存控制
 

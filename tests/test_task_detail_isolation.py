@@ -49,33 +49,3 @@ def test_task_detail_endpoint_isolated_to_requested_task(tmp_path, monkeypatch):
     assert "only legacy source is available" in result["task"]["report"]["terminal_reason"]
     assert all(step["name"] != "repair_agent" for step in result["task"]["steps"])
     assert all(artifact.get("task_id") == "task-a" for artifact in result["artifacts"] if artifact.get("task_id"))
-
-
-def test_manual_intervention_uses_reported_blocking_step_and_reason(monkeypatch):
-    payload = {
-        "run_id": "run-2", "status": "partial_failed",
-        "created_at": "2026-10-16T00:00:00+00:00", "updated_at": "2026-10-16T00:01:00+00:00",
-        "tasks": [{
-            "task_id": "task-cp", "carrier": "CouriersPlease", "biztype": "framework.track_server",
-            "status": "MANUAL", "approval_pending": False,
-            "report": {
-                "result": "MANUAL", "terminal_step": "prepare_evidence",
-                "terminal_reason": "only spiders/CouriersPlease.py exists; expected gathers entry point",
-            },
-            "steps": [
-                {"name": "prepare_evidence", "status": "succeeded", "result": None,
-                 "output": {"legacy_only": True, "legacy_reason": "only spiders/CouriersPlease.py exists; expected gathers entry point"}},
-                {"name": "finalize_execution", "status": "succeeded", "result": "MANUAL",
-                 "output": {"delivery_status": "MANUAL", "summary": "MANUAL"}},
-            ],
-        }],
-    }
-    monkeypatch.setattr(workbench_api, "_store", lambda: object())
-    monkeypatch.setattr(workbench_api, "_all_run_ids", lambda _: ["run-2"])
-    monkeypatch.setattr(workbench_api, "_run_payload", lambda _store, _run_id: payload)
-
-    result = workbench_api.v1_list_manual_interventions(None)
-
-    assert result["total"] == 1
-    assert result["items"][0]["step"] == "prepare_evidence"
-    assert "only spiders/CouriersPlease.py exists" in result["items"][0]["summary"]

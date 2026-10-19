@@ -45,7 +45,6 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         (state.get("evidence") or {}).get("legacy_only")
         or (state.get("evidence") or {}).get("legacy_dependency")
         or state.get("scope_escalation_required")
-        or state.get("manual_intervention_required")
         or str((state.get("review") or {}).get("verdict") or "").upper() == "MANUAL"
         or str((state.get("task_summary") or {}).get("delivery_status") or "").upper() in {"FAILED", "MANUAL"}
         or str((state.get("locate") or {}).get("status") or "") != "LOCATED"

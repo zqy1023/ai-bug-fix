@@ -33,6 +33,15 @@ def test_invalid_approval_decision_is_rejected():
     assert response.status_code == 422
 
 
+def test_manual_intervention_api_routes_are_removed():
+    client = TestClient(app)
+    assert client.get("/api/v1/manual-interventions").status_code == 404
+    assert client.post(
+        "/api/v1/manual-interventions/run-1:task-1/decision",
+        json={"decision": "terminate", "reason": "done"},
+    ).status_code == 404
+
+
 def test_v1_contract_exposes_dashboard_and_paginated_runs():
     client = TestClient(app)
     dashboard = client.get("/api/v1/dashboard/summary")
@@ -70,110 +79,6 @@ def test_control_audit_endpoint_requires_existing_run():
     assert response.status_code in {404, 503}
 
 
-
-def test_manual_intervention_endpoint_lists_manual_locate_without_treating_it_as_approval(monkeypatch, tmp_path):
-    from types import SimpleNamespace
-
-    fake_store = SimpleNamespace(task_dir=lambda run_id, task_id: tmp_path / run_id / task_id)
-    monkeypatch.setattr(workbench_api, "_store", lambda: fake_store)
-    monkeypatch.setattr(workbench_api, "_all_run_ids", lambda _store: ["run-manual"])
-    monkeypatch.setattr(workbench_api, "_run_payload", lambda _store, _run_id: {
-        "updated_at": "2026-10-16T00:00:00+00:00",
-        "tasks": [{
-            "task_id": "task-1",
-            "carrier": "ExampleCarrier",
-            "biztype": "Brazil",
-            "status": "MANUAL",
-            "approval_pending": False,
-            "steps": [{
-                "name": "locate_agent",
-                "result": "MANUAL",
-                "summary": "缺少关键源码证据",
-                "output": {"status": "MANUAL", "summary": "缺少关键源码证据"},
-            }],
-        }],
-    })
-
-    result = workbench_api.v1_list_manual_interventions(None)
-
-    assert result["total"] == 1
-    item = result["items"][0]
-    assert item["intervention_id"] == "run-manual:task-1"
-    assert item["step"] == "locate_agent"
-    assert item["status"] == "open"
-    assert item["summary"] == "缺少关键源码证据"
-
-
-def test_manual_intervention_endpoint_recovers_legacy_locate_detail(monkeypatch, tmp_path):
-    from types import SimpleNamespace
-
-    fake_store = SimpleNamespace(task_dir=lambda run_id, task_id: tmp_path / run_id / task_id)
-    monkeypatch.setattr(workbench_api, "_store", lambda: fake_store)
-    monkeypatch.setattr(workbench_api, "_all_run_ids", lambda _store: ["run-legacy"])
-    monkeypatch.setattr(workbench_api, "_run_payload", lambda _store, _run_id: {
-        "updated_at": "2026-10-16T00:00:00+00:00",
-        "tasks": [{
-            "task_id": "task-legacy",
-            "carrier": "ExampleCarrier",
-            "biztype": "track_server",
-            "status": "MANUAL",
-            "approval_pending": False,
-            "steps": [{
-                "name": "locate_agent",
-                "result": "MANUAL",
-                "summary": "定位输出不满足证据或路径契约，停止并转人工",
-                "output": {
-                    "status": "MANUAL",
-                    "summary": "定位输出不满足证据或路径契约，停止并转人工",
-                    "evidence_gaps": ["candidate_files[0] 超出目标 carrier 目录：gathers/Other/main.py"],
-                },
-            }],
-        }],
-    })
-
-    result = workbench_api.v1_list_manual_interventions(None)
-
-    assert result["total"] == 1
-    assert "gathers/Other/main.py" in result["items"][0]["summary"]
-    assert result["items"][0]["summary"].startswith("定位输出契约校验失败：")
-
-
-
-def test_manual_intervention_pending_exposes_only_evidence_supported_actions(monkeypatch, tmp_path):
-    from types import SimpleNamespace
-
-    fake_store = SimpleNamespace(task_dir=lambda run_id, task_id: tmp_path / run_id / task_id)
-    monkeypatch.setattr(workbench_api, "_store", lambda: fake_store)
-    monkeypatch.setattr(workbench_api, "_all_run_ids", lambda _store: ["run-pending"])
-    monkeypatch.setattr(workbench_api, "_run_payload", lambda _store, _run_id: {
-        "updated_at": "2026-10-16T00:00:00+00:00",
-        "tasks": [{
-            "task_id": "task-pending",
-            "carrier": "ExampleCarrier",
-            "biztype": "track_server",
-            "status": "WAITING_APPROVAL",
-            "approval_pending": True,
-            "steps": [{
-                "name": "request_approval",
-                "input": {
-                    "mode": "manual_intervention",
-                    "intervention_reason": "定位契约不完整，需要人工复核",
-                    "root_cause": "上游响应解析异常",
-                    "candidate_files": ["gathers/ExampleCarrier/main.py"],
-                    "continue_allowed": True,
-                },
-            }],
-        }],
-    })
-
-    result = workbench_api.v1_list_manual_interventions(None)
-
-    assert result["total"] == 1
-    item = result["items"][0]
-    assert item["status"] == "waiting_decision"
-    assert item["root_cause"] == "上游响应解析异常"
-    assert item["candidate_files"] == ["gathers/ExampleCarrier/main.py"]
-    assert item["decision_options"] == ["RETRY_LOCATE", "CONTINUE_REPAIR", "MARK_DONE", "TERMINATE"]
 
 def test_v1_start_persists_run_before_scheduling_background_task(tmp_path, monkeypatch):
     from types import SimpleNamespace

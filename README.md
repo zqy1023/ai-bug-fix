@@ -12,7 +12,7 @@ discover_logs -> normalize_error -> deduplicate_error -> identify_carrier
      prepare_source_snapshot -> prepare_evidence -> locate_agent
      -> claim_repair_slot -> prepare_workspace -> repair_agent
      -> check_changes -> verify_issue -> run_regression
-     -> review_agent | request_approval -> apply_plan
+     -> review_agent -> request_approval
      -> prepare_delivery -> finalize_execution
   -> task_collect（记下结论，推进游标）-> 回到 task_dispatch
 ```

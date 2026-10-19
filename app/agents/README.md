@@ -11,8 +11,8 @@
 修复对外只留 `passed` / `result` / `analysis` / `summary` / `change_plan` / `blocked_reason` / `scope_escalation_required`。
 审查对外只留 `verdict` / `passed` / `summary` / `findings` / `required_changes` / `change_plan`。
 
-`change_plan` 是两者的正式授权通道：根因确实不在目标 carrier 时给出方案，`scope=project` 的方案
-进人工审批，批准后由 `apply_plan` 落盘；`scope=carrier` 且已就地改完时 `edits` 为空。
+`change_plan` 是两者的正式分析通道：根因确实不在目标 carrier 时给出方案，`scope=project`
+的方案需要人工确认；`scope=carrier` 且已就地改完时 `edits` 为空。
 
 Agent 子图的 `State` 使用 TypedDict：**新增字段必须显式声明**，否则会被 LangGraph 静默丢弃
 （`RepairState.passed`、`ReviewState.change_plan` 都踩过这个坑）。

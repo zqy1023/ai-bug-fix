@@ -318,7 +318,6 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
                     retry_reason=str(state.get("retry_reason") or ""),
                     evidence=evidence,
                     locate=dict(state.get("locate") or {}),
-                    manual_continue_authorized=bool(state.get("manual_continue_authorized")),
                 )
                 # 任务字典平铺回子图输入：子图按 carrier / service_name 取字段。
                 graph_input = {
@@ -513,10 +512,7 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
         }
         if kind == "locate":
             patch["last_result"] = "manual" if failed else "passed"
-            patch["manual_intervention_required"] = failed
-            patch["manual_continue_allowed"] = bool(final.get("manual_continue_allowed"))
             patch["scope_escalation_required"] = bool(final.get("scope_escalation_required")) or bool(view.recommended_scope == "project")
-            patch["approval_mode"] = ""
         if kind == "review" and view.change_plan:
             patch["change_plan"] = dict(view.change_plan)
             patch["scope_escalation_required"] = str(view.change_plan.get("scope") or "") == "project"
@@ -542,41 +538,18 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
                 # 不允许共享层改动在没有可审方案时被重试/收尾悄悄吞掉。
                 source_evidence = locate.get("source_evidence")
                 candidate_files = locate.get("candidate_files")
-                can_retry_repair = bool(
-                    (str(locate.get("status") or "") == "LOCATED" or bool(state.get("manual_continue_authorized")))
-                    and str(locate.get("root_cause") or "").strip()
-                    and isinstance(source_evidence, list) and source_evidence
-                    and isinstance(candidate_files, list) and candidate_files
-                )
                 patch.update({
-                    "manual_intervention_required": True,
-                    "manual_continue_allowed": can_retry_repair,
-                    "manual_intervention_reason": (
-                        "定位已确认需要修改目标 carrier 之外的共享代码，但修复 Agent 没有生成完整的变更方案。"
-                        "请重新尝试生成方案，或结束自动修复后人工处理；系统不会直接写入共享层。"
-                    ),
-                    "manual_intervention_step": "repair_agent",
-                    "manual_resume_step": "repair_agent",
                     "last_result": "manual",
                     "terminal_status": "manual",
                 })
             else:
                 if scope_escalation:
                     patch["terminal_status"] = "manual"
-                patch.update({
-                    "manual_intervention_required": False,
-                    "manual_continue_allowed": False,
-                    "manual_intervention_reason": "",
-                    "manual_intervention_step": "",
-                    "manual_resume_step": "",
-                })
             baseline = final.get("baseline_manifest")
             if isinstance(baseline, dict):
                 patch["baseline_manifest"] = {str(key): str(value) for key, value in baseline.items()}
             if final.get("baseline_dir"):
                 patch["baseline_dir"] = str(final.get("baseline_dir"))
-            # 人工继续授权只允许被当前 repair 调用消费一次。
-            patch["manual_continue_authorized"] = False
         if cancellation_requested(store.root, run_id):
             patch.update({
                 "last_result": "cancelled",

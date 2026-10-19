@@ -38,7 +38,9 @@ def prepare_run(
         max_attempts=int(options.get("max_attempts", config.max_attempts)),
     )
     if not 1 <= config.log_days <= 30 or not 1 <= config.max_attempts <= 5 or config.limit < 0:
-        raise ValueError("执行参数超出允许范围")
+        raise ValueError("执行参"
+                         ""
+                         "数超出允许范围")
     if config.review_mode not in ("agent", "human"):
         raise ValueError("review_mode 只能是 agent 或 human")
     if config.source_repo is None:
@@ -219,11 +221,10 @@ def _ensure_task_final_report(
         inferred_reason = "任务已结束，但系统未能从持久化步骤记录还原具体结束原因。"
         inferred_action = "查看最后一个步骤的输入、输出和错误，补齐处置记录后再重试或转人工。"
 
-    has_recorded_reason = bool(str(existing.get("terminal_reason") or final_output.get("terminal_reason") or "").strip())
     terminal_reason = str(existing.get("terminal_reason") or final_output.get("terminal_reason") or inferred_reason or "").strip()
     next_action = str(existing.get("next_action") or final_output.get("next_action") or inferred_action or "").strip()
-    if error is not None and result == "FAILED" and not has_recorded_reason:
-        terminal_reason = f"工作流在任务执行期间异常退出：{type(error).__name__}: {str(error).strip()}"[:2000]
+    if error is not None and result == "FAILED":
+        terminal_reason = "工作流在任务执行期间异常退出；请检查服务端日志中的完整堆栈。"
         next_action = "检查服务端异常堆栈、最后步骤的输入输出和任务产物；修复异常后重新执行。"
 
     carrier = str(existing.get("carrier") or _task_slot_identity(slot, "carrier"))
@@ -303,11 +304,12 @@ def _write_run_report(
         if error is not None:
             result = "FAILED"
             terminal = failed_steps[-1] if failed_steps else (run_steps[-1] if run_steps else None)
-            reason = f"{type(error).__name__}: {error}".strip()
+            logger.error("Run 工作流异常 run_id=%s", run_id, exc_info=(type(error), error, error.__traceback__))
+            reason = "后台工作流异常；请检查服务端日志中的完整堆栈。"
             terminal_step = terminal.name if terminal else "workflow"
             next_action = "检查工作流异常堆栈、最后一个节点的输入输出和运行产物后重试。"
             failure = {
-                "status": "FAILED", "error_type": type(error).__name__, "message": str(error),
+                "status": "FAILED", "error_type": type(error).__name__, "message": reason,
                 "failed_at": now, "terminal_step": terminal_step, "terminal_reason": reason,
             }
             _atomic_json(reports_dir / "run_failure.json", failure)

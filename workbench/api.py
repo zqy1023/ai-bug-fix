@@ -53,7 +53,7 @@ class StartRunRequest(BaseModel):
 
 
 class ApprovalRequest(BaseModel):
-    # decision：人工审批决定或人工处置动作。
+    # decision：交付审批决定。
     decision: str
     # reason：人工操作说明，用于审计与终态报告。
     reason: str = ""
@@ -118,7 +118,7 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
             report = _read_json(final_path, {})
             # 同一任务可经历多轮回修与多次审批；必须以最后一次 request_approval 为准。
             # 读取第一条会让旧的已完成审批遮蔽当前 running/PENDING 的 interrupt，
-            # API 随后把 MARK_DONE 当作历史登记，根本不恢复 LangGraph checkpoint。
+            # API 随后按最新审批记录恢复 LangGraph checkpoint。
             approval = _latest_approval_step(task_steps)
             carrier = str((report or {}).get("carrier") or _task_identity(slot, "carrier"))
             biztype = str((report or {}).get("biztype") or _task_identity(slot, "biztype"))
@@ -492,10 +492,8 @@ def decide_approval(
     _: None = Depends(_authorize),
 ) -> dict[str, Any]:
     decision = request.decision.upper()
-    if decision not in {"APPROVE", "REJECT", "RETRY_LOCATE", "CONTINUE_REPAIR", "MARK_DONE", "TERMINATE"}:
-        raise HTTPException(status_code=422, detail="审批或人工处置决定无效")
-    if decision in {"CONTINUE_REPAIR", "MARK_DONE", "TERMINATE"} and not request.reason.strip():
-        raise HTTPException(status_code=422, detail="继续修复、人工完成或终止操作必须填写处置说明")
+    if decision not in {"APPROVE", "REJECT"}:
+        raise HTTPException(status_code=422, detail="变更审批 decision 只能是 APPROVE 或 REJECT")
     run_id, task_id = _safe_id(run_id), _safe_id(task_id)
     store = _store()
     run = _run_payload(store, run_id)
@@ -505,29 +503,6 @@ def decide_approval(
     steps = task.get("steps") if isinstance(task.get("steps"), list) else []
     approval_step = _latest_approval_step(steps)
     approval_input = approval_step.get("input") if isinstance(approval_step, dict) and isinstance(approval_step.get("input"), dict) else {}
-    mode = str(approval_input.get("mode") or "change_approval")
-    if not task.get("approval_pending") and decision in {"MARK_DONE", "TERMINATE"}:
-        report = task.get("report") if isinstance(task.get("report"), dict) else {}
-        terminal = str(report.get("result") or task.get("status") or "").upper()
-        if terminal not in {"MANUAL", "INSUFFICIENT_EVIDENCE"}:
-            raise HTTPException(status_code=409, detail="该任务不是待处置的人工介入任务")
-        now = datetime.now(timezone.utc).isoformat()
-        store.write_artifact(run_id, "reports/manual_resolution.json", {
-            "status": "completed" if decision == "MARK_DONE" else "terminated",
-            "decision": decision, "reason": request.reason, "resolved_at": now,
-        }, task_id)
-        return {"run_id": run_id, "task_id": task_id, "decision": decision, "status": "resolved"}
-    manual_actions = {"RETRY_LOCATE", "CONTINUE_REPAIR", "MARK_DONE", "TERMINATE"}
-
-    if mode == "manual_intervention":
-        allowed = {"RETRY_LOCATE", "MARK_DONE", "TERMINATE"}
-        if approval_input.get("continue_allowed") is True:
-            allowed.add("CONTINUE_REPAIR")
-        if decision not in allowed:
-            raise HTTPException(status_code=422, detail="人工处置动作无效，或当前证据不允许继续修复")
-    elif decision not in {"APPROVE", "REJECT"}:
-        raise HTTPException(status_code=422, detail="变更审批 decision 只能是 APPROVE 或 REJECT")
-
     if not task.get("approval_pending"):
         raise HTTPException(status_code=409, detail="该任务当前没有可恢复的人工决策中断；历史终态任务不能原地续跑")
 
@@ -544,7 +519,6 @@ def decide_approval(
         run_id,
         lock,
         resume_payload,
-        {"mode": mode, "task_id": task_id, "decision": decision, "reason": request.reason},
     )
     return {"run_id": run_id, "task_id": task_id, "decision": decision, "status": "resume_requested"}
 
@@ -566,8 +540,8 @@ class V1StartRunRequest(BaseModel):
 
 
 class V1ApprovalDecision(BaseModel):
-    # decision：普通审批仅使用 approve/reject；人工介入可选择重定位、继续修复、标记完成或终止。
-    decision: Literal["approve", "reject", "retry_locate", "continue_repair", "mark_done", "terminate"]
+    # decision：交付审批决定。
+    decision: Literal["approve", "reject"]
     # reason：审批说明或拒绝原因，最多 1000 字符。
     reason: str = Field(default="", max_length=1000)
 
@@ -889,6 +863,7 @@ def v1_start_run(
 def _record_background_failure(run_id: str, error: Exception) -> None:
     """将图外异常写成可查询的终态产物，避免后台任务失败后 Run 永久显示运行中。"""
     try:
+        logger.error("后台工作流异常 run_id=%s", run_id, exc_info=(type(error), error, error.__traceback__))
         directory = _store().run_dir(_safe_id(run_id))
         if not directory.is_dir():
             return
@@ -897,11 +872,11 @@ def _record_background_failure(run_id: str, error: Exception) -> None:
         target = report_dir / "run_failure.json"
         temporary = report_dir / "run_failure.json.tmp"
         now = datetime.now(timezone.utc).isoformat()
-        reason = f"{type(error).__name__}: {str(error).strip()}"[:2000]
+        reason = "后台工作流异常；请检查服务端日志中的完整堆栈。"
         payload = {
             "status": "FAILED", "error_type": type(error).__name__,
-            "message": reason or "后台工作流异常，请检查服务端日志并按 run_id 查询完整堆栈。",
-            "terminal_step": "workflow_startup", "terminal_reason": reason or "后台工作流在初始化阶段异常退出。",
+            "message": reason,
+            "terminal_step": "workflow_startup", "terminal_reason": reason,
             "next_action": "检查配置、工作流图装配错误和服务端异常堆栈，修复后重新执行。",
             "failed_at": now,
         }
@@ -965,15 +940,10 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
     report = source.get("report") if isinstance(source.get("report"), dict) else {}
     if not report:
         last = steps[-1] if steps else {}
-        error = last.get("error") if isinstance(last.get("error"), dict) else {}
-        detail = str(error.get("message") or last.get("summary") or "")
         report = {
             "result": source.get("status") or "INCOMPLETE",
             "terminal_step": str(last.get("name") or "workflow"),
-            "terminal_reason": (
-                "历史任务没有持久化终态报告；当前只能根据已有步骤记录展示结果。"
-                + (f" 最后一步记录：{detail}" if detail else "")
-            ),
+            "terminal_reason": "历史任务没有持久化终态报告；请检查服务端日志和步骤产物。",
             "next_action": "重新运行该任务以生成完整终态报告；如需排查旧记录，请检查步骤输入、输出和错误。",
             "legacy_report": True,
         }
@@ -1074,7 +1044,6 @@ def _resume_workflow_background(
     run_id: str,
     run_lock: Any = None,
     resume_payload: dict[str, Any] | None = None,
-    approval_meta: dict[str, Any] | None = None,
 ) -> None:
     if run_lock is None:
         with _RUN_LOCKS_GUARD:
@@ -1110,14 +1079,6 @@ def _resume_workflow_background(
             stale_run_report.unlink(missing_ok=True)
         from app.entrypoint import _write_run_report_if_terminal
         _write_run_report_if_terminal(store, run_id, graph, final_state=final_state)
-        if isinstance(approval_meta, dict) and approval_meta.get("mode") == "manual_intervention" and approval_meta.get("decision") in {"MARK_DONE", "TERMINATE"}:
-            task_id = str(approval_meta.get("task_id") or "")
-            store.write_artifact(run_id, "reports/manual_resolution.json", {
-                "status": "completed" if approval_meta.get("decision") == "MARK_DONE" else "terminated",
-                "decision": approval_meta.get("decision"),
-                "reason": str(approval_meta.get("reason") or ""),
-                "resolved_at": datetime.now(timezone.utc).isoformat(),
-            }, task_id)
     except Exception as exc:
         logger.exception("恢复工作流失败 run_id=%s", run_id)
         _record_background_failure(run_id, exc)
@@ -1179,8 +1140,6 @@ def v1_list_approvals(
             continue
         step = item.get("approval_step") or {}
         approval_input = step.get("input") if isinstance(step.get("input"), dict) else {}
-        if str(approval_input.get("mode") or "") == "manual_intervention":
-            continue
         output = step.get("output") if isinstance(step.get("output"), dict) else {}
         run_id, task_id = str(item.get("run_id") or ""), str(item.get("task_id") or "")
         if run_id not in run_cache:
@@ -1238,60 +1197,6 @@ def v1_list_approvals(
     return {"items": items, "total": len(items)}
 
 
-@app.get("/api/v1/manual-interventions")
-def v1_list_manual_interventions(_: None = Depends(_authorize)) -> dict[str, Any]:
-    """列出需要人工决定的任务，包括挂起中的定位处置，不只提供查看链接。"""
-    store = _store()
-    items: list[dict[str, Any]] = []
-    for run_id in _all_run_ids(store):
-        try:
-            payload = _run_payload(store, run_id)
-        except (HTTPException, OSError, ValueError):
-            continue
-        for task in payload.get("tasks") or []:
-            task_id = str(task.get("task_id") or "")
-            resolution_path = store.task_dir(run_id, task_id) / "reports" / "manual_resolution.json"
-            resolution = _read_json(resolution_path, {})
-            if isinstance(resolution, dict) and resolution.get("status") in {"completed", "terminated"}:
-                continue
-            steps = task.get("steps") if isinstance(task.get("steps"), list) else []
-            approval = _latest_approval_step(steps)
-            approval_input = approval.get("input") if isinstance(approval, dict) and isinstance(approval.get("input"), dict) else {}
-            manual_pending = bool(task.get("approval_pending")) and str(approval_input.get("mode") or "") == "manual_intervention"
-            if task.get("approval_pending") and not manual_pending:
-                continue
-            report = task.get("report") if isinstance(task.get("report"), dict) else {}
-            terminal = str(report.get("result") or task.get("status") or "").upper()
-            if not manual_pending and terminal not in {"MANUAL", "INSUFFICIENT_EVIDENCE"}:
-                continue
-            locate_step = next((step for step in reversed(steps) if step.get("name") == "locate_agent"), None)
-            locate_output = locate_step.get("output") if isinstance(locate_step, dict) and isinstance(locate_step.get("output"), dict) else {}
-            report_step = str(report.get("terminal_step") or approval_input.get("intervention_step") or ("locate_agent" if manual_pending else "")).strip()
-            reason = str(approval_input.get("intervention_reason") or report.get("terminal_reason") or "").strip()
-            evidence_gaps = locate_output.get("evidence_gaps")
-            if not reason and isinstance(evidence_gaps, list) and evidence_gaps:
-                # 具体的路径/契约失败比通用 summary 更有操作价值，必须优先展示。
-                reason = "定位输出契约校验失败：" + "；".join(str(item) for item in evidence_gaps[:8])
-            if not reason:
-                reason = str(locate_output.get("summary") or "").strip()
-            if not reason:
-                reason = "自动流程因安全门禁无法继续，需要人工排查；历史记录没有保存更具体的原因。"
-            continue_allowed = bool(approval_input.get("continue_allowed")) if manual_pending else False
-            decision_options = ["RETRY_LOCATE", "MARK_DONE", "TERMINATE"] if manual_pending else ["MARK_DONE", "TERMINATE"]
-            if manual_pending and continue_allowed:
-                decision_options.insert(1, "CONTINUE_REPAIR")
-            items.append({
-                "intervention_id": f"{run_id}:{task_id}", "run_id": run_id, "task_id": task_id,
-                "carrier": str(task.get("carrier") or ""), "biztype": str(task.get("biztype") or ""),
-                "step": report_step or str((locate_step or {}).get("name") or "finalize_execution"),
-                "status": "waiting_decision" if manual_pending else "open", "summary": reason[:2000],
-                "root_cause": str(approval_input.get("root_cause") or locate_output.get("root_cause") or ""),
-                "candidate_files": [str(item) for item in (approval_input.get("candidate_files") or locate_output.get("candidate_files") or [])],
-                "continue_allowed": continue_allowed, "decision_options": decision_options,
-                "created_at": str(payload.get("updated_at") or payload.get("created_at") or ""),
-            })
-    return {"items": items, "total": len(items)}
-
 @app.post("/api/v1/approvals/{approval_id}/decision")
 def v1_decide_approval(
     approval_id: str, request: V1ApprovalDecision, background: BackgroundTasks,
@@ -1306,26 +1211,6 @@ def v1_decide_approval(
     _audit_control(run_id, task_id, "approval." + request.decision, actor, request.reason)
     return decide_approval(run_id, task_id, ApprovalRequest(decision=request.decision.upper(), reason=request.reason), background=background)
 
-
-@app.post("/api/v1/manual-interventions/{intervention_id}/decision")
-def v1_decide_manual_intervention(
-    intervention_id: str, request: V1ApprovalDecision, background: BackgroundTasks,
-    authorization: str | None = Header(default=None),
-    _: None = Depends(_authorize),
-) -> dict[str, Any]:
-    """对人工介入任务执行安全处置；继续修复仅在当前 interrupt 证据允许时放行。"""
-    if ":" not in intervention_id:
-        raise HTTPException(status_code=400, detail="无效的人工介入 ID")
-    run_id, task_id = intervention_id.split(":", 1)
-    run_id, task_id = _safe_id(run_id), _safe_id(task_id)
-    decision = request.decision.upper()
-    if decision not in {"RETRY_LOCATE", "CONTINUE_REPAIR", "MARK_DONE", "TERMINATE"}:
-        raise HTTPException(status_code=422, detail="人工介入动作无效")
-    if decision in {"CONTINUE_REPAIR", "MARK_DONE", "TERMINATE"} and not request.reason.strip():
-        raise HTTPException(status_code=422, detail="继续修复、人工完成或终止操作必须填写处置说明")
-    actor = "bearer-token" if authorization else "local-user"
-    _audit_control(run_id, task_id, "manual_intervention." + decision.lower(), actor, request.reason)
-    return decide_approval(run_id, task_id, ApprovalRequest(decision=decision, reason=request.reason), background=background)
 
 @app.get("/api/v1/runs/{run_id}/artifacts")
 def v1_list_artifacts(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:

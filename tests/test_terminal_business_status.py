@@ -49,6 +49,7 @@ def test_background_exception_is_persisted_as_a_safe_terminal_report(tmp_path, m
     assert report["status"] == "FAILED"
     assert report["error_type"] == "RuntimeError"
     assert "secret-token-should-not-leak" not in json.dumps(report)
+    assert report["message"] == "后台工作流异常；请检查服务端日志中的完整堆栈。"
 
 
 def test_persisted_business_result_uses_model_output_contract():

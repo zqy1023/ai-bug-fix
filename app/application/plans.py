@@ -1,9 +1,4 @@
-"""ChangePlan：修复与审查共用的方案契约。
-
-方案必须结构化，不能只活在散文里：``scope`` 说影响面，``edits`` 说要改哪些文件、
-怎么改，``requires_human_authorization`` 说是否越过自动放行范围。有了它，
-"给了方案却说无法修改"就有了一个真实的落盘通道（``apply_plan`` 插件）。
-"""
+"""ChangePlan：修复与审查共用的结构化分析契约。"""
 
 from __future__ import annotations
 
@@ -46,7 +41,7 @@ class ChangePlan(FrozenModel):
         return tuple(edit.path for edit in self.edits)
 
     def authorized(self) -> ChangePlan:
-        """人工已授权的派生版本：project 影响面必须带授权标记。"""
+        """已授权方案的派生版本：project 影响面必须带授权标记。"""
         if self.scope == "carrier":
             return self
         return self.model_copy(update={"requires_human_authorization": True})

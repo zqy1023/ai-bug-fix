@@ -47,7 +47,13 @@ def test_run_report_captures_unhandled_workflow_exception(tmp_path):
 
     assert report["result"] == "FAILED"
     assert report["terminal_step"] == "workflow"
-    assert "graph construction failed" in report["terminal_reason"]
+    assert "RuntimeError" not in report["terminal_reason"]
+    assert "graph construction failed" not in json.dumps(report, ensure_ascii=False)
+    assert "后台工作流异常" in report["terminal_reason"]
+    failure = json.loads((store.run_dir("failed-run") / "reports" / "run_failure.json").read_text(encoding="utf-8"))
+    assert failure["error_type"] == "RuntimeError"
+    assert "graph construction failed" not in json.dumps(failure, ensure_ascii=False)
+    assert "后台工作流异常" in failure["message"]
     assert report["next_action"].strip()
 
 
@@ -76,4 +82,5 @@ def test_background_failure_preserves_task_level_report_summary(tmp_path, monkey
     assert report["result"] == "FAILED"
     assert report["task_count"] == 1
     assert report["task_results"] == expected_tasks
-    assert "background error" in report["terminal_reason"]
+    assert "后台工作流异常" in report["terminal_reason"]
+    assert "background error" not in json.dumps(report, ensure_ascii=False)

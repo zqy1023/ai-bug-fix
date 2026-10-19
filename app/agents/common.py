@@ -269,7 +269,7 @@ def _safe_tool_input(value: Any) -> dict[str, Any]:
 
 
 def _audit_events(value: Any) -> list[dict[str, Any]]:
-    """只留工具使用/结果事件；模型中间分析不入库，最终结论单独追加一次。"""
+    """保留公开助手与工具事件；隐藏思考和未知事件不入库。"""
     if not isinstance(value, list):
         return []
     result: list[dict[str, Any]] = []
@@ -277,7 +277,12 @@ def _audit_events(value: Any) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         kind = str(item.get("type") or "")
-        if kind == "tool_use":
+        # SDK 流式收集的助手事件带 elapsed_ms，视为中间分析；无计时的公开摘要可保留。
+        if kind == "assistant" and "elapsed_ms" not in item:
+            text = _audit_text(item.get("text") or "", 500)
+            if text and "分析" not in text and "analysis" not in text.casefold():
+                result.append({"type": "assistant", "text": text})
+        elif kind == "tool_use":
             result.append({
                 "type": "tool_use",
                 "tool": str(item.get("tool") or "unknown")[:80],

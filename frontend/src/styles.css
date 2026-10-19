@@ -130,10 +130,6 @@ a { color: #456de0; cursor: pointer; }
 .change-plan-detail .ant-table-wrapper { margin-top: 2px; }
 .change-plan-detail .ant-table { background: transparent; }
 .change-plan-detail .ant-table-tbody > tr > td { overflow-wrap: anywhere; }
-.knowledge-metrics { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 16px; }
-.knowledge-detail { display: flex; flex-direction: column; gap: 12px; overflow-wrap: anywhere; }
-.knowledge-detail .ant-typography { margin-bottom: 0; white-space: pre-wrap; }
-.knowledge-detail .ant-typography strong { color: #344054; }
 
 /* Task-first operations dashboard */
 .dashboard-page { gap: 20px; }
@@ -209,11 +205,6 @@ a { color: #456de0; cursor: pointer; }
 .priority-pill.priority-amber, .priority-pill.priority-red, .priority-pill.priority-blue, .priority-pill.priority-neutral { background: #f4f6f9; }
 .priority-pill.priority-amber { color: #9e6c1c; background: #fff5df; } .priority-pill.priority-red { color: #bf4c47; background: #fff0ef; } .priority-pill.priority-blue { color: #4568cd; background: #edf3ff; }
 
-/* Existing trace and knowledge screens share the same design primitives */
-.knowledge-metrics { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 16px; }
-.knowledge-detail { display: flex; flex-direction: column; gap: 12px; overflow-wrap: anywhere; }
-.knowledge-detail .ant-typography { margin-bottom: 0; white-space: pre-wrap; }
-.knowledge-detail .ant-typography strong { color: #344054; }
 .run-control-toolbar { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 .run-control-hint { margin-top: -8px; padding: 10px 13px; border: 1px solid #e4e9f2; border-radius: 9px; background: #fafbfe; font-size: 12px; line-height: 1.6; }
 .run-heading { align-items: center; }
@@ -235,7 +226,6 @@ a { color: #456de0; cursor: pointer; }
   .content-card .ant-card-head { padding-inline: 15px; } .content-card .ant-card-body { padding: 15px; } .triage-card .ant-card-body { padding-inline: 15px; }
   .triage-item { gap: 8px; } .triage-item-meta, .triage-arrow { display: none; } .app-footer { padding: 12px 14px 18px; flex-direction: column; gap: 4px; }
   .step-expanded { grid-template-columns: minmax(0,1fr); } .workflow-canvas { height: 380px; } .filter-row > * { min-width: 100%; }
-  .knowledge-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); }
 }
 @media (max-width: 560px) {
   .app-sider { max-width: 76px !important; min-width: 76px !important; width: 76px !important; }
@@ -243,7 +233,7 @@ a { color: #456de0; cursor: pointer; }
   .workbench-menu { padding-inline: 9px; } .workbench-menu .ant-menu-item { justify-content: center; padding-inline: 0 !important; } .workbench-menu .ant-menu-title-content { display: none; }
   .sider-bottom { padding: 14px; } .header-heading > strong { max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
   .overview-metrics { grid-template-columns: minmax(0,1fr); } .overview-metric .ant-card-body { padding: 15px 17px; } .overview-metric .ant-statistic-content { font-size: 29px; }
-  .overview-hero-actions { flex-direction: column; } .knowledge-metrics { grid-template-columns: minmax(0,1fr); }
+  .overview-hero-actions { flex-direction: column; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; scroll-behavior: auto !important; } }
 

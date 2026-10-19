@@ -126,14 +126,12 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
         for key in ("carrier_dir", "candidates", "symbols", "category", "extracted", "legacy_only", "legacy_dependency", "legacy_reason")
         if key in evidence
     }
-    historical_knowledge = evidence.get("knowledge_cases", [])
     context = prompt_context(
         "locate",
         incoming.model_dump(),
         framework=str(framework),
         evidence={
             "prepared_source_evidence": prepared_evidence,
-            "historical_knowledge_cases": historical_knowledge,
         },
         read_roots=roots,
         write_roots=(),
@@ -212,26 +210,9 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
         contract_summary = _locate_contract_summary(error)
         if contract_summary not in output.summary:
             output.summary = f"{output.summary.strip()}；{contract_summary}".strip("；")
-    # A MANUAL result may continue only when a contract/path downgrade preserved
-    # enough verified evidence for a human to authorize a carrier-scoped repair.
-    # Use the original requested scope because LocateOutput intentionally normalizes
-    # every non-LOCATED result to scope="manual".
-    requested_scope = (
-        str(payload.get("recommended_scope") or "")
-        if isinstance(payload, dict)
-        else ""
-    )
-    manual_continue_allowed = (
-        output.status == "MANUAL"
-        and requested_scope == "carrier"
-        and bool(output.root_cause.strip())
-        and bool(output.candidate_files)
-        and bool(output.source_evidence)
-    )
     return {
         **output.model_dump(),
         "passed": output.status == "LOCATED",
-        "manual_continue_allowed": manual_continue_allowed,
         "raw_result": original,
         "_usage": usage,
         "_audit": audit_metadata(request, usage),
@@ -284,7 +265,7 @@ def _validate_output_paths(
             continue
         # 共享层候选不能直接写入 carrier，但也不能因模型漏写 project scope 而丢掉审批路径。
         # 只有路径位于显式允许的只读根目录时才接受，并强制升级为 project 变更范围，
-        # 让 repair_agent 生成 change_plan，再经过 request_approval/apply_plan 和验证门禁。
+        # 让 repair_agent 生成 change_plan，再经过审批和验证门禁。
         # 这是范围安全约束，不是根据异常文本推断根因。
         if not any(target == base or target.is_relative_to(base) for base in allowed):
             raise ValueError(f"共享层候选文件超出只读证据范围: {value}")
@@ -308,7 +289,6 @@ def _manual(reason: str) -> dict[str, Any]:
         "recommended_scope": "manual",
         "summary": reason,
         "passed": False,
-        "manual_continue_allowed": False,
         "_usage": {},
         "_audit": {},
     }

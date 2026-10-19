@@ -6,7 +6,7 @@
 Browser -> Nginx (same-origin /api proxy) -> FastAPI Workbench API
                                       -> RecordStore (steps.json + artifacts)
                                       -> LangGraph SQLite checkpoints
-                                      -> SQLite execution eligibility / control audit
+                                      -> SQLite control audit
                                       -> existing run_workflow / approval resume
 ```
 
@@ -19,8 +19,7 @@ Browser -> Nginx (same-origin /api proxy) -> FastAPI Workbench API
 - Checkpoint：以 `thread_id=run_id` 关联 LangGraph SQLite 检查点；暂停/继续/审批恢复必须复用同一 thread_id。
 - Agent 调用：`model_calls.jsonl` 记录调用元数据、输出摘要与事件索引；`tasks/<task_id>/audit/agent_events.jsonl` 按任务追加过滤后的助手公开文本、工具调用和工具结果。隐藏思考块、完整 SDK 对象和 Prompt 不写入调试归档。
 - 调试 hook：`AI_REPAIR_DEBUG_HOOK_LOG` 仅写过滤后的事件摘要，单文件上限 5 MiB，超过后滚动保留一份。
-- Eligibility：SQLite 唯一键 `run_id|biztype|carrier` 保证同一轮同一运输商只领取一次资格。
-- MANUAL：人工介入终态，不是成功也不是待审批方案。待审批列表只包含实际挂起的审批；人工介入列表显示定位/审查的 MANUAL 结论。
+- MANUAL：人工介入终态，不是成功也不是待审批方案。审批列表只包含实际挂起的交付审批。
 
 ## 本地启动
 
@@ -58,11 +57,10 @@ docker compose logs -f api frontend
 - [ ] `pytest -q` 通过。
 - [ ] `cd frontend && npm install && npm run typecheck && npm run build` 成功。
 - [ ] `docker compose config` 与 `docker compose build` 成功。
-- [ ] 两个独立进程同时领取资格时只有一个成功。
 - [ ] 服务重启后可以恢复等待审批的 LangGraph thread。
 - [ ] 批准/拒绝只作用于对应 run/task，不重复执行 Git commit/push。
 - [ ] 任务工作区互相隔离；产物 API 无路径穿越。
-- [ ] MANUAL 任务最终报告为 MANUAL，审批中心与人工介入队列区分正确。
+- [ ] MANUAL 任务最终报告为 MANUAL，且不进入交付审批队列。
 - [ ] CI、回归、故障注入和备份恢复验证有可追溯结果。
 
 
@@ -80,7 +78,6 @@ docker compose logs -f api frontend
 | `tasks/<task_id>/**` 下的其他 JSON | 证据、diff、验证、回归和交付报告等节点产物 | 由步骤按声明的相对路径生成；steps.json 只保存引用 |
 | `model_calls.jsonl` | 每次 Provider 调用的模型、角色、耗时、用量、输出摘要及事件索引 | 每次模型调用追加一行；旧记录缺失事件时不补造 |
 | `workbench-control.sqlite3` | 启动幂等键、暂停/取消意图、控制操作审计 | 控制 API 首次调用时创建；必须持久化挂载 |
-| `eligibility.sqlite3` | 同一 run 中 carrier 修复资格的唯一性约束 | 领取修复资格时使用 |
 | `workflow-checkpoints.sqlite3` | runtime 根目录的 LangGraph 状态检查点，支持审批/暂停后继续 | 节点提交状态时更新；必须与同一 runtime 的 JSON/JSONL 一起备份 |
 
-运行根目录下的 JSON 是可读审计记录，SQLite 用于控制状态、资格唯一性和图检查点；二者不是互相替代关系。备份时应整体备份同一 runtime 目录，恢复后再验证 checkpoint 与 JSON 记录的 run_id 一致。
+运行根目录下的 JSON 是可读审计记录，SQLite 用于控制状态和图检查点；二者不是互相替代关系。备份时应整体备份同一 runtime 目录，恢复后再验证 checkpoint 与 JSON 记录的 run_id 一致。

@@ -16,8 +16,7 @@
 | `validate_changes` | `check_changes → verify_issue`，任一步失败即停止 | `run_regression` |
 | `run_regression` | 在本地准生产 Git 环境执行回归，不提交 | `review_agent` 或审批 |
 | `review_agent` | 只读审查真实 Diff、门禁、验证和回归报告 | 交付、回修或人工处理 |
-| `request_approval` | 人工决策；拒绝进入有上限的回修循环 | `apply_plan` 或交付 |
-| `apply_plan` | 共享层方案唯一落盘通道；落盘后重新验证 | `validate_changes` |
+| `request_approval` | 交付方案人工决策；拒绝进入有上限的回修循环 | 收尾 |
 | `prepare_delivery` | 创建修复分支并按配置提交/推送 | `finalize_execution` |
 | `finalize_execution` | 生成终态报告并收尾 | 结束 |
 
@@ -39,7 +38,6 @@
 | `verify_issue` | task | 验证原始问题是否修复 |
 | `run_regression` | task | 执行配置的准生产回归 |
 | `request_approval` | task | 保存人工决策 |
-| `apply_plan` | task | 落盘已批准的共享层修改 |
 | `prepare_delivery` | task | 生成修复分支与交付结果 |
 | `finalize_execution` | task | 汇总该任务的步骤记录、状态和产物 |
 

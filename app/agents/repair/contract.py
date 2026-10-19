@@ -3,9 +3,8 @@
 提示词要求模型只输出 passed / analysis / changed_files / summary / change_plan；
 这里只做结构校验、业务判定和"可持久化视图"的裁剪，不涉及任何 provider 或主图概念。
 
-关键约定：``passed=false`` **不再清空方案**。根因落在共享层时，``change_plan``
-原样保留并标记 ``scope_escalation_required``，交给人工授权与 ``apply_plan`` 落盘，
-而不是让方案在系统内空转到重试耗尽。
+关键约定：``passed=false`` **不再清空分析**。根因落在共享层时，``change_plan``
+原样保留并标记 ``scope_escalation_required``，供终态报告记录分析结果。
 """
 
 from __future__ import annotations

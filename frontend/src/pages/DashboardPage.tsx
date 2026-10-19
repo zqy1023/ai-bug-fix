@@ -39,7 +39,7 @@ const workflowLabels: Record<string, string> = {
   locate_agent: '根因定位', claim_repair_slot: '修复资格门禁', prepare_workspace: '准备隔离工作区',
   repair_agent: '修复代码', check_changes: '变更范围检查', verify_issue: '问题验证',
   run_regression: '回归验证', review_agent: '代码审查', request_approval: '最终审批',
-  apply_plan: '应用交付方案', prepare_delivery: '准备交付', finalize_execution: '完成与报告',
+  prepare_delivery: '准备交付', finalize_execution: '完成与报告',
 };
 
 export function DashboardPage() {

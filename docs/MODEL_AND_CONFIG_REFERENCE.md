@@ -73,7 +73,7 @@ JSON 不支持注释，逐字段说明集中在本表。
 | `LOG_PULL_EXCLUDED_BIZTYPES` | 排除的业务类型清单 |
 | `AI_REPAIR_SOURCE_REPO` | 容器/主机内可访问的源 Git 仓库路径 |
 | `AI_REPAIR_PROJECT_SUBDIR` | 仓库内项目子目录 |
-| `AI_REPAIR_RUNTIME_DIR` | 运行记录、SQLite checkpoint、资格与审计的持久化目录 |
+| `AI_REPAIR_RUNTIME_DIR` | 运行记录、SQLite checkpoint、控制状态与审计的持久化目录 |
 | `AI_REPAIR_VERIFY_COMMANDS` | JSON 数组格式的验证命令 |
 | `AI_REPAIR_GIT_REMOTE` / `AI_REPAIR_GIT_PUSH` | Git 远程名与是否允许自动推送 |
 | `AI_REPAIR_REVIEW_MODE` | `agent` 或 `human` |

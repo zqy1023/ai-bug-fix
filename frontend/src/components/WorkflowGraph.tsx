@@ -19,7 +19,6 @@ const layout = [
   { id: 'run_regression', label: '准生产回归', x: 2260, y: 0 },
   { id: 'review_agent', label: 'AI 审查', x: 2460, y: 0 },
   { id: 'request_approval', label: '人工审批', x: 2460, y: 150 },
-  { id: 'apply_plan', label: '应用共享层方案', x: 2260, y: 150 },
   { id: 'prepare_delivery', label: '准备交付分支', x: 2060, y: 150 },
   { id: 'retry_prepare', label: '重试准备', x: 1860, y: 150 },
   { id: 'finalize_execution', label: '收尾与汇总', x: 1660, y: 150 },
@@ -40,9 +39,9 @@ const transitions = [
   ['run_regression', 'review_agent', '通过'], ['run_regression', 'request_approval', '人工审查模式'],
   ['run_regression', 'retry_prepare', '失败'], ['review_agent', 'prepare_delivery', '审查通过'],
   ['review_agent', 'request_approval', '需要审批'], ['review_agent', 'retry_prepare', '审查失败'],
-  ['review_agent', 'finalize_execution', '转人工'], ['request_approval', 'apply_plan', '批准共享层方案'],
+  ['review_agent', 'finalize_execution', '转人工'],
   ['request_approval', 'prepare_delivery', '批准运输商修复'], ['request_approval', 'retry_prepare', '拒绝/重试'],
-  ['request_approval', 'finalize_execution', '终止'], ['apply_plan', 'check_changes', '重新验证'],
+  ['request_approval', 'finalize_execution', '终止'],
   ['prepare_delivery', 'finalize_execution'], ['retry_prepare', 'repair_agent', '未超过重试上限'],
 ] as const;
 
