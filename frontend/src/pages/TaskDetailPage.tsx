@@ -7,6 +7,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../lib/api';
 import { StatusTag } from '../components/StatusTag';
 import { StructuredValue } from '../components/StructuredValue';
+import { WorkflowGraph } from '../components/WorkflowGraph';
 import type { ArtifactRef, StepRecord, WorkflowReport } from '../lib/types';
 
 const { Title, Text, Paragraph } = Typography;
@@ -188,7 +189,10 @@ export function TaskDetailPage() {
       <Card className="content-card task-inspection-card" title={<div className="card-title-group"><span>诊断检查器</span><Text type="secondary">节点审计、模型调用、受控产物和终态报告</Text></div>}>
         <Tabs activeKey={activeTab} onChange={setActiveTab} items={[
           { key: 'steps', label: '节点执行', children: (
-            <div className="task-steps-layout">
+            <div className="inspection-tab-content">
+              <div className="inspection-tab-intro"><div><strong>任务节点拓扑</strong><span>点击节点可定位下方执行记录；状态以服务端持久化步骤记录为准。</span></div><Tag>{completedSteps}/{steps.length} 已完成</Tag></div>
+              <WorkflowGraph steps={steps} selectedStep={selectedStepName} onSelectStep={setSelectedStepName} />
+              <div className="task-steps-layout">
               <div className="task-steps-table">
                 <Table rowKey="name" columns={stepColumns} dataSource={steps} pagination={false} size="small" scroll={{ x: 760 }}
                   onRow={(row) => ({ onClick: () => setSelectedStepName(row.name), className: selectedStepName === row.name ? 'selected-task-row' : 'clickable-row' })}
