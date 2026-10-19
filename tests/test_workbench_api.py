@@ -393,3 +393,35 @@ def test_approval_resume_passes_decision_even_when_parent_snapshot_hides_nested_
     assert lock.acquire(blocking=False) is True
     lock.release()
 
+
+
+def test_v1_rerun_uses_saved_config_and_creates_new_run(monkeypatch):
+    captured = {}
+
+    class Background:
+        def add_task(self, function, *args, **kwargs):
+            captured["background"] = (function, args, kwargs)
+
+    monkeypatch.setattr(workbench_api, "_v1_detail", lambda run_id: {
+        "run_id": run_id,
+        "status": "failed",
+        "config": {"log_days": 4, "log_limit": 120, "review_mode": "human", "max_attempts": 2},
+    })
+
+    def fake_start(request, background, idempotency_key=None, _=None):
+        captured["request"] = request
+        captured["key"] = idempotency_key
+        return {"run_id": "new-run-id", "status": "accepted", "idempotent_replay": False}
+
+    monkeypatch.setattr(workbench_api, "v1_start_run", fake_start)
+    monkeypatch.setattr(workbench_api, "_audit_control", lambda *args, **kwargs: None)
+
+    result = workbench_api.v1_rerun_run("old-run-id", Background(), None)
+
+    assert result["run_id"] == "new-run-id"
+    assert result["source_run_id"] == "old-run-id"
+    assert result["message"].startswith("已创建新的 Run")
+    assert captured["request"].model_dump() == {
+        "log_days": 4, "log_limit": 120, "review_mode": "human", "max_attempts": 2,
+    }
+    assert captured["key"].startswith("rerun-")
