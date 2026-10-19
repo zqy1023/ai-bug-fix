@@ -10,7 +10,11 @@ from app.workflow.steps.identify_carrier.node import run
 
 
 def _input(state: dict[str, Any]) -> dict[str, Any]:
-    return {"run_id": str(state.get("run_id") or "")}
+    return {
+        "run_id": str(state.get("run_id") or ""),
+        "task_filter_carrier": str(state.get("task_filter_carrier") or ""),
+        "task_filter_biztype": str(state.get("task_filter_biztype") or ""),
+    }
 
 
 def _patch(output: dict[str, Any]) -> dict[str, Any]:
