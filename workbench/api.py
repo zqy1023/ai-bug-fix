@@ -567,6 +567,9 @@ class V1StartRunRequest(BaseModel):
     review_mode: Literal["agent", "human"] = "agent"
     # max_attempts：单任务修复尝试总次数，包含首次执行。
     max_attempts: int = Field(default=3, ge=1, le=5)
+    # 仅供 Task 重跑使用；普通 Run 保持空字符串。
+    task_filter_carrier: str = Field(default="", max_length=160)
+    task_filter_biztype: str = Field(default="", max_length=160)
 
 
 class V1ApprovalDecision(BaseModel):
@@ -1081,6 +1084,44 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
             "log_days": run_meta.get("log_days", 1), "log_limit": run_meta.get("log_limit", 0),
             "review_mode": run_meta.get("review_mode", "agent"), "max_attempts": run_meta.get("max_attempts", 3),
         },
+    }
+
+
+@app.post("/api/v1/runs/{run_id}/tasks/{task_id}/rerun", status_code=202)
+def v1_rerun_task(
+    run_id: str, task_id: str, background: BackgroundTasks,
+    _: None = Depends(_authorize),
+) -> dict[str, Any]:
+    """用新 Run 重新扫描并仅执行同一 carrier + biztype 的任务，不复用旧 checkpoint/工作区。"""
+    run_id, task_id = _safe_id(run_id), _safe_id(task_id)
+    detail = _v1_detail(run_id)
+    source = next((item for item in detail.get("tasks", []) if item.get("task_id") == task_id), None)
+    if source is None:
+        raise HTTPException(status_code=404, detail="该 Run 中不存在此 Task")
+    carrier = str(source.get("carrier") or "").strip()
+    biztype = str(source.get("biztype") or "").strip()
+    if not carrier or not biztype:
+        raise HTTPException(status_code=409, detail="任务缺少明确 carrier/biztype，拒绝进行范围不确定的重跑")
+    config = detail.get("config") if isinstance(detail.get("config"), dict) else {}
+    request = V1StartRunRequest(
+        log_days=int(config.get("log_days") or 1),
+        log_limit=int(config.get("log_limit") or 0),
+        review_mode=config.get("review_mode") if config.get("review_mode") in {"agent", "human"} else "agent",
+        max_attempts=int(config.get("max_attempts") or 3),
+        task_filter_carrier=carrier,
+        task_filter_biztype=biztype,
+    )
+    result = v1_start_run(request, background, idempotency_key="rerun-task-" + uuid.uuid4().hex)
+    new_run_id = str(result.get("run_id") or "")
+    try:
+        _audit_control(new_run_id, "", "task.rerun_from:" + run_id + ":" + task_id, "api",
+                       f"仅重新扫描并执行 carrier={carrier}, biztype={biztype}；旧工作区与产物不复用")
+    except Exception:
+        logger.exception("记录 Task 重跑来源失败 source_run_id=%s task_id=%s", run_id, task_id)
+    return {
+        **result, "source_run_id": run_id, "source_task_id": task_id,
+        "carrier": carrier, "biztype": biztype,
+        "message": f"已创建新 Run，仅筛选 {carrier} / {biztype} 任务；会重新扫描日志，不复用旧工作区和 checkpoint",
     }
 
 
