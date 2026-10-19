@@ -81,6 +81,13 @@ def run(ctx: StepContext, data: IdentifyCarrierInput) -> IdentifyCarrierOutput:
                 problem=problem,
             )
         )
+    # Task 重跑只允许按确定的 carrier + biztype 过滤；不从异常文本推断身份。
+    filter_carrier = data.task_filter_carrier.strip()
+    filter_biztype = data.task_filter_biztype.strip()
+    if bool(filter_carrier) != bool(filter_biztype):
+        raise StepFailed("Task 重跑过滤条件必须同时提供 carrier 和 biztype")
+    if filter_carrier and filter_biztype:
+        tasks = [task for task in tasks if task.carrier == filter_carrier and task.biztype == filter_biztype]
     output = IdentifyCarrierOutput(tasks=tasks, created=len(tasks), manual=manual)
     return output
 
