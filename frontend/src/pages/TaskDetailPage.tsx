@@ -64,6 +64,14 @@ export function TaskDetailPage() {
     enabled: Boolean(payload),
     refetchInterval: activeRun ? 5000 : false,
   });
+  const rerunTask = useMutation({
+    mutationFn: () => api.rerunTask(runId, taskId),
+    onSuccess: (result) => {
+      message.success(result.message || '已创建任务重跑 Run');
+      navigate('/runs/' + encodeURIComponent(result.run_id));
+    },
+    onError: (error) => message.error('重跑任务失败：' + (error as Error).message),
+  });
   const retryStep = useMutation({
     mutationFn: (stepName: string) => api.retryFailedStep(runId, taskId, stepName),
     onSuccess: async (result) => {
@@ -140,6 +148,7 @@ export function TaskDetailPage() {
         </div>
         <Space wrap>
           <Button icon={<ReloadOutlined />} onClick={() => detail.refetch()} loading={detail.isFetching}>刷新诊断</Button>
+          <Button type="primary" disabled={rerunTask.isPending || ['queued', 'running', 'waiting_approval', 'paused', 'pause_requested', 'cancel_requested'].includes(payload.run_status)} loading={rerunTask.isPending} onClick={() => Modal.confirm({ title: '重新执行此 Task？', content: '将创建一个新的 Run，重新扫描日志，并只保留相同 carrier + biztype 的任务。旧 Run、checkpoint、工作区和产物不会复用；如果原始异常已不在查询窗口内，新 Run 可能没有匹配任务。', okText: '重跑此任务', cancelText: '取消', onOk: () => rerunTask.mutateAsync() })}>重跑任务</Button>
         </Space>
       </div>
 
