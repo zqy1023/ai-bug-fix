@@ -995,6 +995,32 @@ def _retryable_step_names(run_id: str, store: RecordStore, steps: list[dict[str,
         return []
 
 
+@app.post("/api/v1/runs/{run_id}/rerun", status_code=202)
+def v1_rerun_run(
+    run_id: str, background: BackgroundTasks, _: None = Depends(_authorize),
+) -> dict[str, Any]:
+    """以新 Run ID 重跑本轮；保留原运行记录，不复用旧 checkpoint/工作区。"""
+    run_id = _safe_id(run_id)
+    detail = _v1_detail(run_id)
+    config = detail.get("config") if isinstance(detail.get("config"), dict) else {}
+    request = V1StartRunRequest(
+        log_days=int(config.get("log_days") or 1),
+        log_limit=int(config.get("log_limit") or 0),
+        review_mode=config.get("review_mode") if config.get("review_mode") in {"agent", "human"} else "agent",
+        max_attempts=int(config.get("max_attempts") or 3),
+    )
+    result = v1_start_run(
+        request, background,
+        idempotency_key="rerun-" + uuid.uuid4().hex,
+    )
+    new_run_id = str(result.get("run_id") or "")
+    try:
+        _audit_control(new_run_id, "", "run.rerun_from:" + run_id, "api", "从历史 Run 创建全新执行；旧 checkpoint、工作区和产物不复用")
+    except Exception:
+        logger.exception("记录重跑来源失败 source_run_id=%s new_run_id=%s", run_id, new_run_id)
+    return {**result, "source_run_id": run_id, "message": "已创建新的 Run 并重新扫描日志；原 Run 与其产物保持不变"}
+
+
 @app.get("/api/v1/runs/{run_id}/tasks/{task_id}")
 def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
     """只返回一个任务的详情，避免 Run 页面携带并渲染所有任务的步骤与产物。"""
