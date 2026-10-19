@@ -57,6 +57,8 @@ def prepare_run(
         "log_limit": config.limit,
         "review_mode": config.review_mode,
         "max_attempts": config.max_attempts,
+        "task_filter_carrier": str(options.get("task_filter_carrier") or ""),
+        "task_filter_biztype": str(options.get("task_filter_biztype") or ""),
         "startup_state": "queued" if queued else "started",
     }
     run_json = store.run_dir(resolved) / "run.json"
