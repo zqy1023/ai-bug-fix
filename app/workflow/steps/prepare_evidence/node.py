@@ -170,7 +170,7 @@ def run(ctx: StepContext, data: EvidenceInput) -> EvidenceOutput:
         raise StepFailed(f"service_name 未注册，禁止准备修复证据: {data.service_name}")
     if not data.workspace_path:
         raise StepFailed("缺少 prepare_workspace 提供的隔离工作区路径")
-    root = Path(data.source_project_path).resolve()
+    root = Path(data.workspace_path).resolve()
     if not root.is_dir():
         raise StepFailed(f"隔离工作区路径不存在: {root}")
     safe_carrier = WorkspaceManager.safe_carrier_name(data.carrier)
