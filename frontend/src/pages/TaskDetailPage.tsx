@@ -6,6 +6,7 @@ import dayjs from 'dayjs';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../lib/api';
 import { StatusTag } from '../components/StatusTag';
+import { StructuredValue } from '../components/StructuredValue';
 import type { ArtifactRef, StepRecord, WorkflowReport } from '../lib/types';
 
 const { Title, Text, Paragraph } = Typography;
@@ -167,8 +168,8 @@ export function TaskDetailPage() {
                   <div className="inspector-facts"><span>步骤 ID<strong>{selectedStep.name}</strong></span><span>尝试次数<strong>{selectedStep.attempt ?? 1}</strong></span><span>耗时<strong>{formatDuration(selectedStep.duration_ms)}</strong></span></div>
                   <div className="inspector-summary">{selectedStep.summary || selectedStep.error?.message || '没有额外摘要。'}</div>
                   {selectedStep.error?.message && <Alert type="error" showIcon message={selectedStep.error.code || '步骤错误'} description={selectedStep.error.message} />}
-                  <div className="json-panel-wrap"><div className="inspector-label">输入记录</div><pre className="json-panel">{pretty(selectedStep.input)}</pre></div>
-                  <div className="json-panel-wrap"><div className="inspector-label">输出记录</div><pre className="json-panel">{pretty(selectedStep.output)}</pre></div>
+                  <div className="json-panel-wrap"><div className="inspector-label">节点输入 · 字段视图</div><StructuredValue value={selectedStep.input} /></div>
+                  <div className="json-panel-wrap"><div className="inspector-label">节点输出 · 字段视图</div><StructuredValue value={selectedStep.output} /></div>
                 </> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择一个节点查看执行证据" />}
               </div>
             </div>
@@ -176,7 +177,7 @@ export function TaskDetailPage() {
           { key: 'models', label: '模型调用', children: (
             <div className="inspection-tab-content">
               <div className="inspection-tab-intro"><div><strong>模型调用审计</strong><span>展示可公开的调用元信息和输出摘要，不展示隐藏推理链。</span></div><Tag>{calls.data?.total ?? 0} 次调用</Tag></div>
-              {calls.isError ? <Alert type="error" showIcon message="模型调用记录加载失败" description={(calls.error as Error).message} /> : <Table rowKey="model_call_id" columns={callColumns} dataSource={calls.data?.items ?? []} loading={calls.isLoading} pagination={{ pageSize: 10, showSizeChanger: false }} scroll={{ x: 900 }} locale={{ emptyText: <Empty description="此任务没有模型调用记录" /> }} />}
+              {calls.isError ? <Alert type="error" showIcon message="模型调用记录加载失败" description={(calls.error as Error).message} /> : <Table rowKey="model_call_id" columns={callColumns} dataSource={calls.data?.items ?? []} loading={calls.isLoading} pagination={{ pageSize: 10, showSizeChanger: false }} scroll={{ x: 900 }} expandable={{ expandedRowRender: (call) => <div className="model-session-detail"><div className="inspection-tab-intro"><div><strong>会话事件</strong><span>按实际持久化顺序查看 Agent 文本、工具调用与工具结果。</span></div><Tag>{call.events?.length ?? 0} 条事件</Tag></div><Descriptions size="small" bordered column={{ xs: 1, sm: 2 }}><Descriptions.Item label="会话 ID">{call.model_call_id}</Descriptions.Item><Descriptions.Item label="尝试次数">{call.attempt}</Descriptions.Item><Descriptions.Item label="开始时间">{formatDate(call.started_at)}</Descriptions.Item><Descriptions.Item label="结束时间">{formatDate(call.finished_at)}</Descriptions.Item><Descriptions.Item label="事件持久化">{call.event_persistence_status || '未标记'}</Descriptions.Item><Descriptions.Item label="工具调用数">{call.tool_call_count ?? '—'}</Descriptions.Item></Descriptions>{call.error_type && <Alert type="error" showIcon message="调用失败" description={call.error_type} />}{call.events?.length ? <Table size="small" rowKey={(_, index) => String(index)} pagination={{ pageSize: 5, size: 'small', hideOnSinglePage: true }} dataSource={call.events} columns={[{ title: '序号', key: 'index', render: (_: unknown, __: unknown, index: number) => index + 1 }, { title: '类型', dataIndex: 'type', key: 'type', render: (value: string) => <Tag>{({ assistant: 'Agent 输出', tool_use: '工具调用', tool_result: '工具结果' } as Record<string, string>)[value] || value}</Tag> }, { title: '工具', dataIndex: 'tool', key: 'tool', render: (value?: string) => value || '—' }, { title: '耗时', dataIndex: 'elapsed_ms', key: 'elapsed_ms', render: formatDuration }, { title: '状态', dataIndex: 'is_error', key: 'is_error', render: (value?: boolean) => value ? <Tag color="red">错误</Tag> : <Tag>正常</Tag> }, { title: '内容 / 输入', key: 'payload', render: (_: unknown, event: { text?: string; input?: Record<string, unknown> }) => <StructuredValue value={event.text ?? event.input ?? {}} /> }]} /> : <Empty description={call.event_persistence_status === 'failed' ? '事件日志持久化失败，无法还原会话' : '该模型调用没有可用的会话事件'} />}{call.output_preview && <><div className="inspector-label">调用输出摘要</div><StructuredValue value={call.output_preview} /></>}</div> }} locale={{ emptyText: <Empty description="此任务没有模型调用记录" /> }} />}
             </div>
           )},
           { key: 'artifacts', label: '产物与报告', children: (
@@ -189,7 +190,7 @@ export function TaskDetailPage() {
               </div>}
             </div>
           )},
-          { key: 'report', label: '终态报告', children: <div className="report-json"><pre className="json-panel">{pretty(report)}</pre></div> },
+          { key: 'report', label: '终态报告', children: <div className="report-json"><StructuredValue value={report} /></div> },
         ]} />
       </Card>
     </div>
