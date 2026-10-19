@@ -252,11 +252,11 @@ def resolve_tools(writable: bool, tools: Sequence[str] | None = None) -> list[st
 
 
 # 拒绝原因要结构化：模型会逐字读回这段文案。写成"禁止修改"会诱导它直接宣布
-# "我无法修改"并放弃；明确指出"可以写进 change_plan 走人工授权"才是可用信息。
+# "我无法修改"并放弃；明确指出"可以写进 change_plan 转分析报告"才是可用信息。
 _SCOPE_DENIED_HINT = (
     "该路径在目标 carrier 之外。若根因确实在此，请不要放弃：把修复方案写进输出 JSON 的 "
-    "change_plan（scope=project、requires_human_authorization=true、edits[].content 给完整文件内容），"
-    "系统会转人工审批并在批准后落盘。"
+    "change_plan（scope=project、edits[].content 给完整文件内容）。"
+    "工作流只会据此生成分析报告转人工线下处理，不会自动修改共享层。"
 )
 
 

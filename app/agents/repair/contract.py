@@ -65,13 +65,13 @@ def change_plan_of(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def needs_escalation(payload: dict[str, Any], *, passed: bool) -> bool:
-    """方案影响共享层且本轮未完成修改时，需要人工授权。"""
+    """方案影响共享层且本轮未完成修改时，转分析报告。"""
     if passed:
         return False
     raw_plan = payload.get("change_plan")
     if not isinstance(raw_plan, dict):
         return False
-    # 共享层方案即使只有理由、没有 edits，也必须进入人工授权流程。
+    # 共享层方案即使只有理由、没有 edits，也必须进入分析报告流程。
     scope = raw_plan.get("scope")
     return isinstance(scope, str) and scope.casefold() == "project"
 

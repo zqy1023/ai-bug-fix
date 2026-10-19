@@ -138,7 +138,6 @@ def build_task_graph(
                     "change_plan": {},
                     "scope_escalation_required": False,
                     "repair_slot_claimed": kept_repair_slot(state),
-                    "authorized_files": [],
                     "check_passed": False,
                     "verify_passed": False,
                     "regression_passed": False,

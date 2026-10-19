@@ -94,7 +94,6 @@ def run(ctx: StepContext, data: CheckInput) -> CheckOutput:
         data.changed_files,
         data.baseline_manifest or None,
         data.baseline_dir or None,
-        list(data.authorized_files),
     )
     all_files = list(result.get("files") or [])
     files = _limit_items(all_files, kind="files")

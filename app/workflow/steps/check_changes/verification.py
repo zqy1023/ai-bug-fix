@@ -169,7 +169,6 @@ def validate_changed_files(
     changed_files: list[str],
     baseline_manifest: dict[str, str] | None = None,
     baseline_dir: str | Path | None = None,
-    authorized_files: list[str] | None = None,
 ) -> dict[str, Any]:
     """校验真实 diff 只能修改目标 carrier，并执行 AST 与安全门禁。
 
@@ -179,24 +178,15 @@ def validate_changed_files(
         changed_files: 模型声明的修改清单（工作区相对路径）。
         baseline_manifest: 修改前的文件哈希（用于判定真实差异）。
         baseline_dir: 修改前的内容副本目录（用于给出逐文件增删行数）。
-        authorized_files: 人工已批准的具体文件（工作区相对路径）。默认为空，
-            此时只允许 carrier 内改动。授权只对方案里列出的这几个文件生效，
-            不会因为批准了一个方案就放开同目录下的其它文件。
     """
     root = Path(workspace).resolve()
     claimed = {str(path).replace("\\", "/") for path in changed_files if str(path)}
     claimed_by_norm = {_norm(path): path for path in claimed}
-    granted_by_norm = {
-        _norm(str(path).replace("\\", "/")): str(path).replace("\\", "/")
-        for path in (authorized_files or [])
-        if str(path) and _under(root, (root / str(path)).resolve(strict=False))
-    }
-    granted = set(granted_by_norm)
     try:
         carrier_paths = [root / item for item in WorkspaceManager.locate_carrier_roots(root, carrier)]
     except WorkspaceError as error:
         return _blocked(public_exception(error, prefix="定位 carrier 失败"), carrier)
-    if not carrier_paths and not granted:
+    if not carrier_paths:
         return _blocked(f"工作区缺少目标 carrier: {carrier}", carrier)
     allowed_root = [item.relative_to(root).as_posix() for item in carrier_paths]
 
@@ -241,7 +231,7 @@ def validate_changed_files(
     all_keys = sorted(claimed_keys | actual_keys)
     for key in all_keys:
         raw = claimed_by_norm.get(key, actual_by_norm[key])
-        entry = _inspect_file(root, carrier_paths, granted, raw, baseline_manifest, diff)
+        entry = _inspect_file(root, carrier_paths, raw, baseline_manifest, diff)
         files.append(entry)
         failures.extend(
             {"file": raw, "reason": reason, "code": "FILE_PROBLEM"}
@@ -260,7 +250,6 @@ def validate_changed_files(
         "scope": {
             "carrier": carrier,
             "allowed_root": allowed_root,
-            "authorized_files": sorted(granted_by_norm.values()),
             "baseline_files": len(baseline_manifest or {}),
             "claimed_files": len(claimed),
             "actual_files": len(actual),
@@ -284,21 +273,20 @@ def validate_changed_files(
 def _inspect_file(
     root: Path,
     allowed: list[Path],
-    granted: set[str],
     raw: str,
     baseline_manifest: dict[str, str] | None,
     diff: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     """逐文件检查并返回证据行；problems 同时作为失败原因使用。
 
-    范围判定有两层：目标 carrier 目录，或人工逐文件批准的白名单。
+    范围判定只认目标 carrier 目录。
     """
     candidate = (root / raw).resolve(strict=False)
     stats = diff.get(_norm(raw), {})
     in_carrier = any(_under(item, candidate) for item in allowed)
     entry: dict[str, Any] = {
         "path": raw,
-        "in_scope": in_carrier or _norm(raw) in granted,
+        "in_scope": in_carrier,
         "exists": candidate.exists(),
         # 没有 diff 条目 = 内容与基线一致（例如被声明但其实没改）
         "status": str(stats.get("status", "unchanged")),
@@ -318,7 +306,7 @@ def _inspect_file(
     }
     problems: list[str] = entry["problems"]
     if not entry["in_scope"]:
-        problems.append("文件既不在目标 carrier 范围内，也不在人工批准清单内")
+        problems.append("文件不在目标 carrier 范围内")
         return entry
     if not candidate.exists():
         if baseline_manifest is not None and _norm(raw) in {_norm(path) for path in baseline_manifest}:

@@ -17,12 +17,11 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         "changed_files": list(state.get("changed_files") or []),
         "baseline_manifest": dict(state.get("baseline_manifest") or {}),
         "baseline_dir": str(state.get("baseline_dir") or ""),
-        "authorized_files": list(state.get("authorized_files") or []),
     }
 
 
 def _patch(output: dict[str, Any]) -> dict[str, Any]:
-    # 门禁只确认，不重写改动清单：清单由修复 Agent 和获批方案共同累加。
+    # 门禁只确认，不重写改动清单：清单由修复 Agent 声明。
     return {
         "check_passed": bool(output["passed"]),
         "gate_result": output,
@@ -42,7 +41,7 @@ SPEC = StepSpec(
     # 落盘投影：baseline_manifest 是"carrier 全部文件 × 哈希"的门禁中间态，
     # 逐文件证据里size/sha256/nlink/secret_samples/ast/dangerous_calls 也都是
     # 过程量。判定要看的只有改动量与问题清单。
-    input_record=RecordView(keep=("carrier", "changed_files", "baseline_dir", "authorized_files")),
+    input_record=RecordView(keep=("carrier", "changed_files", "baseline_dir")),
     output_record=RecordView(
         trim=(
             (

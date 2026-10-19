@@ -17,7 +17,6 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
             "task_id": data.task_id,
             "approval_fingerprint": data.approval_fingerprint,
             "changed_files": list(data.changed_files),
-            "authorized_files": list(data.authorized_files),
             "actions": ["APPROVE", "REJECT"],
         })
         if isinstance(resumed, dict):
@@ -64,7 +63,6 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
             "changed_files": list(data.changed_files),
             "baseline_manifest": data.baseline_manifest or None,
             "baseline_dir": data.baseline_dir or None,
-            "authorized_files": list(data.authorized_files),
         }
     )
     if gate.get("passed") is not True:

@@ -1,0 +1,17 @@
+export const queryKeys = {
+  health: ['workbench-health'] as const,
+  dashboard: ['dashboard'] as const,
+  dashboardRuns: ['dashboard-runs'] as const,
+  dashboardSelectedRun: (runId: string) => ['dashboard-selected-run', runId] as const,
+  approvals: ['approvals'] as const,
+  runs: (page?: number, keyword?: string, status?: string) => ['runs', page, keyword, status] as const,
+  runsRoot: ['runs'] as const,
+  run: (runId: string) => ['run', runId] as const,
+  checkpoint: (runId: string) => ['checkpoint', runId] as const,
+  checkpoints: (runId: string, limit?: number) => ['checkpoints', runId, limit] as const,
+  task: (runId: string, taskId: string) => ['task', runId, taskId] as const,
+  modelCalls: (runId: string, taskId?: string) => ['model-calls', runId, taskId] as const,
+  controlAudit: (runId: string) => ['control-audit', runId] as const,
+  artifactContent: (runId: string, path?: string, taskId?: string) => ['artifact-content', runId, path, taskId] as const,
+  taskAuditRuns: ['task-audit-runs'] as const,
+} as const;

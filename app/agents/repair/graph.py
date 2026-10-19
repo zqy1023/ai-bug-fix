@@ -121,7 +121,7 @@ def analyze(state: RepairState, runtime: Any) -> dict[str, Any]:
     """生成方案。
 
     ``passed=false`` 时仍保留结构化 ``change_plan`` 并给出 ``blocked_reason``：
-    根因在共享层的任务由此转人工授权，而不是重试到耗尽后以失败收场。
+    根因在共享层的任务由此转分析报告，而不是重试到耗尽后以失败收场。
     """
     payload, usage, audit, original = _call(runtime, "analyze", state)
     plan = slim_plan(payload)

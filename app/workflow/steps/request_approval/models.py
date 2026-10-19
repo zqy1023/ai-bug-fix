@@ -25,8 +25,6 @@ class ApprovalInput(FrozenModel):
     baseline_manifest: dict[str, str] = Field(default_factory=dict)
     # baseline_dir：字段说明见该模型文档与工作流契约。
     baseline_dir: str
-    # authorized_files：字段说明见该模型文档与工作流契约。
-    authorized_files: list[str] = Field(default_factory=list)
     # approval_fingerprint：绑定交付物与最终门禁结果，防止过期审批。
     approval_fingerprint: str = ""
     # 最终审批拒绝时清理已经推送的修复分支。

@@ -114,8 +114,6 @@ class WorkflowState(TypedDict, total=False):
     scope_escalation_required: bool
     # repair_slot_claimed：本任务是否已经领取过修复资格，重新定位后不得重复领取。
     repair_slot_claimed: bool
-    # authorized_files：最终门禁允许的 carrier 内文件清单。
-    authorized_files: list[str]
     # 审查结论与审批状态，交付门禁只认这两个字段，不从步骤记录里回读。
     review_decision: str
     # approval_granted：人工审批是否通过。

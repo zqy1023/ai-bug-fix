@@ -14,7 +14,6 @@ import threading
 from app.infrastructure.filesystem.workspace import WorkspaceConfig, WorkspaceManager
 from app.infrastructure.git.delivery import GitBranchDelivery, GitDeliveryConfig
 from app.infrastructure.es.logs import ESLogAdapter
-from app.infrastructure.filesystem.scope import CarrierScopePolicy
 from app.infrastructure.config import load_config
 from app.workflow.graph import build_graph as build_state_graph
 from app.workflow.graph import build_task_graph
@@ -114,7 +113,6 @@ def build_services() -> WorkflowServices:
         ),
         log_source=log_source,
         ignore_errors=list(config.ignore_errors),
-        scope_policy=CarrierScopePolicy(),
         metadata={"independent_verify": _independent_verify},
     )
     return services

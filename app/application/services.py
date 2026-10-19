@@ -14,7 +14,6 @@ if TYPE_CHECKING:
     from app.infrastructure.filesystem.workspace import WorkspaceManager
     from app.infrastructure.git.delivery import GitBranchDelivery
     from app.infrastructure.es.logs import ESLogAdapter
-    from app.application.ports import ScopePolicy
 
 
 @dataclass
@@ -39,8 +38,6 @@ class WorkflowServices:
     log_source: ESLogAdapter | None = None
     # ignore_errors：在归一化阶段排除的错误消息清单。
     ignore_errors: list[str] = field(default_factory=list)
-    # scope_policy：判断变更是否超出目标 carrier 授权范围的策略。
-    scope_policy: ScopePolicy | None = None
     # metadata：注入验证器和其他基础设施适配器的扩展依赖。
     metadata: dict[str, Any] = field(default_factory=dict)
 

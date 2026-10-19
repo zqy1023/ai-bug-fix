@@ -40,7 +40,7 @@ class RepairState(TypedDict, total=False):
     changed_files: list[str]
     change_plan: dict[str, Any]   # 结构化方案：passed=false 时同样保留
     blocked_reason: str          # 改不动的结构化原因
-    scope_escalation_required: bool  # 需要人工授权跨目录落盘
+    scope_escalation_required: bool  # 共享层范围，只能转分析报告
     # baseline_manifest：该模型字段用于承载对应契约中的结构化数据。
     baseline_manifest: dict[str, str]
     # baseline_dir：该模型字段用于承载对应契约中的结构化数据。

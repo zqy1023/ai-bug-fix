@@ -17,7 +17,6 @@ ROOT = Path(__file__).resolve().parent.parent
 @dataclass(frozen=True)
 class Settings:
     """应用默认设置。"""
-
     # default_output_dir：默认输出目录。
     default_output_dir: Path = ROOT / "output"
     # runtime_dir_name：运行记录目录名称。

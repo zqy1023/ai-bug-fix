@@ -14,7 +14,6 @@ class DeliveryInput(FrozenModel):
 
     交付前门禁字段：
     - review_decision: 审查结果（PASS/FAIL/MANUAL）
-    - authorized_files: 允许提交的 carrier 文件范围
     - analysis_only: 是否只交付 final.json 分析报告
     - allow_push: 是否允许推送远程修复分支
     - require_push: 是否要求远程存在且推送成功
@@ -32,8 +31,6 @@ class DeliveryInput(FrozenModel):
     ai_workspace_path: str
     # changed_files：字段说明见该模型文档与工作流契约。
     changed_files: list[str]
-    # authorized_files：字段说明见该模型文档与工作流契约。
-    authorized_files: list[str] = []
     # error：字段说明见该模型文档与工作流契约。
     error: str = ""
     # repair_analysis：字段说明见该模型文档与工作流契约。

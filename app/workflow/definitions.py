@@ -39,7 +39,7 @@ TASK_STATIC_TRANSITIONS: tuple[tuple[str, str], ...] = (
 
 TASK_CONDITIONAL_TRANSITIONS = (
     (PREPARE_CONTEXT, after_prepare_context, (LOCATE, FINALIZE)),
-    # 定位不确定或非 carrier 范围结论只产出报告，不进入中间审批。
+    # 定位不确定或非 carrier 范围结论只产出报告，不进入审批。
     (LOCATE, after_locate, (CLAIM, RETRY, FINALIZE)),
     (CLAIM, after_claim, (REPAIR, FINALIZE)),
     (REPAIR, after_repair, (VALIDATE, RETRY, FINALIZE)),

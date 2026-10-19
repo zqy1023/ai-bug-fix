@@ -41,7 +41,6 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
                 "source_repo_path": data.source_repo_path,
                 "ai_workspace_path": data.ai_workspace_path,
                 "changed_files": [] if data.analysis_only else list(data.changed_files),
-                "authorized_files": [] if data.analysis_only else list(data.authorized_files),
                 "analysis_only": data.analysis_only,
                 "report_paths": list(data.report_paths),
                 "delivery_status": "ANALYSIS_ONLY" if data.analysis_only else "REPAIR",

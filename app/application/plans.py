@@ -32,19 +32,11 @@ class ChangePlan(FrozenModel):
     edits: tuple[FileEdit, ...] = ()
     # rationale：该模型字段用于承载对应契约中的结构化数据。
     rationale: str = ""
-    # requires_human_authorization：该模型字段用于承载对应契约中的结构化数据。
-    requires_human_authorization: bool = False
 
     @property
     def paths(self) -> tuple[str, ...]:
         """方案涉及的文件路径。"""
         return tuple(edit.path for edit in self.edits)
-
-    def authorized(self) -> ChangePlan:
-        """已授权方案的派生版本：project 影响面必须带授权标记。"""
-        if self.scope == "carrier":
-            return self
-        return self.model_copy(update={"requires_human_authorization": True})
 
 
 def plan_of(payload: dict[str, Any]) -> ChangePlan | None:

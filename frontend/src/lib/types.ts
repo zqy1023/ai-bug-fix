@@ -46,7 +46,7 @@ export interface CheckpointHistoryResponse { run_id: string; items: CheckpointPr
 export interface ApprovalItem {
   approval_id: string; run_id: string; task_id: string; carrier: string; biztype: string; scope: 'carrier' | 'project';
   status: 'pending' | 'approved' | 'rejected' | 'expired'; summary: string; changed_files: string[];
-  change_plan?: { scope: 'carrier' | 'project'; rationale: string; requires_human_authorization: boolean; edits: Array<{ path: string; action: string; note: string }> };
+  change_plan?: { scope: 'carrier' | 'project'; rationale: string; edits: Array<{ path: string; action: string; note: string }> };
   created_at: string; expires_at?: string | null;
 }
 export interface RunQuery { page: number; page_size: number; status?: RunStatus; keyword?: string; from?: string; to?: string; }

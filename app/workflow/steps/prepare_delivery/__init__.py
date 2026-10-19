@@ -79,7 +79,6 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         "source_repo_path": str(state.get("source_repo_path") or ""),
         "ai_workspace_path": str(state.get("ai_workspace_path") or ""),
         "changed_files": [str(item) for item in state.get("changed_files") or []],
-        "authorized_files": [str(item) for item in state.get("authorized_files") or []],
         "error": str(problem_payload.get("error") or ""),
         "repair_analysis": str(repair_payload.get("analysis") or ""),
         "repair_summary": str(repair_payload.get("summary") or ""),

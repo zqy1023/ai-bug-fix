@@ -163,14 +163,9 @@ class GitBranchDelivery:
             outside_carrier = self._outside_carrier(
                 delivery_project, str(state.get("carrier", "")), relative_files
             )
-            granted = {
-                str(item).replace("\\", "/")
-                for item in (state.get("authorized_files") or [])
-            }
-            unauthorized = outside_carrier - granted
-            if unauthorized:
+            if outside_carrier:
                 raise DeliveryError(
-                    f"禁止提交未经批准的共享层文件: {sorted(unauthorized)[0]}"
+                    f"禁止提交目标 carrier 之外的文件: {sorted(outside_carrier)[0]}"
                 )
 
             # 先切到明确基准再建分支，然后才复制文件。

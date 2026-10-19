@@ -24,14 +24,12 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         "changed_files": [str(item) for item in state.get("changed_files") or []],
         "baseline_manifest": dict(state.get("baseline_manifest") or {}),
         "baseline_dir": str(state.get("baseline_dir") or ""),
-        "authorized_files": list(state.get("authorized_files") or []),
         "approval_fingerprint": hashlib.sha256(
             json.dumps(
                 {
                     "task_id": str(state.get("task_id") or ""),
                     "change_plan": state.get("change_plan") or {},
                     "changed_files": sorted(str(item) for item in state.get("changed_files") or []),
-                    "authorized_files": sorted(str(item) for item in state.get("authorized_files") or []),
                     "baseline_manifest": state.get("baseline_manifest") or {},
                 },
                 ensure_ascii=False,

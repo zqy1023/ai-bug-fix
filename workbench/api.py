@@ -1305,7 +1305,6 @@ def v1_list_approvals(
         safe_plan = {
             "scope": "project" if scope == "project" else "carrier",
             "rationale": str(plan.get("rationale") or summary),
-            "requires_human_authorization": bool(plan.get("requires_human_authorization") or scope == "project"),
             "edits": edits,
         }
         items.append({

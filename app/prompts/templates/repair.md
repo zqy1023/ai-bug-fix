@@ -122,7 +122,7 @@ Locate Agent 的结论是调查线索，不是无条件可信的修改指令。�
 - 修改无关字段、异常处理或状态映射。
 - 为了让 changed_files 非空而制造变更。
 
-如果问题确实位于共享层，必须停止实际修改，输出 `scope=project` 的变更方案并请求人工授权。
+如果问题确实位于共享层，必须停止实际修改，输出 `scope=project` 的变更方案作为分析结论；系统只生成分析报告转人工线下处理，不会自动落盘。
 
 如果问题来自下游故障或配置问题，且当前任务没有相应授权和可靠修复依据，不得通过修改 carrier 代码掩盖问题。
 
@@ -248,7 +248,6 @@ Locate Agent 的结论是调查线索，不是无条件可信的修改指令。�
 当 `change_plan.scope=project` 时：
 
 - `passed` 必须为 `false`。
-- `requires_human_authorization` 必须为 `true`。
 - 不得执行任何共享层写入。
 - 必须提供每个目标文件的修改理由、影响面、完整预期修改后内容及后续验证要求。
 - 如果无法可靠提供某个文件的完整修改后内容，必须明确标记方案不完整，不能伪造内容。
@@ -267,8 +266,7 @@ Locate Agent 的结论是调查线索，不是无条件可信的修改指令。�
   "change_plan": {
     "scope": "carrier",
     "edits": [],
-    "rationale": "变更依据",
-    "requires_human_authorization": false
+    "rationale": "变更依据"
   }
 }
 

@@ -151,7 +151,6 @@ export function ApprovalsPage() {
           {selected.change_plan && <div className="approval-plan-block">
             <div className="approval-section-title">方案说明</div>
             <Paragraph>{selected.change_plan.rationale || '未提供额外方案说明。'}</Paragraph>
-            {selected.change_plan.requires_human_authorization && <Alert type="warning" showIcon message="此方案需要人工授权" description="请确认变更范围和影响后，再决定是否批准。" />}
             {!!selected.change_plan.edits?.length && <div className="approval-file-list">{selected.change_plan.edits.map((edit) => (
               <div className="approval-file-row" key={edit.path}><code>{edit.path}</code><Tag>{edit.action}</Tag><Text type="secondary">{edit.note}</Text></div>
             ))}</div>}

@@ -9,7 +9,7 @@ from pydantic import Field
 
 
 class CheckInput(FrozenModel):
-    """check_changes 的输入。``authorized_files`` 是审批后放行的额外范围。"""
+    """check_changes 的输入。"""
 
     # carrier：运输商标识。
     carrier: str
@@ -21,8 +21,6 @@ class CheckInput(FrozenModel):
     baseline_manifest: dict[str, str] = Field(default_factory=dict)
     # baseline_dir：只读基线目录。
     baseline_dir: str = ""
-    # authorized_files：审批后授权的额外文件范围。
-    authorized_files: list[str] = Field(default_factory=list)
 
 
 class FileEvidence(FrozenModel):

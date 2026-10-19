@@ -140,7 +140,7 @@ def after_repair(state: WorkflowState) -> str:
     """修复后路由：共享层或范围升级只留分析报告，局部修复才进入验证链。"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
         return FINALIZE
-    # 共享层范围升级即使带有 change_plan，也不能进入自动修改或中间审批。
+    # 共享层范围升级即使带有 change_plan，也不能进入自动修改或审批。
     if state.get("scope_escalation_required"):
         # 共享层/范围升级不属于允许自动修改的 carrier 局部问题。
         return FINALIZE
