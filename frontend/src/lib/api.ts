@@ -37,6 +37,7 @@ export const api = {
   },
   run: (runId: string) => request<RunDetail>('/runs/' + encodeURIComponent(runId)),
   task: (runId: string, taskId: string) => request<import('./types').TaskDetailResponse>('/runs/' + encodeURIComponent(runId) + '/tasks/' + encodeURIComponent(taskId)),
+  rerunTask: (runId: string, taskId: string) => request<{ run_id: string; source_run_id: string; source_task_id: string; carrier: string; biztype: string; status: string; message: string }>('/runs/' + encodeURIComponent(runId) + '/tasks/' + encodeURIComponent(taskId) + '/rerun', { method: 'POST' }),
   retryFailedStep: (runId: string, taskId: string, stepName: string, reason = '人工重试失败节点') => request<{ status: string; message: string }>('/runs/' + encodeURIComponent(runId) + '/tasks/' + encodeURIComponent(taskId) + '/steps/' + encodeURIComponent(stepName) + '/retry', { method: 'POST', body: JSON.stringify({ reason }) }),
   artifactContent: (runId: string, path: string, taskId?: string) => {
     const params = new URLSearchParams({ path });
