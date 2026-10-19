@@ -208,6 +208,7 @@ export function TaskDetailPage() {
                   <div className="json-panel-wrap"><div className="inspector-label">节点输出 · 字段视图</div><StructuredValue value={selectedStep.output} /></div>
                 </> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择一个节点查看执行证据" />}
               </div>
+              </div>
             </div>
           )},
           { key: 'models', label: '模型调用', children: (
