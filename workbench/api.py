@@ -59,6 +59,10 @@ class ApprovalRequest(BaseModel):
     reason: str = ""
 
 
+class RetryStepRequest(BaseModel):
+    reason: str = Field(default="人工重试失败节点", max_length=500)
+
+
 def _authorize(authorization: str | None = Header(default=None)) -> None:
     token = os.getenv("WORKBENCH_API_TOKEN", "").strip()
     if not token:
@@ -952,6 +956,45 @@ def v1_get_run(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
     return _v1_detail(run_id)
 
 
+def _pending_checkpoint_nodes(snapshot: Any, seen: set[int] | None = None) -> set[str]:
+    """递归读取父图/嵌套任务子图的待执行节点；不把已完成的节点误判为可重试。"""
+    if snapshot is None:
+        return set()
+    seen = seen or set()
+    marker = id(snapshot)
+    if marker in seen:
+        return set()
+    seen.add(marker)
+    nodes = {str(name) for name in (getattr(snapshot, "next", ()) or ())}
+    for task in (getattr(snapshot, "tasks", ()) or ()):
+        nested = getattr(task, "state", None)
+        if nested is not None and not isinstance(nested, (str, bytes, dict)):
+            nodes.update(_pending_checkpoint_nodes(nested, seen))
+    return nodes
+
+
+def _retryable_step_names(run_id: str, store: RecordStore, steps: list[dict[str, Any]]) -> list[str]:
+    """只有 checkpoint 明确把该失败节点列为待执行时，才开放节点级重试。"""
+    failed = {
+        str(step.get("name") or "")
+        for step in steps
+        if step.get("status") == "failed" and str(step.get("name") or "")
+    }
+    if not failed:
+        return []
+    try:
+        from app.workflow.wiring import build_graph
+        graph = build_graph(store=store)
+        snapshot = graph.get_state(
+            {"configurable": {"thread_id": run_id}},
+            subgraphs=True,
+        )
+        return sorted(failed.intersection(_pending_checkpoint_nodes(snapshot)))
+    except Exception:
+        logger.debug("无法读取节点级重试 checkpoint run_id=%s", run_id, exc_info=True)
+        return []
+
+
 @app.get("/api/v1/runs/{run_id}/tasks/{task_id}")
 def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
     """只返回一个任务的详情，避免 Run 页面携带并渲染所有任务的步骤与产物。"""
@@ -995,9 +1038,12 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
             "size_bytes": None, "task_id": task_id,
         })
     run_meta = _read_json(store.run_dir(run_id) / "run.json", {})
+    run_status = _v1_run_summary(payload)["status"]
+    retryable_steps = _retryable_step_names(run_id, store, steps) if run_status == "failed" and not source.get("approval_pending") else []
     return {
         "run_id": run_id,
-        "run_status": _v1_run_summary(payload)["status"],
+        "run_status": run_status,
+        "retryable_steps": retryable_steps,
         "task": {
             "task_id": task_id, "carrier": source.get("carrier", ""),
             "biztype": source.get("biztype", ""), "result": source.get("status", "PENDING"),
@@ -1009,6 +1055,70 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
             "log_days": run_meta.get("log_days", 1), "log_limit": run_meta.get("log_limit", 0),
             "review_mode": run_meta.get("review_mode", "agent"), "max_attempts": run_meta.get("max_attempts", 3),
         },
+    }
+
+
+@app.post("/api/v1/runs/{run_id}/tasks/{task_id}/steps/{step_name}/retry", status_code=202)
+def v1_retry_failed_step(
+    run_id: str,
+    task_id: str,
+    step_name: str,
+    request: RetryStepRequest,
+    background: BackgroundTasks,
+    authorization: str | None = Header(default=None),
+    _: None = Depends(_authorize),
+) -> dict[str, Any]:
+    """重试 checkpoint 中仍处于 pending 的失败节点；成功后由原图继续正常路由。"""
+    run_id, task_id, step_name = _safe_id(run_id), _safe_id(task_id), _safe_id(step_name)
+    with _RUN_LOCKS_GUARD:
+        lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
+    if not lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="该执行正在进行其他控制操作")
+    try:
+        store = _store()
+        payload = _run_payload(store, run_id)
+        source = next((item for item in payload.get("tasks", []) if item.get("task_id") == task_id), None)
+        if source is None:
+            raise HTTPException(status_code=404, detail="该执行中不存在此任务")
+        if str(payload.get("status") or "").lower() != "failed":
+            raise HTTPException(status_code=409, detail="只有执行失败的 Run 可以进行节点级重试")
+        if source.get("approval_pending"):
+            raise HTTPException(status_code=409, detail="任务正在等待人工审批，不能同时重试节点")
+        step = next((item for item in reversed(source.get("steps") or []) if item.get("name") == step_name), None)
+        if not step or step.get("status") != "failed":
+            raise HTTPException(status_code=409, detail="指定节点没有失败记录，拒绝重试")
+        retryable = _retryable_step_names(run_id, store, list(source.get("steps") or []))
+        if step_name not in retryable:
+            raise HTTPException(
+                status_code=409,
+                detail="该节点不是 LangGraph checkpoint 中待重新执行的节点；为避免跳过依赖或重复执行副作用，未提交重试",
+            )
+        connection = _control_db()
+        try:
+            connection.execute(
+                "INSERT INTO run_control(run_id,pause_requested,cancel_requested,updated_at) VALUES(?,0,0,?) "
+                "ON CONFLICT(run_id) DO UPDATE SET pause_requested=0,cancel_requested=0,updated_at=excluded.updated_at",
+                (run_id, datetime.now(timezone.utc).isoformat()),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        actor = "bearer-token" if authorization else "local-user"
+        _audit_control(run_id, task_id, "step.retry_requested:" + step_name, actor, request.reason)
+    except HTTPException:
+        lock.release()
+        raise
+    except Exception as exc:
+        lock.release()
+        logger.exception("提交失败节点重试失败 run_id=%s task_id=%s step=%s", run_id, task_id, step_name)
+        raise HTTPException(status_code=503, detail="无法验证或提交节点重试，请检查服务端日志") from exc
+    background.add_task(_resume_workflow_background, run_id, lock)
+    return {
+        "run_id": run_id,
+        "task_id": task_id,
+        "step_name": step_name,
+        "status": "retry_requested",
+        "message": "已提交该失败节点重试；节点成功后工作流将按原有路由继续执行",
     }
 
 
@@ -1036,38 +1146,30 @@ def v1_pause_run(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
 @app.post("/api/v1/runs/{run_id}/resume", status_code=202)
 def v1_resume_run(run_id: str, background: BackgroundTasks, _: None = Depends(_authorize)) -> dict[str, Any]:
     run_id = _safe_id(run_id)
+    detail = _v1_detail(run_id)
+    if detail["status"] not in {"running", "queued", "paused", "failed"} or not detail["checkpoint"]["resumable"]:
+        raise HTTPException(status_code=409, detail="执行当前没有可恢复的 checkpoint")
     with _RUN_LOCKS_GUARD:
         lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
     if not lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="该执行正在进行其他控制操作")
-
-    # 检查点和状态必须在取得执行锁后重新读取，避免并发控制请求在校验后改变状态。
     try:
-        detail = _v1_detail(run_id)
-        if detail["status"] not in {"running", "queued", "paused", "failed"} or not detail["checkpoint"]["resumable"]:
-            raise HTTPException(status_code=409, detail="执行当前没有可恢复的 checkpoint")
         connection = _control_db()
-        try:
-            connection.execute(
-                "INSERT INTO run_control(run_id,pause_requested,cancel_requested,updated_at) VALUES(?,0,0,?) "
-                "ON CONFLICT(run_id) DO UPDATE SET pause_requested=0,cancel_requested=0,updated_at=excluded.updated_at",
-                (run_id, datetime.now(timezone.utc).isoformat()),
-            )
-            connection.commit()
-        finally:
-            connection.close()
     except Exception:
         lock.release()
         raise
-
     try:
-        _audit_control(run_id, "", "run.resume_requested", "api")
-    except Exception:
-        lock.release()
-        logger.exception("写入恢复操作审计失败 run_id=%s", run_id)
-        raise HTTPException(status_code=503, detail="恢复未提交：写入控制审计失败")
+        connection.execute(
+            "INSERT INTO run_control(run_id,pause_requested,cancel_requested,updated_at) VALUES(?,0,0,?) "
+            "ON CONFLICT(run_id) DO UPDATE SET pause_requested=0,updated_at=excluded.updated_at",
+            (run_id, datetime.now(timezone.utc).isoformat()),
+        )
+        connection.commit()
+    finally:
+        connection.close()
     background.add_task(_resume_workflow_background, run_id, lock)
-    return {"run_id": run_id, "status": "resume_requested", "message": "已提交检查点恢复；请观察运行状态变化"}
+    _audit_control(run_id, "", "run.resume_requested", "api")
+    return {"run_id": run_id, "status": "resume_requested"}
 
 
 def _resume_workflow_background(
