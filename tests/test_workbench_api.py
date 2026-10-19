@@ -423,6 +423,7 @@ def test_v1_rerun_uses_saved_config_and_creates_new_run(monkeypatch):
     assert result["message"].startswith("已创建新的 Run")
     assert captured["request"].model_dump() == {
         "log_days": 4, "log_limit": 120, "review_mode": "human", "max_attempts": 2,
+        "task_filter_carrier": "", "task_filter_biztype": "",
     }
     assert captured["key"].startswith("rerun-")
 
