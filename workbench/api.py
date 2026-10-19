@@ -832,6 +832,8 @@ def v1_start_run(
     config = _config()
     if config.source_repo is None:
         raise HTTPException(status_code=409, detail="未配置 AI_REPAIR_SOURCE_REPO，不能启动生产工作流")
+    if bool(request.task_filter_carrier.strip()) != bool(request.task_filter_biztype.strip()):
+        raise HTTPException(status_code=422, detail="任务筛选必须同时提供 carrier 和 biztype")
     if not idempotency_key:
         raise HTTPException(status_code=400, detail="缺少 Idempotency-Key，请为本次启动生成唯一请求键")
 
