@@ -46,13 +46,15 @@ def after_prepare_context(state: WorkflowState) -> str:
 
 
 def after_validate_changes(state: WorkflowState) -> str:
-    """变更门禁和问题验证均通过后才执行回归。"""
+    """变更门禁和问题验证均通过后才执行回归。
+
+    ``syntax_only`` 只表示日志里没有可重放的 response，重放被跳过。
+    语法检查已经通过，不能因此跳过回归、审查和交付。
+    """
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
         return FINALIZE
     if _result(state) != "passed":
         return _retry_or_finalize(state)
-    if str((state.get("verify_result") or {}).get("mode") or "") == "syntax_only":
-        return FINALIZE
     return REGRESSION
 
 
@@ -65,6 +67,13 @@ def after_identify(state: WorkflowState) -> str:
 
 def _result(state: WorkflowState) -> str:
     return str(state.get("last_result") or "failed")
+
+
+def _delivery_status(state: WorkflowState) -> str:
+    """任务汇总或交付回写里的状态，统一转大写比较。"""
+    summary = str((state.get("task_summary") or {}).get("delivery_status") or "")
+    delivery = str((state.get("delivery") or {}).get("delivery_status") or "")
+    return (summary or delivery).upper()
 
 
 def _retry_or_finalize(state: WorkflowState) -> str:
@@ -203,6 +212,9 @@ def after_delivery(state: WorkflowState) -> str:
     """分析报告分支交付后直接结束；源码修复分支交付后进入唯一最终审批。"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
         return FINALIZE
+    # 已有未合并修复分支时预检直接跳过，不创建报告分支，也不进入审批。
+    if _delivery_status(state) == "SKIPPED":
+        return END
     evidence = state.get("evidence") or {}
     locate = state.get("locate") or {}
     analysis_only = bool(
@@ -210,7 +222,7 @@ def after_delivery(state: WorkflowState) -> str:
         or evidence.get("legacy_dependency")
         or state.get("scope_escalation_required")
         or str((state.get("review") or {}).get("verdict") or "").upper() == "MANUAL"
-        or str((state.get("task_summary") or {}).get("delivery_status") or "").upper() in {"FAILED", "MANUAL"}
+        or _delivery_status(state) in {"FAILED", "MANUAL"}
         or str(locate.get("status") or "") != "LOCATED"
         or str(locate.get("recommended_scope") or "") != "carrier"
         or str(locate.get("category") or "") != "carrier"
@@ -226,12 +238,13 @@ def after_finalize(state: WorkflowState) -> str:
     """对已完成根因分析但不允许自动修改的任务，交付 final.json 分支后结束。"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED":
         return END
+    # 已有未合并修复分支时本轮任务已被跳过，不得再创建报告分支。
+    if _delivery_status(state) == "SKIPPED":
+        return END
     # 明确拒绝或分支清理失败后不得再创建报告分支，避免重新引入被拒绝的分支。
     if str(state.get("decision") or "").upper() == "REJECT" or state.get("approval_cleanup_failed"):
         return END
     if str(state.get("review_mode") or "agent").lower() == "human":
-        return END
-    if str((state.get("verify_result") or {}).get("mode") or "") == "syntax_only":
         return END
     evidence = state.get("evidence") or {}
     locate = state.get("locate") or {}
@@ -240,7 +253,7 @@ def after_finalize(state: WorkflowState) -> str:
         or evidence.get("legacy_dependency")
         or state.get("scope_escalation_required")
         or str((state.get("review") or {}).get("verdict") or "").upper() == "MANUAL"
-        or str((state.get("task_summary") or {}).get("delivery_status") or "").upper() in {"FAILED", "MANUAL"}
+        or _delivery_status(state) in {"FAILED", "MANUAL"}
         or (locate and (
             str(locate.get("status") or "") != "LOCATED"
             or str(locate.get("recommended_scope") or "") != "carrier"

@@ -20,6 +20,12 @@ from app.infrastructure.runtime import close_sessions
 logger = logging.getLogger(__name__)
 
 
+def _uncaught_reason(error: BaseException) -> str:
+    """未进入步骤记录的异常只留类型，不把命令原文或密钥写进报告。"""
+    name = type(error).__name__ or "Exception"
+    return f"工作流未捕获异常（错误类型：{name}）。完整堆栈只在服务端日志。"
+
+
 def prepare_run(
     run_id: str | None = None,
     *,
@@ -233,9 +239,9 @@ def _ensure_task_final_report(
 
     terminal_reason = str(existing.get("terminal_reason") or final_output.get("terminal_reason") or inferred_reason or "").strip()
     next_action = str(existing.get("next_action") or final_output.get("next_action") or inferred_action or "").strip()
-    if error is not None and result == "FAILED":
-        terminal_reason = "工作流在任务执行期间异常退出；请检查服务端日志中的完整堆栈。"
-        next_action = "检查服务端异常堆栈、最后步骤的输入输出和任务产物；修复异常后重新执行。"
+    if error is not None and result == "FAILED" and not terminal_reason:
+        terminal_reason = _uncaught_reason(error)
+        next_action = "检查失败步骤的错误类型和任务产物；修复后重新执行该任务。"
 
     carrier = str(existing.get("carrier") or _task_slot_identity(slot, "carrier"))
     biztype = str(existing.get("biztype") or _task_slot_identity(slot, "biztype"))
@@ -313,11 +319,20 @@ def _write_run_report(
 
         if error is not None:
             result = "FAILED"
-            terminal = failed_steps[-1] if failed_steps else (run_steps[-1] if run_steps else None)
             logger.error("Run 工作流异常 run_id=%s", run_id, exc_info=(type(error), error, error.__traceback__))
-            reason = "后台工作流异常；请检查服务端日志中的完整堆栈。"
-            terminal_step = terminal.name if terminal else "workflow"
-            next_action = "检查工作流异常堆栈、最后一个节点的输入输出和运行产物后重试。"
+            reason = _uncaught_reason(error)
+            failed_task = next(
+                (item for item in reversed(task_results) if item["result"].upper() in {"FAILED", "FAIL"}),
+                None,
+            )
+            if failed_task and failed_task["terminal_step"]:
+                terminal_step = failed_task["terminal_step"]
+                if failed_task["terminal_reason"]:
+                    reason = failed_task["terminal_reason"]
+            else:
+                terminal = failed_steps[-1] if failed_steps else None
+                terminal_step = terminal.name if terminal else "workflow"
+            next_action = "检查失败步骤的错误类型和运行产物后重试；未开始的任务需要重新发起。"
             failure = {
                 "status": "FAILED", "error_type": type(error).__name__, "message": reason,
                 "failed_at": now, "terminal_step": terminal_step, "terminal_reason": reason,

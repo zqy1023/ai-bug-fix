@@ -5,8 +5,11 @@ import { ArrowLeftOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useNavigate, useParams } from 'react-router-dom';
 import dayjs from 'dayjs';
 import { api } from '../lib/api';
+import { subscribeRunEvents } from '../lib/runEvents';
+import { queryKeys } from '../lib/queryKeys';
 import { StatusTag } from '../components/StatusTag';
 import { WorkflowGraph } from '../components/WorkflowGraph';
+import { CheckpointPanel } from '../components/CheckpointPanel';
 import type { StepRecord } from '../lib/types';
 const { Title, Text, Paragraph } = Typography;
 function duration(value?: number | null) { if (value == null) return '—'; return value >= 1000 ? (value / 1000).toFixed(2) + ' 秒' : value.toFixed(0) + ' ms'; }
@@ -20,9 +23,9 @@ export function RunDetailPage() {
   const [activeTab, setActiveTab] = useState('steps');
   const [selectedArtifact, setSelectedArtifact] = useState<{ path: string; task_id?: string; name: string } | null>(null);
   const [resumeAwaitingTransition, setResumeAwaitingTransition] = useState(false);
-  const detail = useQuery({ queryKey: ['run', runId], queryFn: () => api.run(runId), refetchInterval: (q) => (resumeAwaitingTransition || ['running', 'queued', 'waiting_approval', 'pause_requested', 'paused', 'cancel_requested'].includes(q.state.data?.status ?? '')) ? 3000 : false });
-  const pause = useMutation({ mutationFn: () => api.pauseRun(runId), onSuccess: async (result) => { message.info(result.message || '已提交暂停请求'); await queryClient.invalidateQueries({ queryKey: ['run', runId] }); }, onError: (error) => message.error('暂停请求失败：' + (error as Error).message) });
-  const resume = useMutation({ mutationFn: () => api.resumeRun(runId), onSuccess: async (result) => { setResumeAwaitingTransition(true); message.success(result.status === 'resume_requested' ? (result.message || '已提交检查点恢复，正在等待工作流状态更新') : '恢复请求已返回'); await queryClient.invalidateQueries({ queryKey: ['run', runId] }); }, onError: (error) => message.error('恢复执行失败：' + (error as Error).message) });
+  const detail = useQuery({ queryKey: queryKeys.run(runId), queryFn: () => api.run(runId), refetchInterval: (q) => (resumeAwaitingTransition || ['running', 'queued', 'waiting_approval', 'pause_requested', 'paused', 'cancel_requested'].includes(q.state.data?.status ?? '')) ? 3000 : false });
+  const pause = useMutation({ mutationFn: () => api.pauseRun(runId), onSuccess: async (result) => { message.info(result.message || '已提交暂停请求'); await queryClient.invalidateQueries({ queryKey: queryKeys.run(runId) }); }, onError: (error) => message.error('暂停请求失败：' + (error as Error).message) });
+  const resume = useMutation({ mutationFn: () => api.resumeRun(runId), onSuccess: async (result) => { setResumeAwaitingTransition(true); message.success(result.status === 'resume_requested' ? (result.message || '已提交检查点恢复，正在等待工作流状态更新') : '恢复请求已返回'); await queryClient.invalidateQueries({ queryKey: queryKeys.run(runId) }); }, onError: (error) => message.error('恢复执行失败：' + (error as Error).message) });
   useEffect(() => {
     if (!resumeAwaitingTransition) return;
     if (detail.data && !['failed', 'paused'].includes(detail.data.status)) {
@@ -33,21 +36,21 @@ export function RunDetailPage() {
     const timeout = window.setTimeout(() => setResumeAwaitingTransition(false), 60_000);
     return () => window.clearTimeout(timeout);
   }, [resumeAwaitingTransition, detail.data?.status]);
-  const cancel = useMutation({ mutationFn: () => api.cancelRun(runId), onSuccess: async (result) => { message.warning(result.message || '已提交停止请求；后台任务可能需要时间响应'); await queryClient.invalidateQueries({ queryKey: ['run', runId] }); }, onError: (error) => message.error('停止请求失败：' + (error as Error).message) });
+  const cancel = useMutation({ mutationFn: () => api.cancelRun(runId), onSuccess: async (result) => { message.warning(result.message || '已提交停止请求；后台任务可能需要时间响应'); await queryClient.invalidateQueries({ queryKey: queryKeys.run(runId) }); }, onError: (error) => message.error('停止请求失败：' + (error as Error).message) });
   // 同一时刻只允许一个控制动作，避免暂停/恢复/停止请求互相竞争。
   const controlPending = pause.isPending || resume.isPending || cancel.isPending;
   useEffect(() => {
     if (!runId) return;
-    const source = new EventSource(`/api/v1/runs/${encodeURIComponent(runId)}/events`);
-    source.addEventListener('run.snapshot', () => { void queryClient.invalidateQueries({ queryKey: ['run', runId] }); });
-    source.onerror = () => { /* EventSource 自动重连；详情查询仍提供快照兜底。 */ };
-    return () => source.close();
+    return subscribeRunEvents(runId, {
+      onSnapshot: () => { void queryClient.invalidateQueries({ queryKey: queryKeys.run(runId) }); },
+    });
   }, [runId, queryClient]);
   const data = detail.data;
   const graphSteps = data?.steps ?? [];
   const visibleArtifacts = data?.artifacts ?? [];
-  const controlAudit = useQuery({ queryKey: ['control-audit', runId], queryFn: () => api.controlAudit(runId) });
-  const artifactContent = useQuery({ queryKey: ['artifact-content', runId, selectedArtifact?.path, selectedArtifact?.task_id], queryFn: () => api.artifactContent(runId, selectedArtifact!.path, selectedArtifact?.task_id), enabled: Boolean(selectedArtifact) });
+  const controlAudit = useQuery({ queryKey: queryKeys.controlAudit(runId), queryFn: () => api.controlAudit(runId) });
+  const modelCalls = useQuery({ queryKey: queryKeys.modelCalls(runId), queryFn: () => api.modelCalls(runId), enabled: Boolean(data), refetchInterval: ['running', 'queued', 'waiting_approval'].includes(data?.status ?? '') ? 5000 : false });
+  const artifactContent = useQuery({ queryKey: queryKeys.artifactContent(runId, selectedArtifact?.path, selectedArtifact?.task_id), queryFn: () => api.artifactContent(runId, selectedArtifact!.path, selectedArtifact?.task_id), enabled: Boolean(selectedArtifact) });
   const stepColumns = [
     { title: '节点', dataIndex: 'title', key: 'title', render: (v: string, row: StepRecord) => <div><strong>{v || row.name}</strong><div className="secondary-small">{row.name}</div></div> },
     { title: '执行状态', dataIndex: 'status', key: 'status', render: (v: StepRecord['status']) => <StatusTag status={v} /> },
@@ -77,6 +80,7 @@ export function RunDetailPage() {
     {data.status === 'paused' && <div className="run-control-hint"><Text type="secondary">{data.checkpoint?.resumable ? '执行已暂停，可从可恢复检查点继续。' : '执行已暂停，但服务端尚未提供可恢复检查点，因此暂不开放恢复操作。'}</Text></div>}
     {data.status === 'failed' && data.checkpoint?.resumable && <div className="run-control-hint"><Text type="secondary">工作流异常退出，但服务端保留了可恢复检查点。可尝试恢复；若失败节点存在副作用，恢复仍会受现有门禁约束。</Text></div>}
     {data.status === 'cancel_requested' && <div className="run-control-hint"><Text type="secondary">停止请求已提交，正在等待后台任务到达安全边界并确认终态。</Text></div>}
+    <CheckpointPanel run={data} onResume={data.checkpoint?.resumable && !controlPending ? () => resume.mutate() : undefined} loading={resume.isPending} />
     {pause.isError && <Alert type="error" showIcon message="暂停请求失败" description={(pause.error as Error).message} />}
     {resume.isError && <Alert type="error" showIcon message="恢复执行失败" description={(resume.error as Error).message} />}
     {cancel.isError && <Alert type="error" showIcon message="停止请求失败" description={(cancel.error as Error).message} />}
@@ -111,6 +115,11 @@ export function RunDetailPage() {
     <Card className="content-card"><Tabs activeKey={activeTab} onChange={setActiveTab} items={[
       { key: 'steps', label: 'Run 级节点记录', children: <Table rowKey="name" columns={stepColumns} dataSource={graphSteps} pagination={false} expandable={{ expandedRowRender: (row) => <div className="step-expanded"><div><strong>输入摘要</strong><pre>{JSON.stringify(row.input ?? {}, null, 2)}</pre></div><div><strong>输出摘要</strong><pre>{JSON.stringify(row.output ?? {}, null, 2)}</pre></div></div> }} locale={{ emptyText: '暂无节点记录' }} /> },
       { key: 'artifacts', label: 'Run 级产物（' + visibleArtifacts.length + '）', children: visibleArtifacts.length ? <Table rowKey={(row) => (row.task_id ?? 'run') + ':' + row.path} dataSource={visibleArtifacts} pagination={{ pageSize: 10 }} columns={[{ title: '名称', dataIndex: 'name', key: 'name' }, { title: '所属步骤/任务', dataIndex: 'description', key: 'description' }, { title: '类型', dataIndex: 'media_type', key: 'media_type' }, { title: '大小', dataIndex: 'size_bytes', key: 'size_bytes', render: (v?: number) => v == null ? '按需读取' : (v / 1024).toFixed(1) + ' KB' }, { title: '操作', key: 'action', render: (_: unknown, row: { path: string; task_id?: string; name: string }) => <Button type="link" onClick={() => setSelectedArtifact(row)}>预览内容</Button> }]} /> : <Empty description="暂无产物" /> },
+      { key: 'agent', label: 'Agent 审计（' + (modelCalls.data?.total ?? 0) + '）', children: <Table rowKey="model_call_id" loading={modelCalls.isLoading} dataSource={modelCalls.data?.items ?? []} pagination={{ pageSize: 10, showSizeChanger: false }} scroll={{ x: 900 }} locale={{ emptyText: '暂无模型调用记录' }} columns={[
+        { title: '任务', dataIndex: 'task_id', key: 'task_id' }, { title: 'Agent', dataIndex: 'agent_role', key: 'agent_role' }, { title: '模型', dataIndex: 'model', key: 'model' },
+        { title: '状态', dataIndex: 'status', key: 'status', render: (value: string) => <StatusTag status={value} /> }, { title: '耗时', dataIndex: 'duration_ms', key: 'duration_ms', render: (value?: number) => duration(value) },
+        { title: 'Token', dataIndex: 'total_tokens', key: 'total_tokens', render: (value?: number | null) => value ?? '—' }, { title: '公开事件', dataIndex: 'event_count', key: 'event_count', render: (value?: number) => value ?? 0 },
+      ]} /> },
       { key: 'config', label: '执行配置', children: <pre className="json-panel">{JSON.stringify(data.config, null, 2)}</pre> },
     ]} /></Card>
     <Modal title={selectedArtifact ? '产物预览 · ' + selectedArtifact.name : '产物预览'} open={Boolean(selectedArtifact)} onCancel={() => setSelectedArtifact(null)} footer={<Button onClick={() => setSelectedArtifact(null)}>关闭</Button>} width={900} destroyOnClose>

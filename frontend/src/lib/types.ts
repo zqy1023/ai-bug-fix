@@ -36,8 +36,13 @@ export interface TaskDetailResponse {
 export interface RunDetail extends RunSummary {
   run_error?: { status?: string; error_type?: string; message?: string; failed_at?: string; terminal_step?: string; terminal_reason?: string };
   run_report?: WorkflowReport; config: Record<string, unknown>; steps: StepRecord[]; tasks: TaskSummary[];
-  checkpoint?: { resumable: boolean; next_nodes: string[] }; artifacts: ArtifactRef[];
+  checkpoint?: CheckpointProjection & { resumable: boolean }; artifacts: ArtifactRef[];
 }
+export interface CheckpointProjection {
+  checkpoint_id?: string | null; parent_checkpoint_id?: string | null; created_at?: string | null;
+  next_nodes: string[]; node?: string | null; has_interrupt?: boolean;
+}
+export interface CheckpointHistoryResponse { run_id: string; items: CheckpointProjection[]; total: number; }
 export interface ApprovalItem {
   approval_id: string; run_id: string; task_id: string; carrier: string; biztype: string; scope: 'carrier' | 'project';
   status: 'pending' | 'approved' | 'rejected' | 'expired'; summary: string; changed_files: string[];

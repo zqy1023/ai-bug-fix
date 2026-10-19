@@ -46,6 +46,7 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         or state.get("scope_escalation_required")
         or str((state.get("review") or {}).get("verdict") or "").upper() == "MANUAL"
         or str((state.get("task_summary") or {}).get("delivery_status") or "").upper() in {"FAILED", "MANUAL"}
+        or str((state.get("delivery") or {}).get("delivery_status") or "").upper() == "FAILED"
         or str((state.get("locate") or {}).get("status") or "") != "LOCATED"
         or str((state.get("locate") or {}).get("recommended_scope") or "") != "carrier"
         or str((state.get("locate") or {}).get("category") or "") != "carrier"

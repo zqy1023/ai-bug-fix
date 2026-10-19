@@ -28,6 +28,9 @@ class LocateState(TypedDict, total=False):
     evidence: dict[str, Any]
     # source_project_path：该模型字段用于承载对应契约中的结构化数据。
     source_project_path: str
+    # workspace_path：只读定位 Agent 唯一允许访问的隔离工作区。
+    # 必须声明：LangGraph 会丢弃未声明通道，LocateInput 随后会因缺字段校验失败。
+    workspace_path: str
     # source_snapshot：该模型字段用于承载对应契约中的结构化数据。
     source_snapshot: dict[str, Any]
     # status：该模型字段用于承载对应契约中的结构化数据。

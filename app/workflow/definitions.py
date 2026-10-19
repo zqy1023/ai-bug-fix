@@ -17,7 +17,7 @@ from langgraph.graph import END, START
 # 编排节点 -> 实际执行的插件。每个插件仍独立写入自己的步骤记录。
 PHASE_COMPOSITIONS = {
     RUN_PREPARE: ("discover_logs", "normalize_error", "deduplicate_error"),
-    PREPARE_CONTEXT: ("prepare_source_snapshot", "prepare_workspace", "prepare_evidence"),
+    PREPARE_CONTEXT: ("prepare_source_snapshot", "repair_branch_preflight", "prepare_workspace", "prepare_evidence"),
     VALIDATE: ("check_changes", "verify_issue"),
 }
 

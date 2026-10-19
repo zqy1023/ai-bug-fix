@@ -12,6 +12,10 @@ CLAUDE.local.md
 .idea/
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+# 本地密钥与运行时数据，禁止入库
+.env
+runtime/
 # 运行时目录（app/config.py 默认 root/.ai-repair）：记录、工作区、报告都在这里
 .ai-repair/
 reports/

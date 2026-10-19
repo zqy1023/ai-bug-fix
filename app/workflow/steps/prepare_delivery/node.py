@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 
-from app.domain.errors import DeliveryError
 from app.domain.errors import StepFailed
 from app.application.context import StepContext
 from app.workflow.steps.prepare_delivery.models import DeliveryInput, DeliveryOutput
@@ -54,7 +53,12 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
                 "review_summary": data.review_summary,
             }
         )
-    except DeliveryError as error:
+    except StepFailed:
+        raise
+    except Exception as error:
+        # 交付器只把已知业务失败包成 DeliveryError。git 锁 ref、路径冲突这类
+        # 命令异常如果原样冒出，会打断串行主图，后面的任务不再执行。
+        # 这里收成当前任务失败，原因只保留异常类型，不写命令原文。
         raise StepFailed(public_exception(error, prefix="交付失败")) from error
 
     return DeliveryOutput(

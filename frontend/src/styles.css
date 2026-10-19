@@ -99,7 +99,13 @@ a { color: #456de0; cursor: pointer; }
 .health-row, .service-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid #f0f2f6; color: #748197; font-size: 11px; }
 .health-row strong, .service-row strong { color: #344054; text-align: right; font-size: 11px; font-weight: 650; }
 .health-note { display: block; margin-top: 13px; font-size: 10px; line-height: 1.7; }
-.workflow-canvas { width: 100%; height: 460px; overflow: hidden; border: 1px solid var(--wb-line); border-radius: 12px; background: #fbfcfe; }
+.workflow-canvas { position: relative; width: 100%; height: 460px; overflow: hidden; border: 1px solid var(--wb-line); border-radius: 12px; background: #fbfcfe; }
+.workflow-legend { position: absolute; z-index: 5; display: flex; gap: 12px; margin: 10px; padding: 6px 9px; border: 1px solid #e2e7ef; border-radius: 7px; background: rgba(255,255,255,.94); color: #667085; font-size: 10px; }
+.workflow-legend span { display: inline-flex; align-items: center; gap: 4px; }
+.legend-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; }
+.legend-current { background: #2f6fed; box-shadow: 0 0 0 3px rgba(47,111,237,.18); }
+.legend-success { background: #5cbd85; }
+.legend-retry { background: #8c6de8; }
 .workflow-canvas .react-flow__node { cursor: pointer; }
 .workflow-canvas .react-flow__controls { overflow: hidden; border: 1px solid #e2e7ef; border-radius: 8px; box-shadow: 0 3px 9px rgba(25,38,58,.07); }
 .workflow-canvas .react-flow__controls-button { width: 28px; height: 28px; border-bottom-color: #e8edf4; }

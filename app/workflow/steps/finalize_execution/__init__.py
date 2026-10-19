@@ -35,10 +35,7 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         "biztype": str(task.get("biztype") or ""),
         "terminal_status": (
             "manual"
-            if (
-                str(state.get("review_mode") or "agent").lower() == "human"
-                or str((state.get("verify_result") or {}).get("mode") or "") == "syntax_only"
-            )
+            if str(state.get("review_mode") or "agent").lower() == "human"
             else str(state.get("terminal_status") or "")
         ),
         "ai_workspace_path": str(state.get("ai_workspace_path") or ""),

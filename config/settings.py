@@ -45,7 +45,7 @@ class Settings:
     # default_git_remote：默认 Git 远程名。
     default_git_remote: str = "origin"
     # repair_branch_prefix：修复分支前缀。
-    repair_branch_prefix: str = "ai-repair"
+    repair_branch_prefix: str = "bug-repair-tasks"
     # default_git_push：是否默认推送。
     default_git_push: bool = False
     # default_review_mode：默认审查模式。
@@ -61,7 +61,7 @@ class Settings:
     )
     # repair_branch_pattern：修复分支名校验规则。
     repair_branch_pattern: re.Pattern[str] = re.compile(
-        r"^ai-repair/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)?$"
+        r"^bug-repair-tasks/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)?$"
     )
     # max_commit_comment_chars：提交说明最大字符数。
     max_commit_comment_chars: int = 800

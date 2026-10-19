@@ -94,9 +94,7 @@ def build_task_graph(
                         task = dict(state.get("task") or {})
                         manager.reset_task_workspace(
                             state.get("ai_workspace_path") or "",
-                            state.get("source_repo_path") or "",
                             state.get("baseline_dir") or "",
-                            state.get("source_project_path") or "",
                             str(task.get("carrier") or ""),
                         )
                         manifest = {
@@ -107,6 +105,7 @@ def build_task_graph(
                             valid, mismatches = manager.verify_manifest(
                                 state.get("ai_workspace_path") or "",
                                 manifest,
+                                carrier=str(task.get("carrier") or "") or None,
                             )
                             if not valid:
                                 return {
@@ -138,7 +137,7 @@ def build_task_graph(
                     "repair_changed_files": [],
                     "change_plan": {},
                     "scope_escalation_required": False,
-                    "repair_slot_claimed": False,
+                    "repair_slot_claimed": kept_repair_slot(state),
                     "authorized_files": [],
                     "check_passed": False,
                     "verify_passed": False,
@@ -164,6 +163,11 @@ def build_task_graph(
         graph.add_conditional_edges(source, router, list(targets))
 
     return graph.compile()
+
+
+def kept_repair_slot(state: dict[str, Any]) -> bool:
+    """同一任务回修继续使用已领取资格，不在重试时伪造未领取。"""
+    return bool(state.get("repair_slot_claimed"))
 
 
 def dispatch(state: RunState) -> dict[str, Any]:
@@ -274,4 +278,5 @@ __all__ = [
     "build_task_graph",
     "collect",
     "dispatch",
+    "kept_repair_slot",
 ]

@@ -6,6 +6,7 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../lib/api';
 import { StatusTag } from '../components/StatusTag';
 import type { RunSummary, TaskSummary } from '../lib/types';
+import { queryKeys } from '../lib/queryKeys';
 
 const { Title, Text } = Typography;
 type AuditedTask = TaskSummary & { run_id: string; run_status: RunSummary['status']; started_at: string };
@@ -14,9 +15,9 @@ export function TaskAuditPage() {
   const navigate = useNavigate();
   const [keyword, setKeyword] = useState('');
   const [result, setResult] = useState<string>();
-  const runs = useQuery({ queryKey: ['task-audit-runs'], queryFn: () => api.runs({ page: 1, page_size: 30 }), refetchInterval: 15000 });
+  const runs = useQuery({ queryKey: queryKeys.taskAuditRuns, queryFn: () => api.runs({ page: 1, page_size: 30 }), refetchInterval: 15000 });
   const details = useQueries({ queries: (runs.data?.items ?? []).map((run) => ({
-    queryKey: ['task-audit-run', run.run_id],
+    queryKey: queryKeys.run(run.run_id),
     queryFn: () => api.run(run.run_id),
     staleTime: 10000,
     retry: 1,

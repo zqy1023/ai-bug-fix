@@ -13,7 +13,6 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
     return {
         "run_id": str(state.get("run_id") or ""),
         "task_id": str(state.get("task_id") or ""),
-        "source_repo_path": str(state.get("source_repo_path") or ""),
         "source_project_path": str(state.get("source_project_path") or ""),
         "baseline_dir": str(state.get("baseline_dir") or ""),
         "carrier": str((state.get("task") or {}).get("carrier") or ""),

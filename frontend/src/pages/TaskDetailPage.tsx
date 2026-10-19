@@ -6,6 +6,8 @@ import dayjs from 'dayjs';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../lib/api';
 import { StatusTag } from '../components/StatusTag';
+import { AgentEventTimeline } from '../components/AgentEventTimeline';
+import { queryKeys } from '../lib/queryKeys';
 import type { ArtifactRef, StepRecord, WorkflowReport } from '../lib/types';
 
 const { Title, Text, Paragraph } = Typography;
@@ -40,7 +42,7 @@ export function TaskDetailPage() {
   const [selectedArtifact, setSelectedArtifact] = useState<ArtifactRef | null>(null);
 
   const detail = useQuery({
-    queryKey: ['task', runId, taskId],
+    queryKey: queryKeys.task(runId, taskId),
     queryFn: () => api.task(runId, taskId),
     refetchInterval: (query) => ['queued', 'running', 'waiting_approval', 'paused', 'pause_requested'].includes(query.state.data?.run_status ?? '') ? 5000 : false,
   });
@@ -56,13 +58,13 @@ export function TaskDetailPage() {
   }, [steps, selectedStepName]);
 
   const calls = useQuery({
-    queryKey: ['model-calls', runId, taskId],
+    queryKey: queryKeys.modelCalls(runId, taskId),
     queryFn: () => api.modelCalls(runId, taskId),
     enabled: Boolean(payload),
     refetchInterval: activeRun ? 5000 : false,
   });
   const artifactQuery = useQuery({
-    queryKey: ['task-artifact', runId, taskId, selectedArtifact?.path],
+    queryKey: queryKeys.artifactContent(runId, selectedArtifact?.path, taskId),
     queryFn: () => api.artifactContent(runId, selectedArtifact!.path, taskId),
     enabled: Boolean(selectedArtifact),
   });
@@ -177,6 +179,12 @@ export function TaskDetailPage() {
             <div className="inspection-tab-content">
               <div className="inspection-tab-intro"><div><strong>模型调用审计</strong><span>展示可公开的调用元信息和输出摘要，不展示隐藏推理链。</span></div><Tag>{calls.data?.total ?? 0} 次调用</Tag></div>
               {calls.isError ? <Alert type="error" showIcon message="模型调用记录加载失败" description={(calls.error as Error).message} /> : <Table rowKey="model_call_id" columns={callColumns} dataSource={calls.data?.items ?? []} loading={calls.isLoading} pagination={{ pageSize: 10, showSizeChanger: false }} scroll={{ x: 900 }} locale={{ emptyText: <Empty description="此任务没有模型调用记录" /> }} />}
+            </div>
+          )},
+          { key: 'events', label: 'Agent 事件', children: (
+            <div className="inspection-tab-content">
+              <div className="inspection-tab-intro"><div><strong>Agent 公开事件</strong><span>展示 assistant、tool use 和 tool result 等公开审计事件，不包含隐藏推理链。</span></div><Tag>{calls.data?.items.reduce((total, call) => total + (call.events?.length ?? 0), 0) ?? 0} 个事件</Tag></div>
+              {calls.isLoading ? <Spin /> : <AgentEventTimeline calls={calls.data?.items ?? []} />}
             </div>
           )},
           { key: 'artifacts', label: '产物与报告', children: (

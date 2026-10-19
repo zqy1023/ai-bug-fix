@@ -55,7 +55,13 @@ def run(ctx: StepContext, data: FinalizeInput) -> FinalizeOutput:
                     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
                 except OSError:
                     # 运行记录中的报告已经落盘；隔离区报告无法写入时，后续报告交付节点会明确失败。
-                    pass
+                    logger.warning(
+                        "写入工作区报告副本失败 run_id=%s task_id=%s path=%s",
+                        ctx.run.run_id,
+                        data.task_id,
+                        report_path,
+                        exc_info=True,
+                    )
     try:
         release_claim(ctx.store.root, run_id=ctx.run.run_id, task_id=data.task_id)
     except (OSError, sqlite3.Error):
@@ -122,12 +128,16 @@ def _terminal_details(
                 gaps = output.get("evidence_gaps")
                 if not reason and isinstance(gaps, list) and gaps:
                     reason = "证据缺口：" + "；".join(str(item) for item in gaps[:8])
-                reason = reason or "安全门禁要求人工介入，但步骤未写明具体原因。"
+                reason = reason or f"{record.title or name} 要求人工处理，但没有写出具体原因。"
                 return (name, reason,
                         "补充缺失证据并由人工确认处理范围；证据充分前不要自动修改代码。")
-        return (latest.name if latest else "workflow",
-                "流程因安全门禁要求人工介入而结束，现有记录未给出更具体原因。",
-                "检查最后执行步骤的输出，补齐缺失证据后重新发起执行。")
+        # 没有步骤明确给出人工结论时，用最后一步已经落盘的原因。
+        # 不能换成“安全门禁”这类套话，否则真实产出会被盖掉。
+        reason = _record_reason(latest)
+        name = latest.name if latest else "workflow"
+        if not reason:
+            reason = f"{latest.title or name if latest else '流程'} 以人工处理结束，但该步骤没有写下具体原因。"
+        return (name, reason, "查看该步骤的输出，按其中写明的原因处理。")
 
     approval = next((item for item in reversed(ordered) if item.name == "request_approval"), None)
     approval_output = approval.output if approval and isinstance(approval.output, dict) else {}
@@ -193,18 +203,24 @@ def _tokens(ctx: StepContext, task_id: str) -> int:
     if not path.is_file():
         return 0
     total = 0
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        try:
-            item = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(item, dict):
-            try:
-                total += max(0, int(item.get("total_tokens") or 0))
-            except (TypeError, ValueError):
+    try:
+        handle = path.open("r", encoding="utf-8", errors="replace")
+    except OSError:
+        logger.warning("读取 token 指标失败 path=%s", path, exc_info=True)
+        return 0
+    with handle:
+        for line in handle:
+            if not line.strip():
                 continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(item, dict):
+                try:
+                    total += max(0, int(item.get("total_tokens") or 0))
+                except (TypeError, ValueError):
+                    continue
     return total
 
 
@@ -220,6 +236,8 @@ def _delivery_status(records: list[StepRecord], terminal_status: str) -> str:
         or bool(results & {"MANUAL", "INSUFFICIENT_EVIDENCE"})
     ):
         return "MANUAL"
+    if "SKIPPED" in results:
+        return "SKIPPED"
     # 业务失败可能记录为 succeeded + FAIL；不能只看节点执行状态判断成功。
     if records and all(
         record.status in {"succeeded", "skipped"}

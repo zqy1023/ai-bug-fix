@@ -8,6 +8,7 @@ import dayjs from 'dayjs';
 import { api } from '../lib/api';
 import { StatusTag } from '../components/StatusTag';
 import type { RunStatus, RunSummary } from '../lib/types';
+import { queryKeys } from '../lib/queryKeys';
 
 const { Title, Text } = Typography;
 const validStatuses: RunStatus[] = ['queued', 'running', 'waiting_approval', 'succeeded', 'partial_failed', 'failed', 'cancelled', 'paused', 'pause_requested', 'cancel_requested'];
@@ -52,11 +53,11 @@ export function RunsPage() {
   }, [searchParams, setSearchParams]);
 
   const runs = useQuery({
-    queryKey: ['runs', page, keyword, status],
+    queryKey: queryKeys.runs(page, keyword, status),
     queryFn: () => api.runs({ page, page_size: 20, keyword: keyword.trim(), status }),
     refetchInterval: 15000,
   });
-  const health = useQuery({ queryKey: ['workbench-health'], queryFn: api.health, refetchInterval: 30000, retry: 1 });
+  const health = useQuery({ queryKey: queryKeys.health, queryFn: api.health, refetchInterval: 30000, retry: 1 });
 
   const clearFilters = () => {
     setKeyword('');

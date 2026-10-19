@@ -5,6 +5,7 @@ import { CheckOutlined, ClockCircleOutlined, ReloadOutlined, SafetyCertificateOu
 import dayjs from 'dayjs';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../lib/api';
+import { queryKeys } from '../lib/queryKeys';
 import { StatusTag } from '../components/StatusTag';
 import type { ApprovalItem } from '../lib/types';
 
@@ -23,7 +24,7 @@ export function ApprovalsPage() {
   const [selected, setSelected] = useState<ApprovalItem | null>(null);
   const [decision, setDecision] = useState<'approve' | 'reject'>('approve');
   const [reason, setReason] = useState('');
-  const approvals = useQuery({ queryKey: ['approvals'], queryFn: api.approvals, refetchInterval: 15000 });
+  const approvals = useQuery({ queryKey: queryKeys.approvals, queryFn: api.approvals, refetchInterval: 15000 });
 
   const decide = useMutation({
     mutationFn: () => {
@@ -38,11 +39,11 @@ export function ApprovalsPage() {
       setSelected(null);
       setReason('');
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['approvals'] }),
-        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
-        queryClient.invalidateQueries({ queryKey: ['runs'] }),
-        ...(runId ? [queryClient.invalidateQueries({ queryKey: ['run', runId] })] : []),
-        ...(runId && taskId ? [queryClient.invalidateQueries({ queryKey: ['task', runId, taskId] })] : []),
+        queryClient.invalidateQueries({ queryKey: queryKeys.approvals }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.dashboard }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.runsRoot }),
+        ...(runId ? [queryClient.invalidateQueries({ queryKey: queryKeys.run(runId) })] : []),
+        ...(runId && taskId ? [queryClient.invalidateQueries({ queryKey: queryKeys.task(runId, taskId) })] : []),
       ]);
     },
     onError: (error) => message.error('提交审批失败：' + (error as Error).message),

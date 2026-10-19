@@ -64,6 +64,10 @@ function nodeStyle(status?: StepStatus): CSSProperties {
   return { border: '1px solid ' + (palette?.border ?? '#d7dce5'), background: palette?.background ?? '#fff', color: palette?.color ?? '#344054', borderRadius: 8, padding: 10, width: 142, fontSize: 12, textAlign: 'center', boxShadow: '0 2px 6px rgba(20, 35, 70, .04)' };
 }
 
+function executionTime(step: StepRecord): string {
+  return step.started_at || step.finished_at || '';
+}
+
 function statusLabel(status?: StepStatus): string {
   const labels: Record<string, string> = {
     pending: '等待执行', running: '执行中', waiting: '等待人工处理',
@@ -75,25 +79,30 @@ function statusLabel(status?: StepStatus): string {
 export function WorkflowGraph({ steps, selectedStep, onSelectStep }: { steps: StepRecord[]; selectedStep?: string; onSelectStep?: (name: string) => void }) {
   const { nodes, edges } = useMemo(() => {
     const records = new Map(steps.map((step) => [step.name, step]));
+    const ordered = [...steps].sort((left, right) => executionTime(left).localeCompare(executionTime(right)));
+    const executedEdges = new Set(ordered.slice(1).map((step, index) => `${ordered[index].name}->${step.name}`));
+    const currentStep = ordered.find((step) => step.status === 'running' || step.status === 'waiting')?.name;
     const runStepIds = new Set(["discover_logs", "normalize_error", "deduplicate_error", "identify_carrier"]);
     const taskGraph = steps.some((step) => !runStepIds.has(step.name));
     const visibleLayout = layout.filter(({ id }) => taskGraph ? !runStepIds.has(id) : runStepIds.has(id));
     const visibleIds = new Set(visibleLayout.map((item) => item.id));
     const builtNodes: Node[] = visibleLayout.map(({ id, label, x, y }) => {
       const record = records.get(id);
-      return { id, position: { x, y }, data: { label: <div><div>{label}</div><small>{statusLabel(record?.status)}</small></div> }, style: { ...nodeStyle(record?.status), borderWidth: selectedStep === id ? 2 : 1, borderColor: selectedStep === id ? '#456de0' : undefined, boxShadow: selectedStep === id ? '0 0 0 3px rgba(69,109,224,.14)' : undefined }, };
+      const isCurrent = currentStep === id;
+      const isSelected = selectedStep === id;
+      return { id, position: { x, y }, data: { label: <div><div>{label}</div><small>{statusLabel(record?.status)}{record?.attempt && record.attempt > 1 ? ` · 第 ${record.attempt} 次` : ''}</small></div> }, style: { ...nodeStyle(record?.status), borderWidth: isSelected || isCurrent ? 2 : 1, borderColor: isSelected ? '#456de0' : isCurrent ? '#2f6fed' : undefined, boxShadow: isSelected ? '0 0 0 3px rgba(69,109,224,.14)' : isCurrent ? '0 0 0 4px rgba(47,111,237,.18)' : undefined }, };
     });
     const builtEdges: Edge[] = transitions.filter(([source, target]) => visibleIds.has(source) && visibleIds.has(target)).map(([source, target, label], index) => ({
       id: source + '-' + target + '-' + index,
       source,
       target,
       label,
-      animated: records.get(source)?.status === 'running',
-      style: { stroke: records.get(source)?.status === 'succeeded' ? '#5cbd85' : '#c6ccd7', strokeWidth: 1.4 },
+      animated: source === currentStep,
+      style: { stroke: executedEdges.has(`${source}->${target}`) ? (target === 'retry_prepare' ? '#8c6de8' : '#5cbd85') : '#c6ccd7', strokeWidth: executedEdges.has(`${source}->${target}`) ? 2.2 : 1.4, strokeDasharray: target === 'retry_prepare' ? '6 4' : undefined },
       labelStyle: { fill: '#667085', fontSize: 10 },
       labelBgStyle: { fill: '#fbfcfe' },
     }));
     return { nodes: builtNodes, edges: builtEdges };
   }, [steps, selectedStep]);
-  return <div className="workflow-canvas"><ReactFlow nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.18 }} nodesDraggable={false} nodesConnectable={false} elementsSelectable={true} onNodeClick={(_, node) => onSelectStep?.(node.id)} proOptions={{ hideAttribution: true }}><Background color="#e7eaf0" gap={20} /><MiniMap pannable zoomable /><Controls /></ReactFlow></div>;
+  return <div className="workflow-canvas"><div className="workflow-legend"><span><i className="legend-dot legend-current" />当前节点</span><span><i className="legend-dot legend-success" />已执行路径</span><span><i className="legend-dot legend-retry" />重试路径</span></div><ReactFlow nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.18 }} nodesDraggable={false} nodesConnectable={false} elementsSelectable={true} onNodeClick={(_, node) => onSelectStep?.(node.id)} proOptions={{ hideAttribution: true }}><Background color="#e7eaf0" gap={20} /><MiniMap pannable zoomable /><Controls /></ReactFlow></div>;
 }

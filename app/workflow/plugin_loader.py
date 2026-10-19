@@ -20,6 +20,7 @@ BUILTIN_STEPS = (
     "prepare_evidence",
     "prepare_source_snapshot",
     "prepare_workspace",
+    "repair_branch_preflight",
     "request_approval",
     "run_regression",
     "verify_issue",

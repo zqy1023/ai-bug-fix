@@ -12,6 +12,7 @@ import os
 import shutil
 import stat
 import tempfile
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,24 @@ from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 
 class WorkspaceError(RuntimeError):
     """工作区创建或文件复制失败。"""
+
+
+def _clone_repo(git_root: Path, target: Path) -> Repo:
+    """克隆源仓库。优先硬链接，跨盘或权限不足时退回普通复制。
+
+    ``local=True`` 在同盘能省一次对象复制，但 Windows 上硬链接失败会直接
+    中断整个克隆（``failed to create link: Improper link``）。交付、共享源码树
+    和回归工作区都走这里，不能让这一种文件系统限制变成所有任务的共同失败。
+    """
+    try:
+        return Repo.clone_from(str(git_root), str(target), local=True)
+    except Exception as local_error:
+        if target.exists():
+            shutil.rmtree(target, ignore_errors=True)
+        try:
+            return Repo.clone_from(str(git_root), str(target))
+        except Exception:
+            raise local_error from None
 
 
 @dataclass(frozen=True)
@@ -38,7 +57,8 @@ class WorkspaceConfig:
 class WorkspaceManager:
     """创建并管理 AI 隔离工作区（不含 Git）与回归独立克隆。
 
-    AI 隔离工作区：修复和验证在此完成，不含 .git，只读取目标 carrier。
+    AI 隔离工作区：修复和验证在此完成，不含 .git。每轮从 Git 拉取一份只读
+    干净树，任务工作区只复制目标 carrier，其余目录硬链接共享这一份。
     回归独立克隆：从源仓库本地克隆，带 Git 历史，用后删除。
     交付工作区：由交付器临时克隆，在独立分支操作后推送，不碰源仓库检出。
     """
@@ -80,71 +100,105 @@ class WorkspaceManager:
         self._config = config or WorkspaceConfig()
         self._root: Path | None = None
 
+    def prepare_run_tree(self, source_repo: str | Path, run_id: str) -> Path:
+        """从 Git 拉取本轮唯一的干净源码树，供所有任务共享只读使用。
+
+        克隆的是提交内容而不是开发人员的工作区，因此未提交改动不会进入隔离区。
+        同一 run 的后续任务直接复用这份树，不再重复拉取或复制整棵目录。
+        """
+        source = self._require_directory(source_repo)
+        try:
+            git_root = Path(
+                Repo(source, search_parent_directories=True).working_tree_dir or source
+            ).resolve()
+        except (InvalidGitRepositoryError, NoSuchPathError, OSError, ValueError) as error:
+            raise WorkspaceError(f"源项目不是本地 Git 仓库，无法拉取干净源码树: {source}") from error
+        try:
+            project_relative = self.project_root(source).relative_to(git_root)
+        except ValueError as error:
+            raise WorkspaceError("业务项目目录不在 Git 仓库内，无法建立共享源码树") from error
+        if self._root is None:
+            self._root = self._config.root_dir or Path(tempfile.mkdtemp(prefix="ai-repair-"))
+        target = self._root / "shared" / self._safe_name(run_id)
+        project = target / project_relative
+        if project.is_dir():
+            return project.resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f"{target.name}.tmp-{uuid.uuid4().hex}")
+        try:
+            _clone_repo(git_root, temporary)
+            cloned_project = temporary / project_relative
+            if not cloned_project.is_dir():
+                raise WorkspaceError(f"干净源码树缺少业务目录: {project_relative.as_posix()}")
+            # AI 可访问的目录中不能保留 Git 元数据。
+            git_dir = temporary / ".git"
+            if git_dir.exists():
+                self._force_remove(git_dir)
+            self._sanitize_shared_tree(cloned_project)
+            self._make_read_only(cloned_project)
+            if target.exists():
+                self._force_remove(target)
+            temporary.replace(target)
+        except Exception:
+            if temporary.exists():
+                self._force_remove(temporary)
+            raise
+        return (target / project_relative).resolve()
+
     def create_task_workspace(
         self,
-        source_repo: str | Path,
+        shared_project: str | Path,
         task_key: str,
         *,
-        source_project_path: str | Path,
         baseline_dir: str | Path,
         carrier: str,
         framework: str,
     ) -> Path:
-        """为一个任务复制不含 Git 和敏感文件的隔离工作区。"""
-        source = self.project_root(source_repo)
-        if source != Path(source_project_path).resolve():
-            raise WorkspaceError("源项目路径与 prepare_source_snapshot 不一致")
+        """创建任务工作区：只复制自己的 carrier，其余目录共享只读源码树。
+
+        共享文件使用硬链接挂到本轮唯一副本上，既不重复占空间，也不会被
+        其他任务的修改污染；目标 carrier 从不可变快照恢复为可写真实文件。
+        """
+        shared = self._require_directory(shared_project)
         if framework not in {"gathers", "spiders"}:
             raise WorkspaceError(f"无效的快照框架: {framework}")
         target = self._target(task_key)
+        carrier_name = self.safe_carrier_name(carrier)
+        # Windows 路径大小写不敏感，按 casefold 比较，避免把目标 carrier 当成共享目录镜像。
+        excluded = {
+            f"gathers/{carrier_name}".casefold(),
+            f"spiders/{carrier_name}".casefold(),
+        }
         try:
-            self._copy_source(source, target)
+            self._mirror_shared_tree(shared, target, excluded)
             self.restore_carrier_snapshot(target, baseline_dir, carrier, framework)
             if (target / ".git").exists():
                 raise WorkspaceError("AI 工作区禁止包含 .git")
             self._write_ignore(target)
         except Exception:
-            shutil.rmtree(target, ignore_errors=True)
+            if target.exists():
+                self._force_remove(target)
             raise
         return target
 
     def reset_task_workspace(
         self,
         workspace: str | Path,
-        source_repo: str | Path,
         baseline_dir: str | Path,
-        source_project_path: str | Path,
         carrier: str,
     ) -> None:
-        """从干净源项目重建任务工作区，再恢复本次任务的 carrier 基线。"""
+        """重试前只恢复本任务 carrier；共享只读目录仍是本轮唯一副本。"""
         root = Path(workspace).resolve()
-        source = self.project_root(source_repo)
-        expected = Path(source_project_path).resolve()
-        if source != expected:
-            raise WorkspaceError("重试时源项目路径与原始快照不一致")
         if not root.is_dir():
             raise WorkspaceError("重试工作区不存在")
-        temporary = root.with_name(root.name + ".reset")
-        if temporary.exists():
-            shutil.rmtree(temporary, ignore_errors=True)
-        try:
-            self._copy_source(source, temporary)
-            baseline_root = Path(baseline_dir).resolve()
-            carrier_dir = self.safe_carrier_name(carrier)
-            framework = "gathers" if (baseline_root / "gathers" / carrier_dir).is_dir() else "spiders"
-            if not (baseline_root / framework / carrier_dir).is_dir():
-                raise WorkspaceError("重试时基线中没有可恢复的 carrier")
-            # restore_carrier_snapshot 会一次恢复新旧两个框架，避免重复复制。
-            self.restore_carrier_snapshot(temporary, baseline_dir, carrier, framework)
-            self._write_ignore(temporary)
-            try:
-                self._force_remove(root)
-            except OSError as error:
-                raise WorkspaceError(f"任务工作区清理失败，可能有文件被占用: {error}") from error
-            temporary.replace(root)
-        except Exception:
-            shutil.rmtree(temporary, ignore_errors=True)
-            raise
+        baseline_root = Path(baseline_dir).resolve()
+        carrier_dir = self.safe_carrier_name(carrier)
+        framework = "gathers" if (baseline_root / "gathers" / carrier_dir).is_dir() else "spiders"
+        if not (baseline_root / framework / carrier_dir).is_dir():
+            raise WorkspaceError("重试时基线中没有可恢复的 carrier")
+        # restore_carrier_snapshot 会一次恢复新旧两个框架，避免重复复制。
+        self.restore_carrier_snapshot(root, baseline_dir, carrier, framework)
+        self._write_ignore(root)
 
     @classmethod
     def restore_carrier_snapshot(
@@ -175,12 +229,103 @@ class WorkspaceManager:
             if not destination.resolve().is_relative_to(root):
                 raise WorkspaceError("carrier 工作区路径越界")
             if destination.exists():
-                shutil.rmtree(destination)
+                cls._force_remove(destination)
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(source, destination, symlinks=False)
             restored += 1
         if not restored:
             raise WorkspaceError("快照没有可恢复的 carrier 目录")
+
+    @classmethod
+    def _mirror_shared_tree(
+        cls,
+        source: Path,
+        target: Path,
+        excluded: set[str],
+    ) -> None:
+        """把共享源码树镜像到任务工作区，排除目标 carrier 和敏感内容。
+
+        普通文件优先硬链接到本轮唯一副本；跨卷等无法硬链接时退回普通复制。
+        """
+        for current, directories, filenames in os.walk(source, followlinks=False):
+            current_path = Path(current)
+            relative = current_path.relative_to(source)
+            kept: list[str] = []
+            for name in directories:
+                candidate = current_path / name
+                if (
+                    candidate.is_symlink()
+                    or cls._is_skipped_dir(name)
+                    or cls._is_sensitive(name)
+                    or (relative / name).as_posix().casefold() in excluded
+                ):
+                    continue
+                kept.append(name)
+            directories[:] = kept
+            destination_dir = target / relative
+            destination_dir.mkdir(parents=True, exist_ok=True)
+            for name in filenames:
+                if cls._is_skipped_dir(name) or cls._is_sensitive(name):
+                    continue
+                source_file = current_path / name
+                if (
+                    source_file.is_symlink()
+                    or (relative / name).as_posix().casefold() in excluded
+                ):
+                    continue
+                cls._link_or_copy(source_file, destination_dir / name)
+
+    @staticmethod
+    def _link_or_copy(source: Path, destination: Path) -> None:
+        """共享只读文件优先硬链接；失败时复制内容并保持只读。"""
+        try:
+            os.link(source, destination)
+            return
+        except OSError:
+            pass
+        shutil.copyfile(source, destination)
+        try:
+            os.chmod(destination, stat.S_IREAD)
+        except OSError as error:
+            raise WorkspaceError(f"共享源码文件设置只读失败: {destination}") from error
+
+    @classmethod
+    def _sanitize_shared_tree(cls, root: Path) -> None:
+        """剔除 Git 树里不应暴露的缓存、日志、敏感文件和符号链接。"""
+        for current, directories, filenames in os.walk(root, topdown=True, followlinks=False):
+            current_path = Path(current)
+            kept: list[str] = []
+            for name in directories:
+                candidate = current_path / name
+                if not (
+                    candidate.is_symlink()
+                    or cls._is_skipped_dir(name)
+                    or cls._is_sensitive(name)
+                ):
+                    kept.append(name)
+                    continue
+                if candidate.is_dir() and not candidate.is_symlink():
+                    cls._force_remove(candidate)
+                else:
+                    candidate.unlink()
+            directories[:] = kept
+            for name in filenames:
+                candidate = current_path / name
+                if candidate.is_symlink() or cls._is_sensitive(name) or cls._is_skipped_dir(name):
+                    candidate.unlink()
+
+    @classmethod
+    def _make_read_only(cls, root: Path) -> None:
+        """把共享源码树中的普通文件设为只读，防止任务通过硬链接改写共享内容。"""
+        for current, _directories, filenames in os.walk(root):
+            for name in filenames:
+                path = Path(current) / name
+                if path.is_symlink():
+                    continue
+                try:
+                    os.chmod(path, stat.S_IREAD)
+                except OSError as error:
+                    raise WorkspaceError(f"共享源码文件设置只读失败: {path}") from error
 
     def _write_ignore(self, workspace: Path) -> None:
         """限制模型默认可见目录。目标文件仍可按路径读取。"""
@@ -245,13 +390,14 @@ class WorkspaceManager:
             self._root = self._config.root_dir or Path(tempfile.mkdtemp(prefix="ai-repair-"))
         target = self._root / "regression" / self._safe_name(task_key)
         if target.exists():
+            # 回归工作区一次性使用，进程崩溃留下的陈旧残留在本次执行前自愈。
             try:
                 shutil.rmtree(target)
             except OSError:
                 self._force_remove(target)
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
-            Repo.clone_from(str(git_root), str(target), local=True)
+            _clone_repo(git_root, target)
         except Exception as error:
             shutil.rmtree(target, ignore_errors=True)
             raise WorkspaceError(f"回归工作区克隆失败: {error}") from error
@@ -312,8 +458,14 @@ class WorkspaceManager:
         cls,
         workspace: str | Path,
         manifest: dict[str, str],
+        *,
+        carrier: str | None = None,
     ) -> tuple[bool, list[str]]:
-        """验证工作区指定文件与不可变基线 manifest 完全一致。"""
+        """验证工作区指定文件与不可变基线 manifest 完全一致。
+
+        ``carrier`` 给定时只扫描该 carrier 的新旧框架目录，避免把共享树里
+        其他 carrier 的只读文件误判成本任务的额外改动。
+        """
         root = Path(workspace).resolve()
         mismatches: list[str] = []
         expected = {str(key).replace("\\", "/"): str(value) for key, value in manifest.items()}
@@ -327,8 +479,13 @@ class WorkspaceManager:
             if not target.is_file() or cls._sha256(target) != digest:
                 mismatches.append(relative)
         actual: set[str] = set()
-        for framework in ("gathers", "spiders"):
-            base = root / framework
+        carrier_name = cls.safe_carrier_name(carrier) if carrier else ""
+        scopes = (
+            [root / "gathers" / carrier_name, root / "spiders" / carrier_name]
+            if carrier_name
+            else [root / "gathers", root / "spiders"]
+        )
+        for base in scopes:
             if not base.is_dir():
                 continue
             for path in base.rglob("*"):
@@ -395,7 +552,7 @@ class WorkspaceManager:
 
         shutil.rmtree(path, onerror=onerror)
 
-    @classmethod
+    @staticmethod
     def _require_directory(source_repo: str | Path) -> Path:
         """确认源项目目录存在。"""
         source = Path(source_repo).resolve()
@@ -527,7 +684,22 @@ class WorkspaceManager:
             sensitive_csv
             or lowered.endswith(cls._SENSITIVE_SUFFIXES)
             or lowered.endswith(cls._BUILD_ARTIFACT_SUFFIXES)
-            or any(lowered == item or lowered.startswith(item) for item in cls._SENSITIVE_NAMES)
+            or any(
+                (
+                    lowered.startswith(item)
+                    if item.endswith(".")
+                    else lowered == item
+                    if item.startswith(".")
+                    else (
+                        lowered == item
+                        or lowered.startswith(item + "_")
+                        or lowered.startswith(item + "-")
+                        or lowered.startswith(item + ".")
+                    )
+                )
+                for item in cls._SENSITIVE_NAMES
+                if not item.startswith(".") or item in {".env", ".env."}
+            )
         )
 
     @staticmethod
@@ -546,7 +718,10 @@ class WorkspaceManager:
 
     @staticmethod
     def _safe_name(value: str) -> str:
-        """将任务键转换成安全目录名。"""
-        return "".join(char if char.isalnum() or char in "-_." else "-" for char in value)
+        """将任务键转换成安全目录名，避免非法字符和大小写造成碰撞。"""
+        return "".join(
+            char if char.isalnum() or char in "-_" or char == "." else f"%{ord(char):02X}"
+            for char in str(value).casefold()
+        )
 
 

@@ -25,11 +25,15 @@ def _sha256(path: Path) -> str:
 
 
 def run(ctx: StepContext, data: SourceSnapshotInput) -> SourceSnapshotOutput:
-    """从真实源仓库复制命中的 carrier 目录并记录普通文件哈希。"""
+    """从本轮 Git 干净树复制命中的 carrier 目录并记录普通文件哈希。"""
     if ctx.services.workspaces is None:
         raise StepFailed("工作区适配器未配置，无法解析源仓库")
     try:
-        root = ctx.services.workspaces.project_root(data.source_repo_path)
+        # 基线来自本轮唯一的 Git 干净树，未提交改动不进入 AI 隔离区。
+        root = ctx.services.workspaces.prepare_run_tree(
+            data.source_repo_path,
+            ctx.run.run_id,
+        )
     except Exception as error:
         raise StepFailed(public_exception(error, prefix="源码快照源仓库无法读取")) from error
     from app.infrastructure.filesystem.workspace import WorkspaceManager
@@ -71,7 +75,10 @@ def run(ctx: StepContext, data: SourceSnapshotInput) -> SourceSnapshotOutput:
                     continue
                 relative_parts = source.relative_to(source_dir).parts
                 if (
-                    any(WorkspaceManager._is_skipped_dir(part) for part in relative_parts[:-1])
+                    any(
+                        WorkspaceManager._is_skipped_dir(part) or WorkspaceManager._is_sensitive(part)
+                        for part in relative_parts[:-1]
+                    )
                     or WorkspaceManager._is_sensitive(source.name)
                 ):
                     continue

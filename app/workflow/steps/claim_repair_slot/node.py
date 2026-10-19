@@ -83,6 +83,66 @@ def release_claim(root: str | Path, *, run_id: str, task_id: str) -> None:
         connection.close()
 
 
+def renew_claim(root: str | Path, *, run_id: str, task_id: str) -> bool:
+    """恢复尚未终态的任务时续租本运行已领取的资格。
+
+    只延长本 ``run_id`` + ``task_id`` 的未过期记录。其他运行占用、已过期或从未领取的
+    记录不在这里补领，避免恢复把别人的资格抢走。
+    """
+    now = datetime.now(timezone.utc)
+    expires = now + _CLAIM_TTL
+    connection = _claim_connection(Path(root))
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            "SELECT expires_at FROM repair_claims WHERE run_id=? AND task_id=?",
+            (run_id, task_id),
+        ).fetchone()
+        if row is None:
+            connection.rollback()
+            return False
+        try:
+            expired = datetime.fromisoformat(str(row[0])) <= now
+        except ValueError:
+            expired = True
+        if expired:
+            connection.rollback()
+            return False
+        connection.execute(
+            "UPDATE repair_claims SET expires_at=? WHERE run_id=? AND task_id=?",
+            (expires.isoformat(), run_id, task_id),
+        )
+        connection.commit()
+        return True
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def pending_repair_branch(
+    source: str,
+    *,
+    biztype: str,
+    carrier: str,
+    problem_key: str,
+    remote_name: str,
+) -> str:
+    """只读检查同一问题是否已有未合并修复分支。没有则返回空字符串。"""
+    branch = repair_branch(
+        biztype,
+        carrier,
+        settings.repair_branch_prefix,
+        problem_key,
+    )
+    try:
+        repo = Repo(source, search_parent_directories=True)
+    except Exception as error:
+        raise StepFailed(f"不是有效的本地 Git 仓库: {source}") from error
+    return _pending_branch(repo, branch, remote_name)
+
+
 def run(ctx: StepContext, data: ClaimInput) -> ClaimOutput:
     """已有未合并修复分支时跳过，保证本轮处理的是干净状态。"""
     if ctx.services.source_repo is None and not data.source_repo_path:
@@ -94,14 +154,12 @@ def run(ctx: StepContext, data: ClaimInput) -> ClaimOutput:
         settings.repair_branch_prefix,
         data.problem_key or data.task_id.rsplit("__", 1)[-1],
     )
-    try:
-        repo = Repo(source, search_parent_directories=True)
-    except Exception as error:
-        raise StepFailed(f"不是有效的本地 Git 仓库: {source}") from error
-    pending = _pending_branch(
-        repo,
-        branch,
-        ctx.services.git_remote or settings.default_git_remote,
+    pending = pending_repair_branch(
+        source,
+        biztype=data.biztype,
+        carrier=data.carrier,
+        problem_key=data.problem_key or data.task_id.rsplit("__", 1)[-1],
+        remote_name=ctx.services.git_remote or settings.default_git_remote,
     )
     if pending:
         raise StepFailed(
@@ -146,4 +204,4 @@ def _base_commit(repo: Repo, remote_name: str) -> str:
     return "HEAD"
 
 
-__all__ = ["release_claim", "run"]
+__all__ = ["pending_repair_branch", "release_claim", "renew_claim", "run"]

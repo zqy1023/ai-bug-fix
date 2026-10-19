@@ -12,9 +12,7 @@ class WorkspaceInput(FrozenModel):
     run_id: str
     # task_id：字段说明见该模型文档与工作流契约。
     task_id: str
-    # source_repo_path：字段说明见该模型文档与工作流契约。
-    source_repo_path: str
-    # source_project_path：字段说明见该模型文档与工作流契约。
+    # source_project_path：本轮 Git 干净树的业务项目目录。
     source_project_path: str
     # baseline_dir：字段说明见该模型文档与工作流契约。
     baseline_dir: str

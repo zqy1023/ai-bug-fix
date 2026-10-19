@@ -42,9 +42,40 @@ def redact_output(text: str) -> str:
 
 
 def public_exception(error: BaseException, *, prefix: str) -> str:
-    """返回可持久化的异常摘要，不复制原始异常文本。"""
+    """返回可持久化的异常摘要。
+
+    默认只保留异常类型，避免把密钥、单号或模型原文写进步骤记录。
+    pydantic ``ValidationError`` 只保留字段名和错误类型，不保留输入值。
+    """
     error_type = type(error).__name__ or "Exception"
+    detail = _validation_detail(error)
+    if detail:
+        return f"{prefix}（错误类型：{error_type}：{detail}）"
     return f"{prefix}（错误类型：{error_type}）"
+
+
+def _validation_detail(error: BaseException) -> str:
+    """抽出校验失败的字段位置，不带入被拒绝的原始值。"""
+    errors = getattr(error, "errors", None)
+    if not callable(errors):
+        return ""
+    try:
+        items = errors()
+    except Exception:
+        return ""
+    if not isinstance(items, list):
+        return ""
+    parts: list[str] = []
+    for item in items[:8]:
+        if not isinstance(item, dict):
+            continue
+        loc = ".".join(str(part) for part in item.get("loc") or ()) or "<root>"
+        kind = str(item.get("type") or "invalid")
+        parts.append(f"{loc}[{kind}]")
+    hidden = len(items) - len(parts)
+    if hidden > 0:
+        parts.append(f"另有 {hidden} 项")
+    return "；".join(parts)
 
 
 __all__ = ["mask_secrets", "public_exception", "redact_output"]

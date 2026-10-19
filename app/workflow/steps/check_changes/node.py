@@ -11,6 +11,32 @@ from app.workflow.steps.check_changes.models import CheckInput, CheckOutput, Fil
 from app.workflow.steps.check_changes.verification import validate_changed_files
 
 
+MAX_OUTPUT_ITEMS = 200
+_TRUNCATED_REASON = "…其余 {count} 条已省略"
+
+
+def _limit_items(items: list[Any], *, kind: str) -> list[Any]:
+    """限制步骤记录中的列表体量，保留门禁结论并避免记录存储超限。"""
+    if len(items) <= MAX_OUTPUT_ITEMS:
+        return items
+    omitted = len(items) - MAX_OUTPUT_ITEMS
+    if kind == "files":
+        placeholder: Any = {
+            "path": "",
+            "in_scope": True,
+            "exists": True,
+            "status": "truncated",
+            "problems": [_TRUNCATED_REASON.format(count=omitted)],
+        }
+    else:
+        placeholder = {
+            "file": "",
+            "reason": _TRUNCATED_REASON.format(count=omitted),
+            "code": "TRUNCATED",
+        }
+    return [*items[:MAX_OUTPUT_ITEMS], placeholder]
+
+
 def _render_diff(files: list[dict[str, Any]]) -> str:
     """把逐文件差异行拼成可直接阅读的 unified diff 文本。
 
@@ -70,9 +96,11 @@ def run(ctx: StepContext, data: CheckInput) -> CheckOutput:
         data.baseline_dir or None,
         list(data.authorized_files),
     )
-    files = list(result.get("files") or [])
+    all_files = list(result.get("files") or [])
+    files = _limit_items(all_files, kind="files")
+    failures = _limit_items(list(result.get("failures") or []), kind="failures")
     # 判定失败也要留下完整差异：下一轮修复看的就是这份。
-    ctx.emit_artifact("diff", "artifacts/diff.json", {"diff": _render_diff(files)})
+    ctx.emit_artifact("diff", "artifacts/diff.json", {"diff": _render_diff(all_files)})
     output = CheckOutput(
         passed=result.get("passed") is True,
         reason=str(result.get("reason") or ""),
@@ -83,7 +111,7 @@ def run(ctx: StepContext, data: CheckInput) -> CheckOutput:
         claim=dict(result.get("claim") or {}),
         totals=dict(result.get("totals") or {}),
         files=[_evidence(item) for item in files],
-        failures=list(result.get("failures") or []),
+        failures=failures,
     )
     if not output.passed:
         raise StepFailed(output.reason or "确定性检查失败", output.model_dump())

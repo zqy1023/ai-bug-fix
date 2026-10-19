@@ -233,6 +233,10 @@ def bind(
             # Agent 调用异常时只回写白名单内的重试元数据，不把异常输出当成业务结果。
             # 否则 after_retry 看不到 retry_target，定位失败会错误地回到 repair_agent。
             patch = _failure_route_patch(result)
+            # 交付失败必须留下状态。终态之后会按审查通过再次进入交付，
+            # 不标记的话，一个 git 异常会在当前任务里来回打转。
+            if spec.name == "prepare_delivery":
+                patch = {**patch, "delivery": {"delivery_status": "FAILED"}}
 
         return {
             **patch,

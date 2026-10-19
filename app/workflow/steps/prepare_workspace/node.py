@@ -10,16 +10,15 @@ from app.infrastructure.redaction import public_exception
 
 
 def run(ctx: StepContext, data: WorkspaceInput) -> WorkspaceOutput:
-    """每个任务拥有独立源码树，目标 carrier 从不可变快照恢复。"""
-    if ctx.services.workspaces is None or not data.source_repo_path:
-        raise StepFailed("源仓库未配置，无法创建任务隔离区")
+    """每个任务只复制自己的 carrier，其余目录共享本轮只读源码树。"""
+    if ctx.services.workspaces is None or not data.source_project_path:
+        raise StepFailed("共享源码树未准备，无法创建任务隔离区")
     try:
         task_key = f"{data.run_id}-{data.task_id}"
         workspace = str(
             ctx.services.workspaces.create_task_workspace(
-                data.source_repo_path,
+                data.source_project_path,
                 task_key,
-                source_project_path=data.source_project_path,
                 baseline_dir=data.baseline_dir,
                 carrier=data.carrier,
                 framework=data.framework,

@@ -262,7 +262,7 @@ def _compose_phase(
     step_names: tuple[str, ...],
     nodes: dict[str, Callable[..., Any]],
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
-    """顺序执行一个组合阶段；失败、人工介入或取消后立即停止后续子步骤。"""
+    """顺序执行一个组合阶段；失败、跳过、人工介入或取消后立即停止后续子步骤。"""
     missing = [name for name in step_names if name not in nodes]
     if missing:
         raise PluginError(f"组合阶段缺少步骤插件: {', '.join(missing)}")
@@ -277,7 +277,7 @@ def _compose_phase(
             current.update(patch)
             combined_patch.update(patch)
             result = str(patch.get("last_result") or "passed").lower()
-            if result not in {"passed", "skipped"}:
+            if result != "passed":
                 break
             if str(current.get("terminal_status") or "").upper() == "CANCELLED":
                 break

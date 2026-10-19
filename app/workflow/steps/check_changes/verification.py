@@ -96,7 +96,14 @@ def _actual_changed_files(
     prefix = f"{scope.as_posix().rstrip('/')}/" if scope is not None else ""
     normalized_prefix = _norm(prefix)
     scoped = {
-        key: value for key, value in baseline.items() if not prefix or _norm(key).startswith(normalized_prefix)
+        key: value
+        for key, value in baseline.items()
+        if (
+            (not prefix or _norm(key).startswith(normalized_prefix))
+            and not any(part in _IGNORED_PARTS for part in Path(key).parts)
+            and not any(WorkspaceManager._is_skipped_dir(part) for part in Path(key).parts[:-1])
+            and not WorkspaceManager._is_sensitive(Path(key).name)
+        )
     }
     if not scoped:
         return set()
@@ -314,7 +321,7 @@ def _inspect_file(
         problems.append("文件既不在目标 carrier 范围内，也不在人工批准清单内")
         return entry
     if not candidate.exists():
-        if baseline_manifest is not None and raw in baseline_manifest:
+        if baseline_manifest is not None and _norm(raw) in {_norm(path) for path in baseline_manifest}:
             # 删除只能作用于目标 carrier 中已存在的基线文件
             entry["status"] = "deleted"
             return entry
@@ -352,7 +359,7 @@ def _inspect_file(
             problems.extend(visitor.failures)
         else:
             entry["ast"] = "n/a"
-    except (OSError, SyntaxError) as error:
+    except (OSError, SyntaxError, RecursionError) as error:
         entry["ast"] = "error"
         problems.append(public_exception(error, prefix="文件检查失败"))
     return entry

@@ -44,7 +44,7 @@ def task_id(biztype: str, carrier: str, fingerprint: str) -> str:
 def repair_branch(
     biztype: str,
     carrier: str,
-    prefix: str = "ai-repair",
+    prefix: str = "bug-repair-tasks",
     fingerprint: str = "",
 ) -> str:
     """按业务类型、carrier 与问题指纹生成稳定分支名，避免不同异常互相覆盖。"""

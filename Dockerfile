@@ -13,4 +13,4 @@ COPY __init__.py ./__init__.py
 RUN useradd --create-home --uid 10001 app && mkdir -p /app/.ai-repair /app/runtime && chown -R app:app /app
 USER app
 EXPOSE 8000
-CMD ["uvicorn", "workbench.api:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "server.py"]

@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Alert, App, Form, InputNumber, Modal, Select } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../../lib/api';
+import { queryKeys } from '../../lib/queryKeys';
 
 type LaunchValues = { log_days: number; log_limit: number; review_mode: 'agent' | 'human'; max_attempts: number };
 
@@ -16,8 +17,8 @@ export function ExecutionLaunchDialog({ open, onClose }: { open: boolean; onClos
       onClose();
       message.success('执行已创建，正在进入执行工作区');
       await Promise.all([
-        client.invalidateQueries({ queryKey: ['dashboard'] }),
-        client.invalidateQueries({ queryKey: ['runs'] }),
+        client.invalidateQueries({ queryKey: queryKeys.dashboard }),
+        client.invalidateQueries({ queryKey: queryKeys.runsRoot }),
       ]);
       navigate('/runs/' + encodeURIComponent(run_id));
     },

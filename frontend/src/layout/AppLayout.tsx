@@ -4,6 +4,7 @@ import { ClockCircleOutlined, CodeOutlined, FileSearchOutlined, HomeFilled, Safe
 import { Badge, Breadcrumb, Button, Input, Layout, Menu, Modal, Typography } from 'antd';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, api, setApiToken } from '../lib/api';
+import { queryKeys } from '../lib/queryKeys';
 
 const { Header, Sider, Content } = Layout;
 const { Text } = Typography;
@@ -17,11 +18,11 @@ export function AppLayout() {
   const taskId = routeParts[2] === 'tasks' && routeParts[3] ? decodeURIComponent(routeParts[3]) : '';
   const [tokenDraft, setTokenDraft] = useState('');
   const [globalSearch, setGlobalSearch] = useState('');
-  const health = useQuery({ queryKey: ['workbench-health'], queryFn: api.health, refetchInterval: 30000, retry: 1 });
-  const approvals = useQuery({ queryKey: ['approvals'], queryFn: api.approvals, refetchInterval: 15000, retry: 1 });
+  const health = useQuery({ queryKey: queryKeys.health, queryFn: api.health, refetchInterval: 30000, retry: 1 });
+  const approvals = useQuery({ queryKey: queryKeys.approvals, queryFn: api.approvals, refetchInterval: 15000, retry: 1 });
   const authRequired = health.error instanceof ApiError && health.error.status === 401;
   const pendingCount = approvals.data?.length ?? 0;
-  const dashboard = useQuery({ queryKey: ['dashboard'], queryFn: api.dashboard, refetchInterval: 15000, retry: 1 });
+  const dashboard = useQuery({ queryKey: queryKeys.dashboard, queryFn: api.dashboard, refetchInterval: 15000, retry: 1 });
   const activeRunCount = dashboard.data?.active_runs ?? 0;
   const selected = location.pathname.startsWith('/runs') ? '/runs' : location.pathname === '/audit' ? '/audit' : location.pathname;
   const pageTitle = location.pathname.startsWith('/runs/') ? (taskId ? '任务审计' : '运行详情')

@@ -43,6 +43,23 @@ _MAX_AUDIT_BYTES = 512 * 1024
 _logger = logging.getLogger(__name__)
 
 
+def _clone_repo(git_root: Path, target: Path) -> Repo:
+    """克隆源仓库。优先硬链接，跨盘或权限不足时退回普通复制。
+
+    ``local=True`` 在同盘能省一次对象复制，但 Windows 上硬链接失败会直接
+    中断整个克隆（``failed to create link: Improper link``）。
+    """
+    try:
+        return Repo.clone_from(str(git_root), str(target), local=True)
+    except Exception as local_error:
+        if target.exists():
+            shutil.rmtree(target, ignore_errors=True)
+        try:
+            return Repo.clone_from(str(git_root), str(target))
+        except Exception:
+            raise local_error from None
+
+
 def _one_line(value: Any, limit: int = _MAX_COMMENT_CHARS) -> str:
     """把一段文本压成提交说明里的一行：脱敏、压空白、限长。"""
     text = str(value or "").strip()
@@ -192,8 +209,19 @@ class GitBranchDelivery:
             if not delivery_repo.git.status("--porcelain", "--", *git_paths).strip():
                 raise DeliveryError("修复分支没有待提交差异")
             try:
-                # 按路径提交，只记录这批文件，不把其它内容卷进修复提交。
-                delivery_repo.git.commit("-m", self._commit_message(state), "--", *git_paths)
+                # 新文件不在索引里时，直接 commit -- path 会报 pathspec did not match。
+                # Windows 的 core.ignorecase 还会把 gathers/asccourier 收成已有的
+                # gathers/ASCCourier；暂存清单必须不带原路径过滤，提交用 Git 收下的路径。
+                delivery_repo.git.add("--", *git_paths)
+                requested = {path.casefold() for path in git_paths}
+                staged = [
+                    line.replace("\\", "/")
+                    for line in delivery_repo.git.diff("--cached", "--name-only").splitlines()
+                    if line.replace("\\", "/").casefold() in requested
+                ]
+                if not staged:
+                    raise DeliveryError(f"修复文件未能进入暂存区: {git_paths[0]}")
+                delivery_repo.git.commit("-m", self._commit_message(state), "--", *staged)
                 commit = delivery_repo.head.commit
             except Exception as error:
                 raise DeliveryError(
@@ -254,9 +282,9 @@ class GitBranchDelivery:
     def _delivery_workspace(self, git_root: Path, branch: str) -> Path:
         """克隆一个只用于本次交付的临时工作区，不碰源仓库的检出。"""
         target = self._workspaces.allocate("delivery", branch)
-        shutil.rmtree(target)
+        shutil.rmtree(target, ignore_errors=True)
         try:
-            Repo.clone_from(str(git_root), str(target), local=True)
+            _clone_repo(git_root, target)
         except Exception as error:
             shutil.rmtree(target, ignore_errors=True)
             raise DeliveryError(f"交付工作区克隆失败: {git_root}") from error
@@ -294,19 +322,14 @@ class GitBranchDelivery:
 
     @staticmethod
     def _base_branch(repo: Repo, remote_name: str = settings.default_git_remote) -> str:
-        """返回修复分支应派生的远程跟踪分支。
-
-        修复交付可能在上一次任务留下的本地 ``ai-repair/*`` 分支上运行，不能再
-        从本地 ``main``/``master`` 派生，否则本地未推送提交会污染后续任务。只要
-        配置的 remote 存在，就必须使用该 remote 下的跟踪引用；没有 remote 的临时
-        准生产仓库才保留本地分支回退。
-        """
+        """返回修复分支应派生的基准提交 SHA。"""
         remotes = {remote.name for remote in repo.remotes}
         remote_refs = {
             ref.name
             for ref in repo.refs
             if ref.name.startswith(f"{remote_name}/")
         }
+        base: str | None = None
         if remote_name in remotes:
             try:
                 symbolic = str(
@@ -315,24 +338,36 @@ class GitBranchDelivery:
                     )
                 ).strip()
                 if symbolic in remote_refs:
-                    return symbolic
+                    base = symbolic
             except Exception:
                 pass
-            for candidate in (
-                f"{remote_name}/main",
-                f"{remote_name}/master",
-            ):
-                if candidate in remote_refs:
-                    return candidate
-            raise DeliveryError(
-                f"远程 {remote_name} 没有可用的默认跟踪分支"
-            )
-
-        heads = {head.name for head in repo.heads}
-        for candidate in ("main", "master"):
-            if candidate in heads:
-                return candidate
-        return str(repo.active_branch.name)
+            if base is None:
+                for candidate in (
+                    f"{remote_name}/main",
+                    f"{remote_name}/master",
+                ):
+                    if candidate in remote_refs:
+                        base = candidate
+                        break
+            if base is None:
+                raise DeliveryError(
+                    f"远程 {remote_name} 没有可用的默认跟踪分支"
+                )
+        else:
+            try:
+                heads = {head.name for head in repo.heads}
+                for candidate in ("main", "master"):
+                    if candidate in heads:
+                        base = candidate
+                        break
+                if base is None:
+                    base = repo.active_branch.name
+            except Exception as error:
+                raise DeliveryError("无法确定修复分支基准") from error
+        try:
+            return str(repo.git.rev_parse(base)).strip()
+        except Exception as error:
+            raise DeliveryError("无法确定修复分支基准") from error
 
     @classmethod
     def _copy_changed_files(
@@ -390,10 +425,11 @@ class GitBranchDelivery:
         *,
         carrier: str,
     ) -> list[str]:
-        """仅复制目标 carrier 目录中的 final.json 或白名单 Markdown 审计报告。"""
+        """仅复制目标 carrier 目录中的 final.json 或 Markdown 审计报告。"""
         if not isinstance(raw_paths, list):
             return []
         copied: list[str] = []
+        expected_carrier = WorkspaceManager.safe_carrier_name(carrier)
         for raw_path in raw_paths:
             source = Path(str(raw_path))
             if not source.is_absolute():
@@ -401,12 +437,19 @@ class GitBranchDelivery:
             source = source.resolve()
             try:
                 relative = source.relative_to(source_root)
-            except ValueError as error:
-                raise DeliveryError(f"报告不在 AI 工作区内: {raw_path}") from error
-            relative_text = relative.as_posix()
-            valid_markdown = source.suffix == ".md"
+            except ValueError:
+                _logger.warning("跳过工作区外的报告: %s", raw_path)
+                continue
             parts = relative.parts
-            expected_carrier = WorkspaceManager.safe_carrier_name(carrier)
+            if any(part.casefold() in {".ai-repair", "artifacts", ".git"} for part in parts):
+                _logger.warning("跳过不安全路径中的报告: %s", raw_path)
+                continue
+            valid_markdown = (
+                source.suffix == ".md"
+                and len(parts) >= 2
+                and parts[0] in {"gathers", "spiders"}
+                and parts[1] == expected_carrier
+            )
             valid_final_json = (
                 source.suffix == ".json"
                 and len(parts) == 3
@@ -415,7 +458,8 @@ class GitBranchDelivery:
                 and parts[2] == "final.json"
             )
             if not source.is_file() or not (valid_markdown or valid_final_json):
-                raise DeliveryError(f"非法审计报告: {raw_path}")
+                _logger.warning("跳过非法审计报告: %s", raw_path)
+                continue
             destination = destination_root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             if source != destination:
@@ -441,11 +485,39 @@ class GitBranchDelivery:
             allowed = source.is_file() and not source.is_symlink()
             if not allowed or source.suffix not in cls._AUDIT_SUFFIXES:
                 continue
+            try:
+                if source.stat().st_size > _MAX_AUDIT_BYTES:
+                    _logger.warning("跳过过大的审计产物: %s", source)
+                    continue
+                content = source.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as error:
+                _logger.warning("跳过无法读取的审计产物: %s (%s)", source, type(error).__name__)
+                continue
             relative = source.relative_to(source_root)
             destination = destination_root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
-            if source.resolve() != destination.resolve():
-                shutil.copy2(source, destination)
+            temporary: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    dir=destination.parent,
+                    prefix=f".{destination.name}.",
+                    suffix=".redacted",
+                    delete=False,
+                ) as output:
+                    output.write(redact_output(content))
+                    temporary = Path(output.name)
+                shutil.copyfile(temporary, destination)
+            except OSError as error:
+                _logger.warning("跳过无法写入的脱敏审计产物: %s (%s)", source, type(error).__name__)
+                continue
+            finally:
+                if temporary is not None:
+                    try:
+                        temporary.unlink()
+                    except OSError:
+                        pass
             copied.append(relative.as_posix())
         return copied
 
@@ -459,7 +531,7 @@ class GitBranchDelivery:
         """
         carrier = str(state.get("carrier") or "unknown")
         status = str(state.get("delivery_status") or "REPAIR")
-        lines = [f"ai-repair: {carrier} ({status})"]
+        lines = [f"bug-repair-tasks: {carrier} ({status})"]
 
         error = _one_line(state.get("error"))
         if error:

@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import time
 import threading
 from contextlib import contextmanager
 from pathlib import Path
@@ -103,8 +105,18 @@ class RecordStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         text = json.dumps(payload, ensure_ascii=False, indent=2)
         temporary = path.with_suffix(".tmp")
-        temporary.write_text(text, encoding="utf-8")
-        temporary.replace(path)
+        with temporary.open("w", encoding="utf-8") as file_obj:
+            file_obj.write(text)
+            file_obj.flush()
+            os.fsync(file_obj.fileno())
+        for attempt in range(3):
+            try:
+                temporary.replace(path)
+                break
+            except PermissionError:
+                if attempt == 2:
+                    raise
+                time.sleep(0.05)
 
     def save(
         self,
@@ -137,6 +149,12 @@ class RecordStore:
                 slot[record.name] = body
             else:
                 payload[record.name] = body
+            path = self.steps_path(run_id)
+            if path.is_file():
+                try:
+                    shutil.copyfile(path, path.with_name("steps.json.bak"))
+                except OSError:
+                    pass
             self._write_steps(run_id, payload)
         return self.steps_path(run_id)
 
@@ -283,10 +301,19 @@ def _process_lock(path: Path):
 
             handle.seek(0, 2)
             if handle.tell() == 0:
+                handle.seek(0)
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                except OSError as error:
+                    raise OSError("另一进程持有记录锁") from error
                 handle.write("0")
                 handle.flush()
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                handle.seek(0)
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                except OSError as error:
+                    raise OSError("另一进程持有记录锁") from error
         else:
             import fcntl
 

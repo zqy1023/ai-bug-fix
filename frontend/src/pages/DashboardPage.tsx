@@ -8,6 +8,7 @@ import { api } from '../lib/api';
 import { StatusTag } from '../components/StatusTag';
 import type { RunSummary, StepRecord } from '../lib/types';
 import { ExecutionLaunchDialog } from '../features/executions/ExecutionLaunchDialog';
+import { queryKeys } from '../lib/queryKeys';
 
 const { Title, Text } = Typography;
 const statusLabel: Record<string, string> = {
@@ -46,13 +47,13 @@ export function DashboardPage() {
   const navigate = useNavigate();
   const [launchOpen, setLaunchOpen] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState('');
-  const summary = useQuery({ queryKey: ['dashboard'], queryFn: api.dashboard, refetchInterval: 15000 });
-  const runsQuery = useQuery({ queryKey: ['dashboard-runs'], queryFn: () => api.runs({ page: 1, page_size: 12 }), refetchInterval: 15000 });
-  const health = useQuery({ queryKey: ['workbench-health'], queryFn: api.health, refetchInterval: 30000, retry: 1 });
-  const approvals = useQuery({ queryKey: ['approvals'], queryFn: api.approvals, refetchInterval: 15000 });
+  const summary = useQuery({ queryKey: queryKeys.dashboard, queryFn: api.dashboard, refetchInterval: 15000 });
+  const runsQuery = useQuery({ queryKey: queryKeys.dashboardRuns, queryFn: () => api.runs({ page: 1, page_size: 12 }), refetchInterval: 15000 });
+  const health = useQuery({ queryKey: queryKeys.health, queryFn: api.health, refetchInterval: 30000, retry: 1 });
+  const approvals = useQuery({ queryKey: queryKeys.approvals, queryFn: api.approvals, refetchInterval: 15000 });
   const recentRuns = runsQuery.data?.items ?? summary.data?.recent_runs ?? [];
   const selectedId = selectedRunId || recentRuns[0]?.run_id || '';
-  const selectedRun = useQuery({ queryKey: ['dashboard-selected-run', selectedId], queryFn: () => api.run(selectedId), enabled: Boolean(selectedId), refetchInterval: 10000 });
+  const selectedRun = useQuery({ queryKey: queryKeys.dashboardSelectedRun(selectedId), queryFn: () => api.run(selectedId), enabled: Boolean(selectedId), refetchInterval: 10000 });
   const run = selectedRun.data;
   const steps = run?.steps ?? [];
   const task = run?.tasks?.[0];

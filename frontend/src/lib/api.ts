@@ -1,9 +1,9 @@
-import type { ApprovalItem, DashboardSummary, ModelCall, PageResult, RunDetail, RunQuery, RunSummary, ControlAuditItem } from './types';
+import type { ApprovalItem, CheckpointHistoryResponse, CheckpointProjection, DashboardSummary, ModelCall, PageResult, RunDetail, RunQuery, RunSummary, ControlAuditItem } from './types';
 
 const API_BASE = '/api/v1';
 let apiToken = '';
 export function setApiToken(token: string) { apiToken = token.trim(); }
-function authorizationHeaders(): Record<string, string> { return apiToken ? { Authorization: 'Bearer ' + apiToken } : {}; }
+export function authorizationHeaders(): Record<string, string> { return apiToken ? { Authorization: 'Bearer ' + apiToken } : {}; }
 
 export class ApiError extends Error {
   constructor(message: string, public readonly status: number, public readonly code = 'API_ERROR') {
@@ -36,6 +36,8 @@ export const api = {
     return request<PageResult<RunSummary>>('/runs?' + params.toString());
   },
   run: (runId: string) => request<RunDetail>('/runs/' + encodeURIComponent(runId)),
+  checkpoint: (runId: string) => request<{ run_id: string; checkpoint: CheckpointProjection }>('/runs/' + encodeURIComponent(runId) + '/checkpoint'),
+  checkpoints: (runId: string, limit = 20) => request<CheckpointHistoryResponse>('/runs/' + encodeURIComponent(runId) + '/checkpoints?limit=' + limit),
   task: (runId: string, taskId: string) => request<import('./types').TaskDetailResponse>('/runs/' + encodeURIComponent(runId) + '/tasks/' + encodeURIComponent(taskId)),
   artifactContent: (runId: string, path: string, taskId?: string) => {
     const params = new URLSearchParams({ path });

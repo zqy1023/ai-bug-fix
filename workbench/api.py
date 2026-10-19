@@ -17,8 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -26,20 +25,9 @@ from app.infrastructure.config import load_config
 from app.infrastructure.records.store import RecordStore
 from app.infrastructure.redaction import public_exception
 
-app = FastAPI(
-    title="AI Repair Workbench API",
-    version="1.0.0",
-    description="Run/task/step/artifact observability and human approval API.",
-    docs_url="/api/docs",
-    openapi_url="/api/openapi.json",
-)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
-    allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
-)
+router = APIRouter()
+SERVICE_NAME = "ai-repair-workbench"
+SERVICE_VERSION = "1.0.0"
 
 _ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,160}$")
 _RUN_LOCKS: dict[str, threading.Lock] = {}
@@ -333,13 +321,13 @@ def _all_run_ids(store: RecordStore) -> list[str]:
     )
 
 
-@app.get("/api/health")
+@router.get("/api/health")
 def health(_: None = Depends(_authorize)) -> dict[str, Any]:
     config = _config()
     return {
         "status": "ok",
-        "service": "ai-repair-workbench",
-        "version": app.version,
+        "service": SERVICE_NAME,
+        "version": SERVICE_VERSION,
         "runtime_dir_configured": bool(config.runtime_dir),
         "source_repo_configured": config.source_repo is not None,
         "api_token_required": bool(os.getenv("WORKBENCH_API_TOKEN", "").strip()),
@@ -347,7 +335,7 @@ def health(_: None = Depends(_authorize)) -> dict[str, Any]:
     }
 
 
-@app.get("/api/runs")
+@router.get("/api/runs")
 def list_runs(
     limit: int = Query(default=50, ge=1, le=200),
     _: None = Depends(_authorize),
@@ -376,12 +364,12 @@ def list_runs(
     return {"items": items, "total": len(items)}
 
 
-@app.get("/api/runs/{run_id}")
+@router.get("/api/runs/{run_id}")
 def get_run(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
     return _run_payload(_store(), _safe_id(run_id))
 
 
-@app.get("/api/approvals")
+@router.get("/api/approvals")
 def list_approvals(_: None = Depends(_authorize)) -> dict[str, Any]:
     store = _store()
     approvals = []
@@ -404,7 +392,7 @@ def list_approvals(_: None = Depends(_authorize)) -> dict[str, Any]:
     return {"items": approvals, "total": len(approvals)}
 
 
-@app.post("/api/runs", status_code=202)
+@router.post("/api/runs", status_code=202)
 def start_run(
     request: StartRunRequest,
     background: BackgroundTasks,
@@ -437,7 +425,7 @@ def start_run(
     return {"run_id": run_id, "status": "accepted", "message": "已提交后台执行；请在运行详情中观察节点进度"}
 
 
-@app.get("/api/runs/{run_id}/artifacts")
+@router.get("/api/runs/{run_id}/artifacts")
 def list_artifacts(
     run_id: str,
     task_id: str = "",
@@ -460,7 +448,7 @@ def list_artifacts(
     return {"items": artifacts, "total": len(artifacts)}
 
 
-@app.get("/api/runs/{run_id}/artifacts/content")
+@router.get("/api/runs/{run_id}/artifacts/content")
 def get_artifact_content(
     run_id: str,
     path: str = Query(..., min_length=1, max_length=500),
@@ -489,7 +477,7 @@ def get_artifact_content(
     return JSONResponse(content={"path": path, "task_id": task_id, "content": value})
 
 
-@app.post("/api/runs/{run_id}/tasks/{task_id}/approval")
+@router.post("/api/runs/{run_id}/tasks/{task_id}/approval")
 def decide_approval(
     run_id: str,
     task_id: str,
@@ -680,12 +668,30 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
             "approval_pending": bool(task.get("approval_pending")),
         })
     resumable, next_nodes = False, []
+    checkpoint_id: str | None = None
+    checkpoint_created_at: str | None = None
+    checkpoint_node: str | None = None
+    checkpoint_parent_id: str | None = None
+    checkpoint_has_interrupt = False
     try:
         from app.workflow.wiring import build_graph
         graph = build_graph(store=store)
         snapshot = graph.get_state({"configurable": {"thread_id": run_id}})
         next_nodes = [str(item) for item in (getattr(snapshot, "next", ()) or ())]
         resumable = bool(next_nodes) and not any(task.get("approval_pending") for task in payload.get("tasks") or [])
+        checkpoint_config = getattr(snapshot, "config", {}) or {}
+        configurable = checkpoint_config.get("configurable", {}) if isinstance(checkpoint_config, dict) else {}
+        if isinstance(configurable, dict):
+            checkpoint_id = str(configurable.get("checkpoint_id") or "") or None
+        checkpoint_created_at = str(getattr(snapshot, "created_at", None) or "") or None
+        checkpoint_node = next_nodes[0] if next_nodes else None
+        parent_config = getattr(snapshot, "parent_config", None) or {}
+        parent_configurable = parent_config.get("configurable", {}) if isinstance(parent_config, dict) else {}
+        if isinstance(parent_configurable, dict):
+            checkpoint_parent_id = str(parent_configurable.get("checkpoint_id") or "") or None
+        checkpoint_has_interrupt = bool(getattr(snapshot, "interrupts", ()) or ()) or any(
+            bool(getattr(task, "interrupts", ())) for task in (getattr(snapshot, "tasks", ()) or ())
+        )
     except Exception:
         logger.debug("无法读取执行 checkpoint run_id=%s", run_id, exc_info=True)
     status = _v1_status(str(payload.get("status") or ""))
@@ -721,16 +727,40 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
         "steps": steps, "tasks": tasks, "artifacts": artifacts,
         "run_report": run_report if isinstance(run_report, dict) else {},
         "run_error": payload.get("run_error") or {},
-        "checkpoint": {"resumable": resumable, "next_nodes": next_nodes},
+        "checkpoint": {
+            "resumable": resumable, "next_nodes": next_nodes,
+            "checkpoint_id": checkpoint_id, "created_at": checkpoint_created_at,
+            "node": checkpoint_node, "parent_checkpoint_id": checkpoint_parent_id,
+            "has_interrupt": checkpoint_has_interrupt,
+        },
     }
 
 
-@app.get("/api/v1/health")
+def _checkpoint_projection(snapshot: Any) -> dict[str, Any]:
+    """Expose checkpoint metadata only; workflow channel values stay server-side."""
+    config = getattr(snapshot, "config", {}) or {}
+    configurable = config.get("configurable", {}) if isinstance(config, dict) else {}
+    parent_config = getattr(snapshot, "parent_config", None) or {}
+    parent_configurable = parent_config.get("configurable", {}) if isinstance(parent_config, dict) else {}
+    next_nodes = [str(item) for item in (getattr(snapshot, "next", ()) or ())]
+    return {
+        "checkpoint_id": str(configurable.get("checkpoint_id") or "") or None,
+        "parent_checkpoint_id": str(parent_configurable.get("checkpoint_id") or "") or None,
+        "created_at": str(getattr(snapshot, "created_at", None) or "") or None,
+        "next_nodes": next_nodes,
+        "node": next_nodes[0] if next_nodes else None,
+        "has_interrupt": bool(getattr(snapshot, "interrupts", ()) or ()) or any(
+            bool(getattr(task, "interrupts", ())) for task in (getattr(snapshot, "tasks", ()) or ())
+        ),
+    }
+
+
+@router.get("/api/v1/health")
 def v1_health(_: None = Depends(_authorize)) -> dict[str, Any]:
     return health()
 
 
-@app.get("/api/v1/dashboard/summary")
+@router.get("/api/v1/dashboard/summary")
 def v1_dashboard(_: None = Depends(_authorize)) -> dict[str, Any]:
     store = _store()
     summaries = []
@@ -765,7 +795,7 @@ def v1_dashboard(_: None = Depends(_authorize)) -> dict[str, Any]:
     }
 
 
-@app.get("/api/v1/runs")
+@router.get("/api/v1/runs")
 def v1_list_runs(
     page: int = Query(default=1, ge=1), page_size: int = Query(default=20, ge=1, le=100),
     status: str | None = None, keyword: str | None = Query(default=None, max_length=160),
@@ -794,7 +824,7 @@ def v1_list_runs(
     return {"items": items[start:start + page_size], "total": len(items), "page": page, "page_size": page_size}
 
 
-@app.post("/api/v1/runs", status_code=202)
+@router.post("/api/v1/runs", status_code=202)
 def v1_start_run(
     request: V1StartRunRequest, background: BackgroundTasks,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", min_length=8, max_length=200),
@@ -930,12 +960,55 @@ def _run_workflow_background_v1(
             _STARTED_RUNS.discard(run_id)
 
 
-@app.get("/api/v1/runs/{run_id}")
+@router.get("/api/v1/runs/{run_id}")
 def v1_get_run(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
     return _v1_detail(run_id)
 
 
-@app.get("/api/v1/runs/{run_id}/tasks/{task_id}")
+@router.get("/api/v1/runs/{run_id}/checkpoint")
+def v1_get_checkpoint(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
+    """Return the current checkpoint projection without exposing workflow channel values."""
+    run_id = _safe_id(run_id)
+    store = _store()
+    _v1_detail(run_id)
+    try:
+        from app.workflow.wiring import build_graph
+
+        graph = build_graph(store=store)
+        snapshot = graph.get_state({"configurable": {"thread_id": run_id}})
+    except Exception as exc:
+        logger.exception("读取 checkpoint 失败 run_id=%s", run_id)
+        raise HTTPException(status_code=503, detail="运行 checkpoint 暂时不可读取") from exc
+    return {"run_id": run_id, "checkpoint": _checkpoint_projection(snapshot)}
+
+
+@router.get("/api/v1/runs/{run_id}/checkpoints")
+def v1_list_checkpoints(
+    run_id: str,
+    limit: int = Query(default=20, ge=1, le=100),
+    _: None = Depends(_authorize),
+) -> dict[str, Any]:
+    """List checkpoint metadata for timeline views; state values never leave the server."""
+    run_id = _safe_id(run_id)
+    store = _store()
+    _v1_detail(run_id)
+    try:
+        from app.workflow.wiring import build_graph
+
+        graph = build_graph(store=store)
+        history = graph.get_state_history({"configurable": {"thread_id": run_id}})
+        items = []
+        for snapshot in history:
+            items.append(_checkpoint_projection(snapshot))
+            if len(items) >= limit:
+                break
+    except Exception as exc:
+        logger.exception("读取 checkpoint 历史失败 run_id=%s", run_id)
+        raise HTTPException(status_code=503, detail="运行 checkpoint 历史暂时不可读取") from exc
+    return {"run_id": run_id, "items": items, "total": len(items)}
+
+
+@router.get("/api/v1/runs/{run_id}/tasks/{task_id}")
 def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
     """只返回一个任务的详情，避免 Run 页面携带并渲染所有任务的步骤与产物。"""
     store = _store()
@@ -990,7 +1063,7 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
     }
 
 
-@app.post("/api/v1/runs/{run_id}/pause", status_code=202)
+@router.post("/api/v1/runs/{run_id}/pause", status_code=202)
 def v1_pause_run(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
     """请求在下一个节点边界暂停；节点完成前返回 pause_requested，而非谎报已暂停。"""
     run_id = _safe_id(run_id)
@@ -1011,7 +1084,7 @@ def v1_pause_run(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
     return {"run_id": run_id, "status": "pause_requested", "message": "已请求暂停；当前节点完成或到达安全边界后生效"}
 
 
-@app.post("/api/v1/runs/{run_id}/resume", status_code=202)
+@router.post("/api/v1/runs/{run_id}/resume", status_code=202)
 def v1_resume_run(run_id: str, background: BackgroundTasks, _: None = Depends(_authorize)) -> dict[str, Any]:
     run_id = _safe_id(run_id)
     with _RUN_LOCKS_GUARD:
@@ -1076,6 +1149,7 @@ def _resume_workflow_background(
             ),
         }
         snapshot = graph.get_state(config)
+        _renew_open_claim(store, run_id, snapshot)
         has_interrupt = any(getattr(task, "interrupts", ()) for task in (getattr(snapshot, "tasks", ()) or ()))
         if resume_payload is not None:
             from langgraph.types import Command
@@ -1105,7 +1179,36 @@ def _resume_workflow_background(
         run_lock.release()
 
 
-@app.post("/api/v1/runs/{run_id}/cancel", status_code=202)
+def _renew_open_claim(store: RecordStore, run_id: str, snapshot: Any) -> None:
+    """恢复未终态任务前续租本运行的 claim；没有可续租记录时不补领。"""
+    task_id = _claimed_task_id(snapshot)
+    if not task_id:
+        return
+    from app.workflow.steps.claim_repair_slot.node import renew_claim
+
+    try:
+        renewed = renew_claim(store.root, run_id=run_id, task_id=task_id)
+    except Exception:
+        logger.exception("恢复前续租修复资格失败 run_id=%s task_id=%s", run_id, task_id)
+        return
+    if not renewed:
+        logger.warning("恢复时没有可续租的修复资格 run_id=%s task_id=%s", run_id, task_id)
+
+
+def _claimed_task_id(snapshot: Any) -> str:
+    """从父图或当前任务子图状态里取出已领取资格的任务。"""
+    states = [getattr(snapshot, "values", None)]
+    states.extend(getattr(task, "state", None) for task in (getattr(snapshot, "tasks", ()) or ()))
+    for values in states:
+        payload = getattr(values, "values", values)
+        if isinstance(payload, dict) and payload.get("repair_slot_claimed"):
+            task_id = str(payload.get("task_id") or "")
+            if task_id:
+                return task_id
+    return ""
+
+
+@router.post("/api/v1/runs/{run_id}/cancel", status_code=202)
 def v1_cancel_run(
     run_id: str, background: BackgroundTasks, _: None = Depends(_authorize)
 ) -> dict[str, Any]:
@@ -1145,7 +1248,7 @@ def v1_cancel_run(
     return {"run_id": run_id, "status": "cancel_requested", "message": "已记录取消请求；正在执行的节点会在安全边界收尾"}
 
 
-@app.get("/api/v1/approvals")
+@router.get("/api/v1/approvals")
 def v1_list_approvals(
     status: str = Query(default="pending", pattern="^(pending|approved|rejected|expired)$"),
     _: None = Depends(_authorize),
@@ -1216,7 +1319,7 @@ def v1_list_approvals(
     return {"items": items, "total": len(items)}
 
 
-@app.post("/api/v1/approvals/{approval_id}/decision")
+@router.post("/api/v1/approvals/{approval_id}/decision")
 def v1_decide_approval(
     approval_id: str, request: V1ApprovalDecision, background: BackgroundTasks,
     authorization: str | None = Header(default=None),
@@ -1231,13 +1334,13 @@ def v1_decide_approval(
     return decide_approval(run_id, task_id, ApprovalRequest(decision=request.decision.upper(), reason=request.reason), background=background)
 
 
-@app.get("/api/v1/runs/{run_id}/artifacts")
+@router.get("/api/v1/runs/{run_id}/artifacts")
 def v1_list_artifacts(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
     detail = _v1_detail(run_id)
     return {"items": detail["artifacts"], "total": len(detail["artifacts"])}
 
 
-@app.get("/api/v1/runs/{run_id}/artifacts/content")
+@router.get("/api/v1/runs/{run_id}/artifacts/content")
 def v1_artifact_content(
     run_id: str, path: str = Query(..., min_length=1, max_length=500), task_id: str = "",
     _: None = Depends(_authorize),
@@ -1245,7 +1348,7 @@ def v1_artifact_content(
     return get_artifact_content(run_id, path, task_id)
 
 
-@app.get("/api/v1/runs/{run_id}/model-calls")
+@router.get("/api/v1/runs/{run_id}/model-calls")
 def v1_model_calls(
     run_id: str, task_id: str | None = None, _: None = Depends(_authorize),
 ) -> dict[str, Any]:
@@ -1310,7 +1413,7 @@ def v1_model_calls(
     return {"items": items, "total": len(items), "source": "provider_audit"}
 
 
-@app.get("/api/v1/runs/{run_id}/events")
+@router.get("/api/v1/runs/{run_id}/events")
 def v1_run_events(run_id: str, _: None = Depends(_authorize)) -> StreamingResponse:
     """SSE 状态流：以持久化运行记录为准，客户端重连后重新获取最新快照。"""
     import hashlib
@@ -1345,7 +1448,7 @@ def v1_run_events(run_id: str, _: None = Depends(_authorize)) -> StreamingRespon
     })
 
 
-@app.get("/api/v1/runs/{run_id}/control-audit")
+@router.get("/api/v1/runs/{run_id}/control-audit")
 def v1_control_audit(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
     run_id = _safe_id(run_id)
     _v1_detail(run_id)
