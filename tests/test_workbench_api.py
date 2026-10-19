@@ -425,3 +425,45 @@ def test_v1_rerun_uses_saved_config_and_creates_new_run(monkeypatch):
         "log_days": 4, "log_limit": 120, "review_mode": "human", "max_attempts": 2,
     }
     assert captured["key"].startswith("rerun-")
+
+
+def test_v1_task_rerun_scopes_new_run_to_carrier_and_biztype(monkeypatch):
+    captured = {}
+
+    class Background:
+        def add_task(self, *_args, **_kwargs):
+            pass
+
+    monkeypatch.setattr(workbench_api, "_v1_detail", lambda _run_id: {
+        "config": {"log_days": 2, "log_limit": 100, "review_mode": "agent", "max_attempts": 3},
+        "tasks": [{"task_id": "task-a", "carrier": "CarrierA", "biztype": "track_server"}],
+    })
+
+    def fake_start(request, background, idempotency_key=None, _=None):
+        captured["request"] = request
+        captured["key"] = idempotency_key
+        return {"run_id": "new-task-run", "status": "accepted"}
+
+    monkeypatch.setattr(workbench_api, "v1_start_run", fake_start)
+    monkeypatch.setattr(workbench_api, "_audit_control", lambda *args, **kwargs: None)
+
+    result = workbench_api.v1_rerun_task("old-run", "task-a", Background(), None)
+
+    assert result["run_id"] == "new-task-run"
+    assert result["source_task_id"] == "task-a"
+    assert captured["request"].task_filter_carrier == "CarrierA"
+    assert captured["request"].task_filter_biztype == "track_server"
+    assert captured["key"].startswith("rerun-task-")
+
+
+def test_v1_task_rerun_rejects_unknown_task(monkeypatch):
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(workbench_api, "_v1_detail", lambda _run_id: {"config": {}, "tasks": []})
+    background = type("Background", (), {"add_task": lambda *_args, **_kwargs: None})()
+    try:
+        workbench_api.v1_rerun_task("old-run", "missing-task", background, None)
+    except HTTPException as exc:
+        assert exc.status_code == 404
+    else:
+        raise AssertionError("unknown task must not be rerun")
