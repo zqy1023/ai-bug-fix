@@ -152,6 +152,9 @@ class RunState(TypedDict, total=False):
     log_days: int
     # log_limit：日志查询条数上限。
     log_limit: int
+    # 可选的 Task 重跑范围；为空时执行本轮全部任务。
+    task_filter_carrier: str
+    task_filter_biztype: str
     # attempt：当前修复尝试序号。
     attempt: int
     # max_attempts：单任务最大尝试次数。
