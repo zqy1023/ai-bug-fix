@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { Alert, Button, Card, Descriptions, Empty, Progress, Space, Spin, Table, Tabs, Tag, Typography } from 'antd';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Alert, Button, Card, Descriptions, Empty, message, Modal, Progress, Space, Spin, Table, Tabs, Tag, Typography } from 'antd';
 import { ArrowLeftOutlined, FileTextOutlined, ReloadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -39,11 +39,13 @@ export function TaskDetailPage() {
   const [activeTab, setActiveTab] = useState('steps');
   const [selectedStepName, setSelectedStepName] = useState<string>();
   const [selectedArtifact, setSelectedArtifact] = useState<ArtifactRef | null>(null);
+  const [retryAwaiting, setRetryAwaiting] = useState(false);
+  const queryClient = useQueryClient();
 
   const detail = useQuery({
     queryKey: ['task', runId, taskId],
     queryFn: () => api.task(runId, taskId),
-    refetchInterval: (query) => ['queued', 'running', 'waiting_approval', 'paused', 'pause_requested'].includes(query.state.data?.run_status ?? '') ? 5000 : false,
+    refetchInterval: (query) => retryAwaiting || ['queued', 'running', 'waiting_approval', 'paused', 'pause_requested'].includes(query.state.data?.run_status ?? '') ? 3000 : false,
   });
   const payload = detail.data;
   const task = payload?.task;
@@ -62,6 +64,27 @@ export function TaskDetailPage() {
     enabled: Boolean(payload),
     refetchInterval: activeRun ? 5000 : false,
   });
+  const retryStep = useMutation({
+    mutationFn: (stepName: string) => api.retryFailedStep(runId, taskId, stepName),
+    onSuccess: async (result) => {
+      setRetryAwaiting(true);
+      message.success(result.message || '已提交失败节点重试');
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['task', runId, taskId] }),
+        queryClient.invalidateQueries({ queryKey: ['run', runId] }),
+      ]);
+    },
+    onError: (error) => message.error('节点重试失败：' + (error as Error).message),
+  });
+  useEffect(() => {
+    if (!retryAwaiting) return;
+    if (payload && payload.run_status !== 'failed') {
+      setRetryAwaiting(false);
+      return;
+    }
+    const timeout = window.setTimeout(() => setRetryAwaiting(false), 60_000);
+    return () => window.clearTimeout(timeout);
+  }, [retryAwaiting, payload?.run_status]);
   const artifactQuery = useQuery({
     queryKey: ['task-artifact', runId, taskId, selectedArtifact?.path],
     queryFn: () => api.artifactContent(runId, selectedArtifact!.path, taskId),
@@ -90,7 +113,7 @@ export function TaskDetailPage() {
     { title: '业务结论', dataIndex: 'result', key: 'result', render: (value?: string | null) => value ? <Tag>{resultText(value)}</Tag> : '—' },
     { title: '耗时', dataIndex: 'duration_ms', key: 'duration_ms', render: formatDuration },
     { title: '尝试', dataIndex: 'attempt', key: 'attempt', render: (value?: number) => value ?? 1 },
-    { title: '检查记录', key: 'inspect', render: (_: unknown, row: StepRecord) => <Button type="link" onClick={() => setSelectedStepName(row.name)}>查看详情</Button> },
+    { title: '操作', key: 'inspect', render: (_: unknown, row: StepRecord) => <Space size="small"><Button type="link" onClick={() => setSelectedStepName(row.name)}>查看详情</Button>{payload.retryable_steps?.includes(row.name) && <Button type="link" danger loading={retryStep.isPending && retryStep.variables === row.name} disabled={retryStep.isPending} onClick={() => Modal.confirm({ title: '重试失败节点？', content: '系统会再次验证该节点仍是 LangGraph checkpoint 中的待执行节点。成功后按原工作流路由继续；不会重跑整个 Run。', okText: '确认重试', cancelText: '取消', onOk: () => retryStep.mutateAsync(row.name) })}>重试节点</Button>}</Space> },
   ];
   const callColumns = [
     { title: 'Agent 角色', dataIndex: 'agent_role', key: 'agent_role', render: (value: string) => <strong>{value}</strong> },
