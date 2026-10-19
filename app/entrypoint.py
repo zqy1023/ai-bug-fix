@@ -115,6 +115,8 @@ def run_workflow(
                 "attempt": 1,
                 "max_attempts": config.max_attempts,
                 "review_mode": config.review_mode,
+                "task_filter_carrier": str((overrides or {}).get("task_filter_carrier") or ""),
+                "task_filter_biztype": str((overrides or {}).get("task_filter_biztype") or ""),
             },
             config={"configurable": {"thread_id": resolved}, "recursion_limit": 40},
         )
