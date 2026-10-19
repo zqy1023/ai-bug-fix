@@ -134,7 +134,7 @@ export function TaskDetailPage() {
 
       <div className="task-overview-grid">
         <Card className="content-card task-summary-card" title="根因与处理摘要">
-          <div className="summary-field"><span>问题摘要</span><Paragraph>{typeof report.problem === 'string' ? report.problem : pretty(report.problem ?? task.problem ?? '没有可用的问题摘要')}</Paragraph></div>
+          <div className="summary-field"><span>问题摘要</span>{typeof report.problem === 'string' ? <Paragraph>{report.problem}</Paragraph> : <StructuredValue value={report.problem ?? task.problem ?? '没有可用的问题摘要'} />}</div>
           <div className="summary-field"><span>根因判断</span><Paragraph>{report.root_cause || problemRootCause}</Paragraph></div>
           <div className="summary-field"><span>变更摘要</span><Paragraph>{report.change_summary || '暂无变更摘要'}</Paragraph></div>
           {report.next_action && <div className="next-action-box"><strong>下一步建议</strong><span>{report.next_action}</span></div>}
