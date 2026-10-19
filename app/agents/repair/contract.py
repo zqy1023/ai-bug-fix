@@ -68,8 +68,25 @@ def needs_escalation(payload: dict[str, Any], *, passed: bool) -> bool:
     """方案影响共享层且本轮未完成修改时，需要人工授权。"""
     if passed:
         return False
-    plan = plan_of(payload)
-    return bool(plan and plan.scope == "project" and plan.edits)
+    raw_plan = payload.get("change_plan")
+    if not isinstance(raw_plan, dict):
+        return False
+    # 共享层方案即使只有理由、没有 edits，也必须进入人工授权流程。
+    scope = raw_plan.get("scope")
+    return isinstance(scope, str) and scope.casefold() == "project"
+
+
+def _slim_value(value: Any) -> Any:
+    """递归裁剪方案内容，避免完整文件内容撑大任务状态。"""
+    if isinstance(value, str):
+        return _clip_field(value)
+    if isinstance(value, list):
+        return [_slim_value(item) for item in value[:20]]
+    if isinstance(value, dict):
+        return {key: _slim_value(item) for key, item in value.items()}
+    return value
+
+
 
 
 def blocked_reason_of(payload: dict[str, Any], verdict: RepairVerdict) -> str:
@@ -94,7 +111,10 @@ def slim_plan(payload: dict[str, Any]) -> dict[str, Any]:
         if field not in payload:
             continue
         value = payload[field]
-        slim[field] = value if not isinstance(value, str) else _clip_field(value)
+        if field == "change_plan" and isinstance(value, dict):
+            slim[field] = _slim_value(value)
+        else:
+            slim[field] = value if not isinstance(value, str) else _clip_field(value)
     slim["changed_files"] = changed_files_of(payload)
     return slim
 

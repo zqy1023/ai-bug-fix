@@ -78,8 +78,6 @@ class RuntimeConfig:
     git_remote: str
     # git_push：是否自动推送。
     git_push: bool
-    # autorun：是否自动执行。
-    autorun: bool
     # review_mode：审查模式。
     review_mode: str
     # max_attempts：单任务最大修复尝试次数。
@@ -148,10 +146,6 @@ def load_config() -> RuntimeConfig:
             os.getenv("AI_REPAIR_GIT_PUSH", str(settings.default_git_push).lower()).lower()
             == "true"
         ),
-        autorun=(
-            os.getenv("AI_REPAIR_AUTORUN", str(settings.default_autorun).lower()).lower()
-            == "true"
-        ),
         review_mode=review_mode,
         max_attempts=max(
             1,
@@ -202,3 +196,13 @@ def create_es_client(config: RuntimeConfig) -> Any:
     from elasticsearch7 import Elasticsearch
 
     return Elasticsearch(config.log_es, timeout=settings.es_timeout_seconds)
+
+
+def workflow_recursion_limit(*, max_attempts: int, task_count_hint: int = 1) -> int:
+    """计算覆盖串行任务和有界回修的 LangGraph recursion limit。"""
+    attempts = max(1, int(max_attempts))
+    tasks = max(1, min(100, int(task_count_hint)))
+    # 每个任务包含准备、Agent、门禁、回归、审查、交付和收尾，
+    # 失败时还会经过 retry_prepare；固定 40 对多任务运行过低。
+    per_task = 18 + attempts * 8
+    return max(int(settings.graph_recursion_limit), 16 + tasks * per_task)

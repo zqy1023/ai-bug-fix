@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import stat
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -136,42 +137,14 @@ class WorkspaceManager:
             # restore_carrier_snapshot 会一次恢复新旧两个框架，避免重复复制。
             self.restore_carrier_snapshot(temporary, baseline_dir, carrier, framework)
             self._write_ignore(temporary)
-            shutil.rmtree(root, ignore_errors=True)
+            try:
+                self._force_remove(root)
+            except OSError as error:
+                raise WorkspaceError(f"任务工作区清理失败，可能有文件被占用: {error}") from error
             temporary.replace(root)
         except Exception:
             shutil.rmtree(temporary, ignore_errors=True)
             raise
-
-    @classmethod
-    def reset_carrier_workspace(
-        cls,
-        workspace: str | Path,
-        baseline_dir: str | Path,
-        carrier: str,
-    ) -> None:
-        """将任务工作区恢复到不可变基线，供修复/审批重试使用。"""
-        root = Path(workspace).resolve()
-        baseline = Path(baseline_dir).resolve()
-        carrier_name = cls.safe_carrier_name(carrier)
-        if not root.is_dir() or not baseline.is_dir():
-            raise WorkspaceError("重置工作区所需路径不存在")
-        restored = 0
-        for framework in ("gathers", "spiders"):
-            source = baseline / framework / carrier_name
-            destination = root / framework / carrier_name
-            if not source.is_dir():
-                if destination.exists():
-                    shutil.rmtree(destination)
-                continue
-            if not destination.resolve().is_relative_to(root):
-                raise WorkspaceError("carrier 工作区路径越界")
-            if destination.exists():
-                shutil.rmtree(destination)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(source, destination, symlinks=False)
-            restored += 1
-        if not restored:
-            raise WorkspaceError("基线中没有可恢复的 carrier 目录")
 
     @classmethod
     def restore_carrier_snapshot(
@@ -272,7 +245,10 @@ class WorkspaceManager:
             self._root = self._config.root_dir or Path(tempfile.mkdtemp(prefix="ai-repair-"))
         target = self._root / "regression" / self._safe_name(task_key)
         if target.exists():
-            raise WorkspaceError(f"回归工作区已存在，拒绝覆盖: {target}")
+            try:
+                shutil.rmtree(target)
+            except OSError:
+                self._force_remove(target)
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
             Repo.clone_from(str(git_root), str(target), local=True)
@@ -313,8 +289,11 @@ class WorkspaceManager:
                     raise WorkspaceError(f"拒绝复制非普通文件: {raw}")
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(source, destination)
-            elif destination.exists() and destination.is_file():
-                destination.unlink()
+            elif destination.exists():
+                if destination.is_dir():
+                    shutil.rmtree(destination)
+                else:
+                    destination.unlink()
             copied.append(relative.as_posix())
         return copied
 
@@ -328,17 +307,35 @@ class WorkspaceManager:
         target.mkdir(parents=True, exist_ok=True)
         return target
 
-    def snapshot_carrier(self, workspace: str | Path, carrier: str) -> dict[str, str]:
-        """生成目标 carrier 的文件哈希，用于确定性 diff 门禁。"""
+    @classmethod
+    def verify_manifest(
+        cls,
+        workspace: str | Path,
+        manifest: dict[str, str],
+    ) -> tuple[bool, list[str]]:
+        """验证工作区指定文件与不可变基线 manifest 完全一致。"""
         root = Path(workspace).resolve()
-        carrier_root = self._carrier_path(root, carrier)
-        if not carrier_root.is_dir():
-            raise WorkspaceError(f"工作区缺少目标 carrier: {carrier_root}")
-        return {
-            path.relative_to(root).as_posix(): self._sha256(path)
-            for path in carrier_root.rglob("*")
-            if path.is_file() and not path.is_symlink()
-        }
+        mismatches: list[str] = []
+        expected = {str(key).replace("\\", "/"): str(value) for key, value in manifest.items()}
+        for relative, digest in expected.items():
+            target = (root / relative).resolve()
+            try:
+                target.relative_to(root)
+            except ValueError:
+                mismatches.append(relative)
+                continue
+            if not target.is_file() or cls._sha256(target) != digest:
+                mismatches.append(relative)
+        actual: set[str] = set()
+        for framework in ("gathers", "spiders"):
+            base = root / framework
+            if not base.is_dir():
+                continue
+            for path in base.rglob("*"):
+                if path.is_file() and not path.is_symlink():
+                    actual.add(path.relative_to(root).as_posix())
+        mismatches.extend(sorted(actual - set(expected)))
+        return not mismatches, sorted(set(mismatches))
 
     def read_carrier_texts(
         self,
@@ -366,11 +363,6 @@ class WorkspaceManager:
                 continue
         return texts
 
-    def carrier_relative_path(self, workspace: str | Path, carrier: str) -> str:
-        """返回工作区内实际命中的 carrier 相对路径。"""
-        root = Path(workspace).resolve()
-        return self._carrier_path(root, carrier).relative_to(root).as_posix()
-
     @classmethod
     def resolve_carrier_path(cls, workspace: str | Path, carrier: str) -> Path:
         """解析工作区内唯一的 carrier 目录，供各适配器共享路径规则。"""
@@ -392,6 +384,18 @@ class WorkspaceManager:
         return target
 
     @staticmethod
+    def _force_remove(path: Path) -> None:
+        """删除可能带只读属性的目录，失败时保留原始异常。"""
+        def onerror(function, failed_path, exc_info):
+            try:
+                os.chmod(failed_path, stat.S_IWRITE)
+                function(failed_path)
+            except OSError:
+                raise exc_info[1]
+
+        shutil.rmtree(path, onerror=onerror)
+
+    @classmethod
     def _require_directory(source_repo: str | Path) -> Path:
         """确认源项目目录存在。"""
         source = Path(source_repo).resolve()
@@ -479,12 +483,6 @@ class WorkspaceManager:
         except ValueError as error:
             raise WorkspaceError(f"carrier 路径越界: {carrier}") from error
         return selected
-
-    @classmethod
-    def locate_carrier(cls, workspace: str | Path, carrier: str) -> str:
-        """返回目标运输商目录的工作区相对路径。调用模型前使用。"""
-        root = Path(workspace).resolve()
-        return cls._carrier_path(root, carrier).relative_to(root).as_posix()
 
     @classmethod
     def locate_carrier_roots(cls, workspace: str | Path, carrier: str) -> list[str]:

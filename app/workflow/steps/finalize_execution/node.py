@@ -1,9 +1,10 @@
-"""12 任务收尾：只留异常、结果、状态、耗时、token 和完成步骤。"""
+"""任务收尾：只留异常、结果、状态、耗时、token 和完成步骤。"""
 
 from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ from app.application.audit import StepRecord
 from app.application.context import StepContext
 from app.workflow.steps.finalize_execution.models import FinalizeInput, FinalizeOutput
 from app.infrastructure.run_control import cancellation_requested
+from app.workflow.steps.claim_repair_slot.node import release_claim
 
 FINAL_REPORT = "reports/final.json"
 logger = logging.getLogger(__name__)
@@ -54,6 +56,10 @@ def run(ctx: StepContext, data: FinalizeInput) -> FinalizeOutput:
                 except OSError:
                     # 运行记录中的报告已经落盘；隔离区报告无法写入时，后续报告交付节点会明确失败。
                     pass
+    try:
+        release_claim(ctx.store.root, run_id=ctx.run.run_id, task_id=data.task_id)
+    except (OSError, sqlite3.Error):
+        logger.warning("释放修复资格失败 run_id=%s task_id=%s", ctx.run.run_id, data.task_id, exc_info=True)
     return FinalizeOutput(report_path=path, delivery_status=result, terminal_step=terminal_step,
                           terminal_reason=terminal_reason, next_action=next_action, finished_at=finished_at)
 

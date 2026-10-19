@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from dataclasses import replace
 from typing import Any
 
-from app.infrastructure.config import load_config
+from app.infrastructure.config import load_config, workflow_recursion_limit
 from app.infrastructure.records.store import RecordStore
 from app.infrastructure.runtime import close_sessions
 
@@ -59,6 +59,8 @@ def prepare_run(
         "log_limit": config.limit,
         "review_mode": config.review_mode,
         "max_attempts": config.max_attempts,
+        "allow_push": config.git_push,
+        "require_push": False,
         "startup_state": "queued" if queued else "started",
     }
     run_json = store.run_dir(resolved) / "run.json"
@@ -117,8 +119,16 @@ def run_workflow(
                 "attempt": 1,
                 "max_attempts": config.max_attempts,
                 "review_mode": config.review_mode,
+                "allow_push": config.git_push,
+                "require_push": False,
             },
-            config={"configurable": {"thread_id": resolved}, "recursion_limit": 40},
+            config={
+                "configurable": {"thread_id": resolved},
+                "recursion_limit": workflow_recursion_limit(
+                    max_attempts=config.max_attempts,
+                    task_count_hint=config.limit or 50,
+                ),
+            },
         )
         _write_run_report_if_terminal(store, resolved, graph, final_state=final_state)
     except Exception as exc:

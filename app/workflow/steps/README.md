@@ -8,19 +8,18 @@
 |---|---|---|
 | `discover_and_normalize` | `discover_logs → normalize_error → deduplicate_error` | `identify_carrier` |
 | `identify_carrier` | 按日志原始身份字段创建去重任务清单 | 串行任务分发 |
-| `prepare_context` | `prepare_source_snapshot → prepare_evidence` | `locate_agent` |
+| `prepare_context` | `prepare_source_snapshot → prepare_workspace → prepare_evidence` | `locate_agent` |
 | `locate_agent` | 只读定位；仅证据支持的 `LOCATED` 可继续 | `claim_repair_slot` |
-| `claim_repair_slot` | 原子领取本轮修复资格 | `prepare_workspace` |
-| `prepare_workspace` | 创建隔离工作区并清理敏感内容 | `repair_agent` |
+| `claim_repair_slot` | 原子领取本轮修复资格 | `repair_agent` |
 | `repair_agent` | 仅修改授权范围内的目标 carrier | `validate_changes` |
 | `validate_changes` | `check_changes → verify_issue`，任一步失败即停止 | `run_regression` |
-| `run_regression` | 在本地准生产 Git 环境执行回归，不提交 | `review_agent` 或审批 |
+| `run_regression` | 在本地准生产 Git 环境执行回归，不提交 | `review_agent`（agent 模式）或直接收尾（human 模式） |
 | `review_agent` | 只读审查真实 Diff、门禁、验证和回归报告 | 交付、回修或人工处理 |
 | `request_approval` | 交付方案人工决策；拒绝进入有上限的回修循环 | 收尾 |
 | `prepare_delivery` | 创建修复分支并按配置提交/推送 | `finalize_execution` |
 | `finalize_execution` | 生成终态报告并收尾 | 结束 |
 
-任务子图保留 12 个业务主节点；`retry_prepare` 是内部控制节点，不计入节点数。run 级主图只保留日志准备阶段和 `identify_carrier` 两个节点。12 个任务主节点保留了 Agent、安全隔离、资格占用、回归、审批、交付等必须独立审计的边界。
+任务子图保留 10 个业务主节点；`retry_prepare` 是内部控制节点，不计入节点数。run 级主图只保留日志准备阶段和 `identify_carrier` 两个节点。10 个任务主节点保留了 Agent、安全隔离、资格占用、回归、审批、交付等必须独立审计的边界。
 
 ## 原子步骤目录与职责
 

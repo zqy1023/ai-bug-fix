@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from app.workflow.routes import APPROVE, CLAIM, FINALIZE, LOCATE, REPAIR, RETRY, after_approval, after_check_changes, after_locate, after_repair, after_retry
+from app.workflow.routes import APPROVE, CLAIM, FINALIZE, LOCATE, REPAIR, RETRY, after_approval, after_validate_changes, after_locate, after_repair, after_retry
 
 
 def test_validation_failure_uses_bounded_retry_node() -> None:
-    assert after_check_changes({"last_result": "failed", "attempt": 1, "max_attempts": 3}) == RETRY
-    assert after_check_changes({"last_result": "failed", "attempt": 3, "max_attempts": 3}) == FINALIZE
+    assert after_validate_changes({"last_result": "failed", "attempt": 1, "max_attempts": 3}) == RETRY
+    assert after_validate_changes({"last_result": "failed", "attempt": 3, "max_attempts": 3}) == FINALIZE
 
 
 

@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 
 from app.infrastructure.config import load_config
 from app.infrastructure.records.store import RecordStore
+from app.infrastructure.redaction import public_exception
 
 app = FastAPI(
     title="AI Repair Workbench API",
@@ -72,7 +73,10 @@ def _config():
     try:
         return load_config()
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"运行配置不可用：{exc}") from exc
+        raise HTTPException(
+            status_code=503,
+            detail=public_exception(exc, prefix="运行配置不可用"),
+        ) from exc
 
 
 def _store() -> RecordStore:
@@ -329,17 +333,6 @@ def _all_run_ids(store: RecordStore) -> list[str]:
     )
 
 
-def _run_workflow_background(run_id: str) -> None:
-    from app.entrypoint import run_workflow
-
-    try:
-        run_workflow(run_id)
-    except Exception:
-        # 保留完整异常堆栈，避免后台任务失败后只留下一个看似仍在运行的 run。
-        logger.exception("工作流后台执行失败 run_id=%s", run_id)
-        return
-
-
 @app.get("/api/health")
 def health(_: None = Depends(_authorize)) -> dict[str, Any]:
     config = _config()
@@ -421,13 +414,26 @@ def start_run(
     if config.source_repo is None:
         raise HTTPException(status_code=409, detail="未配置 AI_REPAIR_SOURCE_REPO，不能启动生产工作流")
     run_id = _safe_id(request.run_id or uuid.uuid4().hex)
-    store = _store()
-    run_dir = store.run_dir(run_id)
     with _RUN_LOCKS_GUARD:
-        if run_id in _STARTED_RUNS or (run_dir / "run.json").exists():
+        if run_id in _STARTED_RUNS or _store().run_dir(run_id).joinpath("run.json").exists():
             raise HTTPException(status_code=409, detail="该 run_id 已存在或已提交；请使用新的 run_id，禁止重复启动覆盖")
+        lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
+        if not lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="该 run 正在启动或恢复")
         _STARTED_RUNS.add(run_id)
-    background.add_task(_run_workflow_background, run_id)
+    try:
+        # 旧 /api 入口复用 v1 的预创建、后台失败报告和生命周期锁；只保留旧响应形状。
+        from app.entrypoint import prepare_run
+        prepare_run(run_id, overrides={}, queued=True)
+    except Exception as exc:
+        lock.release()
+        with _RUN_LOCKS_GUARD:
+            _STARTED_RUNS.discard(run_id)
+        raise HTTPException(
+            status_code=503,
+            detail=public_exception(exc, prefix="初始化执行记录失败，工作流未启动"),
+        ) from exc
+    background.add_task(_run_workflow_background_v1, run_id, {}, lock)
     return {"run_id": run_id, "status": "accepted", "message": "已提交后台执行；请在运行详情中观察节点进度"}
 
 
@@ -833,7 +839,7 @@ def v1_start_run(
         except Exception as exc:
             raise HTTPException(
                 status_code=503,
-                detail=f"初始化执行记录失败，工作流未启动：{type(exc).__name__}: {exc}",
+                detail=public_exception(exc, prefix="初始化执行记录失败，工作流未启动"),
             ) from exc
 
         connection.execute(
@@ -920,6 +926,8 @@ def _run_workflow_background_v1(
         _record_background_failure(run_id, exc)
     finally:
         run_lock.release()
+        with _RUN_LOCKS_GUARD:
+            _STARTED_RUNS.discard(run_id)
 
 
 @app.get("/api/v1/runs/{run_id}")
@@ -1055,7 +1063,18 @@ def _resume_workflow_background(
         from app.workflow.wiring import build_graph
         store = _store()
         graph = build_graph(store=store)
-        config = {"configurable": {"thread_id": run_id}, "recursion_limit": 40}
+        loader = getattr(store, "load_run", None)
+        run_meta = loader(run_id) if callable(loader) else _read_json(store.run_dir(run_id) / "run.json", {})
+        if not isinstance(run_meta, dict):
+            run_meta = {}
+        from app.infrastructure.config import workflow_recursion_limit
+        config = {
+            "configurable": {"thread_id": run_id},
+            "recursion_limit": workflow_recursion_limit(
+                max_attempts=int(run_meta.get("max_attempts") or 3),
+                task_count_hint=int(run_meta.get("log_limit") or 50),
+            ),
+        }
         snapshot = graph.get_state(config)
         has_interrupt = any(getattr(task, "interrupts", ()) for task in (getattr(snapshot, "tasks", ()) or ()))
         if resume_payload is not None:

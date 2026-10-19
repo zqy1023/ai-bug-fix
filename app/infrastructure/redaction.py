@@ -41,4 +41,10 @@ def redact_output(text: str) -> str:
     return mask_secrets(masked)
 
 
-__all__ = ["mask_secrets", "redact_output"]
+def public_exception(error: BaseException, *, prefix: str) -> str:
+    """返回可持久化的异常摘要，不复制原始异常文本。"""
+    error_type = type(error).__name__ or "Exception"
+    return f"{prefix}（错误类型：{error_type}）"
+
+
+__all__ = ["mask_secrets", "public_exception", "redact_output"]

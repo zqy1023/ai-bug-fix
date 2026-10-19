@@ -51,14 +51,9 @@ def after_validate_changes(state: WorkflowState) -> str:
         return FINALIZE
     if _result(state) != "passed":
         return _retry_or_finalize(state)
+    if str((state.get("verify_result") or {}).get("mode") or "") == "syntax_only":
+        return FINALIZE
     return REGRESSION
-
-
-def after_deduplicate(state: WorkflowState) -> str:
-    """去重后继续识别运输商；run 级步骤失败则整轮结束。"""
-    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
-        return END
-    return IDENTIFY if _result(state) == "passed" else END
 
 
 def after_identify(state: WorkflowState) -> str:
@@ -83,21 +78,6 @@ def _locate_references_legacy(locate: dict) -> bool:
         if isinstance(item, dict):
             paths.append(str(item.get("path") or ""))
     return any(path.replace("\\", "/").startswith("spiders/") for path in paths)
-
-
-def after_source_snapshot(state: WorkflowState) -> str:
-    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
-        return FINALIZE
-    return EVIDENCE if _result(state) == "passed" else FINALIZE
-
-
-def after_evidence(state: WorkflowState) -> str:
-    """证据准备成功后始终进入定位分析；旧框架只限制后续修改，不跳过根因分析。"""
-    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
-        return FINALIZE
-    if _result(state) != "passed":
-        return FINALIZE
-    return LOCATE
 
 
 def after_retry(state: WorkflowState) -> str:
@@ -147,12 +127,6 @@ def after_locate(state: WorkflowState) -> str:
     return FINALIZE
 
 
-def after_workspace(state: WorkflowState) -> str:
-    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
-        return FINALIZE
-    return REPAIR if _result(state) == "passed" else FINALIZE
-
-
 def after_repair(state: WorkflowState) -> str:
     """修复后路由：共享层或范围升级只留分析报告，局部修复才进入验证链。"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
@@ -167,27 +141,14 @@ def after_repair(state: WorkflowState) -> str:
     return VALIDATE
 
 
-def after_check_changes(state: WorkflowState) -> str:
-    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
-        return FINALIZE
-    if _result(state) != "passed":
-        return _retry_or_finalize(state)
-    return VERIFY
-
-
-def after_verify(state: WorkflowState) -> str:
-    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
-        return FINALIZE
-    if _result(state) != "passed":
-        return _retry_or_finalize(state)
-    return REGRESSION
-
-
 def after_regression(state: WorkflowState) -> str:
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
         return FINALIZE
     if _result(state) != "passed":
         return _retry_or_finalize(state)
+    # human 模式明确跳过 AI 审查，直接生成待人工审查的终态报告。
+    if str(state.get("review_mode") or "agent").lower() == "human":
+        return FINALIZE
     return REVIEW
 
 
@@ -268,6 +229,10 @@ def after_finalize(state: WorkflowState) -> str:
     # 明确拒绝或分支清理失败后不得再创建报告分支，避免重新引入被拒绝的分支。
     if str(state.get("decision") or "").upper() == "REJECT" or state.get("approval_cleanup_failed"):
         return END
+    if str(state.get("review_mode") or "agent").lower() == "human":
+        return END
+    if str((state.get("verify_result") or {}).get("mode") or "") == "syntax_only":
+        return END
     evidence = state.get("evidence") or {}
     locate = state.get("locate") or {}
     analysis_only = bool(
@@ -291,9 +256,7 @@ __all__ = [
     "PREPARE_CONTEXT", "RUN_PREPARE", "VALIDATE",
     "EVIDENCE", "FINALIZE", "IDENTIFY", "LOCATE", "NORMALIZE", "REGRESSION", "REPAIR",
     "REVIEW", "RETRY", "SNAPSHOT", "TASK_DISPATCH", "VERIFY", "WORKSPACE",
-    "after_approval", "after_delivery", "after_finalize", "after_retry", "after_check_changes", "after_claim", "after_prepare_context",
+    "after_approval", "after_delivery", "after_finalize", "after_retry", "after_claim", "after_prepare_context",
     "after_run_prepare", "after_validate_changes",
-    "after_deduplicate", "after_evidence", "after_identify", "after_locate",
-    "after_regression", "after_repair", "after_review", "after_source_snapshot",
-    "after_verify", "after_workspace",
+    "after_identify", "after_locate", "after_regression", "after_repair", "after_review",
 ]

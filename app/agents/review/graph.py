@@ -69,7 +69,11 @@ def _carrier_has_tests(root: Path, carrier: str) -> bool:
         for path in base.rglob("*.py"):
             name = path.name.lower()
             parts = {part.lower() for part in path.relative_to(base).parts[:-1]}
-            if name.startswith("test_") or name.endswith("_test.py") or "test" in parts:
+            if (
+                name.startswith("test_")
+                or name.endswith("_test.py")
+                or any(part == "tests" or part.startswith("test_") or part == "test" for part in parts)
+            ):
                 return True
     return False
 
@@ -93,14 +97,22 @@ def _gate_entries(state: dict[str, Any]) -> list[dict[str, Any]]:
         entries.append({
             "path": str(item["path"]),
             "status": str(item.get("status") or "modified"),
-            "added": int(item.get("added") or 0),
-            "removed": int(item.get("removed") or 0),
+            "added": _safe_int(item.get("added")),
+            "removed": _safe_int(item.get("removed")),
             "lines": list(item.get("lines") or []),
         })
     return entries
 
 
-def _evidence_block(state: dict[str, Any]) -> str:
+def _safe_int(value: Any) -> int:
+    """把门禁计数安全收敛为整数，避免异常记录击穿审查节点。"""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _evidence_block(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """构造确定性证据块。
 
     审查要判断"这次改动对不对"，必须拿到逐文件差异。证据来源按可信度二选一：
@@ -151,8 +163,8 @@ def _evidence_block(state: dict[str, Any]) -> str:
     for item in changes[:12]:
         relative = str(item.get("path") or "")
         status = str(item.get("status") or "")
-        added = int(item.get("added") or 0)
-        removed = int(item.get("removed") or 0)
+        added = _safe_int(item.get("added"))
+        removed = _safe_int(item.get("removed"))
         if root is not None and relative.endswith(".py"):
             ast_state = _ast_status(root, relative)
         else:
@@ -171,8 +183,8 @@ def _evidence_block(state: dict[str, Any]) -> str:
                     continue
                 line_no = sample.get("line", "")
                 snippet = sample.get("snippet", "")
-                source = sample.get("source", "")
-                lines.append(f"    - 第{line_no}行 ({source}): {snippet[:80]}")
+                sample_source = sample.get("source", "")
+                lines.append(f"    - 第{line_no}行 ({sample_source}): {snippet[:80]}")
             if len(samples) > 3:
                 lines.append(f"    - ...另有 {len(samples) - 3} 处")
 
@@ -206,7 +218,7 @@ def _evidence_block(state: dict[str, Any]) -> str:
             f"- 覆盖提示：本轮新增了 {added_control} 处控制流/分支，但目标 carrier 下没有测试文件，"
             "无法用回归验证覆盖；请在结论中说明这些分支的验证依据，必要时在 required_changes 中要求补最小验证。"
         )
-    return "\n".join(lines)
+    return "\n".join(lines), {"secret_warnings": secret_warnings}
 
 
 def _bounded_evidence(text: str, max_chars: int) -> str:
@@ -239,10 +251,10 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
     config = getattr(runtime, "config", None)
     config = config if isinstance(config, ReviewConfig) else ReviewConfig.load()
     changed_files = [str(item) for item in state.get("changed_files", [])]
-    evidence_text = _bounded_evidence(
-        _evidence_block({**state, "ai_workspace_path": workspace, "changed_files": changed_files}),
-        config.max_diff_chars,
+    evidence_text, evidence_meta = _evidence_block(
+        {**state, "ai_workspace_path": workspace, "changed_files": changed_files}
     )
+    evidence_text = _bounded_evidence(evidence_text, config.max_diff_chars)
     full_diff_summary = str(state.get("diff_summary") or "")
     compact_diff_summary = full_diff_summary
     if len(compact_diff_summary) > 1200:
@@ -289,7 +301,7 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
         workspace=workspace,
         model=model_name(runtime),
     )
-    if "安全门禁失败" in evidence_text:
+    if evidence_meta.get("secret_warnings", 0) > 0:
         return {
             "verdict": "FAIL", "passed": False,
             "summary": "确定性安全门禁阻断：检测到疑似硬编码敏感信息",

@@ -131,6 +131,41 @@ def test_v1_start_persists_run_before_scheduling_background_task(tmp_path, monke
         workbench_api._STARTED_RUNS.discard(result["run_id"])
 
 
+def test_legacy_start_reuses_v1_preparation_and_background_lifecycle(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.infrastructure.records.store import RecordStore
+    from workbench.api import StartRunRequest
+
+    runtime_dir = tmp_path / "runtime"
+    config = SimpleNamespace(runtime_dir=runtime_dir, source_repo=tmp_path / "source")
+    store = RecordStore(runtime_dir)
+    monkeypatch.setattr(workbench_api, "_config", lambda: config)
+    monkeypatch.setattr(workbench_api, "_store", lambda: store)
+
+    def prepare_run(run_id, *, overrides=None, queued=False):
+        store.create_run(run_id, {"startup_state": "queued" if queued else "started"})
+
+    monkeypatch.setattr("app.entrypoint.prepare_run", prepare_run)
+
+    class CapturingBackground:
+        def __init__(self):
+            self.tasks = []
+
+        def add_task(self, function, *args, **kwargs):
+            self.tasks.append((function, args, kwargs))
+
+    background = CapturingBackground()
+    result = workbench_api.start_run(StartRunRequest(run_id="legacy-start"), background)
+
+    assert result["status"] == "accepted"
+    assert background.tasks[0][0] is workbench_api._run_workflow_background_v1
+    assert store.load_run("legacy-start")["startup_state"] == "queued"
+    workbench_api._RUN_LOCKS["legacy-start"].release()
+    with workbench_api._RUN_LOCKS_GUARD:
+        workbench_api._STARTED_RUNS.discard("legacy-start")
+
+
 def test_v1_approval_projection_uses_real_repair_plan_and_hides_file_contents(monkeypatch):
     monkeypatch.setattr(workbench_api, "_store", lambda: object())
     monkeypatch.setattr(workbench_api, "list_approvals", lambda: {

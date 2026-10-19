@@ -24,6 +24,7 @@ from app.agents.repair.models import RepairView
 from app.agents.repair.provider import create_provider
 from app.agents.repair.state import RepairState
 from app.agents.common import audit_metadata, parse_result, raw_result, usage_of
+from app.infrastructure.redaction import public_exception
 from app.prompts import PromptRenderer
 from app.prompts.context import model_name, prompt_context
 from langgraph.graph import END, START, StateGraph
@@ -55,7 +56,11 @@ def _call(
         if carrier_dir != expected or not (Path(workspace) / carrier_dir / "main.py").is_file():
             raise WorkspaceError(f"evidence 未指向唯一新框架入口: {carrier_dir}")
     except (WorkspaceError, KeyError) as error:
-        return {"passed": False, "reason": str(error), "changed_files": []}, {}, {}, ""
+        return {
+            "passed": False,
+            "reason": public_exception(error, prefix="修复工作区校验失败"),
+            "changed_files": [],
+        }, {}, {}, ""
     # 读写范围均绑定到已经验证的新框架 carrier 目录。
     readable = [carrier_dir, *WorkspaceManager.readable_rule_paths(workspace)]
     baseline_manifest = dict(state.get("baseline_manifest") or {})
@@ -154,11 +159,14 @@ def _run_syntax_check(workspace: str, changed_files: list[str]) -> str:
             # helper only checks syntax for files the model actually created.
             if not target.is_file():
                 continue
+            # 只对 Python 源码做语法检查：先判后缀再读，避免把模型合法修改的
+            # 非 .py 文件（JSON/CSV/二进制）当成语法失败而否决整轮修复。
+            if target.suffix.casefold() != ".py":
+                continue
             source = target.read_text(encoding="utf-8")
-            if target.suffix == ".py":
-                ast.parse(source, filename=str(target))
-        except (OSError, UnicodeDecodeError, SyntaxError, ValueError) as error:
-            return f"RunSyntaxCheck 失败: {relative}: {error}"
+            ast.parse(source, filename=str(target))
+        except (OSError, UnicodeDecodeError, SyntaxError, ValueError, RecursionError) as error:
+            return public_exception(error, prefix=f"RunSyntaxCheck 失败: {relative}")
     return ""
 
 

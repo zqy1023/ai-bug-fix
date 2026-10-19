@@ -1,6 +1,6 @@
 # AI Repair Workbench
 
-唯一正式前端位于 `frontend/`，后端使用 FastAPI，执行引擎复用仓库现有 LangGraph 主图、步骤插件、RecordStore 与 checkpoint。已退役的 `workbench/ui/` 不再作为启动或构建入口。
+唯一正式前端位于 `frontend/`，后端使用 FastAPI，执行引擎复用仓库现有 LangGraph 主图、步骤插件、RecordStore 与 checkpoint。已退役的 `workbench/ui/` 不再作为启动或构建入口；旧 `/api` 启动入口复用 v1 的预创建、后台失败报告和生命周期锁。
 
 ## 本地启动
 
@@ -37,6 +37,8 @@ npm run build
 - 运行状态快照 SSE 和控制操作审计查询。
 - 审批队列与 LangGraph checkpoint 恢复。
 - 产物读取限制在当前运行/任务目录，限制最大读取大小。
+
+工作台不提供知识案例或人工介入转派 API；人工决策只针对交付后的 `request_approval` 中断。旧 `apply_plan` 入口已退役，变更方案通过工作流的 `change_plan` 契约流转。
 
 模型调用审计文件写入 `runtime/runs/<run_id>/model_calls.jsonl`。历史运行不会补造缺失的模型调用记录。Token 等用量字段以 Provider 实际返回为准。
 

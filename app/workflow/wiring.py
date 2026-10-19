@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any
+import atexit
+import threading
 
 from app.infrastructure.filesystem.workspace import WorkspaceConfig, WorkspaceManager
 from app.infrastructure.git.delivery import GitBranchDelivery, GitDeliveryConfig
@@ -21,6 +23,7 @@ from app.domain.errors import StepFailed
 from app.workflow.runner import bind
 from app.workflow.routes import FINALIZE
 from app.infrastructure.records.store import RecordStore
+from app.infrastructure.redaction import public_exception
 from app.application.services import WorkflowServices
 from app.workflow import registry
 from app.workflow.plugin_checks import verify_registry
@@ -31,6 +34,40 @@ from config.settings import settings
 import sqlite3
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph.state import CompiledStateGraph
+
+
+_CHECKPOINT_LOCK = threading.Lock()
+_CHECKPOINT_CONNECTIONS: dict[str, sqlite3.Connection] = {}
+
+
+def close_checkpoints() -> None:
+    """关闭进程内复用的 checkpoint SQLite 连接。"""
+    with _CHECKPOINT_LOCK:
+        connections = list(_CHECKPOINT_CONNECTIONS.values())
+        _CHECKPOINT_CONNECTIONS.clear()
+    for connection in connections:
+        try:
+            connection.close()
+        except sqlite3.Error:
+            pass
+
+
+atexit.register(close_checkpoints)
+
+
+def _checkpoint_saver(runtime_dir: Any) -> SqliteSaver:
+    path = str((runtime_dir / "workflow-checkpoints.sqlite3").resolve())
+    with _CHECKPOINT_LOCK:
+        connection = _CHECKPOINT_CONNECTIONS.get(path)
+        if connection is None:
+            runtime_dir.mkdir(parents=True, exist_ok=True)
+            connection = sqlite3.connect(path, check_same_thread=False, timeout=30)
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA busy_timeout=30000")
+            _CHECKPOINT_CONNECTIONS[path] = connection
+        saver = SqliteSaver(connection)
+        saver.setup()
+        return saver
 
 def _agent_builder(kind: str) -> Callable[[Any | None], CompiledStateGraph]:
     """只在装配 Agent 节点时导入对应子图。"""
@@ -92,21 +129,21 @@ def _independent_verify(payload: dict[str, Any]) -> dict[str, Any]:
     files = [str(item) for item in payload.get("changed_files") or [] if str(item).endswith(".py")]
     workspace = Path(str(payload.get("ai_workspace_path") or ""))
     if not workspace.is_dir():
-        return {"passed": False, "reason": "验证工作区不存在"}
+        return {"passed": False, "mode": "unavailable", "reason": "验证工作区不存在"}
     if not files:
-        return {"passed": True, "reason": "本轮仅修改非 Python 文件，无需 Python 编译验证"}
+        return {"passed": True, "mode": "syntax_only", "reason": "本轮仅修改非 Python 文件，未执行问题重放"}
     for relative in files:
         target = (workspace / relative).resolve()
         try:
             target.relative_to(workspace.resolve())
         except ValueError:
-            return {"passed": False, "reason": "改动文件超出工作区"}
+            return {"passed": False, "mode": "unavailable", "reason": "改动文件超出工作区"}
         if not target.is_file():
-            return {"passed": False, "reason": f"改动文件不存在: {relative}"}
+            return {"passed": False, "mode": "unavailable", "reason": f"改动文件不存在: {relative}"}
         try:
             py_compile.compile(str(target), doraise=True)
         except py_compile.PyCompileError as error:
-            return {"passed": False, "reason": f"语法检查失败: {relative}: {error.msg}"}
+            return {"passed": False, "mode": "syntax_only", "reason": f"语法检查失败: {relative}: {error.msg}"}
 
     # ========== 阶段 2: Response 重放验证（可选）==========
     # 尝试从 payload 中提取 response 和 track_config，有这两个字段才执行重放
@@ -124,7 +161,7 @@ def _independent_verify(payload: dict[str, Any]) -> dict[str, Any]:
             # 找到 gathers 根目录
             gathers_root = workspace / "gathers"
             if not gathers_root.is_dir():
-                return {"passed": False, "reason": "gathers 目录不存在，无法执行 response 重放"}
+                return {"passed": False, "mode": "response_replay", "reason": "gathers 目录不存在，无法执行 response 重放"}
 
             # 执行重放
             replay_result = run_replay(
@@ -139,18 +176,20 @@ def _independent_verify(payload: dict[str, Any]) -> dict[str, Any]:
             if not replay_result.success:
                 return {
                     "passed": False,
+                    "mode": "response_replay",
                     "reason": f"Response 重放验证失败: {replay_result.error}",
-                    "replay_traceback": replay_result.traceback,
+                    "replay_exception_type": replay_result.exception_type,
                 }
 
             return {
                 "passed": True,
+                "mode": "response_replay",
                 "reason": f"语法检查 + Response 重放验证通过: {len(files)} 个文件",
                 "replay_output": replay_result.output[:500],  # 截取前 500 字符
             }
 
     # 没有 response/track_config，只返回语法检查结果
-    return {"passed": True, "reason": f"语法检查通过: {len(files)} 个文件"}
+    return {"passed": True, "mode": "syntax_only", "reason": f"语法检查通过: {len(files)} 个文件；未执行问题重放"}
 
 
 _MAX_DIFF_SUMMARY_CHARS = settings.max_diff_summary_chars
@@ -361,14 +400,19 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
                 name=spec.name, title=spec.title, status="failed", started_at=utc_now(),
                 attempt=int(state.get("attempt") or 1), input={"failure_stage": "input_validation"},
             )
-            record.error = StepError(code=error_code_of("system_crash"), message=f"Agent 输入构造失败: {error}")
-            record.output = {"failure_reason": f"Agent 输入构造失败：{error}"}
+            record.error = StepError(
+                code=error_code_of("system_crash"),
+                message=public_exception(error, prefix="Agent 输入构造失败"),
+            )
+            record.output = {
+                "failure_reason": public_exception(error, prefix="Agent 输入构造失败")
+            }
             record.finished_at = utc_now()
             record.duration_ms = round((time.perf_counter() - started) * 1000, 2)
             store.save(run_id, record, task_id)
             return {
                 "last_result": "failed",
-                "retry_reason": f"{spec.name} 输入构造失败：{error}",
+                "retry_reason": public_exception(error, prefix=f"{spec.name} 输入构造失败"),
                 "retry_target": spec.name,
                 "terminal_status": "failed",
                 "attempt": int(state.get("attempt") or 1),
@@ -443,15 +487,20 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
             # 不能把异常抛出 LangGraph 并中止整个 run 的后续 carrier 任务。
             record.status = "failed"
             record.result = None
-            record.output = {"failure_reason": f"Agent 执行异常：{error}"}
+            record.output = {
+                "failure_reason": public_exception(error, prefix="Agent 执行异常")
+            }
             record.artifacts = list(refs)
-            record.error = StepError(code=error_code_of("system_crash"), message=f"Agent内部运行系统级崩溃: {error}")
+            record.error = StepError(
+                code=error_code_of("system_crash"),
+                message=public_exception(error, prefix="Agent 内部运行系统级崩溃"),
+            )
             record.finished_at = utc_now()
             record.duration_ms = round((time.perf_counter() - started) * 1000, 2)
             store.save(run_id, record, task_id)
             return {
                 "last_result": "failed",
-                "retry_reason": f"{spec.name} 执行异常：{error}",
+                "retry_reason": public_exception(error, prefix=f"{spec.name} 执行异常"),
                 "retry_target": spec.name,
                 "terminal_status": "failed",
                 "attempt": int(state.get("attempt") or 1),
@@ -575,21 +624,22 @@ def build_graph(
     resolved_store = store or RecordStore(load_config().runtime_dir)
     if checkpointer is None:
         runtime_dir = load_config().runtime_dir
-        runtime_dir.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(
-            str(runtime_dir / "workflow-checkpoints.sqlite3"),
-            check_same_thread=False,
-            timeout=30,
-        )
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA busy_timeout=30000")
-        saver = SqliteSaver(connection)
-        saver.setup()
+        saver = _checkpoint_saver(runtime_dir)
     else:
         saver = checkpointer
-    nodes = build_nodes(resolved_store, services or build_services(), runtimes)
-    task_graph = build_task_graph(nodes)
+    resolved_services = services or build_services()
+    nodes = build_nodes(resolved_store, resolved_services, runtimes)
+    task_graph = build_task_graph(
+        nodes,
+        workspace_manager=getattr(resolved_services, "workspaces", None),
+    )
     return build_state_graph(nodes, task_graph, checkpointer=saver)
 
 
-__all__ = ["build_agent_node", "build_graph", "build_nodes", "build_services"]
+__all__ = [
+    "build_agent_node",
+    "build_graph",
+    "build_nodes",
+    "build_services",
+    "close_checkpoints",
+]

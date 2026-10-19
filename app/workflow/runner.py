@@ -18,6 +18,7 @@ from typing import Any
 from app.domain.models import utc_now
 from app.infrastructure.records.store import RecordStore
 from app.infrastructure.run_control import cancellation_requested, pause_requested
+from app.infrastructure.redaction import public_exception
 from app.application.audit import (
     ArtifactRef,
     StepError,
@@ -105,6 +106,20 @@ def run_stage(
         raise
     except StepFailed as error:
         return _save_fail(spec, store, state, record, task_id, artifacts, started, error, **_views(spec))
+    except (ValidationError, KeyError, ValueError) as error:
+        # 输入/输出契约错误属于当前步骤失败，必须写入步骤记录并由路由处理；
+        # 该分支必须位于通用异常捕获之前，否则永远不会执行。
+        return _save_fail(
+            spec,
+            store,
+            state,
+            record,
+            task_id,
+            artifacts,
+            started,
+            StepFailed(str(error)),
+            **_views(spec),
+        )
     except Exception as error:
         # Agent SDK/API/进程级异常不能直接冒泡出任务子图；按 Agent 执行失败记录，
         # 由 after_* 路由进入有界 retry，耗尽后只结束当前 task。
@@ -118,26 +133,17 @@ def run_stage(
                 artifacts,
                 started,
                 StepFailed(
-                    f"{spec.name} 执行异常: {error}",
+                    public_exception(error, prefix=f"{spec.name} 执行异常"),
                     result="failed",
                     code="AGENT_EXECUTION_ERROR",
-                    output={"retry_target": spec.name, "failure_reason": str(error)},
+                    output={
+                        "retry_target": spec.name,
+                        "failure_reason": public_exception(error, prefix="Agent 执行失败"),
+                    },
                 ),
                 **_views(spec),
             )
         raise
-    except (ValidationError, KeyError, ValueError) as error:
-        return _save_fail(
-            spec,
-            store,
-            state,
-            record,
-            task_id,
-            artifacts,
-            started,
-            StepFailed(str(error)),
-            **_views(spec),
-        )
     output_payload = dump_model(checked)
     status, business = map_outcome(
         kind="ok",
@@ -265,7 +271,10 @@ def _save_fail(
     record.artifacts = list(artifacts)
     record.output = output
     if status == "failed":
-        record.error = StepError(code=error_code_of(error.code), message=str(error))
+        record.error = StepError(
+            code=error_code_of(error.code),
+            message=public_exception(error, prefix=f"步骤 {spec.name} 执行失败"),
+        )
     record.finished_at = utc_now()
     record.duration_ms = round((time.perf_counter() - started) * 1000, 2)
     store.save(str(state.get("run_id") or ""), record, task_id, **views)
@@ -276,7 +285,7 @@ def _save_fail(
         output=record.output,
         failure=StepFailure(
             code=error.result,
-            reason=str(error),
+            reason=public_exception(error, prefix=f"步骤 {spec.name} 执行失败"),
             recoverable=error.result == "failed",
         ),
         next_action=spec.next_step or None,

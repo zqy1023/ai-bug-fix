@@ -85,3 +85,42 @@ def test_business_conclusions_drive_routes_without_relabeling_step_execution():
 
 def test_cancelled_terminal_status_is_preserved_in_final_report():
     assert _delivery_status([], "CANCELLED") == "CANCELLED"
+
+
+def test_value_error_in_step_is_recorded_without_original_exception_text(tmp_path, monkeypatch):
+    from pydantic import BaseModel
+
+    from app.application.services import WorkflowServices
+    from app.infrastructure.records.store import RecordStore
+    from app.workflow.runner import run_stage
+    import app.workflow.runner as runner_module
+    from app.workflow.spec import StepSpec
+
+    class Input(BaseModel):
+        value: str
+
+    class Output(BaseModel):
+        passed: bool = False
+
+    def runner(_ctx, _data):
+        raise ValueError("raw-secret-from-provider")
+
+    store = RecordStore(tmp_path)
+    store.create_run("run-validation", {})
+    spec = StepSpec(
+        name="validation_probe",
+        title="validation probe",
+        runner=runner,
+        input_model=Input,
+        output_model=Output,
+        input_builder=lambda _state: {"value": "ok"},
+        task_level=False,
+    )
+    monkeypatch.setattr(runner_module, "parse_input", lambda _name, _payload: Input(value="ok"))
+
+    result = run_stage(spec, store, WorkflowServices(), {"run_id": "run-validation"})
+    assert result.status == "failed"
+    record = store.list_steps("run-validation")[0]
+    assert record.status == "failed"
+    assert "raw-secret-from-provider" not in str(record.model_dump())
+    assert "validation_probe" in str(record.error.message)

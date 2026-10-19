@@ -22,7 +22,9 @@ def slim_review(payload: dict[str, Any]) -> dict[str, Any]:
         if field not in payload:
             continue
         value = payload[field]
-        if isinstance(value, str):
+        if field == "change_plan" and isinstance(value, dict):
+            slim[field] = _clip_nested(value)
+        elif isinstance(value, str):
             slim[field] = _clip(value)
         elif isinstance(value, list):
             slim[field] = _cap_items(value)
@@ -34,6 +36,17 @@ def slim_review(payload: dict[str, Any]) -> dict[str, Any]:
 def _clip(value: str) -> str:
     """超长文本截断，避免单条记录把状态文件撑大。"""
     return value if len(value) <= _MAX_FIELD_CHARS else f"{value[:_MAX_FIELD_CHARS]}…（已截断）"
+
+
+def _clip_nested(value: Any) -> Any:
+    """递归裁剪结构化方案，避免完整文件内容撑大任务状态。"""
+    if isinstance(value, str):
+        return _clip(value)
+    if isinstance(value, list):
+        return [_clip_nested(item) for item in value[:_MAX_ITEMS]]
+    if isinstance(value, dict):
+        return {key: _clip_nested(item) for key, item in value.items()}
+    return value
 
 
 def _cap_items(items: list[Any]) -> list[Any]:

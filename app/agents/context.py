@@ -25,12 +25,23 @@ def build_context(
     if max_chars < 256:
         raise ValueError("Agent 上下文预算至少需要 256 字符")
 
+    _MAX_CANDIDATE_PATH_CHARS = 500
+    _MAX_SYMBOL_NAME_CHARS = 200
+
+    def _problem_value(value: Any) -> str:
+        if isinstance(value, str):
+            return value[:1000]
+        try:
+            return json.dumps(value, ensure_ascii=False)[:1000]
+        except (TypeError, ValueError):
+            return str(value)[:1000]
+
     payload: dict[str, Any] = {
         "problem": {
-            str(key): str(value)[:1000]
+            str(key): _problem_value(value)
             for key, value in list(problem.items())[:24]
         },
-        "candidate_files": [str(item) for item in candidates[:max_candidates]],
+        "candidate_files": [str(item)[:_MAX_CANDIDATE_PATH_CHARS] for item in candidates[:max_candidates]],
         "retry_reason": str(retry_reason)[:2000],
         "prior_evidence": [str(item)[:500] for item in (prior_evidence or [])[:8]],
         "context_truncated": False,
@@ -39,7 +50,9 @@ def build_context(
         payload["category"] = str(category)[:120]
     if isinstance(symbols, dict) and symbols:
         payload["file_symbols"] = {
-            str(path): [str(name) for name in list(names or [])[:24]]
+            str(path)[:_MAX_CANDIDATE_PATH_CHARS]: [
+                str(name)[:_MAX_SYMBOL_NAME_CHARS] for name in list(names or [])[:24]
+            ]
             for path, names in list(symbols.items())[:max_candidates]
             if names
         }

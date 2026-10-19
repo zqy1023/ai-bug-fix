@@ -127,13 +127,27 @@ def file_changes(
             continue
         current = root_path / relative
         baseline_file = baseline_path / relative if baseline_path is not None else None
+        baseline_exists = baseline_file is not None and baseline_file.is_file()
+        current_exists = current.is_file()
         before = _read_text(baseline_file)
-        after = _read_text(current if current.is_file() else None)
-        if before is None and after is None:
+        after = _read_text(current if current_exists else None)
+        if (baseline_exists and before is None) or (current_exists and after is None):
+            changes.append(
+                {
+                    "path": relative,
+                    "status": "modified_too_large",
+                    "added": 0,
+                    "removed": 0,
+                    "lines": [],
+                    "too_large": True,
+                }
+            )
             continue
-        if before is None:
+        if not baseline_exists and not current_exists:
+            continue
+        if not baseline_exists:
             status = "added"
-        elif after is None:
+        elif not current_exists:
             status = "deleted"
         elif before == after:
             continue  # 内容一致：没有改动，不要造出 modified 0/0 的假条目

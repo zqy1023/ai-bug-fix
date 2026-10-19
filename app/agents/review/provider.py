@@ -52,14 +52,12 @@ class ClaudeSessionProvider(ReviewProvider):
         super().__init__(config, env)
 
     def run(self, request: AgentRequest) -> dict[str, Any]:
-        """在常驻只读会话中提交提示词；同一任务同一轮可复用。"""
+        """在常驻只读会话中提交提示词；同一任务跨回修轮次复用。"""
         ToolPolicy.validate(request)
         from app.infrastructure.runtime import drop_session, shared_session
 
-        session_key = (
-            f"{request.workspace}\x00{request.run_id}\x00{request.task_id}"
-            f"\x00{request.prompt_hash}"
-        )
+        # key 不含 prompt_hash：每轮提示词必然不同，带它进来会让缓存永不命中。
+        session_key = f"{request.workspace}\x00{request.run_id}\x00{request.task_id}"
         session = shared_session(
             request.agent_role,
             # 一个 workspace 可能承载多个 carrier/task；按 task 隔离即可在回修轮次复用

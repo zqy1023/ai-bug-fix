@@ -48,8 +48,6 @@ class Settings:
     repair_branch_prefix: str = "ai-repair"
     # default_git_push：是否默认推送。
     default_git_push: bool = False
-    # default_autorun：是否默认自动执行。
-    default_autorun: bool = False
     # default_review_mode：默认审查模式。
     default_review_mode: str = "agent"
     # default_ignore_errors：默认忽略错误清单。

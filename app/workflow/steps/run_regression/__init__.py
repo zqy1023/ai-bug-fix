@@ -20,7 +20,8 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _patch(output: dict[str, Any]) -> dict[str, Any]:
-    return {"regression_passed": bool(output["passed"]), "regression_result": output}
+    result = {"mode": "regression", **dict(output)}
+    return {"regression_passed": bool(result["passed"]), "regression_result": result}
 
 
 SPEC = StepSpec(

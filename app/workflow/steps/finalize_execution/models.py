@@ -6,7 +6,7 @@ from app.workflow.spec import FrozenModel
 
 
 class FinalizeInput(FrozenModel):
-    """12 的输入：从 steps.json 汇总本任务。"""
+    """收尾步骤的输入：从 steps.json 汇总本任务。"""
 
     # task_id：字段说明见该模型文档与工作流契约。
     task_id: str
@@ -23,7 +23,7 @@ class FinalizeInput(FrozenModel):
 
 
 class FinalizeOutput(FrozenModel):
-    """12 的输出。"""
+    """收尾步骤的输出。"""
 
     # report_path：字段说明见该模型文档与工作流契约。
     report_path: str = ""

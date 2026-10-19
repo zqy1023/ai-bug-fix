@@ -1,4 +1,4 @@
-"""11 创建修复分支并提交。不创建 MR，不自动合并。"""
+"""创建修复分支并提交。不创建 MR，不自动合并。"""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from app.domain.errors import DeliveryError
 from app.domain.errors import StepFailed
 from app.application.context import StepContext
 from app.workflow.steps.prepare_delivery.models import DeliveryInput, DeliveryOutput
+from app.infrastructure.redaction import public_exception
 
 
 def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
@@ -45,7 +46,8 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
                 "analysis_only": data.analysis_only,
                 "report_paths": list(data.report_paths),
                 "delivery_status": "ANALYSIS_ONLY" if data.analysis_only else "REPAIR",
-                "require_push": True,
+                "allow_push": data.allow_push,
+                "require_push": data.require_push,
                 "error": data.error,
                 "repair_analysis": data.repair_analysis,
                 "repair_summary": data.repair_summary,
@@ -53,7 +55,7 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
             }
         )
     except DeliveryError as error:
-        raise StepFailed(str(error)) from error
+        raise StepFailed(public_exception(error, prefix="交付失败")) from error
 
     return DeliveryOutput(
         repair_branch=str(result.get("repair_branch") or data.repair_branch),

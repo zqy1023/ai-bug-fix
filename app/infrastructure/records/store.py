@@ -14,7 +14,9 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -121,7 +123,7 @@ class RecordStore:
                 f"步骤记录 {record.name} 达 {size} 字节，超过 1MB，大字段必须先落 artifact",
                 code="ARTIFACT_INVALID_FORMAT",
             )
-        with self._lock:
+        with self._lock, _process_lock(self.run_dir(run_id) / ".steps.lock"):
             payload = self._read_steps(run_id)
             if task_id:
                 tasks = payload.setdefault("tasks", [])
@@ -268,6 +270,41 @@ def _step_body(payload: dict[str, Any], step_name: str, task_id: str) -> dict[st
     else:
         body = payload.get(step_name)
     return body if isinstance(body, dict) else None
+
+
+@contextmanager
+def _process_lock(path: Path):
+    """跨进程保护 steps.json 的读改写；线程锁仍由 RecordStore 自己持有。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+")
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0, 2)
+            if handle.tell() == 0:
+                handle.write("0")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
 
 
 __all__ = ["RecordStore", "StepError", "upgrade_record"]

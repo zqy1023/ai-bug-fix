@@ -40,23 +40,19 @@ from app.workflow.routes import (
     after_delivery,
     after_finalize,
     after_retry,
-    after_check_changes,
     after_claim,
-    after_evidence,
     after_identify,
     after_locate,
     after_regression,
     after_repair,
     after_review,
-    after_source_snapshot,
-    after_verify,
-    after_workspace,
 )
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import RetryPolicy
 from config.settings import settings
+from app.infrastructure.redaction import public_exception
 
 # 父图内部节点：串行分发一个任务、执行任务子图、收集该任务结果。
 RUN_TASK = "run_task"
@@ -75,7 +71,11 @@ def _transient_retry() -> RetryPolicy:
     )
 
 
-def build_task_graph(nodes: dict[str, Callable[..., Any]]) -> CompiledStateGraph:
+def build_task_graph(
+    nodes: dict[str, Callable[..., Any]],
+    *,
+    workspace_manager: Any | None = None,
+) -> CompiledStateGraph:
     """编译任务子图。
 
     不挂 checkpointer：它作为节点嵌套进父图，持久化由父图的 checkpointer 统一接管。
@@ -88,24 +88,42 @@ def build_task_graph(nodes: dict[str, Callable[..., Any]]) -> CompiledStateGraph
         if name == RETRY:
             def retry_node(state: dict[str, Any]) -> dict[str, Any]:
                 # Agent/审批重试前恢复不可变基线，避免在上一次失败的半成品上继续修改。
-                workspace_manager = nodes.get("_workspace_manager")
-                if workspace_manager is not None:
+                manager = workspace_manager
+                if manager is not None:
                     try:
                         task = dict(state.get("task") or {})
-                        workspace_manager.reset_task_workspace(
+                        manager.reset_task_workspace(
                             state.get("ai_workspace_path") or "",
                             state.get("source_repo_path") or "",
                             state.get("baseline_dir") or "",
                             state.get("source_project_path") or "",
                             str(task.get("carrier") or ""),
                         )
+                        manifest = {
+                            str(key): str(value)
+                            for key, value in (state.get("baseline_manifest") or {}).items()
+                        }
+                        if manifest:
+                            valid, mismatches = manager.verify_manifest(
+                                state.get("ai_workspace_path") or "",
+                                manifest,
+                            )
+                            if not valid:
+                                return {
+                                    "attempt": int(state.get("attempt") or 1),
+                                    "last_result": "failed",
+                                    "terminal_status": "failed",
+                                    "retry_target": "__retry_reset_failed__",
+                                    "retry_reason": "重试后工作区与基线不一致",
+                                    "blocked_reason": f"基线校验失败：{', '.join(mismatches[:8])}",
+                                }
                     except Exception as error:
                         return {
                             "attempt": int(state.get("attempt") or 1),
                             "last_result": "failed",
                             "terminal_status": "failed",
                             "retry_target": "__retry_reset_failed__",
-                            "retry_reason": f"重试前恢复隔离工作区失败：{error}",
+                            "retry_reason": public_exception(error, prefix="重试前恢复隔离工作区失败"),
                         }
                 return {
                     "attempt": int(state.get("attempt") or 1) + 1,
@@ -245,19 +263,13 @@ __all__ = [
     "after_delivery",
     "after_finalize",
     "after_retry",
-    "after_check_changes",
     "after_claim",
-    "after_deduplicate",
     "after_dispatch",
-    "after_evidence",
     "after_identify",
     "after_locate",
     "after_regression",
     "after_repair",
     "after_review",
-    "after_source_snapshot",
-    "after_verify",
-    "after_workspace",
     "build_graph",
     "build_task_graph",
     "collect",

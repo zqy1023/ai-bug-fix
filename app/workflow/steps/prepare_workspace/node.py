@@ -6,6 +6,7 @@ from __future__ import annotations
 from app.domain.errors import StepFailed
 from app.application.context import StepContext
 from app.workflow.steps.prepare_workspace.models import WorkspaceInput, WorkspaceOutput
+from app.infrastructure.redaction import public_exception
 
 
 def run(ctx: StepContext, data: WorkspaceInput) -> WorkspaceOutput:
@@ -25,7 +26,7 @@ def run(ctx: StepContext, data: WorkspaceInput) -> WorkspaceOutput:
             )
         )
     except Exception as error:
-        raise StepFailed(f"任务隔离区创建失败: {error}") from error
+        raise StepFailed(public_exception(error, prefix="任务隔离区创建失败")) from error
     return WorkspaceOutput(ai_workspace_path=workspace)
 
 

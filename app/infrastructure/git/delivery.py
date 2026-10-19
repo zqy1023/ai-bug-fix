@@ -8,15 +8,17 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import shutil
+import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
 from app.infrastructure.filesystem.workspace import WorkspaceError, WorkspaceManager
-from app.infrastructure.redaction import mask_secrets
+from app.infrastructure.redaction import mask_secrets, redact_output
 from app.domain.errors import DeliveryError
 from git import Repo
 from config.settings import settings
@@ -37,6 +39,8 @@ class DeliveryPort(Protocol):
 # 与运行记录共用 ``app.infrastructure.redaction.mask_secrets``。
 _LONG_NUMBER = re.compile(r"\d{8,}")
 _MAX_COMMENT_CHARS = settings.max_commit_comment_chars
+_MAX_AUDIT_BYTES = 512 * 1024
+_logger = logging.getLogger(__name__)
 
 
 def _one_line(value: Any, limit: int = _MAX_COMMENT_CHARS) -> str:
@@ -127,6 +131,7 @@ class GitBranchDelivery:
         git_root = Path(repo.working_tree_dir or branch_root).resolve()
 
         workspace: Path | None = None
+        delivery_repo: Repo | None = None
         commit = None
         pushed = False
         report_files: list[str] = []
@@ -198,21 +203,24 @@ class GitBranchDelivery:
                 ) from error
 
             pushed = False
-            # 推送实际由源仓库 Repo 执行，必须检查源仓库配置的 remote，而不是临时克隆的 origin。
+            # allow_push 是本轮配置策略，require_push 是调用方门禁。
+            # 两者分离后，本地交付可以没有 remote；明确要求推送时则必须同时允许推送。
             remote_names = {remote.name for remote in repo.remotes}
-            require_push = bool(state.get("require_push") or state.get("analysis_only"))
+            allow_push = bool(state.get("allow_push", self._config.push))
+            require_push = bool(state.get("require_push"))
+            if require_push and not allow_push:
+                raise DeliveryError("本次交付要求推送，但运行配置禁止远程推送")
             if require_push and self._config.remote_name not in remote_names:
                 raise DeliveryError(
                     f"本次交付要求推送分支，但源仓库没有远程 {self._config.remote_name}"
                 )
-            if (self._config.push or require_push) and self._config.remote_name in remote_names:
-                # 推送回到源仓库执行：临时克隆的分支对源仓库不可见。
-                # 源仓库只接收这一次按提交哈希的 push，不切换检出、不改工作区文件。
+            if allow_push and self._config.remote_name in remote_names:
+                # 提交对象只存在于临时交付克隆：本地克隆只硬链接既有对象，新提交对源仓库
+                # 不可见。因此必须由克隆按源仓库配置的远程 URL 推送（HEAD 即刚建的分支），
+                # 用源仓库的 Repo 按 SHA refspec 推送会报 bad object。
                 try:
-                    repo.git.push(
-                        self._config.remote_name,
-                        f"{commit.hexsha}:refs/heads/{branch}",
-                    )
+                    remote_url = repo.git.remote("get-url", self._config.remote_name).strip()
+                    delivery_repo.git.push(remote_url, f"HEAD:refs/heads/{branch}")
                     pushed = True
                 except Exception as error:
                     raise DeliveryError(
@@ -222,6 +230,11 @@ class GitBranchDelivery:
                         commit=commit.hexsha,
                     ) from error
         finally:
+            try:
+                if delivery_repo is not None:
+                    delivery_repo.close()
+            except Exception:
+                pass
             if workspace is not None:
                 shutil.rmtree(workspace, ignore_errors=True)
 

@@ -13,6 +13,7 @@ from app.workflow.steps.prepare_source_snapshot.models import (
     SourceSnapshotInput,
     SourceSnapshotOutput,
 )
+from app.infrastructure.redaction import public_exception
 
 
 def _sha256(path: Path) -> str:
@@ -30,7 +31,7 @@ def run(ctx: StepContext, data: SourceSnapshotInput) -> SourceSnapshotOutput:
     try:
         root = ctx.services.workspaces.project_root(data.source_repo_path)
     except Exception as error:
-        raise StepFailed(f"源码快照源仓库无法读取: {error}") from error
+        raise StepFailed(public_exception(error, prefix="源码快照源仓库无法读取")) from error
     from app.infrastructure.filesystem.workspace import WorkspaceManager
 
     carrier = WorkspaceManager.safe_carrier_name(data.carrier)

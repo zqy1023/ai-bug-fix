@@ -33,7 +33,14 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         "task_id": str(state.get("task_id") or ""),
         "carrier": str(task.get("carrier") or ""),
         "biztype": str(task.get("biztype") or ""),
-        "terminal_status": str(state.get("terminal_status") or ""),
+        "terminal_status": (
+            "manual"
+            if (
+                str(state.get("review_mode") or "agent").lower() == "human"
+                or str((state.get("verify_result") or {}).get("mode") or "") == "syntax_only"
+            )
+            else str(state.get("terminal_status") or "")
+        ),
         "ai_workspace_path": str(state.get("ai_workspace_path") or ""),
         "report_destination": f"{report_framework}/{carrier}/final.json",
     }

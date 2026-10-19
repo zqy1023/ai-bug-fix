@@ -25,6 +25,8 @@ class RegressionOutput(FrozenModel):
     passed: bool
     # reason：字段说明见该模型文档与工作流契约。
     reason: str = ""
+    # mode：实际执行的验证级别。
+    mode: str = "regression"
     # command_count：字段说明见该模型文档与工作流契约。
     command_count: int = 0
 

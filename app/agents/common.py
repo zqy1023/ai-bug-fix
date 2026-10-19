@@ -132,7 +132,8 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
             "events_path": "",
             "event_count": 0,
             "output_preview": _audit_text(raw_result(raw), 500),
-            "error_type": str(raw.get("reason") or "")[:300] if raw.get("passed") is False else "",
+            # Provider 的 reason 可能包含连接串、响应正文或 SDK 原始异常；审计只保存类别。
+            "error_type": "provider_error" if raw.get("passed") is False and raw.get("reason") else "",
             "finished_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
         }
         final_text = _audit_text(raw_result(raw), 3000)

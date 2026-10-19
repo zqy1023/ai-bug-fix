@@ -16,6 +16,7 @@ from typing import Any
 
 from app.infrastructure.filesystem.workspace import WorkspaceError, WorkspaceManager
 from app.infrastructure.filesystem.diff import file_changes, read_text_cached, sha256_cached
+from app.infrastructure.redaction import public_exception
 
 # 只把"给敏感名赋了**字面值**"当成命中：
 #   token = "a1b2c3d4e5f6"        命中（引号字面量，长度像凭据）
@@ -29,6 +30,13 @@ _SECRET = re.compile(
 from config.settings import settings
 
 _IGNORED_PARTS = (settings.artifact_dir_name, ".evidence", ".git")
+
+
+def _norm(path: str) -> str:
+    """返回用于路径比较的系统规范形式，展示路径仍保留原值。"""
+    return os.path.normcase(path)
+
+
 _DANGEROUS_CALLS = {"eval", "exec", "compile", "__import__"}
 _DANGEROUS_ATTRIBUTES = {"popen", "Popen", "check_call", "check_output"}
 _CHECKS = (
@@ -86,8 +94,9 @@ def _actual_changed_files(
     所有文件都排除掉，函数就退化成"基线里每个文件都算变化"。
     """
     prefix = f"{scope.as_posix().rstrip('/')}/" if scope is not None else ""
+    normalized_prefix = _norm(prefix)
     scoped = {
-        key: value for key, value in baseline.items() if not prefix or key.startswith(prefix)
+        key: value for key, value in baseline.items() if not prefix or _norm(key).startswith(normalized_prefix)
     }
     if not scoped:
         return set()
@@ -97,11 +106,20 @@ def _actual_changed_files(
         if not path.is_file() or path.is_symlink():
             continue
         relative = path.relative_to(root).as_posix()
-        if any(part in _IGNORED_PARTS for part in Path(relative).parts):
+        relative_parts = Path(relative).parts
+        if (
+            any(part in _IGNORED_PARTS for part in relative_parts)
+            or any(WorkspaceManager._is_skipped_dir(part) for part in relative_parts[:-1])
+            or WorkspaceManager._is_sensitive(path.name)
+        ):
             continue
         current[relative] = _sha256(path)
+    current_by_norm = {_norm(key): (key, value) for key, value in current.items()}
+    scoped_by_norm = {_norm(key): (key, value) for key, value in scoped.items()}
     return {
-        path for path in set(current) | set(scoped) if current.get(path) != scoped.get(path)
+        current_by_norm.get(key, scoped_by_norm.get(key))[0]
+        for key in set(current_by_norm) | set(scoped_by_norm)
+        if current_by_norm.get(key, ("", None))[1] != scoped_by_norm.get(key, ("", None))[1]
     }
 
 
@@ -117,10 +135,13 @@ def _secret_samples(text: str, stats: dict[str, Any]) -> list[dict[str, Any]]:
         for line in (stats.get("lines") or [])
         if line.get("type") == "add"
     }
-    whole_file = stats.get("status") == "added" or bool(stats.get("truncated"))
+    whole_file = stats.get("status") in {"added", "modified_too_large"} or bool(stats.get("truncated"))
     samples: list[dict[str, Any]] = []
     for number, raw in enumerate(text.splitlines(), 1):
-        if not whole_file and raw.strip() not in added:
+        truncated_line = any(
+            item.endswith("…") and raw.strip().startswith(item[:-1]) for item in added
+        )
+        if not whole_file and raw.strip() not in added and not truncated_line:
             continue
         match = _SECRET.search(raw)
         if match:
@@ -129,7 +150,7 @@ def _secret_samples(text: str, stats: dict[str, Any]) -> list[dict[str, Any]]:
                 {
                     "line": number,
                     "snippet": snippet if len(snippet) <= 120 else f"{snippet[:119]}…",
-                    "source": "whole-file" if whole_file else "added-line",
+                    "source": "whole-file" if whole_file else ("truncated-line" if truncated_line else "added-line"),
                 }
             )
     return samples
@@ -157,15 +178,17 @@ def validate_changed_files(
     """
     root = Path(workspace).resolve()
     claimed = {str(path).replace("\\", "/") for path in changed_files if str(path)}
-    granted = {
-        str(path).replace("\\", "/")
+    claimed_by_norm = {_norm(path): path for path in claimed}
+    granted_by_norm = {
+        _norm(str(path).replace("\\", "/")): str(path).replace("\\", "/")
         for path in (authorized_files or [])
         if str(path) and _under(root, (root / str(path)).resolve(strict=False))
     }
+    granted = set(granted_by_norm)
     try:
         carrier_paths = [root / item for item in WorkspaceManager.locate_carrier_roots(root, carrier)]
     except WorkspaceError as error:
-        return _blocked(str(error), carrier)
+        return _blocked(public_exception(error, prefix="定位 carrier 失败"), carrier)
     if not carrier_paths and not granted:
         return _blocked(f"工作区缺少目标 carrier: {carrier}", carrier)
     allowed_root = [item.relative_to(root).as_posix() for item in carrier_paths]
@@ -176,25 +199,41 @@ def validate_changed_files(
         for scope in allowed_root:
             actual.update(_actual_changed_files(root, baseline_manifest, Path(scope)))
 
+    # diff 证据必须覆盖全部声明∪真实变化文件：file_changes 的默认 max_files 截断会让
+    # 超出部分的文件拿不到逐行 stats，敏感信息扫描的"只看新增行"逻辑因此整体失效。
+    claimed_by_norm = {_norm(path): path for path in claimed}
+    actual_by_norm = {_norm(path): path for path in actual}
+    diff_candidates = sorted(set(claimed_by_norm) | set(actual_by_norm))
     diff = {
-        item["path"]: item
-        for item in file_changes(baseline_dir, root, sorted(claimed | actual))
+        _norm(item["path"]): item
+        for item in file_changes(
+            baseline_dir,
+            root,
+            [claimed_by_norm.get(path, actual_by_norm[path]) for path in diff_candidates],
+            max_files=max(1, len(diff_candidates)),
+        )
     }
 
     files: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
     # 声明与差异不一致：逐文件给出结论，不用一句"不一致"糊过去
     compare_claims = bool(baseline_manifest)
+    actual_keys = set(actual_by_norm)
+    claimed_keys = set(claimed_by_norm)
     if compare_claims:
-        for raw in sorted(actual - claimed):
+        for key in sorted(actual_keys - claimed_keys):
+            raw = actual_by_norm[key]
             failures.append(
                 {"file": raw, "reason": "真实变化但未声明", "code": "UNDECLARED_CHANGE"}
             )
-        for raw in sorted(claimed - actual):
+        for key in sorted(claimed_keys - actual_keys):
+            raw = claimed_by_norm[key]
             failures.append(
                 {"file": raw, "reason": "声明了但没有真实变化", "code": "PHANTOM_CLAIM"}
             )
-    for raw in sorted(claimed | actual):
+    all_keys = sorted(claimed_keys | actual_keys)
+    for key in all_keys:
+        raw = claimed_by_norm.get(key, actual_by_norm[key])
         entry = _inspect_file(root, carrier_paths, granted, raw, baseline_manifest, diff)
         files.append(entry)
         failures.extend(
@@ -203,8 +242,8 @@ def validate_changed_files(
         )
 
     mismatch = {
-        "missing_in_claim": sorted(actual - claimed),
-        "extra_in_claim": sorted(claimed - actual),
+        "missing_in_claim": [actual_by_norm[key] for key in sorted(actual_keys - claimed_keys)],
+        "extra_in_claim": [claimed_by_norm[key] for key in sorted(claimed_keys - actual_keys)],
     }
     return {
         "passed": not failures,
@@ -214,17 +253,17 @@ def validate_changed_files(
         "scope": {
             "carrier": carrier,
             "allowed_root": allowed_root,
-            "authorized_files": sorted(granted),
+            "authorized_files": sorted(granted_by_norm.values()),
             "baseline_files": len(baseline_manifest or {}),
             "claimed_files": len(claimed),
             "actual_files": len(actual),
             "diffable": baseline_dir is not None,
         },
         "claim": {
-            "claimed": sorted(claimed),
-            "actual": sorted(actual),
+            "claimed": sorted(claimed_by_norm.values()),
+            "actual": sorted(actual_by_norm.values()),
             **mismatch,
-            "consistent": not compare_claims or actual == claimed,
+            "consistent": not compare_claims or actual_keys == claimed_keys,
         },
         "totals": {
             "files": len(files),
@@ -248,11 +287,11 @@ def _inspect_file(
     范围判定有两层：目标 carrier 目录，或人工逐文件批准的白名单。
     """
     candidate = (root / raw).resolve(strict=False)
-    stats = diff.get(raw, {})
+    stats = diff.get(_norm(raw), {})
     in_carrier = any(_under(item, candidate) for item in allowed)
     entry: dict[str, Any] = {
         "path": raw,
-        "in_scope": in_carrier or raw in granted,
+        "in_scope": in_carrier or _norm(raw) in granted,
         "exists": candidate.exists(),
         # 没有 diff 条目 = 内容与基线一致（例如被声明但其实没改）
         "status": str(stats.get("status", "unchanged")),
@@ -304,7 +343,7 @@ def _inspect_file(
             problems.append(
                 f"疑似硬编码敏感信息: 第{sample['line']}行（{sample['source']}）"
             )
-        if candidate.suffix == ".py":
+        if candidate.suffix.casefold() == ".py":
             tree = ast.parse(text, filename=str(candidate))
             visitor = _DangerousNodeVisitor()
             visitor.visit(tree)
@@ -315,7 +354,7 @@ def _inspect_file(
             entry["ast"] = "n/a"
     except (OSError, SyntaxError) as error:
         entry["ast"] = "error"
-        problems.append(f"文件检查失败: {error}")
+        problems.append(public_exception(error, prefix="文件检查失败"))
     return entry
 
 

@@ -57,6 +57,10 @@ class WorkflowState(TypedDict, total=False):
     max_attempts: int
     # review_mode：审查模式。
     review_mode: str
+    # allow_push：本轮交付是否允许推送远程分支。
+    allow_push: bool
+    # require_push：调用方是否要求必须存在远程并完成推送。
+    require_push: bool
     # retry_reason：上一轮失败或驳回原因。
     retry_reason: str
     # retry_target：Agent 执行异常后重试的 Agent 名称；普通验证失败默认回到 repair_agent。
@@ -158,6 +162,10 @@ class RunState(TypedDict, total=False):
     max_attempts: int
     # review_mode：审查模式。
     review_mode: str
+    # allow_push：本轮交付是否允许推送远程分支。
+    allow_push: bool
+    # require_push：调用方是否要求必须存在远程并完成推送。
+    require_push: bool
     # tasks：本轮串行处理的任务清单。
     tasks: list[dict[str, Any]]
     # task_cursor：当前任务在清单中的游标。

@@ -21,9 +21,8 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
     review_payload = dict(review) if isinstance(review, dict) else {}
     problem = state.get("problem")
     problem_payload = dict(problem) if isinstance(problem, dict) else {}
-    # 审查结论以主图通道为准。review_agent 回写的是 verdict 而不是 result，
-    # 且只有审查子图实际跑过才有结论；人工审查模式没有子图，结论记在 decision 上。
-    # review_agent 现在始终先执行；人工审批统一放在分支交付之后。
+    # 审查结论以主图通道为准。review_agent 回写的是 verdict 而不是 result；
+    # review_mode=human 会在回归后直接结束，不会进入此交付步骤。
     review_decision = str(review_payload.get("verdict") or "")
     evidence = dict(state.get("evidence") or {})
     locate_payload = dict(state.get("locate") or {})
@@ -87,6 +86,8 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         "review_decision": review_decision,
         "analysis_only": analysis_only,
         "report_paths": [f"{report_framework}/{report_carrier}/final.json"] if analysis_only else [],
+        "allow_push": bool(state.get("allow_push", state.get("git_push", False))),
+        "require_push": bool(state.get("require_push", False)),
     }
 
 

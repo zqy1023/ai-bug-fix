@@ -26,7 +26,10 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
             if supplied_fingerprint != data.approval_fingerprint:
                 raise StepFailed("审批指纹不匹配，拒绝使用过期审批", {"decision": "PENDING", "passed": False, "reason": "审批指纹不匹配"})
         else:
-            decision = str(resumed or "PENDING").upper()
+            raise StepFailed(
+                "审批恢复值必须包含决定和审批指纹",
+                {"decision": "PENDING", "passed": False, "reason": "审批恢复值格式无效"},
+            )
     else:
         decision = data.decision
 

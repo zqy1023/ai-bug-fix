@@ -30,6 +30,8 @@ class VerifyOutput(FrozenModel):
     passed: bool
     # reason：字段说明见该模型文档与工作流契约。
     reason: str = ""
+    # mode：实际执行的验证级别。
+    mode: str = "custom"
 
 
 __all__ = ["VerifyInput", "VerifyOutput"]

@@ -28,7 +28,6 @@ class ReplayResult:
 _REPLAY_SCRIPT = r'''
 import json
 import sys
-import traceback
 from pathlib import Path
 
 try:
@@ -67,8 +66,7 @@ except Exception as error:
     print(json.dumps({
         "success": False,
         "exception_type": type(error).__name__,
-        "error": str(error),
-        "traceback": traceback.format_exc(),
+        "error": "重放目标执行失败",
     }, ensure_ascii=False), file=sys.stderr)
     sys.exit(1)
 '''
@@ -104,7 +102,7 @@ def run_replay(
             "gather_main_path": str(gather_path),
         }
     except (json.JSONDecodeError, TypeError) as error:
-        return ReplayResult(False, error=f"重放输入 JSON 无效: {error}")
+        return ReplayResult(False, error="重放输入 JSON 无效", exception_type=type(error).__name__)
 
     with tempfile.TemporaryDirectory(prefix="ai-replay-") as directory:
         input_path = Path(directory) / "input.json"
@@ -119,9 +117,13 @@ def run_replay(
                 check=False,
             )
         except subprocess.TimeoutExpired:
-            return ReplayResult(False, error=f"重放执行超时 ({timeout_seconds}s)")
+            return ReplayResult(
+                False,
+                error=f"重放执行超时 ({timeout_seconds}s)",
+                exception_type="TimeoutExpired",
+            )
         except OSError as error:
-            return ReplayResult(False, error=f"无法启动重放子进程: {error}")
+            return ReplayResult(False, error="无法启动重放子进程", exception_type=type(error).__name__)
 
     stdout = result.stdout.strip()
     stderr = result.stderr.strip()
@@ -129,12 +131,11 @@ def run_replay(
         try:
             error_data = json.loads(stderr)
         except json.JSONDecodeError:
-            error_data = {"error": stderr or f"子进程退出码 {result.returncode}", "traceback": stderr}
+            error_data = {"error": "重放子进程失败", "exception_type": "SubprocessError"}
         return ReplayResult(
             False,
-            error=str(error_data.get("error") or "重放执行失败"),
+            error="重放执行失败",
             exception_type=str(error_data.get("exception_type") or ""),
-            traceback=str(error_data.get("traceback") or stderr),
         )
 
     # 允许被测代码向 stdout 打日志，读取最后一行结构化结果。
@@ -148,9 +149,8 @@ def run_replay(
         if isinstance(output_data, dict) and output_data.get("success") is False:
             return ReplayResult(
                 False,
-                error=str(output_data.get("error") or "重放执行失败"),
+                error="重放目标执行失败",
                 exception_type=str(output_data.get("exception_type") or ""),
-                traceback=str(output_data.get("traceback") or ""),
             )
     return ReplayResult(False, error="重放脚本未输出有效的成功 JSON", output=stdout[-4000:])
 

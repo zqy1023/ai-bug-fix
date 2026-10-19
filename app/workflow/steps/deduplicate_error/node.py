@@ -92,6 +92,10 @@ def consume(
                 "raw_error": record["raw_error"],
             },
         }
+        # 保留可选 response/track_config，供 verify_issue 执行真实重放。
+        for optional in ("response", "track_config"):
+            if optional in record and record.get(optional):
+                grouped[key]["problem"][optional] = record[optional]
         return "new"
     entry["occurrence_count"] += 1
     return "duplicate"

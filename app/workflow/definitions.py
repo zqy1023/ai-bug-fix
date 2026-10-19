@@ -27,7 +27,7 @@ TASK_PHASES = {
     VALIDATE: PHASE_COMPOSITIONS[VALIDATE],
 }
 
-# 11 个业务主节点；retry_prepare 是仅供有界回修使用的内部控制节点。
+# 10 个业务主节点；retry_prepare 是仅供有界回修使用的内部控制节点。
 TASK_NODE_NAMES = (
     PREPARE_CONTEXT, LOCATE, CLAIM, REPAIR, VALIDATE,
     REGRESSION, REVIEW, APPROVE, DELIVER, FINALIZE, RETRY,

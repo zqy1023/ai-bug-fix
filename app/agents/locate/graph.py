@@ -12,6 +12,7 @@ from app.agents.locate.models import LocateInput, LocateOutput
 from app.agents.locate.provider import create_provider
 from app.agents.locate.state import LocateState
 from app.infrastructure.filesystem.workspace import WorkspaceManager
+from app.infrastructure.redaction import redact_output
 from app.prompts import PromptRenderer
 from app.prompts.context import model_name, prompt_context
 from langgraph.graph import END, START, StateGraph
@@ -67,7 +68,7 @@ def _snapshot_prompt_context(source_snapshot: dict[str, Any], framework: str) ->
 
 def _locate_contract_summary(error: BaseException) -> str:
     """将契约失败的真实原因写入面向人工的摘要。"""
-    detail = " ".join(str(error).split()) or type(error).__name__
+    detail = redact_output(" ".join(str(error).split())) or type(error).__name__
     return f"定位输出契约校验失败：{detail[:500]}；停止自动修复并转人工。"
 
 
@@ -106,7 +107,11 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
         return _manual("预检没有候选源码文件，缺少定位证据")
     if len(candidates) > config.max_candidate_files:
         return _manual("预检候选数量超过 locate.max_candidate_files，要求确定性预检收敛")
-    verified_candidates = [_relative_file(root, item) for item in candidates]
+    try:
+        verified_candidates = [_relative_file(root, item) for item in candidates]
+    except ValueError as error:
+        # 与其它预检不一致场景保持同一降级策略：转人工，而不是让节点崩溃。
+        return _manual(f"预检候选路径非法: {error}")
     for relative in verified_candidates:
         candidate = (root / relative).resolve()
         if not candidate.is_relative_to(carrier_root):
@@ -204,7 +209,7 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
         output.source_evidence = _safe_source_evidence(
             root, roots, output.source_evidence
         )
-        detail = " ".join(str(error).split()) or type(error).__name__
+        detail = redact_output(" ".join(str(error).split())) or type(error).__name__
         if detail not in output.evidence_gaps:
             output.evidence_gaps.append(detail[:500])
         contract_summary = _locate_contract_summary(error)

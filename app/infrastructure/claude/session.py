@@ -649,24 +649,6 @@ def run_agent_once(
     )
 
 
-def run_repair_agent(
-    prompt: str,
-    workspace: str | Path,
-    env: dict[str, str] | None = None,
-) -> dict[str, Any]:
-    """运行允许修改隔离工作区的 Claude 修复智能体。"""
-    return asyncio.run(_run(prompt, workspace, env, writable=True))
-
-
-def run_review_agent(
-    prompt: str,
-    workspace: str | Path,
-    env: dict[str, str] | None = None,
-) -> dict[str, Any]:
-    """运行只读 Claude 代码审查智能体。"""
-    return asyncio.run(_run(prompt, workspace, env, writable=False))
-
-
 class ClaudeSession:
     """执行级常驻 Claude 会话，按队列顺序处理多个 carrier 任务。
 
@@ -862,7 +844,11 @@ class ClaudeSession:
                     },
                 })
             except Exception as error:
-                reason = "AGENT_TIMEOUT" if isinstance(error, TimeoutError) else f"常驻 Agent 调用失败: {error}"
+                reason = (
+                    "AGENT_TIMEOUT"
+                    if isinstance(error, TimeoutError)
+                    else f"常驻 Agent 调用失败（错误类型：{type(error).__name__}）"
+                )
                 # 不能把已收到的工具事件随异常一起丢弃；审计层会过滤并按 task 落盘。
                 result_queue.put({
                     "passed": False,

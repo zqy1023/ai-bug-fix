@@ -1,4 +1,4 @@
-"""12 创建修复分支的输入输出契约。"""
+"""创建修复分支的输入输出契约。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from app.workflow.spec import FrozenModel
 
 
 class DeliveryInput(FrozenModel):
-    """11 的输入。
+    """交付步骤的输入。
 
     ``error`` / ``repair`` / ``review`` 只用于拼提交说明：修复分支的commit
     带上"线上报的什么错、AI 怎么判、审查怎么评"，人工在 Git 上不用回查执行
@@ -16,6 +16,8 @@ class DeliveryInput(FrozenModel):
     - review_decision: 审查结果（PASS/FAIL/MANUAL）
     - authorized_files: 允许提交的 carrier 文件范围
     - analysis_only: 是否只交付 final.json 分析报告
+    - allow_push: 是否允许推送远程修复分支
+    - require_push: 是否要求远程存在且推送成功
     """
 
     # task_id：字段说明见该模型文档与工作流契约。
@@ -45,10 +47,14 @@ class DeliveryInput(FrozenModel):
     analysis_only: bool = False
     # report_paths：AI 隔离工作区内需要随报告分支交付的审计产物。
     report_paths: list[str] = []
+    # allow_push：由运行配置决定是否允许远程推送。
+    allow_push: bool = False
+    # require_push：只有明确要求时才把缺少远程视为交付失败。
+    require_push: bool = False
 
 
 class DeliveryOutput(FrozenModel):
-    """11 的输出。"""
+    """交付步骤的输出。"""
 
     # repair_branch：字段说明见该模型文档与工作流契约。
     repair_branch: str = ""

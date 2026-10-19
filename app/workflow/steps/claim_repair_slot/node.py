@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import sqlite3
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
 from git import Repo
 
 from app.domain.errors import StepFailed
@@ -9,6 +14,73 @@ from app.domain.keys import repair_branch
 from app.application.context import StepContext
 from app.workflow.steps.claim_repair_slot.models import ClaimInput, ClaimOutput
 from config.settings import settings
+
+
+_CLAIM_TTL = timedelta(hours=24)
+
+
+def _claim_key(source: str, branch: str, problem_key: str) -> str:
+    value = "\x00".join((str(Path(source).resolve()), branch, problem_key))
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _claim_connection(root: Path) -> sqlite3.Connection:
+    root.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(str(root / "repair-claims.sqlite3"), timeout=10)
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.execute("PRAGMA busy_timeout=10000")
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS repair_claims ("
+        "claim_key TEXT PRIMARY KEY, source_repo TEXT NOT NULL, branch TEXT NOT NULL, "
+        "problem_key TEXT NOT NULL, run_id TEXT NOT NULL, task_id TEXT NOT NULL, "
+        "claimed_at TEXT NOT NULL, expires_at TEXT NOT NULL)"
+    )
+    return connection
+
+
+def _claim_slot(ctx: StepContext, source: str, branch: str, problem_key: str, task_id: str) -> bool:
+    key = _claim_key(source, branch, problem_key)
+    now = datetime.now(timezone.utc)
+    expires = now + _CLAIM_TTL
+    connection = _claim_connection(ctx.store.root)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            "SELECT run_id,task_id,expires_at FROM repair_claims WHERE claim_key=?",
+            (key,),
+        ).fetchone()
+        if row:
+            try:
+                expired = datetime.fromisoformat(str(row[2])) <= now
+            except ValueError:
+                expired = True
+            if not expired and (str(row[0]) != ctx.run.run_id or str(row[1]) != task_id):
+                connection.rollback()
+                return False
+            connection.execute("DELETE FROM repair_claims WHERE claim_key=?", (key,))
+        connection.execute(
+            "INSERT INTO repair_claims(claim_key,source_repo,branch,problem_key,run_id,task_id,claimed_at,expires_at) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (key, str(Path(source).resolve()), branch, problem_key, ctx.run.run_id, task_id,
+             now.isoformat(), expires.isoformat()),
+        )
+        connection.commit()
+        return True
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def release_claim(root: str | Path, *, run_id: str, task_id: str) -> None:
+    """任务进入终态后释放修复资格；其他运行的 claim 不受影响。"""
+    connection = _claim_connection(Path(root))
+    try:
+        connection.execute("DELETE FROM repair_claims WHERE run_id=? AND task_id=?", (run_id, task_id))
+        connection.commit()
+    finally:
+        connection.close()
 
 
 def run(ctx: StepContext, data: ClaimInput) -> ClaimOutput:
@@ -35,6 +107,13 @@ def run(ctx: StepContext, data: ClaimInput) -> ClaimOutput:
         raise StepFailed(
             f"存在未合并的修复分支，跳过本轮任务: {pending}",
             {"claimed": False, "result": "skipped", "repair_branch": pending},
+            result="skipped",
+        )
+
+    if not _claim_slot(ctx, source, branch, data.problem_key or data.task_id, data.task_id):
+        raise StepFailed(
+            "同一问题已被其他运行领取，跳过本轮任务",
+            {"claimed": False, "result": "skipped", "repair_branch": branch},
             result="skipped",
         )
 
@@ -67,4 +146,4 @@ def _base_commit(repo: Repo, remote_name: str) -> str:
     return "HEAD"
 
 
-__all__ = ["run"]
+__all__ = ["release_claim", "run"]

@@ -25,7 +25,11 @@ def run(ctx: StepContext, data: VerifyInput) -> VerifyOutput:
     )
     if not isinstance(verified, dict) or verified.get("passed") is not True:
         reason = str(verified.get("reason") or "独立验证失败") if isinstance(verified, dict) else "独立验证返回无效"
-        raise StepFailed(reason, {"passed": False, "reason": reason})
-    return VerifyOutput(passed=True, reason=str(verified.get("reason") or ""))
+        raise StepFailed(reason, {"passed": False, "reason": reason, "mode": str(verified.get("mode") or "unavailable")})
+    return VerifyOutput(
+        passed=True,
+        reason=str(verified.get("reason") or ""),
+        mode=str(verified.get("mode") or "custom"),
+    )
 
 

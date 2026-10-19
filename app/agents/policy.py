@@ -37,11 +37,17 @@ class ToolPolicy:
             for relative in WorkspaceManager.readable_rule_paths(workspace)
         )
         if request.agent_role == "locate":
-            expected_reads = (expected_carrier, *(
+            expected_reads = (expected_carrier,)
+            # 新框架（gathers）任务允许只读核对旧实现目录，与 locate._read_roots
+            # 的装配保持一致：旧目录存在且与目标 carrier 不同时才计入白名单。
+            legacy_path = workspace / "spiders" / WorkspaceManager.safe_carrier_name(carrier)
+            if framework == "gathers" and legacy_path.is_dir():
+                expected_reads += (legacy_path.resolve(),)
+            expected_reads += tuple(
                 (workspace / name).resolve()
                 for name in _SHARED_READ_DIRECTORIES
                 if (workspace / name).is_dir()
-            ))
+            )
             plugin_registry = workspace / "plugins.py"
             if plugin_registry.is_file():
                 expected_reads += (plugin_registry.resolve(),)

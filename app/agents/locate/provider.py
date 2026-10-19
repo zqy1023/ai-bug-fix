@@ -31,7 +31,7 @@ def _is_transient_query_error(error: BaseException) -> bool:
         "broken pipe", "temporarily unavailable", "connection aborted",
         "error result: success",
     )
-    return any(marker in diagnostic for marker in markers) or isinstance(error, (TimeoutError, ConnectionError, OSError))
+    return any(marker in diagnostic for marker in markers) or isinstance(error, (TimeoutError, ConnectionError))
 
 
 def _interrupted_call_fallback(error: BaseException, request: AgentRequest, attempts: int) -> dict[str, Any]:
@@ -48,7 +48,7 @@ def _interrupted_call_fallback(error: BaseException, request: AgentRequest, atte
     elif "connection reset" in event_text:
         detail = "Claude 连接被重置（Connection reset）"
     else:
-        detail = str(error).strip() or type(error).__name__
+        detail = f"错误类型：{type(error).__name__}"
     reason = (
         f"Claude 定位请求在 {attempts} 次尝试后仍然中断：{detail}；"
         "没有获得可验证的完整定位结论，可重新定位或转人工处理。"
