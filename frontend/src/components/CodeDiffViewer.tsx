@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Empty, Tag } from 'antd';
 import { FileCodeOutlined } from '@ant-design/icons';
 
@@ -83,10 +83,8 @@ function fallbackFiles(diffText: string): SourceFile[] {
       continue;
     }
     if (line.startsWith('@@')) {
-      const added = line.match(/\+(\d+)/);
-      const removed = line.match(/-(\d+)/);
-      if (added && Number(added[1]) > 0 && (!removed || Number(removed[1]) === 0)) current.status = 'added';
-      if (removed && Number(removed[1]) > 0 && (!added || Number(added[1]) === 0)) current.status = 'deleted';
+      const status = line.match(/^@@\s+(added|deleted|modified|renamed)/i)?.[1]?.toLowerCase();
+      if (status) current.status = status;
       continue;
     }
     if (line.startsWith('+')) current.after.push(line.slice(1));
@@ -237,10 +235,12 @@ function rowsFor(file: SourceFile): DiffRow[] {
 }
 
 function CodePane({
-  side, rows,
+  side, rows, scrollRef, onScroll,
 }: {
   side: 'old' | 'new';
   rows: DiffRow[];
+  scrollRef: React.RefObject<HTMLDivElement | null>;
+  onScroll: () => void;
 }) {
   return (
     <div className={`code-diff-pane is-${side}`}>
@@ -248,18 +248,17 @@ function CodePane({
         <span>{side === 'old' ? '原始版本' : '修改后'}</span>
         <span>{rows.length ? `${rows.length} 行对照` : '空文件'}</span>
       </div>
-      <div className="code-diff-scroll">
+      <div className="code-diff-scroll" ref={scrollRef} onScroll={onScroll}>
         {rows.map((row) => {
           const lineNumber = side === 'old' ? row.leftNumber : row.rightNumber;
           const lineText = side === 'old' ? row.leftText : row.rightText;
-          const missing = lineNumber === undefined && lineText === undefined;
           const cellKind = row.kind === 'same' ? 'same'
             : side === 'old' ? (row.leftNumber === undefined ? 'blank' : 'remove')
               : (row.rightNumber === undefined ? 'blank' : 'add');
           return (
             <div key={row.key} className={`code-diff-line is-${cellKind}`}>
               <span className="code-diff-gutter">{lineNumber ?? ''}</span>
-              <code>{missing ? '' : (lineText === '' ? ' ' : lineText)}</code>
+              <code>{lineText === '' || lineText === undefined ? ' ' : lineText}</code>
             </div>
           );
         })}
@@ -287,13 +286,29 @@ export function CodeDiffViewer({
     return fallbackFiles(fullText);
   }, [primary, fullText]);
 
+  const fileRows = useMemo(
+    () => new Map(files.map((file) => [file.path, rowsFor(file)] as const)),
+    [files],
+  );
   const activePath = files.some((file) => file.path === selectedPath)
     ? selectedPath!
     : files.some((file) => file.path === internalPath)
       ? internalPath
       : files[0]?.path ?? '';
   const activeFile = files.find((file) => file.path === activePath);
-  const activeRows = useMemo(() => activeFile ? rowsFor(activeFile) : [], [activeFile]);
+  const activeRows = activeFile ? fileRows.get(activeFile.path) ?? [] : [];
+  const oldScrollRef = useRef<HTMLDivElement>(null);
+  const newScrollRef = useRef<HTMLDivElement>(null);
+  const syncOldToNew = () => {
+    const oldPane = oldScrollRef.current;
+    const newPane = newScrollRef.current;
+    if (oldPane && newPane && newPane.scrollTop !== oldPane.scrollTop) newPane.scrollTop = oldPane.scrollTop;
+  };
+  const syncNewToOld = () => {
+    const oldPane = oldScrollRef.current;
+    const newPane = newScrollRef.current;
+    if (oldPane && newPane && oldPane.scrollTop !== newPane.scrollTop) oldPane.scrollTop = newPane.scrollTop;
+  };
 
   const select = (path: string) => {
     setInternalPath(path);
@@ -310,8 +325,9 @@ export function CodeDiffViewer({
         <header><span>变更文件</span><Tag>{files.length}</Tag></header>
         {files.map((file) => {
           const active = file.path === activePath;
-          const added = (file.available ? rowsFor(file) : []).filter((row) => row.rightNumber !== undefined && row.kind !== 'same').length;
-          const removed = (file.available ? rowsFor(file) : []).filter((row) => row.leftNumber !== undefined && row.kind !== 'same').length;
+          const rows = fileRows.get(file.path) ?? [];
+          const added = rows.filter((row) => row.rightNumber !== undefined && row.kind !== 'same').length;
+          const removed = rows.filter((row) => row.leftNumber !== undefined && row.kind !== 'same').length;
           return (
             <button
               type="button"
@@ -345,14 +361,14 @@ export function CodeDiffViewer({
             <div className="code-diff-two-pane">
               {activeFile.available ? (
                 <div className="code-diff-panes">
-                  <CodePane side="old" rows={activeRows} />
-                  <CodePane side="new" rows={activeRows} />
+                  <CodePane side="old" rows={activeRows} scrollRef={oldScrollRef} onScroll={syncOldToNew} />
+                  <CodePane side="new" rows={activeRows} scrollRef={newScrollRef} onScroll={syncNewToOld} />
                 </div>
               ) : (
                 <div className="code-diff-legacy">
                   <div className="code-diff-panes">
-                    <CodePane side="old" rows={activeRows} />
-                    <CodePane side="new" rows={activeRows} />
+                    <CodePane side="old" rows={activeRows} scrollRef={oldScrollRef} onScroll={syncOldToNew} />
+                    <CodePane side="new" rows={activeRows} scrollRef={newScrollRef} onScroll={syncNewToOld} />
                   </div>
                   <p>这条历史记录没有保存修改前/修改后的完整文件，当前只能提供差异片段；新生成的任务会保存受限的源码快照。</p>
                 </div>
