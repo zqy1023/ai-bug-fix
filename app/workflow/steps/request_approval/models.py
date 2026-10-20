@@ -24,7 +24,7 @@ class ApprovalInput(FrozenModel):
     # reason：审批说明；驳回时会写入节点输出和控制审计。
     reason: str = ""
     # retry_target：驳回后回退的工作流阶段；实际恢复值仍需在 node 内再次校验。
-    retry_target: RetryTarget = "repair_agent"
+    retry_target: RetryTarget | None = None
     # carrier：字段说明见该模型文档与工作流契约。
     carrier: str
     # ai_workspace_path：字段说明见该模型文档与工作流契约。
