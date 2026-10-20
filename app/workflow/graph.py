@@ -160,14 +160,20 @@ def build_task_graph(
                         "verify_result": {},
                         "regression_result": {},
                     })
-                elif target in {VALIDATE, REGRESSION}:
-                    # 仅重跑验证/回归时保留代码改动，但清空后续阶段的旧结论。
+                elif target == VALIDATE:
+                    # 重跑变更门禁和问题验证，保留源码，但清空这一阶段及下游的旧结论。
                     patch.update({
                         "check_passed": False,
                         "verify_passed": False,
                         "regression_passed": False,
                         "gate_result": {},
                         "verify_result": {},
+                        "regression_result": {},
+                    })
+                elif target == REGRESSION:
+                    # 只重跑回归时保留已有门禁与问题验证结论。
+                    patch.update({
+                        "regression_passed": False,
                         "regression_result": {},
                     })
                 if target == LOCATE:
