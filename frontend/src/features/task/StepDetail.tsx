@@ -67,10 +67,10 @@ function ArtifactsPanel({
 }
 
 export function StepDetail({
-  runId, taskId, step, detail, runActive,
+  runId, taskId, step, detail, runActive, approvalPending = false,
 }: {
   runId: string; taskId: string; step: StepRecord;
-  detail?: StepDetailResponse; runActive: boolean;
+  detail?: StepDetailResponse; runActive: boolean; approvalPending?: boolean;
 }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const tab = searchParams.get('trace');
@@ -183,7 +183,7 @@ export function StepDetail({
         className="step-tabs"
       />
 
-      <StepActionBar runId={runId} taskId={taskId} stepName={step.name} runActive={runActive} />
+      <StepActionBar runId={runId} taskId={taskId} stepName={step.name} runActive={runActive} approvalPending={approvalPending} />
     </section>
   );
 }
