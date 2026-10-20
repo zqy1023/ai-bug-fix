@@ -1014,7 +1014,9 @@ def _record_background_failure(run_id: str, error: Exception) -> None:
         target = report_dir / "run_failure.json"
         temporary = report_dir / "run_failure.json.tmp"
         now = datetime.now(timezone.utc).isoformat()
-        reason = "后台工作流异常；请检查服务端日志中的完整堆栈。"
+        # Persist only the redacted public exception summary: business failures retain
+        # actionable detail; unexpected exceptions reveal only their type, never raw inputs.
+        reason = public_exception(error, prefix="后台工作流异常")
         payload = {
             "status": "FAILED", "error_type": type(error).__name__,
             "message": reason,
