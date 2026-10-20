@@ -14,7 +14,7 @@ type RejectReasonCode = 'root_cause' | 'code_change' | 'validation' | 'regressio
 const REJECTION_REASONS: Array<{
   value: RejectReasonCode;
   label: string;
-  retryTarget: ApprovalRetryTarget;
+  retryTarget?: ApprovalRetryTarget;
   help: string;
 }> = [
   {
@@ -56,7 +56,6 @@ const REJECTION_REASONS: Array<{
   {
     value: 'other',
     label: '其他（自定义原因）',
-    retryTarget: 'repair_agent',
     help: '请补充原因，并明确选择需要重新执行的阶段。',
   },
 ];
