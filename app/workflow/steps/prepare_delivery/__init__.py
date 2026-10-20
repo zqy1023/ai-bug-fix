@@ -53,9 +53,9 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         (state.get("evidence") or {}).get("legacy_only")
         or (state.get("evidence") or {}).get("legacy_dependency")
         or state.get("scope_escalation_required")
+        # review=MANUAL 是明确的业务分流；FAILED 等终态/执行状态不是分流依据。
+        # 否则任一上游失败都会被误标为 analysis_only，掩盖真正失败节点。
         or str((state.get("review") or {}).get("verdict") or "").upper() == "MANUAL"
-        or str((state.get("task_summary") or {}).get("delivery_status") or "").upper() in {"FAILED", "MANUAL"}
-        or str((state.get("delivery") or {}).get("delivery_status") or "").upper() == "FAILED"
         or str((state.get("locate") or {}).get("status") or "") != "LOCATED"
         or str((state.get("locate") or {}).get("recommended_scope") or "") != "carrier"
         or str((state.get("locate") or {}).get("category") or "") != "carrier"
