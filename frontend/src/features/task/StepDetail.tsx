@@ -15,7 +15,7 @@ import { StepActionBar } from './StepActionBar';
 import { FAILED_RESULTS } from './stages';
 
 function compactText(value: string, maxChars: number): string {
-  const normalized = value.replace(/\\s+/g, ' ').trim();
+  const normalized = value.replace(/\s+/g, ' ').trim();
   return normalized.length > maxChars
     ? `${normalized.slice(0, maxChars).trimEnd()}…`
     : normalized;
