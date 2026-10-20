@@ -101,30 +101,34 @@ function terminalLabel(step: string): string {
 
 function fileStatusLabel(value: unknown): string {
   const status = text(value).toLowerCase();
+  if (status === 'declared') return '待核验';
   if (['added', 'new', 'created'].includes(status)) return '新增';
   if (['deleted', 'removed'].includes(status)) return '删除';
   if (['renamed', 'moved'].includes(status)) return '重命名';
   return '修改';
 }
 
-function resultHeadline(result: string, analysisOnly: boolean, deliveredCode: boolean, delivered: boolean, changedCount: number, executionFailed: boolean): string {
+function resultHeadline(result: string, analysisOnly: boolean, deliveredCode: boolean, delivered: boolean, changedCount: number, changeEvidenceKnown: boolean, executionFailed: boolean): string {
   if (executionFailed || ['FAILED', 'FAIL'].includes(result)) return '任务未完成';
   if (result === 'CANCELLED') return '任务已取消';
   if (result === 'REJECTED') return '变更已被拒绝';
   if (analysisOnly && delivered) return '分析报告已提交';
   if (deliveredCode) return '源码修改已提交';
-  if (changedCount > 0) return '检测到代码改动，但尚未完成源码交付';
+  if (changedCount > 0 && changeEvidenceKnown) return '检测到代码改动，但尚未完成源码交付';
+  if (changedCount > 0) return '修复 Agent 声明了改动，尚未完成差异核验';
   if (['MANUAL', 'INSUFFICIENT_EVIDENCE'].includes(result)) return '分析结束，需人工处理';
   if (['RUNNING', 'PENDING', 'QUEUED', 'WAITING_APPROVAL'].includes(result)) return '任务仍在处理中';
   if (delivered) return '交付记录已生成';
   return result ? '任务已结束' : '任务结果待确认';
 }
 
-function resultDescription(analysisOnly: boolean, delivered: boolean, deliveredCode: boolean, changedCount: number, result: string, executionFailed: boolean): string {
+function resultDescription(analysisOnly: boolean, delivered: boolean, deliveredCode: boolean, changedCount: number, changeEvidenceKnown: boolean, result: string, executionFailed: boolean): string {
   if (executionFailed || result === 'FAILED' || result === 'FAIL') return '至少一个关键步骤没有通过或分支交付失败。请先查看终止节点、错误原因和交付记录；没有可靠提交证据时不会显示为已交付。';
   if (analysisOnly && delivered) return '本次提交的是 final.json 分析报告，不包含源码修复。工作流不会自动合并分支。';
   if (deliveredCode) return `已检测到 ${changedCount} 个源码文件变更并提交修复分支；后续由你在 Git 上人工审查和合并。`;
-  if (changedCount > 0) return '隔离工作区内检测到源码改动，但没有确认源码改动已提交到可核验的分支。';
+  if (changedCount > 0 && !changeEvidenceKnown) return '目前只有修复 Agent 的文件声明，尚无基线差异核验；这不代表这些文件确实发生了变化。';
+  if (changedCount > 0) return '确定性门禁确认隔离工作区有源码差异，但没有确认这些源码已提交到可核验的分支。';
+  if (changeEvidenceKnown) return '确定性门禁没有发现真实源码差异；如果本轮有修改声明，系统不会把声明当作实际改动。';
   if (result === 'MANUAL' || result === 'INSUFFICIENT_EVIDENCE') return '当前结论要求人工分析或补充证据；页面会明确区分分析结果与实际源码交付。';
   if (result === 'FAILED' || result === 'FAIL') return '请查看下方终止节点与错误原因；没有确认的分支提交不会被展示为已交付。';
   return '关键结论、实际变更、验证审查与 Git 交付分别列出，执行过程详情默认收起。';
@@ -199,14 +203,23 @@ export function TaskOverview({
   const delivery = dict(deliveryStep?.output);
   const deliveryInput = dict(deliveryStep?.input);
 
-  const changedFilePaths = strings(gate.changed_files).length
-    ? strings(gate.changed_files)
-    : strings(repair.changed_files);
+  const claimedFilePaths = strings(repair.changed_files);
   const gateFiles = objects(gate.files).filter((file) => text(file.path) && text(file.status) !== 'truncated');
   const fileByPath = new Map<string, Dict>(gateFiles.map((file) => [text(file.path), file] as const));
-  const changedFiles = changedFilePaths.length
-    ? changedFilePaths.map((path) => fileByPath.get(path) || { path, status: 'modified', added: 0, removed: 0 })
-    : gateFiles.filter((file) => ['added', 'modified', 'deleted', 'changed'].includes(text(file.status).toLowerCase()));
+  const changeEvidenceKnown = Boolean(checkStep && Object.keys(gate).length > 0);
+  const claim = dict(gate.claim);
+  const actualFilePaths = strings(claim.actual);
+  const actualFromFileEvidence = gateFiles
+    .filter((file) => ['added', 'modified', 'deleted', 'changed', 'modified_too_large'].includes(text(file.status).toLowerCase()))
+    .map((file) => text(file.path));
+  const verifiedFilePaths = actualFilePaths.length ? actualFilePaths : actualFromFileEvidence;
+  const displayFilePaths = changeEvidenceKnown ? verifiedFilePaths : claimedFilePaths;
+  const changedFiles = displayFilePaths.map((path) => fileByPath.get(path) || {
+    path,
+    status: changeEvidenceKnown ? 'modified' : 'declared',
+    added: 0,
+    removed: 0,
+  });
   const changedCount = changedFiles.length;
   const gateTotals = dict(gate.totals);
   const added = Number(gateTotals.added ?? changedFiles.reduce((sum, file) => sum + Number(file.added || 0), 0)) || 0;
@@ -255,8 +268,8 @@ export function TaskOverview({
     staleTime: 60_000,
   });
 
-  const resultText = resultHeadline(result, analysisOnly, deliveredCode, landed, changedCount, resultFailed);
-  const description = resultDescription(analysisOnly, landed, deliveredCode, changedCount, result, resultFailed);
+  const resultText = resultHeadline(result, analysisOnly, deliveredCode, landed, changedCount, changeEvidenceKnown, resultFailed);
+  const description = resultDescription(analysisOnly, landed, deliveredCode, changedCount, changeEvidenceKnown, result, resultFailed);
   const diffText = useMemo(() => {
     const payload = diffQuery.data?.content;
     if (typeof payload === 'string') return payload;
@@ -301,8 +314,10 @@ export function TaskOverview({
         <div className="outcome-hero-facts">
           <div className="outcome-fact-primary">
             <span>源码改动</span>
-            <strong>{changedCount > 0 ? `${changedCount} 个文件` : '未确认有源码改动'}</strong>
-            <small>{changedCount > 0 ? `+${added} / −${removed} 行` : '以确定性变更门禁记录为准'}</small>
+            <strong>{changedCount > 0
+              ? changeEvidenceKnown ? `${changedCount} 个实际变更文件` : `${changedCount} 个文件声明待核验`
+              : changeEvidenceKnown ? '已核验：没有真实差异' : '尚无可核验源码差异'}</strong>
+            <small>{changedCount > 0 && changeEvidenceKnown ? `+${added} / −${removed} 行` : changeEvidenceKnown ? '基线差异核验已完成' : '未完成确定性基线比对'}</small>
           </div>
           <div className="outcome-fact-row">
             <span>终止节点</span>
@@ -332,7 +347,7 @@ export function TaskOverview({
         </div>
         <div className="overview-stage-grid">
           <StageItem title="根因定位" steps={[locateStep]} hint={locateStep ? toneText(toneForStep(locateStep)) : '未开始'} />
-          <StageItem title="代码修改" steps={[repairStep, checkStep]} hint={analysisOnly ? '未随报告分支交付源码' : changedCount ? `${changedCount} 个文件` : repairStep ? toneText(toneForStep(repairStep)) : '未开始'} />
+          <StageItem title="代码修改" steps={[repairStep, checkStep]} hint={analysisOnly ? '未随报告分支交付源码' : changedCount ? (changeEvidenceKnown ? `${changedCount} 个实际变更文件` : `${changedCount} 个文件声明待核验`) : changeEvidenceKnown ? '基线比对未发现差异' : repairStep ? toneText(toneForStep(repairStep)) : '未开始'} />
           <StageItem title="验证与回归" steps={[verifyStep, regressionStep]} hint={qualitySteps.length ? qualityFailed ? '验证未通过' : '验证节点已执行' : '未执行'} />
           <StageItem title="审查结论" steps={[reviewStep]} hint={reviewVerdict ? ({ PASS: '审查通过', FAIL: '审查未通过', MANUAL: '需人工判断' } as Record<string, string>)[reviewVerdict] || reviewVerdict : '未执行'} />
           <StageItem title="Git 交付" steps={[deliveryStep]} hint={landed ? analysisOnly ? '分析报告分支已提交' : '修复分支已提交' : deliveryStep ? toneText(toneForStep(deliveryStep)) : '未交付'} />
@@ -391,15 +406,17 @@ export function TaskOverview({
           <header className="overview-card-head">
             <div className="overview-card-icon"><CodeOutlined /></div>
             <div><h3>代码修改</h3><span>区分工作区改动与真正提交到分支的源码</span></div>
-            <Tag color={deliveredCode ? 'success' : changedCount ? 'gold' : 'default'}>
-              {deliveredCode ? '源码已提交' : analysisOnly ? '仅交付报告' : changedCount ? '改动未交付' : '无改动记录'}
+            <Tag color={deliveredCode ? 'success' : changedCount && changeEvidenceKnown ? 'gold' : !changeEvidenceKnown && claimedFilePaths.length ? 'gold' : 'default'}>
+              {deliveredCode ? '源码已提交' : analysisOnly ? '仅交付报告' : changedCount && changeEvidenceKnown ? '实际改动未交付' : !changeEvidenceKnown && claimedFilePaths.length ? '改动声明待核验' : changeEvidenceKnown ? '无实际差异' : '暂无改动记录'}
             </Tag>
           </header>
           {analysisOnly && (
             <div className="overview-note is-warning">
-              {changedCount > 0
-                ? `隔离工作区检测到 ${changedCount} 个源码文件有变化，但本次交付被标记为分析报告模式；这些源码未提交到下方分支。`
-                : '本次走分析报告交付路径，没有把源码修改提交到分支。'}
+              {changedCount > 0 && changeEvidenceKnown
+                ? `确定性门禁确认有 ${changedCount} 个源码文件发生变化，但本次交付是分析报告模式；这些源码未提交到报告分支。`
+                : changedCount > 0
+                  ? `修复 Agent 声明涉及 ${changedCount} 个文件，但没有完成实际差异核验；本次分支只提交分析报告。`
+                  : '本次走分析报告交付路径，没有确认源码修改随分支提交。'}
             </div>
           )}
           {repairStep && (getText(repair, 'summary', 'analysis') || stepSummary(repairStep)) && (
@@ -429,8 +446,8 @@ export function TaskOverview({
             </>
           ) : (
             <div className="overview-no-change">
-              <strong>没有可核验的源码差异</strong>
-              <span>如果任务只做根因分析，或在修改前已终止，这里会明确显示没有源码提交。</span>
+              <strong>{changeEvidenceKnown ? '没有检测到真实源码差异' : claimedFilePaths.length ? '修改声明尚未核验' : '没有可核验的源码差异'}</strong>
+              <span>{changeEvidenceKnown ? '确定性门禁已比对基线；未将模型声明当作实际修改。' : claimedFilePaths.length ? '修复 Agent 声明了候选文件，但还没有确定性差异证据。' : '任务可能只做根因分析，或在修改前已终止。'}</span>
             </div>
           )}
           <div className="overview-card-actions">
