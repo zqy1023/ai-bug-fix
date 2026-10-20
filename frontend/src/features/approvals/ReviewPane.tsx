@@ -46,7 +46,7 @@ function rawStringField(source: Dict, ...keys: string[]): string {
 }
 
 function shortText(value: string, maxChars = 200): string {
-  const normalized = value.replace(/\\s+/g, ' ').trim();
+  const normalized = value.replace(/\s+/g, ' ').trim();
   return normalized.length > maxChars
     ? `${normalized.slice(0, maxChars).trimEnd()}…`
     : normalized;
@@ -176,7 +176,7 @@ export function ReviewPane({ item }: { item: ApprovalItem }) {
           <details className="review-original-error-details">
             <summary>
               <span>展开原始日志</span>
-              <code>{shortText(originalError.split(/\\r?\\n/)[0] || originalError, 160)}</code>
+              <code>{shortText(originalError.split(/\r?\n/)[0] || originalError, 160)}</code>
             </summary>
             <pre className="review-original-error-text">{originalError}</pre>
           </details>
