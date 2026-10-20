@@ -26,6 +26,7 @@ def test_explicit_legacy_analysis_task_delivers_report_then_ends():
         "last_result": "passed",
         "delivery": {"delivery_status": "SUCCESS"},
         "evidence": {"legacy_only": True},
+        "locate": {"status": "LOCATED", "recommended_scope": "carrier", "category": "carrier"},
         "ai_workspace_path": "/workspace/task",
     }
 
@@ -63,3 +64,13 @@ def test_delivery_execution_failure_takes_precedence_over_manual_review():
     ]
 
     assert _delivery_status(records, "") == "FAILED"
+
+def test_locate_agent_execution_failure_is_not_reclassified_as_analysis_only():
+    state = {
+        "last_result": "failed",
+        "evidence": {"legacy_only": True},
+        "locate": {"status": "FAILED"},
+        "ai_workspace_path": "/workspace/task",
+    }
+
+    assert after_finalize(state) == END
