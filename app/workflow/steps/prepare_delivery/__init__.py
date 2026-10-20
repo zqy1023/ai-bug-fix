@@ -66,15 +66,9 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
             locate_status == "LOCATED"
             and (locate_scope != "carrier" or locate_category != "carrier")
         )
-        or any(
-            str(item.get("path") or "").replace("\\", "/").startswith("spiders/")
-            for item in locate_payload.get("source_evidence") or []
-            if isinstance(item, dict)
-        )
-        or any(
-            str(item).replace("\\", "/").startswith("spiders/")
-            for item in locate_payload.get("candidate_files") or []
-        )
+        # 旧框架引用必须来自有效的业务定位结论；避免失败重试残留的候选路径
+        # 把定位执行异常错误转换成可交付的分析任务。
+        or (locate_status in {"LOCATED", "MANUAL", "INSUFFICIENT_EVIDENCE"} and legacy_reference)
     )
     return {
         "task_id": task_id,
