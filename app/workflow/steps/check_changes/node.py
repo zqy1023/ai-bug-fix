@@ -71,7 +71,7 @@ def _render_diff(files: list[dict[str, Any]]) -> str:
 
 # Inline text sources let the workbench render an editor-style, side-by-side diff.
 # Limits prevent a large carrier file set from bloating the persisted workflow artifact.
-_REVIEW_CONTENT_BUDGET = 1_000_000
+_REVIEW_CONTENT_BUDGET = 550_000
 _REVIEW_CONTENT_FILES = 40
 
 
