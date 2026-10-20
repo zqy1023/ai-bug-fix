@@ -35,7 +35,7 @@ from app.application.contracts import StepAudit, StepFailure, StepResult
 from app.application.services import WorkflowServices
 from app.application.context import RunContext, StepContext, TaskContext
 from app.workflow.spec import StepSpec
-from app.workflow.steps.request_approval.models import APPROVAL_RETRY_TARGETS
+from app.domain.approval import APPROVAL_RETRY_TARGETS
 from app.domain.errors import StepFailed
 from langgraph.errors import GraphInterrupt
 from langgraph.types import interrupt
