@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from app.workflow.state import WorkflowState
 from app.domain.decisions import locate_disposition
+from app.workflow.steps.request_approval.models import APPROVAL_RETRY_TARGETS
 from config.settings import settings
 from langgraph.graph import END
 
@@ -206,8 +207,7 @@ def after_approval(state: WorkflowState) -> str:
     # Never allow legacy/malformed checkpoints to fall through after_retry's generic repair fallback.
     if str(state.get("decision") or "").upper() == "REJECT" or approval_result == "rejected":
         target = str(state.get("retry_target") or "")
-        allowed_targets = {LOCATE, REPAIR, VALIDATE, REGRESSION, REVIEW, DELIVER}
-        if target not in allowed_targets:
+        if target not in APPROVAL_RETRY_TARGETS:
             return FINALIZE
         return _retry_or_finalize(state)
 
