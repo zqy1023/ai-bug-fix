@@ -15,10 +15,10 @@ function isPrimitive(value: unknown): boolean {
 }
 
 function stringValue(value: string, quote = true): ReactNode {
-  if (value.length <= INLINE_STRING_LIMIT && !value.includes('\\n')) {
+  if (value.length <= INLINE_STRING_LIMIT && !value.includes('\n')) {
     return quote ? <span className="json-string">&quot;{value}&quot;</span> : <span>{value}</span>;
   }
-  const preview = value.replace(/\\s+/g, ' ').trim();
+  const preview = value.replace(/\s+/g, ' ').trim();
   return (
     <>
       <span className="json-string">
@@ -81,7 +81,7 @@ export function JsonViewer({ value, depth = NEUTRAL, name = '', defaultExpandDep
     return <div className="json-empty">无数据</div>;
   }
   if (isPrimitive(value)) {
-    return typeof value === 'string' && (value.length > INLINE_STRING_LIMIT || value.includes('\\n'))
+    return typeof value === 'string' && (value.length > INLINE_STRING_LIMIT || value.includes('\n'))
       ? <div className="json-primitive">{stringValue(value, false)}</div>
       : <pre className="json-primitive">{typeof value === 'string' ? value : String(value)}</pre>;
   }
