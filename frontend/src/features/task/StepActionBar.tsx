@@ -7,15 +7,15 @@ import { queryKeys } from '../../lib/queryKeys';
 import { AGENT_STEPS, WRITE_STEPS } from './stages';
 
 export function StepActionBar({
-  runId, taskId, stepName, runActive,
-}: { runId: string; taskId: string; stepName: string; runActive: boolean }) {
+  runId, taskId, stepName, runActive, approvalPending = false,
+}: { runId: string; taskId: string; stepName: string; runActive: boolean; approvalPending?: boolean }) {
   const { message } = App.useApp();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [failure, setFailure] = useState('');
   const risky = WRITE_STEPS.has(stepName);
-  const blocked = stepName === 'request_approval' || stepName === 'retry_prepare';
+  const blockedByStep = stepName === 'request_approval' || stepName === 'retry_prepare';
 
   const mutation = useMutation({
     mutationFn: () => api.runStep(runId, taskId, stepName, risky ? confirmed : false),
@@ -35,10 +35,12 @@ export function StepActionBar({
     },
   });
 
-  if (blocked) {
+  if (blockedByStep || approvalPending) {
     return (
       <div className="step-action-bar is-blocked">
-        审批必须在“交付审批”页完成，单步执行不提供该入口。
+        {blockedByStep
+          ? '审批必须在“交付审批”页完成，单步执行不提供该入口。'
+          : '该任务仍有待处理交付审批，不能通过单步执行绕过；请先在交付审批页完成或恢复决策。'}
       </div>
     );
   }
