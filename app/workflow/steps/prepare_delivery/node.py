@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import traceback
+from pathlib import Path
 
 from app.domain.errors import StepFailed
 from app.application.context import StepContext
@@ -60,12 +62,31 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
     except StepFailed:
         raise
     except Exception as error:
-        # 保留服务端堆栈供运维定位真实根因；步骤记录仍使用脱敏摘要，避免泄露凭据。
+        # 服务端保留完整堆栈；steps.json 同时保存安全的文件/行号/函数帧，
+        # 以免日志未接入工作台时只剩一个 AttributeError，无法定位具体调用点。
         logger.exception(
             "修复分支交付异常 run_id=%s task_id=%s carrier=%s",
             ctx.run.run_id, data.task_id, data.carrier,
         )
-        raise StepFailed(public_exception(error, prefix="交付失败")) from error
+        reason = public_exception(error, prefix="交付失败")
+        frames = traceback.extract_tb(error.__traceback__)
+        diagnostic_frames = [
+            {
+                "file": Path(frame.filename).name,
+                "line": int(frame.lineno),
+                "function": frame.name,
+            }
+            for frame in frames[-8:]
+        ]
+        raise StepFailed(
+            reason,
+            {
+                "reason": reason,
+                "exception_type": type(error).__name__,
+                "diagnostic_frames": diagnostic_frames,
+            },
+            code="DELIVERY_EXECUTION_ERROR",
+        ) from error
 
     return DeliveryOutput(
         repair_branch=str(result.get("repair_branch") or data.repair_branch),
