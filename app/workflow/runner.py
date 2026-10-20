@@ -225,13 +225,26 @@ def bind(
         if cancelled:
             action = "finalize_execution"
         # 审批拒绝是业务决定而非节点崩溃；保留 REJECT 决定供路由进入有上限的回修循环。
-        if result.failure is None or (
-            spec.name == "request_approval" and str(result.output.get("decision") or "").upper() == "REJECT"
-        ):
-            # 业务 FAIL/MANUAL 仍需把结构化结论回写路由状态；只有执行异常才丢弃普通输出。
+        if result.failure is None:
+            # 业务结论正常回写；正常节点执行必须清除上一次残留的重试目标。
             patch = spec.patch(result.output)
-            # 清除上一次 Agent 异常留下的目标，防止后续验证失败误重试旧 Agent。
             patch["retry_target"] = ""
+        elif (
+            spec.name == "request_approval"
+            and str(result.output.get("decision") or "").upper() == "REJECT"
+        ):
+            # 人工拒绝是业务决定，不是节点崩溃；保留审批人指定的阶段和原始驳回原因。
+            # 目标在 API 与 request_approval 节点已校验，这里再用白名单防止非法路由。
+            patch = spec.patch(result.output)
+            target = str(result.output.get("retry_target") or "repair_agent")
+            allowed_targets = {
+                "locate_agent", "repair_agent", "validate_changes",
+                "run_regression", "review_agent", "prepare_delivery",
+            }
+            patch["retry_target"] = target if target in allowed_targets else "repair_agent"
+            patch["retry_reason"] = str(
+                result.output.get("retry_reason") or result.output.get("reason") or "人工打回"
+            )[:2000]
         else:
             # Agent 调用异常时只回写白名单内的重试元数据，不把异常输出当成业务结果。
             # 否则 after_retry 看不到 retry_target，定位失败会错误地回到 repair_agent。
