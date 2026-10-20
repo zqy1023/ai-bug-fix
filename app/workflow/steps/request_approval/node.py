@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.domain.errors import DeliveryError, StepFailed
+from app.infrastructure.redaction import public_exception
 from app.application.context import StepContext
 from app.workflow.steps.request_approval.approval import final_gate
 from app.workflow.steps.request_approval.models import (
@@ -63,10 +64,16 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
                     "pushed": data.delivery_pushed,
                     "local_branch": data.delivery_local_branch,
                 })
-            except DeliveryError as error:
+            except Exception as error:
+                reason = public_exception(error, prefix="审批拒绝后清理修复分支失败")
                 raise StepFailed(
-                    f"审批拒绝，但清理修复分支失败：{error}",
-                    {"decision": "REJECT", "approval_cleanup_failed": True, "passed": False},
+                    reason,
+                    {
+                        "decision": "REJECT",
+                        "approval_cleanup_failed": True,
+                        "passed": False,
+                        "reason": reason,
+                    },
                     result="manual",
                 ) from error
         rejection_summary = decision_reason or "人工打回（未填写补充说明）"
@@ -103,10 +110,17 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
                     "pushed": data.delivery_pushed,
                     "local_branch": data.delivery_local_branch,
                 })
-            except (DeliveryError, AttributeError) as error:
+            except Exception as error:
+                cleanup_reason = public_exception(error, prefix="最终门禁失败，清理修复分支也失败")
                 raise StepFailed(
-                    f"最终门禁失败，且清理修复分支失败：{error}",
-                    {"decision": "REJECT", "approval_cleanup_failed": True, "passed": False, "reason": reason},
+                    cleanup_reason,
+                    {
+                        "decision": "REJECT",
+                        "approval_cleanup_failed": True,
+                        "passed": False,
+                        "reason": reason,
+                        "cleanup_error": cleanup_reason,
+                    },
                     result="manual",
                 ) from error
         raise StepFailed(
