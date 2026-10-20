@@ -8,15 +8,34 @@ type JsonViewerProps = {
 };
 
 const NEUTRAL = 0;
+const INLINE_STRING_LIMIT = 240;
 
 function isPrimitive(value: unknown): boolean {
   return value === null || typeof value !== 'object';
 }
 
+function stringValue(value: string, quote = true): ReactNode {
+  if (value.length <= INLINE_STRING_LIMIT && !value.includes('\\n')) {
+    return quote ? <span className="json-string">&quot;{value}&quot;</span> : <span>{value}</span>;
+  }
+  const preview = value.replace(/\\s+/g, ' ').trim();
+  return (
+    <>
+      <span className="json-string">
+        {quote ? '&quot;' : ''}{preview.slice(0, 180)}…{quote ? '&quot;' : ''}
+      </span>
+      <details className="json-long-value">
+        <summary>查看完整值（{value.length} 字符）</summary>
+        <pre>{value}</pre>
+      </details>
+    </>
+  );
+}
+
 function primitive(value: unknown): ReactNode {
   if (value === null) return <span className="json-null">null</span>;
   if (value === undefined) return <span className="json-null">undefined</span>;
-  if (typeof value === 'string') return <span className="json-string">&quot;{value}&quot;</span>;
+  if (typeof value === 'string') return stringValue(value);
   if (typeof value === 'number') return <span className="json-number">{String(value)}</span>;
   if (typeof value === 'boolean') return <span className="json-boolean">{String(value)}</span>;
   return <span>{String(value)}</span>;
@@ -62,7 +81,9 @@ export function JsonViewer({ value, depth = NEUTRAL, name = '', defaultExpandDep
     return <div className="json-empty">无数据</div>;
   }
   if (isPrimitive(value)) {
-    return <pre className="json-primitive">{typeof value === 'string' ? value : String(value)}</pre>;
+    return typeof value === 'string' && (value.length > INLINE_STRING_LIMIT || value.includes('\\n'))
+      ? <div className="json-primitive">{stringValue(value, false)}</div>
+      : <pre className="json-primitive">{typeof value === 'string' ? value : String(value)}</pre>;
   }
   return (
     <div className="json-viewer">
