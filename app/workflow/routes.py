@@ -98,16 +98,14 @@ def _locate_references_legacy(locate: dict) -> bool:
 
 
 def after_retry(state: WorkflowState) -> str:
-    """根据失败 Agent 的记录重试同一 Agent；普通验证/业务失败默认回到修复。"""
+    """按失败/驳回的明确目标重跑阶段；未知目标安全回退到代码修复。"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED":
         return FINALIZE
     target = str(state.get("retry_target") or "")
-    if target == LOCATE:
-        return LOCATE
-    if target == REVIEW:
-        return REVIEW
     if target == "__retry_reset_failed__":
         return FINALIZE
+    if target in {LOCATE, REPAIR, VALIDATE, REGRESSION, REVIEW, DELIVER}:
+        return target
     return REPAIR
 
 
