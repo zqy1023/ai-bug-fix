@@ -97,8 +97,8 @@ function terminalLabel(step: string): string {
   return STEP_LABELS[step] || step || '终态尚未记录';
 }
 
-function resultHeadline(result: string, analysisOnly: boolean, deliveredCode: boolean, delivered: boolean, changedCount: number): string {
-  if (['FAILED', 'FAIL'].includes(result)) return '任务未完成';
+function resultHeadline(result: string, analysisOnly: boolean, deliveredCode: boolean, delivered: boolean, changedCount: number, executionFailed: boolean): string {
+  if (executionFailed || ['FAILED', 'FAIL'].includes(result)) return '任务未完成';
   if (result === 'CANCELLED') return '任务已取消';
   if (result === 'REJECTED') return '变更已被拒绝';
   if (analysisOnly && delivered) return '分析报告已提交';
@@ -110,7 +110,8 @@ function resultHeadline(result: string, analysisOnly: boolean, deliveredCode: bo
   return result ? '任务已结束' : '任务结果待确认';
 }
 
-function resultDescription(analysisOnly: boolean, delivered: boolean, deliveredCode: boolean, changedCount: number, result: string): string {
+function resultDescription(analysisOnly: boolean, delivered: boolean, deliveredCode: boolean, changedCount: number, result: string, executionFailed: boolean): string {
+  if (executionFailed || result === 'FAILED' || result === 'FAIL') return '至少一个关键步骤没有通过或分支交付失败。请先查看终止节点、错误原因和交付记录；没有可靠提交证据时不会显示为已交付。';
   if (analysisOnly && delivered) return '本次提交的是 final.json 分析报告，不包含源码修复。工作流不会自动合并分支。';
   if (deliveredCode) return `已检测到 ${changedCount} 个源码文件变更并提交修复分支；后续由你在 Git 上人工审查和合并。`;
   if (changedCount > 0) return '隔离工作区内检测到源码改动，但没有确认源码改动已提交到可核验的分支。';
@@ -241,8 +242,8 @@ export function TaskOverview({
     staleTime: 60_000,
   });
 
-  const resultText = resultHeadline(result, analysisOnly, deliveredCode, landed, changedCount);
-  const description = resultDescription(analysisOnly, landed, deliveredCode, changedCount, result);
+  const resultText = resultHeadline(result, analysisOnly, deliveredCode, landed, changedCount, resultFailed);
+  const description = resultDescription(analysisOnly, landed, deliveredCode, changedCount, result, resultFailed);
   const diffText = useMemo(() => {
     const payload = diffQuery.data?.content;
     if (typeof payload === 'string') return payload;
@@ -520,7 +521,12 @@ export function TaskOverview({
         {diffQuery.isLoading ? <Skeleton active paragraph={{ rows: 8 }} />
           : diffQuery.isError ? <Empty description="差异产物读取失败，请从 check_changes 步骤核对错误。" />
             : diffText ? (
-              <pre className="overview-diff-viewer">{diffText}</pre>
+              <pre className="overview-diff-viewer">{diffText.split(/\\r?\\n/).map((line, index) => {
+                const kind = line.startsWith('+++') || line.startsWith('---') ? 'header'
+                  : line.startsWith('+') ? 'add' : line.startsWith('-') ? 'remove'
+                    : line.startsWith('@@') ? 'hunk' : 'context';
+                return <span key={index} className={`overview-diff-line is-${kind}`}>{line || ' '}{'\\n'}</span>;
+              })}</pre>
             ) : <Empty description="该任务没有完整差异文本产物" />}
       </Drawer>
     </div>
