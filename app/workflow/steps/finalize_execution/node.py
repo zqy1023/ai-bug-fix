@@ -268,6 +268,10 @@ def _delivery_status(records: list[StepRecord], terminal_status: str) -> str:
     failed_records = [record for record in records if record.status == "failed"]
     if failed_records:
         return "FAILED"
+    # ReviewAgent 的 MANUAL 代表“已交付后由人复核”，不是最终任务状态。
+    # 只有源码分支已经交付且 request_approval 明确 APPROVE，才能覆盖该中间结论。
+    if _final_source_approval_accepted(records):
+        return "SUCCESS"
     if (
         _legacy_only(records)
         or str(terminal_status or "").upper() == "MANUAL"
@@ -300,6 +304,30 @@ def _delivery_recorded(records: list[StepRecord]) -> bool:
     commit = str(output.get("commit") or "").strip()
     landed = bool(output.get("pushed") or output.get("local_branch"))
     return bool(commit) and landed
+
+
+def _final_source_approval_accepted(records: list[StepRecord]) -> bool:
+    """区分中间 Review=MANUAL 与真正完成的最终人工审批。"""
+    approval = next(
+        (record for record in reversed(records) if record.name == "request_approval"),
+        None,
+    )
+    delivery = next(
+        (record for record in reversed(records) if record.name == "prepare_delivery"),
+        None,
+    )
+    if approval is None or delivery is None:
+        return False
+    if approval.status != "succeeded" or delivery.status not in {"succeeded", "skipped"}:
+        return False
+    approval_output = approval.output if isinstance(approval.output, dict) else {}
+    delivery_input = delivery.input if isinstance(delivery.input, dict) else {}
+    # 分析报告分支的提交不构成源码修复审批。
+    if delivery_input.get("analysis_only") is True:
+        return False
+    if str(approval_output.get("decision") or "").upper() != "APPROVE":
+        return False
+    return _delivery_recorded(records)
 
 
 def _legacy_only(records: list[StepRecord]) -> bool:
