@@ -19,6 +19,14 @@ function callStatusLabel(status: string): string {
   } as Record<string, string>)[status] || status || '未知';
 }
 
+function agentRoleLabel(role: string): string {
+  return ({
+    locate: '定位 Agent',
+    repair: '修复 Agent',
+    review: '审查 Agent',
+  } as Record<string, string>)[role] || role;
+}
+
 export function AgentTrace({
   runId, taskId, stepName, attempt,
 }: { runId: string; taskId: string; stepName: string; attempt?: number }) {
@@ -109,7 +117,7 @@ export function AgentTrace({
           <div className="agent-call-summary">
             <span>调用 #{shortId(selected.model_call_id, 6)}</span>
             <span>attempt {selected.attempt}</span>
-            <span>{role}</span>
+            <span>{agentRoleLabel(role)}</span>
             <span>{formatTokens(selected.total_tokens)} tokens</span>
             <span>{formatDuration(selected.duration_ms)}</span>
             <span className={selected.status === 'succeeded' ? 'text-success' : selected.status === 'failed' ? 'text-danger' : ''}>
