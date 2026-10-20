@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 
 from app.domain.errors import StepFailed
 from app.application.context import StepContext
 from app.workflow.steps.prepare_delivery.models import DeliveryInput, DeliveryOutput
 from app.infrastructure.redaction import public_exception
+
+logger = logging.getLogger(__name__)
 
 
 def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
@@ -57,9 +60,11 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
     except StepFailed:
         raise
     except Exception as error:
-        # 交付器只把已知业务失败包成 DeliveryError。git 锁 ref、路径冲突这类
-        # 命令异常如果原样冒出，会打断串行主图，后面的任务不再执行。
-        # 这里收成当前任务失败，原因只保留异常类型，不写命令原文。
+        # 保留服务端堆栈供运维定位真实根因；步骤记录仍使用脱敏摘要，避免泄露凭据。
+        logger.exception(
+            "修复分支交付异常 run_id=%s task_id=%s carrier=%s",
+            ctx.run.run_id, data.task_id, data.carrier,
+        )
         raise StepFailed(public_exception(error, prefix="交付失败")) from error
 
     return DeliveryOutput(
