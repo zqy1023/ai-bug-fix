@@ -19,6 +19,36 @@ type FileEvidence = Dict & {
   removed?: number;
   problems?: string[];
 };
+function asObject(value: unknown): Dict {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Dict
+    : {};
+}
+
+function text(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function stringField(source: Dict, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = text(source[key]);
+    if (value) return value;
+  }
+  return '';
+}
+
+function rawStringField(source: Dict, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return '';
+}
+
+function stepOf(steps: StepRecord[], name: string): StepRecord | undefined {
+  return [...steps].reverse().find((step) => step.name === name);
+}
+
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="review-fact">
