@@ -91,7 +91,10 @@ def build_task_graph(
                 # 审查重试是复查同一份改动，重置工作区会删掉待审内容，必须跳过。
                 target = str(state.get("retry_target") or "")
                 manager = workspace_manager
-                if manager is not None and target != REVIEW:
+                # 这些重试阶段要继续审查/验证已修改的工作区，不能先恢复成基线。
+                preserve_workspace_targets = {VALIDATE, REGRESSION, REVIEW, DELIVER}
+                preserve_workspace = target in preserve_workspace_targets
+                if manager is not None and not preserve_workspace:
                     try:
                         task = dict(state.get("task") or {})
                         manager.reset_task_workspace(
@@ -130,8 +133,8 @@ def build_task_graph(
                     "attempt": int(state.get("attempt") or 1) + 1,
                     "decision": "PENDING",
                     "approval_granted": False,
-                    "review_decision": "",
-                    "review": {},
+                    "review_decision": str(state.get("review_decision") or "") if target == DELIVER else "",
+                    "review": dict(state.get("review") or {}) if target == DELIVER else {},
                     "delivery": {},
                     "delivery_pushed": False,
                     "delivery_local_branch": False,
@@ -142,14 +145,24 @@ def build_task_graph(
                     "repair_slot_claimed": kept_repair_slot(state),
                     "last_result": "passed",
                 }
-                if target != REVIEW:
-                    # 只有复查保留改动与验证结论；修复/定位重试都要从基线重新开始。
+                if target not in {VALIDATE, REGRESSION, REVIEW, DELIVER}:
+                    # 定位/修复重跑从干净基线开始，避免在上次半成品上叠加修改。
                     patch.update({
                         "repair": {},
                         "changed_files": [],
                         "repair_changed_files": [],
                         "change_plan": {},
                         "scope_escalation_required": False,
+                        "check_passed": False,
+                        "verify_passed": False,
+                        "regression_passed": False,
+                        "gate_result": {},
+                        "verify_result": {},
+                        "regression_result": {},
+                    })
+                elif target in {VALIDATE, REGRESSION}:
+                    # 仅重跑验证/回归时保留代码改动，但清空后续阶段的旧结论。
+                    patch.update({
                         "check_passed": False,
                         "verify_passed": False,
                         "regression_passed": False,
