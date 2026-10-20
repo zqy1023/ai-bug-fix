@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from app.workflow.routes import APPROVE, DELIVER, END, FINALIZE, after_delivery, after_finalize, after_review
-from app.workflow.steps.finalize_execution.node import _delivery_status
+from app.workflow.steps.finalize_execution.node import _delivery_status, _terminal_details
 from app.infrastructure.redaction import public_exception
 from app.domain.errors import StepFailed
 from app.workflow.steps.prepare_delivery.models import DeliveryInput
@@ -111,6 +111,13 @@ def test_final_approval_converts_review_manual_into_success_after_source_commit(
     ]
 
     assert _delivery_status(records, "MANUAL") == "SUCCESS"
+
+    terminal_step, terminal_reason, next_action = _terminal_details(
+        records, "MANUAL", "SUCCESS"
+    )
+    assert terminal_step == "request_approval"
+    assert "最终人工审批" in terminal_reason
+    assert "手动合并" in next_action
 
 def test_locate_agent_execution_failure_is_not_reclassified_as_analysis_only():
     state = {
