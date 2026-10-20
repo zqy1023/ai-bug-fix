@@ -30,6 +30,9 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         review_decision = "HUMAN"
     evidence = dict(state.get("evidence") or {})
     locate_payload = dict(state.get("locate") or {})
+    locate_status = str(locate_payload.get("status") or "").upper()
+    locate_scope = str(locate_payload.get("recommended_scope") or "")
+    locate_category = str(locate_payload.get("category") or "")
     legacy_reference = any(
         str(item.get("path") or "").replace("\\", "/").startswith("spiders/")
         for item in locate_payload.get("source_evidence") or []
@@ -56,9 +59,13 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         # review=MANUAL 是明确的业务分流；FAILED 等终态/执行状态不是分流依据。
         # 否则任一上游失败都会被误标为 analysis_only，掩盖真正失败节点。
         or str((state.get("review") or {}).get("verdict") or "").upper() == "MANUAL"
-        or str((state.get("locate") or {}).get("status") or "") != "LOCATED"
-        or str((state.get("locate") or {}).get("recommended_scope") or "") != "carrier"
-        or str((state.get("locate") or {}).get("category") or "") != "carrier"
+        # 只有明确的 MANUAL / 证据不足结论，或 LOCATED 但不属于 carrier 范围，
+        # 才是分析报告分流。FAILED、空状态和 Agent 执行异常必须保持失败语义。
+        or locate_status in {"MANUAL", "INSUFFICIENT_EVIDENCE"}
+        or (
+            locate_status == "LOCATED"
+            and (locate_scope != "carrier" or locate_category != "carrier")
+        )
         or any(
             str(item.get("path") or "").replace("\\", "/").startswith("spiders/")
             for item in locate_payload.get("source_evidence") or []
