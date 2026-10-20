@@ -115,6 +115,14 @@ def _terminal_details(
                 "收到停止请求，任务已在安全节点边界终止。",
                 "确认停止原因；需要继续时重新发起执行。")
 
+    # 即使旧状态残留 review=MANUAL，真实的最终人工审批通过也决定了终态。
+    if outcome == "SUCCESS" and _final_source_approval_accepted(records):
+        return (
+            "request_approval",
+            "源码修复分支已提交，并通过最终人工审批。",
+            "请在 Git 上检查并手动合并分支；工作流不会自动合并。",
+        )
+
     # 最后一个真实失败步骤是终态原因；不能让较早的 MANUAL 结论覆盖交付异常。
     failed_step = next((item for item in reversed(ordered) if item.status == "failed"), None)
     if failed_step is not None:
