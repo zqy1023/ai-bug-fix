@@ -51,7 +51,7 @@ TASK_CONDITIONAL_TRANSITIONS = (
     (APPROVE, after_approval, (LOCATE, CLAIM, REPAIR, RETRY, FINALIZE)),
     (DELIVER, after_delivery, (APPROVE, FINALIZE, END)),
     (FINALIZE, after_finalize, (DELIVER, END)),
-    (RETRY, after_retry, (LOCATE, REVIEW, REPAIR, FINALIZE)),
+    (RETRY, after_retry, (LOCATE, REPAIR, VALIDATE, REGRESSION, REVIEW, DELIVER, FINALIZE)),
 )
 
 __all__ = [
