@@ -230,7 +230,6 @@ def _analysis_only_task(state: WorkflowState) -> bool:
     if locate_status not in {"LOCATED", "MANUAL", "INSUFFICIENT_EVIDENCE"}:
         return False
     evidence = state.get("evidence") or {}
-    review = state.get("review") or {}
     if (
         evidence.get("legacy_only")
         or evidence.get("legacy_dependency")
