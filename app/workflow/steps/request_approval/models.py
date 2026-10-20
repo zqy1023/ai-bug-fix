@@ -2,19 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Literal, get_args
+from typing import Literal
+
+from app.domain.approval import APPROVAL_RETRY_TARGETS, RetryTarget
 
 from app.workflow.spec import FrozenModel
 from pydantic import Field
 
 
-RetryTarget = Literal[
-    "locate_agent", "repair_agent", "validate_changes",
-    "run_regression", "review_agent", "prepare_delivery",
-]
-
-# Single source of truth for retry-node validation in the API, node runner, and router.
-APPROVAL_RETRY_TARGETS = frozenset(get_args(RetryTarget))
 
 
 class ApprovalInput(FrozenModel):
