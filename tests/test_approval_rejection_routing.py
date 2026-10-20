@@ -455,3 +455,15 @@ def test_legacy_rejection_api_requires_an_explicit_retry_target():
     assert raised.value.status_code == 422
     assert "明确指定回退节点" in raised.value.detail
 
+@pytest.mark.parametrize("retry_target", ["", "__import__", "unknown-node"])
+def test_after_approval_never_routes_rejection_to_a_guessed_retry_target(retry_target):
+    state = {
+        "last_result": "failed",
+        "decision": "REJECT",
+        "retry_target": retry_target,
+        "attempt": 1,
+        "max_attempts": 3,
+    }
+
+    assert after_approval(state) == FINALIZE
+
