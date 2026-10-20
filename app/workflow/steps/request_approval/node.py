@@ -18,7 +18,7 @@ _ALLOWED_RETRY_TARGETS = {
 def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
     """没有决定就挂起；驳回决定须包含原因和白名单内的恢复阶段。"""
     decision_reason = str(data.reason or "").strip()[:1000]
-    retry_target = str(data.retry_target or "repair_agent")
+    retry_target = str(data.retry_target or "")
     if data.decision == "PENDING":
         resumed = interrupt({
             "kind": "change_approval",
@@ -34,7 +34,7 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
             if supplied_fingerprint != data.approval_fingerprint:
                 raise StepFailed("审批指纹不匹配，拒绝使用过期审批", {"decision": "PENDING", "passed": False, "reason": "审批指纹不匹配"})
             decision_reason = str(resumed.get("reason") or "").strip()[:1000]
-            retry_target = str(resumed.get("retry_target") or "repair_agent")
+            retry_target = str(resumed.get("retry_target") or "")
         else:
             raise StepFailed(
                 "审批恢复值必须包含决定和审批指纹",
