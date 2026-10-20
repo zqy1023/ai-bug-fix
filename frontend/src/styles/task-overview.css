@@ -210,3 +210,146 @@
 .file-change-mark.is-added + .file-change-status { background: #ecfdf3; color: #15803d; }
 .file-change-mark.is-deleted + .file-change-status { background: #fff1f2; color: #b91c1c; }
 .file-change-mark.is-modified + .file-change-status { background: #eff6ff; color: #1d4ed8; }
+
+
+/* Final visual calibration: readable type, calmer card rhythm, responsive page width. */
+.task-workspace.page {
+  max-width: 1600px;
+  padding: 24px 32px 48px;
+  gap: 16px;
+}
+.task-header {
+  padding: 12px 18px 16px;
+  gap: 10px;
+}
+.task-identity-main h1 {
+  font-size: 28px;
+  line-height: 1.2;
+}
+.task-run-ref { font-size: 12px; }
+.task-run-ref code { font-size: 11px; }
+
+.task-outcome-hero {
+  grid-template-columns: minmax(0, 1fr) 288px;
+  border-radius: 14px;
+}
+.outcome-hero-main { padding: 24px 26px 22px; }
+.outcome-eyebrow { font-size: 11.5px; margin-bottom: 8px; }
+.outcome-title-row h2 { font-size: 23px; }
+.outcome-description { font-size: 14px; line-height: 1.75; }
+.outcome-reason { margin-top: 18px; padding-top: 15px; gap: 14px; }
+.outcome-reason > span { width: 68px; font-size: 12px; }
+.outcome-reason p { font-size: 13.5px; line-height: 1.75; }
+.outcome-next-action { margin-top: 14px; gap: 10px; }
+.outcome-next-action span { font-size: 12px; }
+.outcome-next-action strong { font-size: 13.5px; line-height: 1.65; }
+.outcome-hero-facts { gap: 13px; padding: 22px 22px; }
+.outcome-fact-primary > span, .outcome-fact-row > span { font-size: 12px; }
+.outcome-fact-primary > strong { font-size: 18px; }
+.outcome-fact-primary > small { font-size: 11px; }
+.outcome-fact-row > strong { font-size: 13px; line-height: 1.6; }
+
+.task-process-overview {
+  padding: 18px 22px 16px;
+  border-radius: 12px;
+}
+.overview-section-heading { margin-bottom: 16px; }
+.overview-section-heading h3 { font-size: 15px; }
+.overview-section-heading > div > span,
+.overview-stop-point { font-size: 12px; }
+.overview-stage { padding: 9px 14px 7px 11px; gap: 10px; }
+.overview-stage-mark { font-size: 15px; }
+.overview-stage-copy { gap: 5px; }
+.overview-stage-copy strong { font-size: 13px; }
+.overview-stage-copy > span { font-size: 11.5px; line-height: 1.55; }
+
+.task-outcome-grid {
+  align-items: start;
+  gap: 16px;
+}
+.overview-card {
+  align-self: start;
+  gap: 16px;
+  padding: 21px 22px 19px;
+  border-radius: 12px;
+}
+.overview-card-head { gap: 12px; padding-bottom: 13px; }
+.overview-card-icon { width: 34px; height: 34px; font-size: 15px; }
+.overview-card-head h3 { font-size: 15px; }
+.overview-card-head > div > span { font-size: 12px; line-height: 1.55; }
+.overview-card-head .ant-tag { font-size: 11px; }
+.analysis-root-cause label,
+.review-result-block > label,
+.analysis-facts > label { font-size: 12px; }
+.analysis-root-cause p { font-size: 14px; line-height: 1.75; }
+.analysis-summary { font-size: 13px; line-height: 1.75; }
+.analysis-facts li,
+.review-findings li { font-size: 12.5px; line-height: 1.7; }
+.analysis-meta > span { padding: 5px 8px; font-size: 11.5px; }
+.source-evidence-row code { font-size: 11.5px; }
+.source-evidence-row p { font-size: 12px; line-height: 1.7; }
+.overview-inline-details { padding: 10px 12px; }
+.overview-inline-details summary { font-size: 12px; }
+.overview-inline-details li { font-size: 12px; line-height: 1.7; }
+.overview-card .ant-empty-description { font-size: 12.5px; }
+.overview-text-link { font-size: 12px; }
+
+.change-summary { font-size: 12.5px; line-height: 1.75; }
+.overview-note { padding: 11px 12px; font-size: 12px; line-height: 1.75; }
+.change-count-line strong { font-size: 12.5px; }
+.changed-file-list li { min-height: 36px; padding: 8px 3px; }
+.changed-file-list code { font-size: 11.5px; }
+.file-change-status { font-size: 10px; }
+.overview-muted-line { font-size: 11.5px; line-height: 1.65; }
+.overview-no-change { gap: 7px; padding: 12px 0; }
+.overview-no-change strong { font-size: 12.5px; }
+.overview-no-change span { font-size: 12px; line-height: 1.7; }
+.overview-card-actions .ant-btn-link { font-size: 12px; }
+
+.quality-check-row { grid-template-columns: 84px auto minmax(0, 1fr); column-gap: 11px; padding: 10px 0; }
+.quality-check-row > span,
+.quality-check-row > strong { font-size: 12px; }
+.quality-check-row > small { font-size: 11.5px; line-height: 1.65; }
+.review-result-block > p { font-size: 12.5px; line-height: 1.75; }
+.delivery-destination { padding: 12px; }
+.delivery-destination-icon { width: 32px; height: 32px; }
+.delivery-destination label { font-size: 11.5px; }
+.delivery-destination code { font-size: 12px; line-height: 1.7; }
+.overview-kv { grid-template-columns: 92px minmax(0, 1fr); padding: 9px 0; }
+.overview-kv > span { font-size: 11.5px; }
+.overview-kv > strong { font-size: 12px; }
+.overview-kv > strong.is-mono { font-size: 11px; }
+.delivery-footnote { padding: 10px 12px; font-size: 11.5px; line-height: 1.75; }
+
+.execution-section { border-radius: 12px; }
+.execution-section-heading { padding: 16px 20px; }
+.execution-heading-copy h3 { font-size: 14px; }
+.execution-heading-copy p { font-size: 12px; line-height: 1.65; }
+.execution-section-footer { padding: 10px 20px; font-size: 11px; }
+
+@media (min-width: 1500px) {
+  .task-outcome-grid { column-gap: 18px; }
+}
+@media (max-width: 1200px) {
+  .task-workspace.page { padding: 20px 22px 44px; }
+  .task-outcome-hero { grid-template-columns: minmax(0, 1fr) 250px; }
+  .overview-stage { padding-inline: 8px; }
+}
+@media (max-width: 900px) {
+  .task-workspace.page { padding: 16px 14px 36px; }
+  .task-outcome-hero { grid-template-columns: 1fr; }
+  .outcome-hero-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .overview-stage-grid { grid-template-columns: 1fr; }
+  .overview-stage, .overview-stage:first-child { padding: 9px 4px; }
+  .task-outcome-grid { grid-template-columns: 1fr; }
+  .overview-card { padding: 17px; }
+}
+@media (max-width: 600px) {
+  .outcome-hero-main { padding: 17px; }
+  .outcome-title-row h2 { font-size: 20px; }
+  .outcome-reason { flex-direction: column; gap: 5px; }
+  .outcome-reason > span { width: auto; }
+  .outcome-hero-facts { grid-template-columns: 1fr; }
+  .quality-check-row { grid-template-columns: 78px minmax(0, 1fr); }
+  .quality-check-row > small { grid-column: 1 / -1; }
+}
