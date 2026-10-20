@@ -1,0 +1,530 @@
+import { useMemo, useState } from 'react';
+import { App, Button, Drawer, Empty, Skeleton, Tag } from 'antd';
+import {
+  ArrowRightOutlined, BranchesOutlined, CheckCircleOutlined, ClockCircleOutlined,
+  CodeOutlined, CopyOutlined, DiffOutlined, FileSearchOutlined, FileTextOutlined,
+  GitlabOutlined, SafetyCertificateOutlined, StopOutlined,
+} from '@ant-design/icons';
+import { useQuery } from '@tanstack/react-query';
+import type { StepRecord, TaskDetailResponse } from '../../lib/types';
+import { api } from '../../lib/api';
+import { queryKeys } from '../../lib/queryKeys';
+import { formatDuration } from '../../lib/format';
+import { StatusBadge } from '../../components/StatusBadge';
+
+type Dict = Record<string, unknown>;
+type Tone = 'success' | 'danger' | 'running' | 'waiting' | 'manual' | 'neutral' | 'pending';
+
+const STEP_LABELS: Record<string, string> = {
+  discover_logs: '拉取异常日志',
+  normalize_error: '规范化异常',
+  deduplicate_error: '异常去重',
+  identify_carrier: '识别承运商',
+  prepare_source_snapshot: '源码快照',
+  repair_branch_preflight: '检查已有分支',
+  prepare_workspace: '准备隔离工作区',
+  prepare_evidence: '准备定位证据',
+  locate_agent: '根因定位',
+  claim_repair_slot: '领取修复资格',
+  repair_agent: '代码修复',
+  check_changes: '变更门禁',
+  verify_issue: '问题验证',
+  run_regression: '回归验证',
+  review_agent: 'AI 审查',
+  prepare_delivery: '分支交付',
+  request_approval: '最终审批',
+  finalize_execution: '终态报告',
+};
+
+function dict(value: unknown): Dict {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Dict : {};
+}
+
+function text(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function getText(source: Dict, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = text(source[key]);
+    if (value) return value;
+  }
+  return '';
+}
+
+function strings(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((item) => String(item ?? '').trim()).filter(Boolean) : [];
+}
+
+function objects(value: unknown): Dict[] {
+  return Array.isArray(value) ? value.filter((item) => item !== null && typeof item === 'object' && !Array.isArray(item)).map((item) => item as Dict) : [];
+}
+
+function stepOf(steps: StepRecord[], name: string): StepRecord | undefined {
+  return [...steps].reverse().find((step) => step.name === name);
+}
+
+function toneForStep(step?: StepRecord): Tone {
+  if (!step) return 'pending';
+  const result = String(step.result ?? '').toUpperCase();
+  if (step.status === 'failed' || ['FAIL', 'FAILED', 'REJECTED'].includes(result)) return 'danger';
+  if (step.status === 'running') return 'running';
+  if (step.status === 'waiting') return 'waiting';
+  if (['MANUAL', 'INSUFFICIENT_EVIDENCE'].includes(result)) return 'manual';
+  if (step.status === 'succeeded' || step.status === 'skipped') return 'success';
+  return 'pending';
+}
+
+function toneText(tone: Tone): string {
+  return ({
+    success: '已完成',
+    danger: '未通过',
+    running: '执行中',
+    waiting: '等待处理',
+    manual: '需人工处理',
+    neutral: '未执行',
+    pending: '未开始',
+  })[tone];
+}
+
+function stepSummary(step?: StepRecord): string {
+  if (!step) return '';
+  const output = dict(step.output);
+  return getText(output, 'summary', 'reason', 'root_cause', 'terminal_reason') || text(step.summary) || text(step.error?.message);
+}
+
+function terminalLabel(step: string): string {
+  return STEP_LABELS[step] || step || '终态尚未记录';
+}
+
+function resultHeadline(result: string, analysisOnly: boolean, deliveredCode: boolean, delivered: boolean, changedCount: number): string {
+  if (['FAILED', 'FAIL'].includes(result)) return '任务未完成';
+  if (result === 'CANCELLED') return '任务已取消';
+  if (result === 'REJECTED') return '变更已被拒绝';
+  if (analysisOnly && delivered) return '分析报告已提交';
+  if (deliveredCode) return '源码修改已提交';
+  if (changedCount > 0) return '检测到代码改动，但尚未完成源码交付';
+  if (['MANUAL', 'INSUFFICIENT_EVIDENCE'].includes(result)) return '分析结束，需人工处理';
+  if (['RUNNING', 'PENDING', 'QUEUED', 'WAITING_APPROVAL'].includes(result)) return '任务仍在处理中';
+  if (delivered) return '交付记录已生成';
+  return result ? '任务已结束' : '任务结果待确认';
+}
+
+function resultDescription(analysisOnly: boolean, delivered: boolean, deliveredCode: boolean, changedCount: number, result: string): string {
+  if (analysisOnly && delivered) return '本次提交的是 final.json 分析报告，不包含源码修复。工作流不会自动合并分支。';
+  if (deliveredCode) return `已检测到 ${changedCount} 个源码文件变更并提交修复分支；后续由你在 Git 上人工审查和合并。`;
+  if (changedCount > 0) return '隔离工作区内检测到源码改动，但没有确认源码改动已提交到可核验的分支。';
+  if (result === 'MANUAL' || result === 'INSUFFICIENT_EVIDENCE') return '当前结论要求人工分析或补充证据；页面会明确区分分析结果与实际源码交付。';
+  if (result === 'FAILED' || result === 'FAIL') return '请查看下方终止节点与错误原因；没有确认的分支提交不会被展示为已交付。';
+  return '关键结论、实际变更、验证审查与 Git 交付分别列出，执行过程详情默认收起。';
+}
+
+function StageItem({ title, steps, hint }: { title: string; steps: Array<StepRecord | undefined>; hint?: string }) {
+  const completed = steps.filter(Boolean) as StepRecord[];
+  let tone: Tone = 'pending';
+  if (completed.some((step) => toneForStep(step) === 'danger')) tone = 'danger';
+  else if (completed.some((step) => toneForStep(step) === 'running')) tone = 'running';
+  else if (completed.some((step) => toneForStep(step) === 'waiting')) tone = 'waiting';
+  else if (completed.some((step) => toneForStep(step) === 'manual')) tone = 'manual';
+  else if (completed.length) tone = 'success';
+
+  return (
+    <div className={`overview-stage is-${tone}`}>
+      <span className="overview-stage-mark">
+        {tone === 'success' ? <CheckCircleOutlined />
+          : tone === 'danger' ? <StopOutlined />
+            : tone === 'running' ? <ClockCircleOutlined />
+              : tone === 'manual' ? <FileTextOutlined />
+                : tone === 'waiting' ? <ClockCircleOutlined />
+                  : <span className="overview-stage-empty" />}
+      </span>
+      <div className="overview-stage-copy">
+        <strong>{title}</strong>
+        <span>{hint || toneText(tone)}</span>
+      </div>
+    </div>
+  );
+}
+
+function KeyValue({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+  if (!value) return null;
+  return (
+    <div className="overview-kv">
+      <span>{label}</span>
+      <strong className={mono ? 'is-mono' : ''} title={value}>{value}</strong>
+    </div>
+  );
+}
+
+export function TaskOverview({
+  detail, onOpenStep,
+}: {
+  detail: TaskDetailResponse;
+  onOpenStep: (stepName: string) => void;
+}) {
+  const { message } = App.useApp();
+  const task = detail.task;
+  const steps = task.steps ?? [];
+  const report = dict(task.report);
+  const result = String(task.result || getText(report, 'result', 'status') || '').toUpperCase();
+
+  const locateStep = stepOf(steps, 'locate_agent');
+  const repairStep = stepOf(steps, 'repair_agent');
+  const checkStep = stepOf(steps, 'check_changes');
+  const verifyStep = stepOf(steps, 'verify_issue');
+  const regressionStep = stepOf(steps, 'run_regression');
+  const reviewStep = stepOf(steps, 'review_agent');
+  const deliveryStep = stepOf(steps, 'prepare_delivery');
+  const finalStep = stepOf(steps, 'finalize_execution');
+
+  const locate = dict(locateStep?.output);
+  const repair = dict(repairStep?.output);
+  const gate = dict(checkStep?.output);
+  const verify = dict(verifyStep?.output);
+  const regression = dict(regressionStep?.output);
+  const review = dict(reviewStep?.output);
+  const delivery = dict(deliveryStep?.output);
+  const deliveryInput = dict(deliveryStep?.input);
+
+  const changedFilePaths = strings(gate.changed_files).length
+    ? strings(gate.changed_files)
+    : strings(repair.changed_files);
+  const gateFiles = objects(gate.files).filter((file) => text(file.path) && text(file.status) !== 'truncated');
+  const fileByPath = new Map(gateFiles.map((file) => [text(file.path), file]));
+  const changedFiles = changedFilePaths.length
+    ? changedFilePaths.map((path) => fileByPath.get(path) || { path, status: 'modified', added: 0, removed: 0 })
+    : gateFiles.filter((file) => ['added', 'modified', 'deleted', 'changed'].includes(text(file.status).toLowerCase()));
+  const changedCount = changedFiles.length;
+  const gateTotals = dict(gate.totals);
+  const added = Number(gateTotals.added ?? changedFiles.reduce((sum, file) => sum + Number(file.added || 0), 0)) || 0;
+  const removed = Number(gateTotals.removed ?? changedFiles.reduce((sum, file) => sum + Number(file.removed || 0), 0)) || 0;
+
+  const branch = getText(delivery, 'repair_branch') || getText(deliveryStep?.input ?? {}, 'repair_branch');
+  const commit = getText(delivery, 'commit');
+  const pushed = delivery.pushed === true;
+  const localBranch = delivery.local_branch === true;
+  const landed = Boolean(commit && (pushed || localBranch) && deliveryStep?.status === 'succeeded');
+  const analysisOnly = deliveryInput.analysis_only === true;
+  const deliveredCode = landed && !analysisOnly;
+  const deliveredReport = landed && analysisOnly;
+  const reportPaths = strings(deliveryInput.report_paths);
+  const terminalStep = getText(report, 'terminal_step') || getText(finalStep?.output ?? {}, 'terminal_step') || steps.filter((step) => step.status !== 'pending').slice(-1)[0]?.name || '';
+  const terminalReason = getText(report, 'terminal_reason') || getText(finalStep?.output ?? {}, 'terminal_reason') || '';
+  const nextAction = getText(report, 'next_action') || getText(finalStep?.output ?? {}, 'next_action') || '';
+  const rootCause = getText(locate, 'root_cause', 'analysis');
+  const analysisSummary = getText(locate, 'summary') || stepSummary(locateStep) || getText(report, 'root_cause');
+  const category = getText(locate, 'category');
+  const scope = getText(locate, 'recommended_scope');
+  const evidence = objects(locate.source_evidence);
+  const evidenceGaps = strings(locate.evidence_gaps);
+  const reviewVerdict = getText(review, 'verdict', 'result') || String(reviewStep?.result || '').toUpperCase();
+  const reviewSummary = getText(review, 'summary') || stepSummary(reviewStep);
+  const findings = strings(review.findings);
+  const requiredChanges = strings(review.required_changes);
+  const verifyPassed = verify.passed === true;
+  const regressionPassed = regression.passed === true;
+  const qualitySteps = [verifyStep, regressionStep].filter(Boolean) as StepRecord[];
+  const qualityFailed = qualitySteps.some((step) => toneForStep(step) === 'danger');
+  const resultFailed = ['FAILED', 'FAIL'].includes(result) || qualityFailed || deliveryStep?.status === 'failed';
+  const terminalReasonFromFailure = terminalReason || (
+    [...steps].reverse().find((step) => step.status === 'failed')?.error?.message || ''
+  );
+
+  const diffArtifact = useMemo(() => (
+    checkStep?.artifacts?.find((artifact) => artifact.name === 'diff' || artifact.path.endsWith('/diff.json'))
+  ), [checkStep?.artifacts]);
+  const [diffOpen, setDiffOpen] = useState(false);
+  const diffQuery = useQuery({
+    queryKey: queryKeys.artifactContent(detail.run_id, diffArtifact?.path || '', task.task_id),
+    queryFn: () => api.artifactContent(detail.run_id, diffArtifact!.path, task.task_id),
+    enabled: diffOpen && Boolean(diffArtifact),
+    staleTime: 60_000,
+  });
+
+  const resultText = resultHeadline(result, analysisOnly, deliveredCode, landed, changedCount);
+  const description = resultDescription(analysisOnly, landed, deliveredCode, changedCount, result);
+  const diffText = useMemo(() => {
+    const payload = diffQuery.data?.content;
+    if (typeof payload === 'string') return payload;
+    const parsed = dict(payload);
+    if (typeof parsed.diff === 'string') return parsed.diff;
+    return payload ? JSON.stringify(payload, null, 2) : '';
+  }, [diffQuery.data?.content]);
+
+  const copyCommit = async () => {
+    if (!commit) return;
+    try {
+      await navigator.clipboard.writeText(commit);
+      message.success('Commit SHA 已复制');
+    } catch {
+      message.warning('复制失败，请手动选择 Commit SHA');
+    }
+  };
+
+  return (
+    <div className="task-overview">
+      <section className={`task-outcome-hero ${resultFailed ? 'is-danger' : deliveredCode || deliveredReport ? 'is-delivered' : ['MANUAL', 'INSUFFICIENT_EVIDENCE'].includes(result) ? 'is-manual' : ''}`}>
+        <div className="outcome-hero-main">
+          <div className="outcome-eyebrow">任务结果</div>
+          <div className="outcome-title-row">
+            <h2>{resultText}</h2>
+            <StatusBadge kind="task" value={task.result} />
+          </div>
+          <p className="outcome-description">{description}</p>
+          {terminalReasonFromFailure && (
+            <div className={`outcome-reason ${resultFailed ? 'is-danger' : ''}`}>
+              <span>{resultFailed ? '停止原因' : '结论说明'}</span>
+              <p>{terminalReasonFromFailure}</p>
+            </div>
+          )}
+          {nextAction && (
+            <div className="outcome-next-action">
+              <ArrowRightOutlined />
+              <div><span>建议下一步</span><strong>{nextAction}</strong></div>
+            </div>
+          )}
+        </div>
+        <div className="outcome-hero-facts">
+          <div className="outcome-fact-primary">
+            <span>源码改动</span>
+            <strong>{changedCount > 0 ? `${changedCount} 个文件` : '未确认有源码改动'}</strong>
+            <small>{changedCount > 0 ? `+${added} / −${removed} 行` : '以确定性变更门禁记录为准'}</small>
+          </div>
+          <div className="outcome-fact-row">
+            <span>终止节点</span>
+            <strong>{terminalLabel(terminalStep)}</strong>
+          </div>
+          <div className="outcome-fact-row">
+            <span>执行耗时</span>
+            <strong>{formatDuration(Number(report.elapsed_ms ?? task.duration_ms) || undefined)}</strong>
+          </div>
+          <div className="outcome-fact-row">
+            <span>已记录步骤</span>
+            <strong>{steps.length} 个</strong>
+          </div>
+          {task.steps?.some((step) => (step.attempt ?? 0) > 1) && (
+            <div className="outcome-fact-row">
+              <span>重试</span>
+              <strong>{Math.max(1, ...steps.map((step) => step.attempt ?? 1))} 次尝试</strong>
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section className="task-process-overview" aria-label="任务执行阶段">
+        <div className="overview-section-heading">
+          <div><h3>处理路径</h3><span>只展示业务阶段；完整原子节点与原始数据位于下方执行记录</span></div>
+          {terminalStep && <span className="overview-stop-point">结束于：{terminalLabel(terminalStep)}</span>}
+        </div>
+        <div className="overview-stage-grid">
+          <StageItem title="根因定位" steps={[locateStep]} hint={locateStep ? toneText(toneForStep(locateStep)) : '未开始'} />
+          <StageItem title="代码修改" steps={[repairStep, checkStep]} hint={analysisOnly ? '未随报告分支交付源码' : changedCount ? `${changedCount} 个文件` : repairStep ? toneText(toneForStep(repairStep)) : '未开始'} />
+          <StageItem title="验证与回归" steps={[verifyStep, regressionStep]} hint={qualitySteps.length ? qualityFailed ? '验证未通过' : '验证节点已执行' : '未执行'} />
+          <StageItem title="审查结论" steps={[reviewStep]} hint={reviewVerdict ? ({ PASS: '审查通过', FAIL: '审查未通过', MANUAL: '需人工判断' } as Record<string, string>)[reviewVerdict] || reviewVerdict : '未执行'} />
+          <StageItem title="Git 交付" steps={[deliveryStep]} hint={landed ? analysisOnly ? '分析报告分支已提交' : '修复分支已提交' : deliveryStep ? toneText(toneForStep(deliveryStep)) : '未交付'} />
+        </div>
+      </section>
+
+      <div className="task-outcome-grid">
+        <section className="overview-card analysis-card">
+          <header className="overview-card-head">
+            <div className="overview-card-icon"><FileSearchOutlined /></div>
+            <div><h3>根因分析</h3><span>定位 Agent 的业务结论与源码证据</span></div>
+            {category && <Tag>{category}</Tag>}
+          </header>
+          {rootCause || analysisSummary ? (
+            <div className="analysis-result">
+              {rootCause && <div className="analysis-root-cause"><label>判断的根因</label><p>{rootCause}</p></div>}
+              {analysisSummary && analysisSummary !== rootCause && <p className="analysis-summary">{analysisSummary}</p>}
+              {(scope || evidence.length > 0) && (
+                <div className="analysis-meta">
+                  {scope && <span><b>建议范围</b>{scope}</span>}
+                  {evidence.length > 0 && <span><b>源码证据</b>{evidence.length} 条</span>}
+                </div>
+              )}
+              {evidence.slice(0, 3).map((item, index) => (
+                <div className="source-evidence-row" key={`${text(item.path)}-${index}`}>
+                  <code>{text(item.path) || '源码位置未记录'}{text(item.symbol) ? ` · ${text(item.symbol)}` : ''}</code>
+                  {text(item.finding) && <p>{text(item.finding)}</p>}
+                </div>
+              ))}
+              {evidenceGaps.length > 0 && (
+                <details className="overview-inline-details">
+                  <summary>证据缺口（{evidenceGaps.length}）</summary>
+                  <ul>{evidenceGaps.map((item) => <li key={item}>{item}</li>)}</ul>
+                </details>
+              )}
+            </div>
+          ) : (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="定位步骤尚未产出根因结论" />
+          )}
+          {locateStep && <button type="button" className="overview-text-link" onClick={() => onOpenStep('locate_agent')}>查看定位步骤记录 <ArrowRightOutlined /></button>}
+        </section>
+
+        <section className="overview-card changes-card">
+          <header className="overview-card-head">
+            <div className="overview-card-icon"><CodeOutlined /></div>
+            <div><h3>代码修改</h3><span>区分工作区改动与真正提交到分支的源码</span></div>
+            <Tag color={deliveredCode ? 'success' : changedCount ? 'gold' : 'default'}>
+              {deliveredCode ? '源码已提交' : analysisOnly ? '仅交付报告' : changedCount ? '改动未交付' : '无改动记录'}
+            </Tag>
+          </header>
+          {analysisOnly && (
+            <div className="overview-note is-warning">
+              {changedCount > 0
+                ? `隔离工作区检测到 ${changedCount} 个源码文件有变化，但本次交付被标记为分析报告模式；这些源码未提交到下方分支。`
+                : '本次走分析报告交付路径，没有把源码修改提交到分支。'}
+            </div>
+          )}
+          {repairStep && (getText(repair, 'summary', 'analysis') || stepSummary(repairStep)) && (
+            <p className="change-summary">{getText(repair, 'summary', 'analysis') || stepSummary(repairStep)}</p>
+          )}
+          {changedFiles.length > 0 ? (
+            <>
+              <div className="change-count-line">
+                <strong>{changedCount} 个变更文件</strong>
+                <span className="diff-add">+{added}</span>
+                <span className="diff-remove">−{removed}</span>
+              </div>
+              <ul className="changed-file-list">
+                {changedFiles.slice(0, 5).map((file, index) => (
+                  <li key={`${text(file.path)}-${index}`}>
+                    <span className={`file-change-mark is-${String(file.status || 'modified').toLowerCase()}`} />
+                    <code title={text(file.path)}>{text(file.path)}</code>
+                    <span className="file-change-lines">
+                      {Number(file.added || 0) > 0 && <b className="diff-add">+{Number(file.added)}</b>}
+                      {Number(file.removed || 0) > 0 && <b className="diff-remove">−{Number(file.removed)}</b>}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              {changedCount > 5 && <div className="overview-muted-line">另有 {changedCount - 5} 个文件，完整清单见确定性门禁输出。</div>}
+            </>
+          ) : (
+            <div className="overview-no-change">
+              <strong>没有可核验的源码差异</strong>
+              <span>如果任务只做根因分析，或在修改前已终止，这里会明确显示没有源码提交。</span>
+            </div>
+          )}
+          <div className="overview-card-actions">
+            {diffArtifact && (
+              <Button size="small" icon={<DiffOutlined />} onClick={() => setDiffOpen(true)}>查看代码差异</Button>
+            )}
+            {checkStep && <Button size="small" type="link" onClick={() => onOpenStep('check_changes')}>变更门禁详情</Button>}
+          </div>
+        </section>
+
+        <section className="overview-card quality-card">
+          <header className="overview-card-head">
+            <div className="overview-card-icon"><SafetyCertificateOutlined /></div>
+            <div><h3>验证与审查</h3><span>明确显示验证证据和 Review Agent 结论</span></div>
+            {reviewVerdict && <Tag color={reviewVerdict === 'PASS' ? 'success' : reviewVerdict === 'FAIL' ? 'error' : 'gold'}>{({ PASS: '审查通过', FAIL: '审查未通过', MANUAL: '需人工判断' } as Record<string, string>)[reviewVerdict] || reviewVerdict}</Tag>}
+          </header>
+          <div className="quality-check-list">
+            <div className="quality-check-row">
+              <span>问题验证</span>
+              <strong className={verifyPassed ? 'is-good' : verifyStep ? 'is-bad' : 'is-muted'}>
+                {verifyPassed ? '通过' : verifyStep ? '未通过' : '未执行'}
+              </strong>
+              <small>{getText(verify, 'mode')}{getText(verify, 'reason') ? ` · ${getText(verify, 'reason')}` : ''}</small>
+            </div>
+            <div className="quality-check-row">
+              <span>回归测试</span>
+              <strong className={regressionPassed ? 'is-good' : regressionStep ? 'is-bad' : 'is-muted'}>
+                {regressionPassed ? '通过' : regressionStep ? '未通过' : '未执行'}
+              </strong>
+              <small>{regression.command_count !== undefined ? `${String(regression.command_count)} 条命令` : ''}{getText(regression, 'reason') ? ` · ${getText(regression, 'reason')}` : ''}</small>
+            </div>
+          </div>
+          <div className="review-result-block">
+            <label>审查结果</label>
+            {reviewStep ? (
+              <>
+                <p>{reviewSummary || '审查步骤已执行，但没有记录摘要。'}</p>
+                {findings.length > 0 && (
+                  <ul className="review-findings">
+                    {findings.slice(0, 3).map((finding) => <li key={finding}>{finding}</li>)}
+                  </ul>
+                )}
+                {requiredChanges.length > 0 && (
+                  <details className="overview-inline-details">
+                    <summary>需要处理的事项（{requiredChanges.length}）</summary>
+                    <ul>{requiredChanges.map((item) => <li key={item}>{item}</li>)}</ul>
+                  </details>
+                )}
+              </>
+            ) : (
+              <p className="overview-muted-line">未产生 AI 审查结论。任务可能在修复、验证阶段前结束，或处于人工审查模式。</p>
+            )}
+          </div>
+          <div className="overview-card-actions">
+            {verifyStep && <Button size="small" type="link" onClick={() => onOpenStep('verify_issue')}>问题验证详情</Button>}
+            {regressionStep && <Button size="small" type="link" onClick={() => onOpenStep('run_regression')}>回归详情</Button>}
+            {reviewStep && <Button size="small" type="link" onClick={() => onOpenStep('review_agent')}>完整审查记录</Button>}
+          </div>
+        </section>
+
+        <section className="overview-card delivery-card">
+          <header className="overview-card-head">
+            <div className="overview-card-icon"><BranchesOutlined /></div>
+            <div><h3>Git 分支交付</h3><span>分支里有什么、提交到哪里、能否核验</span></div>
+            <Tag color={landed ? 'success' : deliveryStep?.status === 'failed' ? 'error' : 'default'}>
+              {landed ? '提交已落地' : deliveryStep?.status === 'failed' ? '交付失败' : '未确认提交'}
+            </Tag>
+          </header>
+          {deliveryStep ? (
+            <>
+              <div className="delivery-destination">
+                <span className="delivery-destination-icon"><GitlabOutlined /></span>
+                <div>
+                  <label>{analysisOnly ? '分析报告分支' : '修复分支'}</label>
+                  <code>{branch || '分支名未记录'}</code>
+                </div>
+              </div>
+              <div className="delivery-kv-list">
+                <KeyValue label="Commit SHA" value={commit} mono />
+                <KeyValue label="交付位置" value={pushed ? '已推送远端' : localBranch ? '仅写入本地仓库' : '未确认推送或落地'} />
+                <KeyValue label="提交内容" value={analysisOnly ? (reportPaths.join('、') || 'final.json 分析报告') : changedCount ? `${changedCount} 个源码文件` : '未记录源码文件清单'} />
+              </div>
+              {commit && (
+                <div className="overview-card-actions">
+                  <Button size="small" icon={<CopyOutlined />} onClick={() => void copyCommit()}>复制 Commit SHA</Button>
+                  {deliveryStep && <Button size="small" type="link" onClick={() => onOpenStep('prepare_delivery')}>交付步骤记录</Button>}
+                </div>
+              )}
+              <div className={`delivery-footnote ${landed ? 'is-good' : 'is-warning'}`}>
+                {landed
+                  ? '系统没有自动合并。请在 Git 上核对变更并由你手动合并。'
+                  : deliveryStep.status === 'failed'
+                    ? stepSummary(deliveryStep) || '交付步骤失败，请查看节点输入、错误和日志。'
+                    : '没有足够的提交证据证明分支已可靠落地。'}
+              </div>
+            </>
+          ) : (
+            <div className="overview-no-change">
+              <strong>尚未进入分支交付</strong>
+              <span>当前任务没有可核验的修复分支或报告分支提交。</span>
+            </div>
+          )}
+        </section>
+      </div>
+
+      <Drawer
+        title={`代码差异 · ${text(diffArtifact?.path) || 'diff.json'}`}
+        placement="right"
+        width="min(960px, 88vw)"
+        open={diffOpen}
+        onClose={() => setDiffOpen(false)}
+        styles={{ body: { paddingTop: 12 } }}
+      >
+        {diffQuery.isLoading ? <Skeleton active paragraph={{ rows: 8 }} />
+          : diffQuery.isError ? <Empty description="差异产物读取失败，请从 check_changes 步骤核对错误。" />
+            : diffText ? (
+              <pre className="overview-diff-viewer">{diffText}</pre>
+            ) : <Empty description="该任务没有完整差异文本产物" />}
+      </Drawer>
+    </div>
+  );
+}
+
+export { STEP_LABELS };
