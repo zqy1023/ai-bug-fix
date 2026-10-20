@@ -68,8 +68,13 @@ export function TaskWorkspace() {
   if (!task.data) return null;
 
   const runActive = ACTIVE.has(task.data.run_status);
+  const approvalRecoveryFailed = task.data.task.approval_pending === true
+    && task.data.run_status === 'failed'
+    && String(task.data.run_error?.status || '').toUpperCase() === 'FAILED';
   const executedCount = steps.filter((record) => record.status !== 'pending').length;
-  const terminalStep = task.data.task.report?.terminal_step || '';
+  const terminalStep = approvalRecoveryFailed
+    ? '审批恢复'
+    : task.data.task.report?.terminal_step || '';
 
   return (
     <div className="page task-workspace">
@@ -81,7 +86,9 @@ export function TaskWorkspace() {
           <div className="execution-heading-icon"><CodeOutlined /></div>
           <div className="execution-heading-copy">
             <h3>执行记录与调试</h3>
-            <p>输入、输出、Agent 会话、错误日志、产物和单步重跑都在这里；默认收起，避免干扰任务结论。</p>
+            <p>{approvalRecoveryFailed
+              ? '后台恢复失败；待审批记录仍保留。请先处理恢复异常，再回到交付审批重试决策。'
+              : '查看节点输入、输出、Agent 会话、错误日志和产物；默认收起。'}</p>
           </div>
           <Button
             type={executionOpen ? 'default' : 'primary'}
@@ -95,7 +102,13 @@ export function TaskWorkspace() {
         {executionOpen && (
           steps.length ? (
             <div className="task-layout">
-              <NodeRail steps={steps} selected={selected} onSelect={selectStep} task={task.data.task} />
+              <NodeRail
+                steps={steps}
+                selected={selected}
+                onSelect={selectStep}
+                task={task.data.task}
+                recoveryError={approvalRecoveryFailed ? task.data.run_error : undefined}
+              />
               <div className="task-main">
                 {step ? (
                   <StepDetail
@@ -104,6 +117,7 @@ export function TaskWorkspace() {
                     step={step}
                     detail={detail.data}
                     runActive={runActive}
+                    approvalPending={Boolean(task.data.task.approval_pending)}
                   />
                 ) : (
                   <EmptyState
