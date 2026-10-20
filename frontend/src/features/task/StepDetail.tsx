@@ -14,6 +14,13 @@ import { AgentTrace } from '../agent/AgentTrace';
 import { StepActionBar } from './StepActionBar';
 import { FAILED_RESULTS } from './stages';
 
+function compactText(value: string, maxChars: number): string {
+  const normalized = value.replace(/\\s+/g, ' ').trim();
+  return normalized.length > maxChars
+    ? `${normalized.slice(0, maxChars).trimEnd()}…`
+    : normalized;
+}
+
 function ArtifactsPanel({
   runId, taskId, artifacts,
 }: { runId: string; taskId: string; artifacts: ArtifactRef[] }) {
@@ -107,7 +114,13 @@ export function StepDetail({
             {step.error ? (
               <div className="error-box">
                 <strong>{step.error.code ?? 'STEP_EXECUTION_FAILED'}</strong>
-                <p>{step.error.message ?? '没有错误详情'}</p>
+                <p>{compactText(step.error.message ?? '没有错误详情', 360)}</p>
+                {(step.error.message?.length ?? 0) > 360 && (
+                  <details className="step-long-text">
+                    <summary>查看完整错误（{step.error.message?.length ?? 0} 字符）</summary>
+                    <pre>{step.error.message}</pre>
+                  </details>
+                )}
                 <span>可重试：{step.error.retryable ? '是' : '否'}</span>
               </div>
             ) : stepFailed ? null : <EmptyState title="该步骤没有错误" description="失败步骤才会记录错误对象。" compact />}
@@ -143,7 +156,17 @@ export function StepDetail({
             ) : null}
           </div>
         </div>
-        {step.summary && <p className="step-summary">{step.summary}</p>}
+        {step.summary && (
+          <div className="step-summary-block">
+            <p className="step-summary">{compactText(step.summary, 220)}</p>
+            {step.summary.length > 220 && (
+              <details className="step-long-text">
+                <summary>查看完整步骤摘要（{step.summary.length} 字符）</summary>
+                <p>{step.summary}</p>
+              </details>
+            )}
+          </div>
+        )}
       </header>
 
       <Tabs
