@@ -110,7 +110,7 @@ def _render_diff(
                                 body = f"{body[:MAX_LINE_CHARS - 1]}…"
                             block.append(body if marker == "@" else f"{marker}{body}")
                         if truncated_lines:
-                            block.append(f"# 单文件差异已截断，最多保留 {MAX_LINES_PER_FILE} 行上下文")
+                            block.append(f"# 单文件差异已截断，最多保留 {MAX_LINES_PER_FILE} 行差异内容")
                         block_text = "\n".join(block)
                         block_bytes = len(block_text.encode("utf-8"))
                         if used_diff_bytes + block_bytes <= _REVIEW_DIFF_BUDGET:
