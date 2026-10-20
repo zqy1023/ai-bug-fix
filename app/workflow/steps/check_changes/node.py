@@ -109,7 +109,7 @@ def _render_file_contents(
             or ".." in Path(relative).parts
             or not relative.lower().endswith(".py")
             or item.get("in_scope") is not True
-            or status not in {"added", "modified", "deleted"}
+            or status not in {"added", "modified", "deleted", "modified_too_large"}
             or not carrier_roots
         ):
             continue
