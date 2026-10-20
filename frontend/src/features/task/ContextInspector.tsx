@@ -69,14 +69,14 @@ export function ContextInspector({ context }: { context?: StepContext }) {
       {counts.length > 0 && (
         <div className="inspector-chips">
           {counts.map(([key, value]) => (
-            <span key={key}>{key} {value}</span>
+            <span key={key}>{COUNT_LABELS[key] || key.replace(/_/g, ' ')} {value}</span>
           ))}
         </div>
       )}
       {flags.length > 0 && (
         <div className="inspector-chips">
           {flags.map(([key, value]) => (
-            <span key={key} className={value ? 'is-on' : ''}>{key}={String(value)}</span>
+            <span key={key} className={value ? 'is-on' : ''}>{FLAG_LABELS[key] || key.replace(/_/g, ' ')}：{value ? '是' : '否'}</span>
           ))}
         </div>
       )}
