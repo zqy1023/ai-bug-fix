@@ -198,7 +198,7 @@ export function TaskOverview({
   const task = detail.task;
   const steps = task.steps ?? [];
   const problem = dict(task.problem);
-  const originalError = rawString(problem.error) || rawString(problem.raw_error);
+  const originalError = rawString(problem.error).trim() || rawString(problem.raw_error).trim();
   const report = dict(task.report);
   const result = String(task.result || getText(report, 'result', 'status') || '').toUpperCase();
 
@@ -298,7 +298,7 @@ export function TaskOverview({
   const terminalReasonFromFailure = terminalReason || (
     [...steps].reverse().find((step) => step.status === 'failed')?.error?.message || ''
   );
-  const originalErrorPreview = originalError.split(/\\r?\\n/)[0] || originalError;
+  const originalErrorPreview = originalError.split(/\r?\n/)[0] || originalError;
 
   const diffArtifact = useMemo(() => (
     checkStep?.artifacts?.find((artifact) => artifact.name === 'diff' || artifact.path.endsWith('/diff.json'))
