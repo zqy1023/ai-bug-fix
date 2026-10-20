@@ -89,6 +89,13 @@ function fallbackFiles(diffText: string): SourceFile[] {
     }
     if (line.startsWith('+')) current.after.push(line.slice(1));
     else if (line.startsWith('-')) current.before.push(line.slice(1));
+    else if (line.startsWith(' ')) {
+      // Preserve context lines in historical unified-diff artifacts that do not contain
+      // whole-file snapshots, so the two panes show nearby source instead of only +/- lines.
+      const context = line.slice(1);
+      current.before.push(context);
+      current.after.push(context);
+    }
   }
   if (current) blocks.push(current);
 
