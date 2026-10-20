@@ -4,5 +4,6 @@
 @import './styles/runs.css';
 @import './styles/run.css';
 @import './styles/task.css';
+@import './styles/task-overview.css';
 @import './styles/agent.css';
 @import './styles/approvals.css';
