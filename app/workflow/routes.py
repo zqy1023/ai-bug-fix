@@ -219,26 +219,28 @@ def after_approval(state: WorkflowState) -> str:
 def _analysis_only_task(state: WorkflowState) -> bool:
     """仅按明确的业务分流原因判断报告交付，不用 FAILED/MANUAL 终态反推原因。
 
-    交付失败是执行失败，绝不能因此被重新归类为分析报告任务。
+    交付失败或定位 Agent 执行失败都是执行失败，绝不能因此重新归类为分析报告任务。
     """
     if str((state.get("delivery") or {}).get("delivery_status") or "").upper() == "FAILED":
         return False
-    evidence = state.get("evidence") or {}
     locate = state.get("locate") or {}
+    if not locate:
+        return False
+    locate_status = str(locate.get("status") or "").upper()
+    if locate_status not in {"LOCATED", "MANUAL", "INSUFFICIENT_EVIDENCE"}:
+        return False
+    evidence = state.get("evidence") or {}
     review = state.get("review") or {}
     if (
         evidence.get("legacy_only")
         or evidence.get("legacy_dependency")
         or state.get("scope_escalation_required")
         or str(review.get("verdict") or "").upper() == "MANUAL"
+        or locate_status in {"MANUAL", "INSUFFICIENT_EVIDENCE"}
     ):
         return True
-    # 只有确实产生了定位结论时，才能依据定位结果转分析报告。
-    if not locate:
-        return False
     return bool(
-        str(locate.get("status") or "").upper() in {"MANUAL", "INSUFFICIENT_EVIDENCE"}
-        or str(locate.get("recommended_scope") or "") != "carrier"
+        str(locate.get("recommended_scope") or "") != "carrier"
         or str(locate.get("category") or "") != "carrier"
         or _locate_references_legacy(locate)
     )
