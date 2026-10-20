@@ -8,6 +8,12 @@ from app.workflow.spec import FrozenModel
 from pydantic import Field
 
 
+RetryTarget = Literal[
+    "locate_agent", "repair_agent", "validate_changes",
+    "run_regression", "review_agent", "prepare_delivery",
+]
+
+
 class ApprovalInput(FrozenModel):
     """request_approval 的输入。"""
 
@@ -15,6 +21,10 @@ class ApprovalInput(FrozenModel):
     task_id: str
     # decision：字段说明见该模型文档与工作流契约。
     decision: Literal["PENDING", "APPROVE", "REJECT"] = "PENDING"
+    # reason：审批说明；驳回时会写入节点输出和控制审计。
+    reason: str = ""
+    # retry_target：驳回后回退的工作流阶段；实际恢复值仍需在 node 内再次校验。
+    retry_target: RetryTarget = "repair_agent"
     # carrier：字段说明见该模型文档与工作流契约。
     carrier: str
     # ai_workspace_path：字段说明见该模型文档与工作流契约。
@@ -44,6 +54,8 @@ class ApprovalOutput(FrozenModel):
     passed: bool = False
     # reason：字段说明见该模型文档与工作流契约。
     reason: str = ""
+    # retry_target：仅在驳回输出中回传给路由层的目标阶段。
+    retry_target: str = ""
 
 
-__all__ = ["ApprovalInput", "ApprovalOutput"]
+__all__ = ["ApprovalInput", "ApprovalOutput", "RetryTarget"]
