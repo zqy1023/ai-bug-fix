@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from app.workflow.state import WorkflowState
 from app.domain.decisions import locate_disposition
-from app.workflow.steps.request_approval.models import APPROVAL_RETRY_TARGETS
+from app.domain.approval import APPROVAL_RETRY_TARGETS
 from config.settings import settings
 from langgraph.graph import END
 
