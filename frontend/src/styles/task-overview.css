@@ -456,3 +456,35 @@
   .analysis-detail-block > p,
   .analysis-detail-block > ul li { font-size: 11.5px; }
 }
+
+
+.task-original-error-details summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  list-style: none;
+}
+.task-original-error-details summary::-webkit-details-marker { display: none; }
+.task-original-error-preview {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #7c5b26;
+  font-size: 11px;
+  font-weight: 400;
+}
+.task-original-error-expand {
+  flex-shrink: 0;
+  color: #92400e;
+  font-size: 10.5px;
+}
+.quality-detail-clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
