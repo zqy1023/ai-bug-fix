@@ -24,8 +24,10 @@ export const TASK_STAGES: TaskStage[] = [
 export const AGENT_STEPS = new Set(['locate_agent', 'repair_agent', 'review_agent']);
 
 /** 执行成功但业务未通过的结果；用于徽标和默认选中步骤。 */
+// MANUAL / INSUFFICIENT_EVIDENCE 是人工处理结论，不是执行失败；不要把它们
+// 当成失败步骤自动选中或在任务详情中与真实 FAIL 混为一类。
 export const FAILED_RESULTS = new Set([
-  'FAIL', 'FAILED', 'REJECTED', 'MANUAL', 'INSUFFICIENT_EVIDENCE',
+  'FAIL', 'FAILED', 'REJECTED',
 ]);
 
 /** 会产生外部写入、需要显式确认的步骤（服务端仍是最终权威）。 */
