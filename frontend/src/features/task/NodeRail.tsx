@@ -51,9 +51,9 @@ function failureReason(records: StepRecord[]): string {
       || FAILED_RESULTS.has(String(record.result || '').toUpperCase()),
   );
   if (!failed) return '';
-  const result = String(failed.result || '').toUpperCase();
-  const summary = failed.summary || failed.error?.message || '';
-  return result ? `业务结果 ${result}${summary && summary !== result ? `：${summary}` : ''}` : summary;
+  const summary = String(failed.summary || failed.error?.message || '').replace(/\\s+/g, ' ').trim();
+  if (!summary) return '';
+  return summary.length > 116 ? `${summary.slice(0, 116).trimEnd()}…` : summary;
 }
 
 export function NodeRail({
