@@ -337,3 +337,30 @@
   .task-layout { grid-template-columns: 1fr; }
   .node-rail { position: static; max-height: 60vh; }
 }
+
+
+.step-summary-block { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.step-long-text { margin-top: 5px; color: var(--wb-ink-faint); font-size: 11px; line-height: 1.6; }
+.step-long-text > summary {
+  display: inline-block;
+  color: var(--wb-primary);
+  cursor: pointer;
+  user-select: none;
+}
+.step-long-text > summary:hover { text-decoration: underline; text-underline-offset: 3px; }
+.step-long-text > pre,
+.step-long-text > p {
+  max-height: 300px;
+  overflow: auto;
+  margin: 6px 0 0;
+  padding: 9px 11px;
+  border: 1px solid var(--wb-line-soft);
+  border-radius: 6px;
+  background: #fbfcfe;
+  color: var(--wb-ink);
+  font-size: 11.5px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
