@@ -97,6 +97,14 @@ function terminalLabel(step: string): string {
   return STEP_LABELS[step] || step || '终态尚未记录';
 }
 
+function fileStatusLabel(value: unknown): string {
+  const status = text(value).toLowerCase();
+  if (['added', 'new', 'created'].includes(status)) return '新增';
+  if (['deleted', 'removed'].includes(status)) return '删除';
+  if (['renamed', 'moved'].includes(status)) return '重命名';
+  return '修改';
+}
+
 function resultHeadline(result: string, analysisOnly: boolean, deliveredCode: boolean, delivered: boolean, changedCount: number, executionFailed: boolean): string {
   if (executionFailed || ['FAILED', 'FAIL'].includes(result)) return '任务未完成';
   if (result === 'CANCELLED') return '任务已取消';
@@ -191,7 +199,7 @@ export function TaskOverview({
     ? strings(gate.changed_files)
     : strings(repair.changed_files);
   const gateFiles = objects(gate.files).filter((file) => text(file.path) && text(file.status) !== 'truncated');
-  const fileByPath = new Map(gateFiles.map((file) => [text(file.path), file]));
+  const fileByPath = new Map<string, Dict>(gateFiles.map((file) => [text(file.path), file] as const));
   const changedFiles = changedFilePaths.length
     ? changedFilePaths.map((path) => fileByPath.get(path) || { path, status: 'modified', added: 0, removed: 0 })
     : gateFiles.filter((file) => ['added', 'modified', 'deleted', 'changed'].includes(text(file.status).toLowerCase()));
@@ -217,6 +225,7 @@ export function TaskOverview({
   const category = getText(locate, 'category');
   const scope = getText(locate, 'recommended_scope');
   const evidence = objects(locate.source_evidence);
+  const facts = strings(locate.facts);
   const evidenceGaps = strings(locate.evidence_gaps);
   const reviewVerdict = getText(review, 'verdict', 'result') || String(reviewStep?.result || '').toUpperCase();
   const reviewSummary = getText(review, 'summary') || stepSummary(reviewStep);
@@ -333,10 +342,22 @@ export function TaskOverview({
             <div><h3>根因分析</h3><span>定位 Agent 的业务结论与源码证据</span></div>
             {category && <Tag>{category}</Tag>}
           </header>
-          {rootCause || analysisSummary ? (
+          {rootCause || analysisSummary || facts.length > 0 ? (
             <div className="analysis-result">
               {rootCause && <div className="analysis-root-cause"><label>判断的根因</label><p>{rootCause}</p></div>}
               {analysisSummary && analysisSummary !== rootCause && <p className="analysis-summary">{analysisSummary}</p>}
+              {facts.length > 0 && (
+                <div className="analysis-facts">
+                  <label>定位依据</label>
+                  <ul>{facts.slice(0, 3).map((fact, index) => <li key={`${index}-${fact}`}>{fact}</li>)}</ul>
+                  {facts.length > 3 && (
+                    <details className="overview-inline-details">
+                      <summary>更多定位依据（{facts.length - 3}）</summary>
+                      <ul>{facts.slice(3).map((fact, index) => <li key={`${index + 3}-${fact}`}>{fact}</li>)}</ul>
+                    </details>
+                  )}
+                </div>
+              )}
               {(scope || evidence.length > 0) && (
                 <div className="analysis-meta">
                   {scope && <span><b>建议范围</b>{scope}</span>}
@@ -391,6 +412,7 @@ export function TaskOverview({
                 {changedFiles.slice(0, 5).map((file, index) => (
                   <li key={`${text(file.path)}-${index}`}>
                     <span className={`file-change-mark is-${String(file.status || 'modified').toLowerCase()}`} />
+                    <span className="file-change-status">{fileStatusLabel(file.status)}</span>
                     <code title={text(file.path)}>{text(file.path)}</code>
                     <span className="file-change-lines">
                       {Number(file.added || 0) > 0 && <b className="diff-add">+{Number(file.added)}</b>}
