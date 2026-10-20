@@ -57,6 +57,18 @@ def public_exception(error: BaseException, *, prefix: str) -> str:
     detail = _validation_detail(error)
     if detail:
         return f"{prefix}（错误类型：{error_type}：{detail}）"
+    # AttributeError 是交付链路常见的集成缺陷；安全地暴露缺失属性名，
+    # 避免运行记录只留下“AttributeError”而无法定位调用方/接口契约不一致。
+    if isinstance(error, AttributeError):
+        match = re.search(
+            r"'([^']+)' object has no attribute '([^']+)'",
+            str(error),
+        )
+        if match:
+            return (
+                f"{prefix}（错误类型：AttributeError："
+                f"{match.group(1)} 缺少属性 {match.group(2)}）"
+            )
     message = _business_message(error)
     if message:
         return f"{prefix}：{message}（错误类型：{error_type}）"
