@@ -35,6 +35,7 @@ from app.application.contracts import StepAudit, StepFailure, StepResult
 from app.application.services import WorkflowServices
 from app.application.context import RunContext, StepContext, TaskContext
 from app.workflow.spec import StepSpec
+from app.workflow.steps.request_approval.models import APPROVAL_RETRY_TARGETS
 from app.domain.errors import StepFailed
 from langgraph.errors import GraphInterrupt
 from langgraph.types import interrupt
@@ -238,10 +239,7 @@ def bind(
             # silently defaulting an invalid target to repair_agent can rerun the wrong stage.
             patch = spec.patch(result.output)
             target = str(result.output.get("retry_target") or "")
-            allowed_targets = {
-                "locate_agent", "repair_agent", "validate_changes",
-                "run_regression", "review_agent", "prepare_delivery",
-            }
+            allowed_targets = APPROVAL_RETRY_TARGETS
             retry_reason = str(
                 result.output.get("retry_reason") or result.output.get("reason") or "人工打回"
             )[:2000]
