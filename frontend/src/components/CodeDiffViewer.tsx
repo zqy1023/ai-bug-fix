@@ -287,6 +287,11 @@ export function CodeDiffViewer({
   const [internalPath, setInternalPath] = useState('');
   const record = object(payload);
   const fullText = typeof payload === 'string' ? payload : asText(record.diff);
+  const diffWarnings = useMemo(
+    () => fullText.split(/\\r?\\n/)
+      .filter((line) => line.startsWith('# 单文件差异已截断') || line.startsWith('# 另有 ')),
+    [fullText],
+  );
   const primary = useMemo(() => sourceFilesFromPayload(payload), [payload]);
   const files = useMemo(() => {
     const fragments = new Map(fallbackFiles(fullText).map((file) => [file.path, file] as const));
@@ -340,6 +345,11 @@ export function CodeDiffViewer({
 
   return (
     <div className="code-diff-workbench">
+      {diffWarnings.length > 0 && (
+        <div className="code-diff-truncation-warning" role="status">
+          {diffWarnings.map((warning) => warning.replace(/^#\\s*/, '')).join('；')}
+        </div>
+      )}
       <aside className="code-diff-file-tree">
         <header><span>变更文件</span><Tag>{files.length}</Tag></header>
         {files.map((file) => {
