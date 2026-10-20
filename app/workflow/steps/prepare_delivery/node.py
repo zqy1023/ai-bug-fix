@@ -21,13 +21,13 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
         if not data.report_paths:
             raise StepFailed("分析任务交付失败：缺少最终报告", {"reason": "report_missing"})
     else:
-        # 源码交付必须有实际改动；agent 模式还要求 AI 审查通过，
-        # human 模式跳过 AI 审查，门禁交给交付审批节点。
+        # 源码交付必须有实际改动。PASS 表示 AI 审查通过；MANUAL 表示 AI
+        # 明确要求人工复核。两者都要先提交候选分支，再由最终审批决定保留或删除。
+        # HUMAN 则表示配置为人工审查模式，因此跳过 AI 审查。
         if not data.changed_files:
             raise StepFailed("交付失败：没有实际变更文件", {"changed_files": [], "reason": "no_changes"})
-        # HUMAN 表示人工审查模式：跳过 AI 审查，交付门禁交给交付审批节点。
         review_decision = str(data.review_decision or "").upper()
-        if review_decision not in ("PASS", "APPROVED", "HUMAN"):
+        if review_decision not in ("PASS", "APPROVED", "MANUAL", "HUMAN"):
             raise StepFailed(
                 f"交付失败：审查未通过，decision={review_decision}",
                 {"review_decision": review_decision, "reason": "review_not_passed"},
