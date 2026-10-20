@@ -178,7 +178,7 @@ export function ReviewPane({ item }: { item: ApprovalItem }) {
   ].filter(Boolean))), [changedFiles, diffBlocks]);
   const selectedDiff = selectedDiffPath
     ? diffBlocks.find((block) => block.path === selectedDiffPath)
-    : diffBlocks[0];
+    : (diffText ? { path: '完整差异', text: diffText } : undefined);
 
   const problem = asObject(task?.problem);
   // identify_carrier preserves the error field from the normalized ES record as the original log text.
