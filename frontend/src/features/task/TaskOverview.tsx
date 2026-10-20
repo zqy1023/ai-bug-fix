@@ -356,13 +356,13 @@ export function TaskOverview({
           {terminalReasonFromFailure && (
             <div className={`outcome-reason ${resultFailed ? 'is-danger' : ''}`}>
               <span>{resultFailed ? '停止原因' : '结论说明'}</span>
-              <p>{terminalReasonFromFailure}</p>
+              <p>{shortText(terminalReasonFromFailure, 220)}</p>
             </div>
           )}
           {nextAction && (
             <div className="outcome-next-action">
               <ArrowRightOutlined />
-              <div><span>建议下一步</span><strong>{nextAction}</strong></div>
+              <div><span>建议下一步</span><strong>{shortText(nextAction, 150)}</strong></div>
             </div>
           )}
         </div>
@@ -627,7 +627,7 @@ export function TaskOverview({
             <label>{analysisOnly ? 'AI 审查结论（报告路径）' : 'AI 审查结论（非最终审批）'}</label>
             {reviewStep ? (
               <>
-                <p className="review-summary-compact">{reviewSummary || '审查步骤已执行，但没有记录摘要。'}</p>
+                <p className="review-summary-compact">{shortText(reviewSummary || '审查步骤已执行，但没有记录摘要。', 220)}</p>
                 {(reviewSummary.length > 180 || findings.length > 0 || requiredChanges.length > 0) && (
                   <details className="overview-inline-details review-full-details">
                     <summary>展开完整审查内容{findings.length ? ` · ${findings.length} 项发现` : ''}</summary>
