@@ -16,6 +16,8 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
     return {
         "task_id": str(state.get("task_id") or ""),
         "decision": str(state.get("decision") or "PENDING").upper(),
+        "reason": str(state.get("retry_reason") or ""),
+        "retry_target": str(state.get("retry_target") or "repair_agent"),
         "carrier": str(task.get("carrier") or ""),
         "source_repo_path": str(state.get("source_repo_path") or ""),
         "repair_branch": str(state.get("repair_branch") or ""),
