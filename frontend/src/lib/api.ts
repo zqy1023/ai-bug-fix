@@ -1,5 +1,5 @@
 import type {
-  AgentCallDetail, ApprovalItem, CheckpointHistoryResponse, CheckpointProjection, ControlAuditItem,
+  AgentCallDetail, ApprovalItem, ApprovalRetryTarget, CheckpointHistoryResponse, CheckpointProjection, ControlAuditItem,
   DashboardSummary, ModelCall, PageResult, RunBoard, RunDetail, RunQuery, RunSummary, StepDetailResponse,
   TaskDetailResponse,
 } from './types';
@@ -114,10 +114,22 @@ export const api = {
     request<{ items: ControlAuditItem[]; total: number }>('/runs/' + encode(runId) + '/control-audit'),
   approvals: () => request<{ items: ApprovalItem[]; total: number }>('/approvals?status=pending')
     .then((response) => response.items),
-  decideApproval: (approvalId: string, decision: 'approve' | 'reject', reason: string) =>
+  decideApproval: (
+    approvalId: string,
+    decision: 'approve' | 'reject',
+    reason: string,
+    retryTarget: ApprovalRetryTarget = 'repair_agent',
+  ) =>
     request<{ run_id: string; task_id: string; decision: string; status: string }>(
       '/approvals/' + encode(approvalId) + '/decision',
-      { method: 'POST', body: JSON.stringify({ decision, reason }) },
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          decision,
+          reason,
+          retry_target: retryTarget,
+        }),
+      },
     ),
   startRun: (payload: { log_days: number; log_limit: number; review_mode: 'agent' | 'human'; max_attempts: number }) =>
     request<{ run_id: string; status: string }>('/runs', {
