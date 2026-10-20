@@ -152,6 +152,11 @@
 .delivery-footnote.is-warning { border-left-color: #d97706; background: #fffbeb; color: #854d0e; }
 .overview-diff-viewer { overflow: auto; max-height: calc(100vh - 180px); margin: 0; padding: 14px; border: 1px solid var(--wb-line); border-radius: 7px; background: #0f172a; color: #e2e8f0; font-family: var(--wb-mono); font-size: 11px; line-height: 1.7; white-space: pre; tab-size: 4; }
 .overview-diff-viewer::selection { background: #334155; color: #fff; }
+.overview-diff-line { display: block; min-height: 1em; }
+.overview-diff-line.is-add { color: #86efac; background: rgba(22, 163, 74, 0.10); }
+.overview-diff-line.is-remove { color: #fca5a5; background: rgba(220, 38, 38, 0.10); }
+.overview-diff-line.is-header { color: #93c5fd; font-weight: 600; }
+.overview-diff-line.is-hunk { color: #c4b5fd; }
 
 /* Debug / step trace is intentionally secondary and collapsible. */
 .execution-section { border: 1px solid var(--wb-line); border-radius: 10px; background: var(--wb-surface); overflow: hidden; }
