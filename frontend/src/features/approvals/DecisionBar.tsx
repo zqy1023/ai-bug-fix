@@ -82,7 +82,7 @@ export function DecisionBar({ item, onDecided }: { item: ApprovalItem; onDecided
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [reasonCode, setReasonCode] = useState<RejectReasonCode | ''>('');
-  const [retryTargetOverride, setRetryTargetOverride] = useState<ApprovalRetryTarget>('repair_agent');
+  const [retryTargetOverride, setRetryTargetOverride] = useState<ApprovalRetryTarget | ''>('');
   const [reason, setReason] = useState('');
   const [pending, setPending] = useState<'approve' | 'reject' | null>(null);
 
@@ -90,7 +90,7 @@ export function DecisionBar({ item, onDecided }: { item: ApprovalItem; onDecided
     () => REJECTION_REASONS.find((option) => option.value === reasonCode),
     [reasonCode],
   );
-  const retryTarget = reasonCode === 'other' ? retryTargetOverride : selectedReason?.retryTarget ?? 'repair_agent';
+  const retryTarget = reasonCode === 'other' ? retryTargetOverride : selectedReason?.retryTarget ?? '';
   const rejectReason = reasonCode === 'other'
     ? reason.trim()
     : selectedReason
@@ -128,20 +128,24 @@ export function DecisionBar({ item, onDecided }: { item: ApprovalItem; onDecided
       message.warning('请先选择驳回原因，确保任务回到正确的执行阶段');
       return;
     }
+    if (decision === 'reject' && reasonCode === 'other' && !retryTargetOverride) {
+      message.warning('选择“其他”时必须明确选择回退阶段');
+      return;
+    }
     if (decision === 'reject' && reasonCode === 'other' && !reason.trim()) {
       message.warning('选择“其他”时必须单独填写驳回原因');
       return;
     }
     const submission: DecisionInput = decision === 'approve'
       ? { decision, reason: reason.trim(), retryTarget: 'repair_agent' }
-      : { decision, reason: rejectReason, retryTarget };
+      : { decision, reason: rejectReason, retryTarget: retryTarget as ApprovalRetryTarget };
 
     setPending(decision);
     modal.confirm({
       title: decision === 'approve' ? '批准这次交付？' : '驳回并删除交付分支？',
       content: decision === 'approve'
         ? '将保留本次交付分支供你手动检查和合并；系统不会自动合并。'
-        : `系统将先清理当前交付分支，再从「${TARGET_LABELS[retryTarget]}」阶段重新执行。当前尝试次数达到上限时，任务会按工作流规则终止。`,
+        : `系统将先清理当前交付分支，再从「${retryTarget ? TARGET_LABELS[retryTarget] : '未选择阶段'}」重新执行。当前尝试次数达到上限时，任务会按工作流规则终止。`,
       okText: decision === 'approve' ? '确认批准' : '确认驳回并重跑',
       okButtonProps: { danger: decision === 'reject' },
       cancelText: '返回',
@@ -172,12 +176,13 @@ export function DecisionBar({ item, onDecided }: { item: ApprovalItem; onDecided
         <div className="decision-retry-route">
           <div>
             <span>重新执行阶段</span>
-            <strong>{reasonCode ? TARGET_LABELS[retryTarget] : '选择原因后确定回退阶段'}</strong>
+            <strong>{retryTarget ? TARGET_LABELS[retryTarget] : '选择原因后确定回退阶段'}</strong>
           </div>
           {reasonCode === 'other' ? (
             <Select
               aria-label="自定义原因的回退阶段"
-              value={retryTargetOverride}
+              value={retryTargetOverride || undefined}
+              placeholder="请选择回退阶段"
               options={Object.entries(TARGET_LABELS).map(([value, label]) => ({ value, label }))}
               onChange={(value: ApprovalRetryTarget) => setRetryTargetOverride(value)}
             />
@@ -207,7 +212,7 @@ export function DecisionBar({ item, onDecided }: { item: ApprovalItem; onDecided
         <Button
           danger
           icon={<StopOutlined />}
-          disabled={!reasonCode || (reasonCode === 'other' && !reason.trim())}
+          disabled={!reasonCode || (reasonCode === 'other' && (!retryTargetOverride || !reason.trim()))}
           loading={decide.isPending && pending === 'reject'}
           onClick={() => run('reject')}
         >
