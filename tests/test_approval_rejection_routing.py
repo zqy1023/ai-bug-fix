@@ -246,3 +246,75 @@ def test_rejection_at_attempt_limit_finalizes_without_another_retry():
 
     assert after_approval(state) == FINALIZE
 
+def test_approval_node_cleanup_failure_is_not_a_retryable_rejection(monkeypatch):
+    import app.workflow.steps.request_approval.node as approval_node
+
+    monkeypatch.setattr(
+        approval_node,
+        "interrupt",
+        lambda _payload: {
+            "decision": "REJECT",
+            "approval_fingerprint": "fingerprint",
+            "reason": "代码需要重修",
+            "retry_target": "repair_agent",
+        },
+    )
+    data = ApprovalInput(
+        task_id="Carrier__framework.track_server__issue",
+        decision="PENDING",
+        carrier="Carrier",
+        source_repo_path="/repo",
+        repair_branch="repair/carrier",
+        delivery_pushed=True,
+        ai_workspace_path="/workspace/task",
+        changed_files=["gathers/Carrier/main.py"],
+        baseline_dir="",
+        approval_fingerprint="fingerprint",
+    )
+
+    with pytest.raises(StepFailed) as raised:
+        approval_node.run(SimpleNamespace(services=SimpleNamespace(delivery=None)), data)
+
+    assert raised.value.result == "manual"
+    assert raised.value.output["decision"] == "REJECT"
+    assert raised.value.output["approval_cleanup_failed"] is True
+    assert "retry_target" not in raised.value.output
+
+
+def test_invalid_rejection_target_is_blocked_by_runner_without_repair_fallback(monkeypatch):
+    import app.workflow.runner as runner_module
+
+    result = StepResult(
+        status="manual",
+        output={
+            "decision": "REJECT",
+            "passed": False,
+            "reason": "驳回回退节点无效",
+            "retry_target": "",
+        },
+        failure=StepFailure(code="manual", reason="驳回回退节点无效", recoverable=False),
+        next_action="finalize_execution",
+        audit=StepAudit(input_summary={}, output_summary={}, elapsed_ms=1),
+    )
+    monkeypatch.setattr(runner_module, "run_stage", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr(runner_module, "cancellation_requested", lambda *_args, **_kwargs: False)
+
+    spec = SimpleNamespace(
+        name="request_approval",
+        task_level=True,
+        input_record=None,
+        output_record=None,
+        next_step="finalize_execution",
+        patch=lambda output: {
+            "decision": output["decision"],
+            "approval_cleanup_failed": bool(output.get("approval_cleanup_failed")),
+        },
+    )
+    node = runner_module.bind(spec, SimpleNamespace(root=Path("/tmp")), services=SimpleNamespace())
+
+    state = node({"run_id": "run-id", "task_id": "task-id"})
+
+    assert state["approval_recovery_blocked"] is True
+    assert state["retry_target"] == ""
+    assert after_approval(state) == FINALIZE
+
