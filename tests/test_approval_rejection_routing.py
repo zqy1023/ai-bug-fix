@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -317,4 +318,76 @@ def test_invalid_rejection_target_is_blocked_by_runner_without_repair_fallback(m
     assert state["approval_recovery_blocked"] is True
     assert state["retry_target"] == ""
     assert after_approval(state) == FINALIZE
+
+def test_background_failure_report_persists_redacted_actionable_reason(monkeypatch, tmp_path):
+    import workbench.api as api_module
+
+    run_dir = tmp_path / "run-id"
+    run_dir.mkdir()
+    monkeypatch.setattr(
+        api_module,
+        "_store",
+        lambda: SimpleNamespace(run_dir=lambda _run_id: run_dir),
+    )
+
+    api_module._record_background_failure(
+        "run-id",
+        StepFailed("delivery failed: Authorization: Bearer secret-token-123456"),
+    )
+
+    payload = json.loads((run_dir / "reports" / "run_failure.json").read_text(encoding="utf-8"))
+    assert payload["status"] == "FAILED"
+    assert "delivery failed" in payload["message"]
+    assert "secret-token-123456" not in payload["message"]
+    assert payload["error_type"] == "StepFailed"
+
+
+def test_task_detail_api_exposes_run_recovery_failure(monkeypatch, tmp_path):
+    import workbench.api as api_module
+
+    run_id = "run-id"
+    task_id = "Carrier__framework.track_server__issue"
+    run_dir = tmp_path / run_id
+    task_dir = run_dir / "tasks" / task_id
+    (run_dir / "reports").mkdir(parents=True)
+    task_dir.mkdir(parents=True)
+    run_failure = {
+        "status": "FAILED",
+        "error_type": "RuntimeError",
+        "message": "后台工作流异常（错误类型：RuntimeError）",
+        "terminal_step": "workflow_startup",
+        "terminal_reason": "后台工作流异常（错误类型：RuntimeError）",
+        "next_action": "检查后台工作流异常后重试。",
+    }
+    (run_dir / "reports" / "run_failure.json").write_text(
+        json.dumps(run_failure, ensure_ascii=False), encoding="utf-8"
+    )
+    payload = {
+        "run_id": run_id,
+        "status": "failed",
+        "tasks": [{
+            "task_id": task_id,
+            "carrier": "Carrier",
+            "biztype": "framework.track_server",
+            "status": "WAITING_APPROVAL",
+            "problem": {"error": "original error"},
+            "approval_pending": True,
+            "steps": [],
+            "report": {"result": "WAITING_APPROVAL"},
+        }],
+    }
+    store = SimpleNamespace(
+        run_dir=lambda _run_id: run_dir,
+        task_dir=lambda _run_id, _task_id: task_dir,
+    )
+    monkeypatch.setattr(api_module, "_store", lambda: store)
+    monkeypatch.setattr(api_module, "_run_payload", lambda _store, _run_id: payload)
+    monkeypatch.setattr(api_module, "_v1_run_summary", lambda _payload: {"status": "failed"})
+
+    response = api_module.v1_get_task(run_id, task_id)
+
+    assert response["run_status"] == "failed"
+    assert response["run_error"]["status"] == "FAILED"
+    assert response["run_error"]["error_type"] == "RuntimeError"
+    assert response["task"]["approval_pending"] is True
 
