@@ -47,6 +47,8 @@ class ApprovalRequest(BaseModel):
     decision: str
     # reason：人工操作说明，用于审计与终态报告。
     reason: str = ""
+    # retry_target：驳回后重新执行的工作流阶段；旧 API 默认回到代码修复。
+    retry_target: str = "repair_agent"
 
 
 def _authorize(authorization: str | None = Header(default=None)) -> None:
@@ -568,6 +570,17 @@ def decide_approval(
         raise HTTPException(status_code=409, detail="该 run 正在执行恢复操作")
     fingerprint = str(approval_input.get("approval_fingerprint") or "")
     resume_payload = {"decision": decision, "approval_fingerprint": fingerprint}
+    if decision == "REJECT":
+        retry_target = str(request.retry_target or "repair_agent")
+        if retry_target not in {
+            "locate_agent", "repair_agent", "validate_changes",
+            "run_regression", "review_agent", "prepare_delivery",
+        }:
+            raise HTTPException(status_code=422, detail="无效的驳回回退节点")
+        resume_payload.update({
+            "reason": str(request.reason or "").strip()[:1000],
+            "retry_target": retry_target,
+        })
     # 审批 API 只负责校验决定并排入恢复任务。恢复过程可能继续执行多个 carrier，
     # 不应占用 HTTP 请求；同一个 run 的锁交给后台恢复器持有，直至整张父图完成。
     background.add_task(
@@ -604,6 +617,11 @@ class V1ApprovalDecision(BaseModel):
     decision: Literal["approve", "reject"]
     # reason：审批说明或拒绝原因，最多 1000 字符。
     reason: str = Field(default="", max_length=1000)
+    # 驳回时明确指定重跑阶段；自定义原因必须由 UI 明确选择，服务端再次白名单校验。
+    retry_target: Literal[
+        "locate_agent", "repair_agent", "validate_changes",
+        "run_regression", "review_agent", "prepare_delivery",
+    ] = "repair_agent"
 
 
 def _control_db():
@@ -1429,7 +1447,16 @@ def v1_decide_approval(
     run_id, task_id = _safe_id(run_id), _safe_id(task_id)
     actor = "bearer-token" if authorization else "local-user"
     _audit_control(run_id, task_id, "approval." + request.decision, actor, request.reason)
-    return decide_approval(run_id, task_id, ApprovalRequest(decision=request.decision.upper(), reason=request.reason), background=background)
+    return decide_approval(
+        run_id,
+        task_id,
+        ApprovalRequest(
+            decision=request.decision.upper(),
+            reason=request.reason,
+            retry_target=request.retry_target,
+        ),
+        background=background,
+    )
 
 
 @router.get("/api/v1/runs/{run_id}/artifacts")
