@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.domain.errors import DeliveryError, StepFailed
+from app.domain.errors import StepFailed
 from app.infrastructure.redaction import public_exception
 from app.application.context import StepContext
 from app.workflow.steps.request_approval.approval import final_gate
