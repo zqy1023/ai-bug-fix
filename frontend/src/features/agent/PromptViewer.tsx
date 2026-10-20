@@ -30,7 +30,7 @@ export function PromptViewer({ snapshot }: { snapshot?: PromptSnapshot | Record<
     <div className="prompt-viewer">
       <div className="prompt-meta">
         <Tag color="blue">{prompt.prompt_version || '未记录版本'}</Tag>
-        <span className="prompt-hash">hash {prompt.prompt_hash?.slice(0, 12) || '—'}</span>
+        <span className="prompt-hash">哈希 {prompt.prompt_hash?.slice(0, 12) || '未记录'}</span>
         <span>第 {prompt.attempt} 次尝试</span>
         <span>{prompt.model}</span>
         {prompt.redacted && <span className="prompt-flag">已脱敏</span>}
