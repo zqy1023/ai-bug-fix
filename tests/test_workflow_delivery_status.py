@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from app.workflow.routes import DELIVER, END, FINALIZE, after_delivery, after_finalize
+from app.workflow.routes import APPROVE, DELIVER, END, FINALIZE, after_delivery, after_finalize, after_review
 from app.workflow.steps.finalize_execution.node import _delivery_status
 from app.infrastructure.redaction import public_exception
 from app.domain.errors import StepFailed
@@ -39,27 +39,50 @@ def test_explicit_legacy_analysis_task_delivers_report_then_ends():
     assert after_delivery(state) == END
 
 
-def test_manual_review_is_analysis_only_but_failed_report_delivery_is_failure_path():
+def test_review_manual_submits_source_branch_before_final_approval():
     state = {
         "last_result": "passed",
         "delivery": {},
-        "review": {"verdict": "MANUAL"},
+        "review": {"verdict": "MANUAL", "summary": "需要人工复核"},
         "locate": {
             "status": "LOCATED",
             "recommended_scope": "carrier",
             "category": "carrier",
         },
+        "evidence": {"carrier_dir": "gathers/TestCarrier"},
+        "framework": "gathers",
         "ai_workspace_path": "/workspace/task",
+        "changed_files": ["gathers/TestCarrier/main.py"],
+        "task_id": "TestCarrier__framework.track_server__issue",
+        "task": {
+            "task_id": "TestCarrier__framework.track_server__issue",
+            "carrier": "TestCarrier",
+            "biztype": "framework.track_server",
+        },
+        "problem": {"error": "test error", "fingerprint": "test"},
     }
-    assert after_finalize(state) == DELIVER
+
+    # MANUAL 是“源码分支交付后需要人复核”，不是分析报告分流，也不是已进入审批态。
+    assert after_review(state) == DELIVER
+    delivery_input = build_delivery_input(state)
+    assert delivery_input["analysis_only"] is False
+    assert delivery_input["review_decision"] == "MANUAL"
+    assert delivery_input["report_paths"] == []
+
+    submitted = {
+        **state,
+        "last_result": "passed",
+        "delivery": {"delivery_status": "SUCCESS"},
+    }
+    # 只有分支提交成功之后才进入最终人工审批。
+    assert after_delivery(submitted) == APPROVE
 
     failed_delivery = {
-        **state,
+        **submitted,
         "last_result": "failed",
         "delivery": {"delivery_status": "FAILED"},
     }
     assert after_delivery(failed_delivery) == FINALIZE
-    assert after_finalize(failed_delivery) == END
 
 
 def test_delivery_execution_failure_takes_precedence_over_manual_review():
@@ -69,6 +92,25 @@ def test_delivery_execution_failure_takes_precedence_over_manual_review():
     ]
 
     assert _delivery_status(records, "") == "FAILED"
+
+def test_final_approval_converts_review_manual_into_success_after_source_commit():
+    records = [
+        SimpleNamespace(
+            name="review_agent", status="succeeded", result="MANUAL",
+            output={"verdict": "MANUAL"},
+        ),
+        SimpleNamespace(
+            name="prepare_delivery", status="succeeded", result="",
+            input={"analysis_only": False},
+            output={"commit": "abc123", "pushed": True, "local_branch": False},
+        ),
+        SimpleNamespace(
+            name="request_approval", status="succeeded", result="",
+            output={"decision": "APPROVE", "passed": True},
+        ),
+    ]
+
+    assert _delivery_status(records, "MANUAL") == "SUCCESS"
 
 def test_locate_agent_execution_failure_is_not_reclassified_as_analysis_only():
     state = {
@@ -174,6 +216,42 @@ def test_failed_locate_does_not_use_stale_legacy_candidate_as_business_routing()
 
     assert result["analysis_only"] is False
     assert result["report_paths"] == []
+
+
+def test_delivery_accepts_review_manual_only_for_final_human_approval():
+    class CapturingDelivery:
+        def __init__(self):
+            self.payload = None
+
+        def deliver(self, state):
+            self.payload = state
+            return {
+                "repair_branch": state["repair_branch"],
+                "commit": "abc123",
+                "pushed": True,
+                "local_branch": False,
+            }
+
+    delivery = CapturingDelivery()
+    context = SimpleNamespace(
+        run=SimpleNamespace(run_id="run-test"),
+        services=SimpleNamespace(delivery=delivery),
+    )
+    data = DeliveryInput(
+        task_id="Carrier__biztype__issue",
+        carrier="Carrier",
+        repair_branch="ai-bug-tasks/biztype/Carrier-issue",
+        ai_workspace_path="/workspace/Carrier",
+        changed_files=["gathers/Carrier/main.py"],
+        review_decision="MANUAL",
+        analysis_only=False,
+    )
+
+    output = run_prepare_delivery(context, data)
+
+    assert output.commit == "abc123"
+    assert delivery.payload["analysis_only"] is False
+    assert delivery.payload["changed_files"] == ["gathers/Carrier/main.py"]
 
 
 def test_delivery_attribute_error_writes_safe_trace_frames_into_step_output():
