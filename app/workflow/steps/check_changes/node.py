@@ -6,7 +6,7 @@ import difflib
 from pathlib import Path
 from typing import Any
 
-from app.infrastructure.filesystem.diff import MAX_FILE_BYTES, MAX_LINE_CHARS, read_text_cached
+from app.infrastructure.filesystem.diff import MAX_FILE_BYTES, MAX_LINE_CHARS, MAX_LINES_PER_FILE, read_text_cached
 from app.infrastructure.filesystem.workspace import WorkspaceManager
 from app.domain.errors import StepFailed
 from app.application.context import StepContext
@@ -55,6 +55,8 @@ def _render_diff(
     root = Path(workspace_path).resolve() if workspace_path else None
     baseline = Path(baseline_path).resolve() if baseline_path else None
     parts: list[str] = []
+    used_diff_bytes = 0
+    omitted_diff_files = 0
 
     for item in files:
         relative = str(item.get("path") or "").replace("\\", "/").strip()
@@ -93,6 +95,10 @@ def _render_diff(
                         lineterm="",
                     ))
                     if unified:
+                        body_lines = unified[2:]
+                        truncated_lines = len(body_lines) > MAX_LINES_PER_FILE
+                        if truncated_lines:
+                            unified = [*unified[:2], *body_lines[:MAX_LINES_PER_FILE]]
                         block: list[str] = []
                         for line in unified:
                             if line.startswith(("--- ", "+++ ")):
@@ -103,7 +109,15 @@ def _render_diff(
                             if len(body) > MAX_LINE_CHARS:
                                 body = f"{body[:MAX_LINE_CHARS - 1]}…"
                             block.append(body if marker == "@" else f"{marker}{body}")
-                        parts.append("\n".join(block))
+                        if truncated_lines:
+                            block.append(f"# 单文件差异已截断，最多保留 {MAX_LINES_PER_FILE} 行上下文")
+                        block_text = "\n".join(block)
+                        block_bytes = len(block_text.encode("utf-8"))
+                        if used_diff_bytes + block_bytes <= _REVIEW_DIFF_BUDGET:
+                            parts.append(block_text)
+                            used_diff_bytes += block_bytes
+                        else:
+                            omitted_diff_files += 1
                     # A readable current/baseline pair is authoritative even for an empty file diff.
                     continue
 
@@ -123,7 +137,18 @@ def _render_diff(
             if len(text) > MAX_LINE_CHARS:
                 text = f"{text[:MAX_LINE_CHARS - 1]}…"
             block.append(f"{marker}{text}")
-        parts.append("\n".join(block))
+        block_text = "\n".join(block)
+        block_bytes = len(block_text.encode("utf-8"))
+        if used_diff_bytes + block_bytes <= _REVIEW_DIFF_BUDGET:
+            parts.append(block_text)
+            used_diff_bytes += block_bytes
+        else:
+            omitted_diff_files += 1
+
+    if omitted_diff_files:
+        parts.append(
+            f"# 另有 {omitted_diff_files} 个文件的 Diff 片段超出总容量上限，完整源码可用时仍可在左右对照视图中查看"
+        )
     return "\n".join(parts)
 
 
@@ -133,6 +158,7 @@ def _render_diff(
 # step record stores only the artifact reference, so this does not inflate steps.json.
 _REVIEW_CONTENT_BUDGET = 4 * 1024 * 1024
 _REVIEW_CONTENT_FILES = 100
+_REVIEW_DIFF_BUDGET = 1 * 1024 * 1024
 
 
 def _under(root: Path, candidate: Path) -> bool:
