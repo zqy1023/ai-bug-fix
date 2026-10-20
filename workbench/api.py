@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from app.infrastructure.config import load_config
 from app.infrastructure.records.store import RecordStore
 from app.infrastructure.redaction import public_exception
+from app.workflow.steps.request_approval.models import APPROVAL_RETRY_TARGETS, RetryTarget
 from config.settings import settings
 
 router = APIRouter()
@@ -574,10 +575,7 @@ def decide_approval(
     resume_payload = {"decision": decision, "approval_fingerprint": fingerprint}
     if decision == "REJECT":
         retry_target = str(request.retry_target)
-        if retry_target not in {
-            "locate_agent", "repair_agent", "validate_changes",
-            "run_regression", "review_agent", "prepare_delivery",
-        }:
+        if retry_target not in APPROVAL_RETRY_TARGETS:
             raise HTTPException(status_code=422, detail="无效的驳回回退节点")
         resume_payload.update({
             "reason": str(request.reason or "").strip()[:1000],
@@ -620,10 +618,7 @@ class V1ApprovalDecision(BaseModel):
     # reason：审批说明或拒绝原因，最多 1000 字符。
     reason: str = Field(default="", max_length=1000)
     # 驳回时明确指定重跑阶段；自定义原因必须由 UI 明确选择，服务端再次白名单校验。
-    retry_target: Literal[
-        "locate_agent", "repair_agent", "validate_changes",
-        "run_regression", "review_agent", "prepare_delivery",
-    ] | None = None
+    retry_target: RetryTarget | None = None
 
 
 def _control_db():
