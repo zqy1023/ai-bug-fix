@@ -126,6 +126,8 @@ class WorkflowState(TypedDict, total=False):
     delivery_commit: str
     repair_branch: str
     approval_cleanup_failed: bool
+    # 审批驳回但分支清理/回退目标不安全时禁止进入回修路由。
+    approval_recovery_blocked: bool
     # 收尾摘要：finalize_execution 写入，父图收集后累加进 task_results。
     task_summary: dict[str, Any]
 
