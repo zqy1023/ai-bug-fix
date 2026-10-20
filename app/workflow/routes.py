@@ -198,7 +198,7 @@ def after_approval(state: WorkflowState) -> str:
     """审批后路由：最终审批只保留或拒绝已交付分支，不自动合并。"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
         return FINALIZE
-    if state.get("approval_cleanup_failed"):
+    if state.get("approval_cleanup_failed") or state.get("approval_recovery_blocked"):
         return FINALIZE
 
     approval_result = _result(state)
