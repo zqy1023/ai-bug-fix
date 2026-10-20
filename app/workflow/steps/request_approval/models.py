@@ -10,8 +10,6 @@ from app.workflow.spec import FrozenModel
 from pydantic import Field
 
 
-
-
 class ApprovalInput(FrozenModel):
     """request_approval 的输入。"""
 
