@@ -9,6 +9,7 @@ import type { ApprovalItem, StepRecord } from '../../lib/types';
 import { api } from '../../lib/api';
 import { queryKeys } from '../../lib/queryKeys';
 import { formatTime } from '../../lib/format';
+import { CodeDiffViewer } from '../../components/CodeDiffViewer';
 
 type Dict = Record<string, unknown>;
 type FileEvidence = Dict & {
@@ -18,103 +19,6 @@ type FileEvidence = Dict & {
   removed?: number;
   problems?: string[];
 };
-type DiffBlock = { path: string; text: string };
-
-function asObject(value: unknown): Dict {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value as Dict
-    : {};
-}
-
-function text(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : '';
-}
-
-function stringField(source: Dict, ...keys: string[]): string {
-  for (const key of keys) {
-    const value = text(source[key]);
-    if (value) return value;
-  }
-  return '';
-}
-
-function rawStringField(source: Dict, ...keys: string[]): string {
-  for (const key of keys) {
-    const value = source[key];
-    if (typeof value === 'string' && value.length > 0) return value;
-  }
-  return '';
-}
-
-function statusLabel(status: unknown): string {
-  switch (text(status).toLowerCase()) {
-    case 'added':
-    case 'new':
-    case 'created':
-      return '新增';
-    case 'deleted':
-    case 'removed':
-      return '删除';
-    case 'renamed':
-    case 'moved':
-      return '重命名';
-    case 'unchanged':
-      return '未变化';
-    case 'declared':
-      return '仅有修改声明';
-    case 'modified_too_large':
-      return '修改较大';
-    default:
-      return '修改';
-  }
-}
-
-function stepOf(steps: StepRecord[], name: string): StepRecord | undefined {
-  return [...steps].reverse().find((step) => step.name === name);
-}
-
-function splitDiff(value: string): DiffBlock[] {
-  if (!value.trim()) return [];
-  const lines = value.split(/\r?\n/);
-  const blocks: DiffBlock[] = [];
-  let current: string[] = [];
-  let currentPath = '';
-
-  const flush = () => {
-    if (!current.length) return;
-    blocks.push({
-      path: currentPath || '完整差异',
-      text: current.join('\n'),
-    });
-  };
-
-  for (const line of lines) {
-    if (line.startsWith('--- a/')) {
-      flush();
-      current = [];
-      currentPath = line.slice('--- a/'.length).trim();
-    }
-    current.push(line);
-  }
-  flush();
-
-  return blocks.length ? blocks : [{ path: '完整差异', text: value }];
-}
-
-function DiffText({ value }: { value: string }) {
-  return (
-    <pre className="approval-diff-viewer">
-      {value.split(/\r?\n/).map((line, index) => {
-        const kind = line.startsWith('+++') || line.startsWith('---') ? 'header'
-          : line.startsWith('+') ? 'add'
-            : line.startsWith('-') ? 'remove'
-              : line.startsWith('@@') ? 'hunk' : 'context';
-        return <span key={index} className={`approval-diff-line is-${kind}`}>{line || ' '}</span>;
-      })}
-    </pre>
-  );
-}
-
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="review-fact">
@@ -172,21 +76,7 @@ export function ReviewPane({ item }: { item: ApprovalItem }) {
     staleTime: 60_000,
   });
 
-  const diffText = useMemo(() => {
-    const payload = diffQuery.data?.content;
-    if (typeof payload === 'string') return payload;
-    const parsed = asObject(payload);
-    if (typeof parsed.diff === 'string') return parsed.diff;
-    return payload ? JSON.stringify(payload, null, 2) : '';
-  }, [diffQuery.data?.content]);
-  const diffBlocks = useMemo(() => splitDiff(diffText), [diffText]);
-  const diffPaths = useMemo(() => Array.from(new Set([
-    ...changedFiles.map((file) => file.path),
-    ...diffBlocks.map((block) => block.path),
-  ].filter(Boolean))), [changedFiles, diffBlocks]);
-  const selectedDiff = selectedDiffPath
-    ? diffBlocks.find((block) => block.path === selectedDiffPath)
-    : (diffText ? { path: '完整差异', text: diffText } : undefined);
+  const diffPayload = diffQuery.data?.content;
 
   const problem = asObject(task?.problem);
   // identify_carrier preserves the error field from the normalized ES record as the original log text.
@@ -354,63 +244,25 @@ export function ReviewPane({ item }: { item: ApprovalItem }) {
       </p>
 
       <Drawer
-        title="文件修改详情 · Unified Diff"
+        title="文件修改详情 · 源码左右对照"
         placement="right"
-        width="min(1180px, 94vw)"
+        width="min(1440px, 97vw)"
         open={diffOpen}
         onClose={() => setDiffOpen(false)}
-        styles={{ body: { padding: 12 } }}
+        styles={{ body: { padding: 10, overflow: 'hidden' } }}
       >
         {diffQuery.isLoading ? (
           <Skeleton active paragraph={{ rows: 10 }} />
         ) : diffQuery.isError ? (
           <Empty description="读取 diff 产物失败，请检查 check_changes 的步骤记录。" />
-        ) : !diffText ? (
-          <Empty description="没有可显示的逐行差异文本。" />
+        ) : diffPayload ? (
+          <CodeDiffViewer
+            payload={diffPayload}
+            selectedPath={selectedDiffPath}
+            onSelectedPathChange={setSelectedDiffPath}
+          />
         ) : (
-          <div className="approval-diff-layout">
-            <aside className="approval-diff-sidebar">
-              <div className="approval-diff-sidebar-head">变更文件 <span>{diffPaths.length}</span></div>
-              {diffPaths.map((path) => {
-                const evidence = evidenceOf(path);
-                const active = (selectedDiff?.path ?? '') === path;
-                return (
-                  <button
-                    key={path}
-                    type="button"
-                    className={`approval-diff-nav-item${active ? ' is-active' : ''}`}
-                    onClick={() => setSelectedDiffPath(path)}
-                  >
-                    <code>{path}</code>
-                    <span>
-                      {evidence
-                        ? `+${Number(evidence.added) || 0} / −${Number(evidence.removed) || 0}`
-                        : '查看差异'}
-                    </span>
-                  </button>
-                );
-              })}
-            </aside>
-            <section className="approval-diff-content">
-              {selectedDiff ? (
-                <>
-                  <header className="approval-diff-file-head">
-                    <strong>{selectedDiff.path}</strong>
-                    <Button
-                      size="small"
-                      type="link"
-                      onClick={() => setSelectedDiffPath('')}
-                    >
-                      查看全部
-                    </Button>
-                  </header>
-                  <DiffText value={selectedDiff.text} />
-                </>
-              ) : (
-                <Empty description="该文件没有对应的逐行 diff 片段；请检查变更清单与 diff 产物是否一致。" />
-              )}
-            </section>
-          </div>
+          <Empty description="没有可显示的代码差异。" />
         )}
       </Drawer>
     </article>
