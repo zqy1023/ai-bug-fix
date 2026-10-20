@@ -406,3 +406,49 @@ def test_v1_rejection_api_requires_an_explicit_retry_target():
     assert raised.value.status_code == 422
     assert "明确指定回退节点" in raised.value.detail
 
+def test_approval_node_blocks_rejection_without_retry_target(monkeypatch):
+    import app.workflow.steps.request_approval.node as approval_node
+
+    monkeypatch.setattr(
+        approval_node,
+        "interrupt",
+        lambda _payload: {
+            "decision": "REJECT",
+            "approval_fingerprint": "fingerprint",
+            "reason": "节点未提供",
+            # No retry_target: this must not silently become repair_agent.
+        },
+    )
+    data = ApprovalInput(
+        task_id="Carrier__framework.track_server__issue",
+        decision="PENDING",
+        carrier="Carrier",
+        ai_workspace_path="/workspace/task",
+        changed_files=["gathers/Carrier/main.py"],
+        baseline_dir="",
+        approval_fingerprint="fingerprint",
+    )
+
+    with pytest.raises(StepFailed) as raised:
+        approval_node.run(SimpleNamespace(services=SimpleNamespace(delivery=None)), data)
+
+    assert raised.value.result == "manual"
+    assert raised.value.output["decision"] == "REJECT"
+    assert raised.value.output["retry_target"] == ""
+
+
+def test_legacy_rejection_api_requires_an_explicit_retry_target():
+    from fastapi import HTTPException
+    import workbench.api as api_module
+
+    request = api_module.ApprovalRequest(
+        decision="REJECT",
+        reason="未指定回退节点",
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        api_module.decide_approval("run-id", "task-id", request, background=None)
+
+    assert raised.value.status_code == 422
+    assert "明确指定回退节点" in raised.value.detail
+
