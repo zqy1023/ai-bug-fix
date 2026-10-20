@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { App, Button, Input, Select } from 'antd';
 import { CheckOutlined, StopOutlined } from '@ant-design/icons';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -79,30 +80,27 @@ type DecisionInput = {
 export function DecisionBar({ item, onDecided }: { item: ApprovalItem; onDecided: () => void }) {
   const { message, modal } = App.useApp();
   const queryClient = useQueryClient();
-  const [reasonCode, setReasonCode] = useState<RejectReasonCode>('code_change');
+  const navigate = useNavigate();
+  const [reasonCode, setReasonCode] = useState<RejectReasonCode | ''>('');
   const [retryTargetOverride, setRetryTargetOverride] = useState<ApprovalRetryTarget>('repair_agent');
   const [reason, setReason] = useState('');
   const [pending, setPending] = useState<'approve' | 'reject' | null>(null);
 
   const selectedReason = useMemo(
-    () => REJECTION_REASONS.find((option) => option.value === reasonCode) ?? REJECTION_REASONS[1],
+    () => REJECTION_REASONS.find((option) => option.value === reasonCode),
     [reasonCode],
   );
-  const retryTarget = reasonCode === 'other' ? retryTargetOverride : selectedReason.retryTarget;
+  const retryTarget = reasonCode === 'other' ? retryTargetOverride : selectedReason?.retryTarget ?? 'repair_agent';
   const rejectReason = reasonCode === 'other'
     ? reason.trim()
-    : `${selectedReason.label}${reason.trim() ? `；补充说明：${reason.trim()}` : ''}`;
+    : selectedReason
+      ? `${selectedReason.label}${reason.trim() ? `；补充说明：${reason.trim()}` : ''}`
+      : '';
 
   const decide = useMutation({
     mutationFn: ({ decision, reason: decisionReason, retryTarget: target }: DecisionInput) =>
       api.decideApproval(item.approval_id, decision, decisionReason, target),
     onSuccess: async (_result, variables) => {
-      if (variables.decision === 'approve') {
-        message.success('已批准，交付分支保留供你手动合并');
-      } else {
-        message.success(`已驳回，将从「${TARGET_LABELS[variables.retryTarget]}」阶段重新执行`);
-      }
-      setReason('');
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.approvals }),
         queryClient.invalidateQueries({ queryKey: queryKeys.dashboard }),
@@ -111,12 +109,25 @@ export function DecisionBar({ item, onDecided }: { item: ApprovalItem; onDecided
         queryClient.invalidateQueries({ queryKey: queryKeys.board(item.run_id) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.task(item.run_id, item.task_id) }),
       ]);
+      setReason('');
       onDecided();
+      if (variables.decision === 'approve') {
+        message.success('已批准，分支已保留；请在 Git 上手动检查并合并');
+      } else {
+        // API only confirms that the async checkpoint resume was accepted. It cannot
+        // guarantee cleanup or retry has already succeeded, so take the operator to live task status.
+        message.info(`驳回请求已受理；后台将从「${TARGET_LABELS[variables.retryTarget]}」恢复。请以任务详情中的实际状态为准。`);
+        navigate(`/runs/${encodeURIComponent(item.run_id)}/tasks/${encodeURIComponent(item.task_id)}`);
+      }
     },
     onError: (error) => message.error(error instanceof ApiError ? error.message : '提交审批失败'),
   });
 
   const run = (decision: 'approve' | 'reject') => {
+    if (decision === 'reject' && !reasonCode) {
+      message.warning('请先选择驳回原因，确保任务回到正确的执行阶段');
+      return;
+    }
     if (decision === 'reject' && reasonCode === 'other' && !reason.trim()) {
       message.warning('选择“其他”时必须单独填写驳回原因');
       return;
@@ -150,7 +161,8 @@ export function DecisionBar({ item, onDecided }: { item: ApprovalItem; onDecided
           <Select
             id="approval-reject-reason"
             aria-label="驳回原因"
-            value={reasonCode}
+            value={reasonCode || undefined}
+            placeholder="请选择驳回原因"
             options={REJECTION_REASONS.map((option) => ({ value: option.value, label: option.label }))}
             onChange={(value: RejectReasonCode) => setReasonCode(value)}
             popupMatchSelectWidth={false}
@@ -160,7 +172,7 @@ export function DecisionBar({ item, onDecided }: { item: ApprovalItem; onDecided
         <div className="decision-retry-route">
           <div>
             <span>重新执行阶段</span>
-            <strong>{TARGET_LABELS[retryTarget]}</strong>
+            <strong>{reasonCode ? TARGET_LABELS[retryTarget] : '选择原因后确定回退阶段'}</strong>
           </div>
           {reasonCode === 'other' ? (
             <Select
@@ -170,7 +182,7 @@ export function DecisionBar({ item, onDecided }: { item: ApprovalItem; onDecided
               onChange={(value: ApprovalRetryTarget) => setRetryTargetOverride(value)}
             />
           ) : (
-            <p>{selectedReason.help}</p>
+            <p>{selectedReason?.help || '请先选择驳回原因；系统将按预设映射恢复到对应节点。'}</p>
           )}
         </div>
 
@@ -195,7 +207,7 @@ export function DecisionBar({ item, onDecided }: { item: ApprovalItem; onDecided
         <Button
           danger
           icon={<StopOutlined />}
-          disabled={reasonCode === 'other' && !reason.trim()}
+          disabled={!reasonCode || (reasonCode === 'other' && !reason.trim())}
           loading={decide.isPending && pending === 'reject'}
           onClick={() => run('reject')}
         >
