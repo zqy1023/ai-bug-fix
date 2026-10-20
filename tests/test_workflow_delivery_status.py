@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from app.workflow.routes import DELIVER, END, FINALIZE, after_delivery, after_finalize
 from app.workflow.steps.finalize_execution.node import _delivery_status
+from app.infrastructure.redaction import public_exception
 
 
 def test_source_delivery_failure_is_not_reclassified_as_analysis_only():
@@ -74,3 +75,12 @@ def test_locate_agent_execution_failure_is_not_reclassified_as_analysis_only():
     }
 
     assert after_finalize(state) == END
+
+def test_attribute_error_summary_keeps_safe_missing_attribute_detail():
+    message = public_exception(
+        AttributeError("'WorkspaceManager' object has no attribute 'project_root'"),
+        prefix="交付失败",
+    )
+
+    assert "WorkspaceManager" in message
+    assert "project_root" in message
