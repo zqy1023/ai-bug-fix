@@ -267,6 +267,12 @@ def after_finalize(state: WorkflowState) -> str:
         return END
     if str(state.get("decision") or "").upper() == "REJECT" or state.get("approval_cleanup_failed"):
         return END
+    # finalize_execution 已汇总出的执行失败必须终止；不能因 review=MANUAL 等业务结论
+    # 再次进入报告交付，从而把节点失败伪装成“分析任务已完成”。
+    if _finalized_status(state) in {"FAILED", "FAIL", "CANCELLED", "REJECTED"}:
+        return END
+    if _result(state) in {"failed", "cancelled", "rejected"}:
+        return END
     if str((state.get("delivery") or {}).get("delivery_status") or "").upper() == "FAILED":
         return END
     return DELIVER if _analysis_only_task(state) and state.get("ai_workspace_path") else END
