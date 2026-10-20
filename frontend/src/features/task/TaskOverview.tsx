@@ -247,7 +247,15 @@ export function TaskOverview({
   const deliveredCode = landed && !analysisOnly;
   const deliveredReport = landed && analysisOnly;
   const reportPaths = strings(deliveryInput.report_paths);
-  const terminalStep = getText(report, 'terminal_step') || getText(finalStep?.output ?? {}, 'terminal_step') || steps.filter((step) => step.status !== 'pending').slice(-1)[0]?.name || '';
+  const terminalStep = getText(report, 'terminal_step') || getText(finalStep?.output ?? {}, 'terminal_step') || '';
+  const lastExecutedStep = [...steps]
+    .filter((step) => step.status !== 'pending')
+    .sort((left, right) => {
+      const leftTime = Date.parse(left.finished_at || left.started_at || '') || 0;
+      const rightTime = Date.parse(right.finished_at || right.started_at || '') || 0;
+      return leftTime - rightTime;
+    })
+    .slice(-1)[0];
   const terminalReason = getText(report, 'terminal_reason') || getText(finalStep?.output ?? {}, 'terminal_reason') || '';
   const nextAction = getText(report, 'next_action') || getText(finalStep?.output ?? {}, 'next_action') || '';
   const rootCause = getText(locate, 'root_cause', 'analysis');
@@ -333,8 +341,12 @@ export function TaskOverview({
             <small>{changedCount > 0 && changeEvidenceKnown ? `+${added} / −${removed} 行` : changeEvidenceKnown ? '基线差异核验已完成' : '未完成确定性基线比对'}</small>
           </div>
           <div className="outcome-fact-row">
-            <span>终止节点</span>
+            <span>自动修复停止点</span>
             <strong>{terminalLabel(terminalStep)}</strong>
+          </div>
+          <div className="outcome-fact-row">
+            <span>最后执行步骤</span>
+            <strong>{terminalLabel(lastExecutedStep?.name || '')}</strong>
           </div>
           <div className="outcome-fact-row">
             <span>执行耗时</span>
@@ -356,7 +368,7 @@ export function TaskOverview({
       <section className="task-process-overview" aria-label="任务执行阶段">
         <div className="overview-section-heading">
           <div><h3>处理路径</h3><span>只展示业务阶段；完整原子节点与原始数据位于下方执行记录</span></div>
-          {terminalStep && <span className="overview-stop-point">结束于：{terminalLabel(terminalStep)}</span>}
+          {terminalStep && <span className="overview-stop-point">自动修复停止点：{terminalLabel(terminalStep)}</span>}
         </div>
         <div className="overview-stage-grid">
           <StageItem title="根因定位" steps={[locateStep]} hint={locateStep ? toneText(toneForStep(locateStep)) : '未开始'} />
