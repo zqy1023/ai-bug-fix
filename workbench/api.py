@@ -621,7 +621,7 @@ class V1ApprovalDecision(BaseModel):
     retry_target: Literal[
         "locate_agent", "repair_agent", "validate_changes",
         "run_regression", "review_agent", "prepare_delivery",
-    ] = "repair_agent"
+    ] | None = None
 
 
 def _control_db():
@@ -1445,6 +1445,8 @@ def v1_decide_approval(
     authorization: str | None = Header(default=None),
     _: None = Depends(_authorize),
 ) -> dict[str, Any]:
+    if request.decision == "reject" and not request.retry_target:
+        raise HTTPException(status_code=422, detail="驳回必须明确指定回退节点")
     if ":" not in approval_id:
         raise HTTPException(status_code=400, detail="无效的审批 ID")
     run_id, task_id = approval_id.split(":", 1)
@@ -1457,7 +1459,7 @@ def v1_decide_approval(
         ApprovalRequest(
             decision=request.decision.upper(),
             reason=request.reason,
-            retry_target=request.retry_target,
+            retry_target=request.retry_target or "repair_agent",
         ),
         background=background,
     )
