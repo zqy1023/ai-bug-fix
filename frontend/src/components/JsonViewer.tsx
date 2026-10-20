@@ -22,7 +22,7 @@ function stringValue(value: string, quote = true): ReactNode {
   return (
     <>
       <span className="json-string">
-        {quote ? '&quot;' : ''}{preview.slice(0, 180)}…{quote ? '&quot;' : ''}
+        {quote ? '"' : ''}{preview.slice(0, 180)}…{quote ? '"' : ''}
       </span>
       <details className="json-long-value">
         <summary>查看完整值（{value.length} 字符）</summary>
