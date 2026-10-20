@@ -9,6 +9,16 @@ import { PromptViewer } from './PromptViewer';
 import { ToolCallTimeline } from './ToolCallTimeline';
 import { ModelOutputPanel } from './ModelOutputPanel';
 
+function callStatusLabel(status: string): string {
+  return ({
+    succeeded: '成功',
+    failed: '失败',
+    running: '运行中',
+    pending: '等待中',
+    cancelled: '已取消',
+  } as Record<string, string>)[status] || status || '未知';
+}
+
 export function AgentTrace({
   runId, taskId, stepName, attempt,
 }: { runId: string; taskId: string; stepName: string; attempt?: number }) {
@@ -21,8 +31,8 @@ export function AgentTrace({
 
   const calls = useMemo(() => {
     const all = (callsQuery.data?.items ?? []).filter((call) => call.agent_role === role);
-    const exact = attempt ? all.filter((call) => call.attempt === attempt) : [];
-    return exact.length ? exact : all;
+    // If this specific attempt has no recorded call, do not display calls from a previous attempt as if current.
+    return attempt ? all.filter((call) => call.attempt === attempt) : all;
   }, [callsQuery.data?.items, role, attempt]);
 
   const [selectedId, setSelectedId] = useState('');
@@ -41,6 +51,9 @@ export function AgentTrace({
   });
 
   if (callsQuery.isLoading) return <Skeleton active paragraph={{ rows: 6 }} />;
+  if (callsQuery.isError) {
+    return <EmptyState title="Agent 调用读取失败" description="请刷新步骤详情后重试。" compact />;
+  }
   if (!calls.length) {
     return (
       <EmptyState
@@ -69,7 +82,7 @@ export function AgentTrace({
               onClick={() => setSelectedId(call.model_call_id)}
               title={call.model_call_id}
             >
-              #{shortId(call.model_call_id, 6)} · {call.status}
+              #{shortId(call.model_call_id, 6)} · {callStatusLabel(call.status)}
             </button>
           ))}
         </div>
@@ -89,6 +102,8 @@ export function AgentTrace({
 
       {!selected ? null : detail.isLoading ? (
         <Skeleton active paragraph={{ rows: 5 }} />
+      ) : detail.isError ? (
+        <EmptyState title="调用详情读取失败" description="调用记录已找到，但提示词和工具事件无法加载。" compact />
       ) : (
         <>
           <div className="agent-call-summary">
@@ -97,8 +112,8 @@ export function AgentTrace({
             <span>{role}</span>
             <span>{formatTokens(selected.total_tokens)} tokens</span>
             <span>{formatDuration(selected.duration_ms)}</span>
-            <span className={selected.status === 'succeeded' ? 'text-success' : 'text-danger'}>
-              {selected.status === 'succeeded' ? '成功' : selected.status}
+            <span className={selected.status === 'succeeded' ? 'text-success' : selected.status === 'failed' ? 'text-danger' : ''}>
+              {callStatusLabel(selected.status)}
             </span>
           </div>
           <div className="agent-section">
