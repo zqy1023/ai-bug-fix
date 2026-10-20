@@ -288,7 +288,7 @@ export function CodeDiffViewer({
   const record = object(payload);
   const fullText = typeof payload === 'string' ? payload : asText(record.diff);
   const diffWarnings = useMemo(
-    () => fullText.split(/\\r?\\n/)
+    () => fullText.split(/\r?\n/)
       .filter((line) => line.startsWith('# 单文件差异已截断') || line.startsWith('# 另有 ')),
     [fullText],
   );
@@ -347,7 +347,7 @@ export function CodeDiffViewer({
     <div className="code-diff-workbench">
       {diffWarnings.length > 0 && (
         <div className="code-diff-truncation-warning" role="status">
-          {diffWarnings.map((warning) => warning.replace(/^#\\s*/, '')).join('；')}
+          {diffWarnings.map((warning) => warning.replace(/^#\s*/, '')).join('；')}
         </div>
       )}
       <aside className="code-diff-file-tree">
