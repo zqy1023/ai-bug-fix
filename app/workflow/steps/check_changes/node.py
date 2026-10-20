@@ -70,9 +70,10 @@ def _render_diff(files: list[dict[str, Any]]) -> str:
 
 
 # Inline text sources let the workbench render an editor-style, side-by-side diff.
-# Limits prevent a large carrier file set from bloating the persisted workflow artifact.
-_REVIEW_CONTENT_BUDGET = 550_000
-_REVIEW_CONTENT_FILES = 40
+# Keep enough room for a normal multi-file repair and both complete source versions; the
+# step record stores only the artifact reference, so this does not inflate steps.json.
+_REVIEW_CONTENT_BUDGET = 4 * 1024 * 1024
+_REVIEW_CONTENT_FILES = 100
 
 
 def _under(root: Path, candidate: Path) -> bool:
