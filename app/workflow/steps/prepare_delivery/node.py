@@ -16,11 +16,13 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
         if not data.report_paths:
             raise StepFailed("分析任务交付失败：缺少最终报告", {"reason": "report_missing"})
     else:
-        # 源码交付必须有实际改动，并且审查和必要审批均已通过。
+        # 源码交付必须有实际改动；agent 模式还要求 AI 审查通过，
+        # human 模式跳过 AI 审查，门禁交给交付审批节点。
         if not data.changed_files:
             raise StepFailed("交付失败：没有实际变更文件", {"changed_files": [], "reason": "no_changes"})
+        # HUMAN 表示人工审查模式：跳过 AI 审查，交付门禁交给交付审批节点。
         review_decision = str(data.review_decision or "").upper()
-        if review_decision not in ("PASS", "APPROVED"):
+        if review_decision not in ("PASS", "APPROVED", "HUMAN"):
             raise StepFailed(
                 f"交付失败：审查未通过，decision={review_decision}",
                 {"review_decision": review_decision, "reason": "review_not_passed"},
@@ -64,6 +66,7 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
         repair_branch=str(result.get("repair_branch") or data.repair_branch),
         commit=str(result.get("commit") or ""),
         pushed=bool(result.get("pushed")),
+        local_branch=bool(result.get("local_branch")),
     )
 
 

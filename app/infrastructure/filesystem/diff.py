@@ -11,11 +11,12 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
-MAX_LINES_PER_FILE = 120
-MAX_LINE_CHARS = 400
-MAX_FILES = 20
-MAX_FILE_BYTES = 2 * 1024 * 1024
 from config.settings import settings
+
+MAX_LINES_PER_FILE = settings.diff_max_lines_per_file
+MAX_LINE_CHARS = settings.diff_max_line_chars
+MAX_FILES = settings.diff_max_files
+MAX_FILE_BYTES = settings.diff_max_file_bytes
 
 _IGNORED_PARTS = (settings.artifact_dir_name, ".evidence", ".git")
 
@@ -24,7 +25,7 @@ _IGNORED_PARTS = (settings.artifact_dir_name, ".evidence", ".git")
 # 因此不会返回过期内容，同时把重复 I/O 压到一次。
 _TEXT_CACHE: dict[tuple[str, int, int], str | None] = {}
 _HASH_CACHE: dict[tuple[str, int, int], str] = {}
-_CACHE_MAX = 512
+_CACHE_MAX = settings.diff_cache_size
 
 
 def _cache_key(path: Path) -> tuple[str, int, int] | None:

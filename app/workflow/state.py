@@ -121,6 +121,8 @@ class WorkflowState(TypedDict, total=False):
     # 最终交付与审批清理状态。
     delivery: dict[str, Any]
     delivery_pushed: bool
+    # delivery_local_branch：未推送时修复提交已写回源仓库的本地分支。
+    delivery_local_branch: bool
     delivery_commit: str
     repair_branch: str
     approval_cleanup_failed: bool

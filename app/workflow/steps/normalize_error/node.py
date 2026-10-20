@@ -66,14 +66,22 @@ def _normalize(record: Any, index: int) -> dict[str, Any]:
     normalized = normalize_error(raw_error)
     if not normalized:
         raise StepFailed(f"ES 第 {index} 条记录的 error 规范化后为空")
+    # 上游日志常把 response / track_config 嵌在 req 对象里，而不是放在记录顶层。
+    # 顶层优先，缺失时回退到 req 内部；两者都统一成 JSON 字符串，供重放使用。
+    response = record.get("response") or request.get("response") or ""
+    track_config = record.get("track_config") or request.get("track_config") or ""
+    if not isinstance(response, str):
+        response = json.dumps(response, ensure_ascii=False)
+    if not isinstance(track_config, str):
+        track_config = json.dumps(track_config, ensure_ascii=False)
     return NormalizedLog(
         source_index=index,
         service_name=service_name,
         biztype=biztype,
         carrier=carrier,
         req=req,
-        response=record.get("response", ""),  # 可选字段
-        track_config=record.get("track_config", ""),  # 可选字段
+        response=response,
+        track_config=track_config,
         raw_error=raw_error,
         normalized_error=normalized,
     ).model_dump()

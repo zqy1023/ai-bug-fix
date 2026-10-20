@@ -1,0 +1,370 @@
+"""单步执行应用服务。
+
+单步执行严格复用 CLI 调试语义：从本次执行已落盘的记录重建输入、校验前置步骤、
+写操作必须显式确认。与 CLI 的唯一区别是增加了运行态校验：活跃执行由 LangGraph
+单写者持有，任何旁路写入都会破坏 ``steps.json`` 的一致性。
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+from dataclasses import dataclass
+from typing import Any, Callable
+
+from app.application.audit import StepError, StepRecord
+from app.application.services import WorkflowServices
+from app.domain.models import utc_now
+from app.infrastructure.records.store import RecordStore
+from app.infrastructure.runtime import close_sessions
+from app.workflow.spec import AgentSpec, PluginSpec, StepSpec
+
+logger = logging.getLogger(__name__)
+
+# 活跃状态由 LangGraph 主图持有写权，禁止旁路单步执行。
+ACTIVE_RUN_STATUSES = frozenset({"queued", "running", "pause_requested", "cancel_requested"})
+# 审批必须走审批接口；retry_prepare 是用户不可见的内部回修节点。
+BLOCKED_STEPS = frozenset({"request_approval", "retry_prepare"})
+
+
+class StepRunnerError(RuntimeError):
+    """单步执行被拒绝或失败；``code`` 与 ``status_code`` 供 API 映射。"""
+
+    def __init__(self, message: str, *, code: str = "STEP_RUN_REJECTED", status_code: int = 409) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status_code = status_code
+
+
+@dataclass(frozen=True)
+class StepRunRequest:
+    """一次单步执行请求。"""
+
+    run_id: str
+    task_id: str
+    step_name: str
+    confirm_write: bool = False
+
+
+def default_store() -> RecordStore:
+    """按当前运行配置打开记录仓库。"""
+    from app.infrastructure.config import load_config
+
+    return RecordStore(load_config().runtime_dir)
+
+
+def resolve_spec(name: str) -> PluginSpec:
+    """按插件名取契约；步骤名与 agent 短名/全名都接受。"""
+    from app.workflow.plugin_loader import BUILTIN_AGENTS, BUILTIN_STEPS, load_agent, load_step
+    from app.workflow.registry import resolve
+
+    short = name[:-6] if name.endswith("_agent") else name
+    try:
+        if name in BUILTIN_STEPS:
+            load_step(name)
+            return resolve(name)
+        if short in BUILTIN_AGENTS:
+            load_agent(short)
+            return resolve(f"{short}_agent")
+    except Exception as exc:
+        raise StepRunnerError(f"无法装载步骤 {name}: {exc}", code="STEP_NOT_FOUND", status_code=404) from exc
+    raise StepRunnerError(f"未知步骤: {name}", code="STEP_NOT_FOUND", status_code=404)
+
+
+def dependencies_missing(store: RecordStore, run_id: str, spec: PluginSpec, task_id: str) -> list[str]:
+    """返回尚未成功的直接前置步骤名。"""
+    missing: list[str] = []
+    for dependency in spec.depends_on:
+        dependency_task = task_id if dependency.level == "task" else ""
+        record = store.load(run_id, dependency.name, dependency_task)
+        if record is None or record.status != "succeeded":
+            missing.append(dependency.name)
+    return missing
+
+
+def _manifest(store: RecordStore, run_id: str, task_id: str, record: StepRecord) -> dict[str, Any]:
+    """按引用取源码基线清单；旧记录没有引用，退回它自己的路径字段。"""
+    refs = [ref for ref in record.artifacts if ref.name == "source_snapshot"]
+    if refs:
+        manifest = store.read_ref(run_id, refs[0], task_id)
+    else:
+        relative = str(record.output.get("manifest_artifact") or "")
+        if not relative:
+            raise StepRunnerError(f"任务 {task_id} 的 prepare_source_snapshot 记录没有基线清单引用")
+        manifest = store.read_artifact(run_id, relative, task_id)
+    if not isinstance(manifest, dict):
+        raise StepRunnerError(f"任务 {task_id} 的 source_snapshot.json 必须是哈希对象")
+    return manifest
+
+
+def state_from_records(store: RecordStore, run_id: str, task_id: str = "") -> dict[str, Any]:
+    """只依据本执行已落盘的记录重建图通道。"""
+    from app.infrastructure.config import load_config
+
+    config = load_config()
+    state: dict[str, Any] = {
+        "run_id": run_id,
+        "task_id": task_id,
+        "attempt": 1,
+        "schema_version": 2,
+        "source_repo_path": str(store.load_run(run_id).get("source_repo_path") or ""),
+    }
+    state.update({
+        "log_service_name": config.log_service_name,
+        "log_service_prefix": config.log_service_prefix,
+        "log_excluded_messages": list(config.excluded_messages),
+        "log_excluded_biztypes": list(config.excluded_biztypes),
+        "log_days": config.log_days,
+        "log_limit": config.limit,
+    })
+    for record in store.list_steps(run_id):
+        if record.name == "identify_carrier":
+            state["tasks"] = list(record.output.get("tasks") or [])
+    if not task_id:
+        return state
+
+    for record in store.list_steps(run_id, task_id):
+        output = record.output
+        if record.name == "prepare_workspace" and record.status == "succeeded":
+            state["ai_workspace_path"] = str(output.get("ai_workspace_path") or "")
+        elif record.name == "prepare_evidence" and record.status == "succeeded":
+            state["evidence"] = dict(output)
+        elif record.name == "prepare_source_snapshot" and record.status == "succeeded":
+            manifest = _manifest(store, run_id, task_id, record)
+            state["baseline_manifest"] = {str(key): str(value) for key, value in manifest.items()}
+            state["baseline_dir"] = str(output.get("baseline_dir") or "")
+            state["source_project_path"] = str(output.get("source_project_path") or "")
+            state["framework"] = str(output.get("framework") or "")
+        elif record.name == "repair_agent":
+            state["repair"] = output
+            state["changed_files"] = list(output.get("changed_files") or [])
+            state["change_plan"] = dict(output.get("change_plan") or {})
+            state["attempt"] = int(record.attempt or state["attempt"])
+        elif record.name == "locate_agent":
+            state["locate"] = output
+        elif record.name == "check_changes":
+            state["check_passed"] = bool(output.get("passed"))
+            state["changed_files"] = list(output.get("changed_files") or state.get("changed_files") or [])
+        elif record.name == "verify_issue":
+            state["verify_passed"] = bool(output.get("passed"))
+            state["verify_result"] = output
+        elif record.name == "run_regression":
+            state["regression_passed"] = bool(output.get("passed"))
+            state["regression_result"] = output
+        elif record.name == "review_agent":
+            state["review"] = output
+
+    task = next((item for item in state.get("tasks", []) if item.get("task_id") == task_id), None)
+    if task is None:
+        raise StepRunnerError(f"执行 {run_id} 里没有任务 {task_id}，先完成 identify_carrier")
+    state["task"] = task
+    problem = task.get("problem")
+    if not isinstance(problem, dict):
+        raise StepRunnerError(f"任务 {task_id} 缺少原始 problem")
+    state["problem"] = dict(problem)
+    return state
+
+
+def _require_identity(spec: PluginSpec, run_id: str, task_id: str) -> None:
+    if not run_id:
+        raise StepRunnerError("必须指定 run_id", code="RUN_ID_REQUIRED", status_code=422)
+    if spec.task_level and not task_id:
+        raise StepRunnerError("任务级插件必须指定 task_id", code="TASK_ID_REQUIRED", status_code=422)
+
+
+def _require_write_confirmation(spec: PluginSpec, confirmed: bool) -> None:
+    if spec.requires_confirmation and not confirmed:
+        raise StepRunnerError(
+            f"{spec.name} 会产生外部写入；请显式确认后再执行",
+            code="CONFIRM_WRITE_REQUIRED",
+        )
+
+
+def execute_once(
+    spec: PluginSpec,
+    *,
+    run_id: str,
+    task_id: str = "",
+    confirm_write: bool = False,
+    services: WorkflowServices | None = None,
+) -> tuple[int, StepRecord | None, dict[str, Any]]:
+    """同步执行一个步骤或 Agent，返回 ``(退出码, 步骤记录, 节点结果)``。"""
+    _require_identity(spec, run_id, task_id)
+    _require_write_confirmation(spec, confirm_write)
+    store = default_store()
+    missing = dependencies_missing(store, run_id, spec, task_id)
+    if missing:
+        raise StepRunnerError(
+            f"{spec.name} 缺少已通过的前置步骤: {', '.join(missing)}",
+            code="STEP_DEPENDENCY_MISSING",
+        )
+    state = state_from_records(store, run_id, task_id)
+
+    if isinstance(spec, AgentSpec):
+        from app.workflow.wiring import build_agent_node
+
+        if spec.kind == "repair":
+            evidence = dict(state.get("evidence") or {})
+            if not evidence.get("carrier_dir") or not evidence.get("candidates"):
+                raise StepRunnerError("prepare_evidence 未通过或缺少候选文件，不能进入修复")
+            if not state.get("baseline_manifest") or not state.get("baseline_dir"):
+                raise StepRunnerError("缺少 prepare_source_snapshot 基线，不能进入修复")
+        node = build_agent_node(spec, store)
+    else:
+        from app.infrastructure.config import load_config
+        from app.infrastructure.git.source import sync_source_repo
+        from app.workflow.runner import bind
+        from app.workflow.wiring import build_services
+
+        if services is None:
+            config = load_config()
+            services = build_services(config=config, source_repo=sync_source_repo(config))
+        node = bind(spec, store, services)
+
+    try:
+        result = node(state)
+    finally:
+        close_sessions()
+    record = store.load(run_id, spec.name, task_id if spec.task_level else "")
+    payload = result if isinstance(result, dict) else {}
+    return (0 if payload.get("last_result") == "passed" else 1), record, payload
+
+
+class StepRunner:
+    """后台单步执行器：先写 running 记录，再异步执行并落终态。"""
+
+    def __init__(
+        self,
+        store: RecordStore,
+        *,
+        run_status: Callable[[str], str] | None = None,
+        on_finish: Callable[[], None] | None = None,
+    ) -> None:
+        self._store = store
+        self._run_status = run_status or (lambda run_id: "")
+        # 由调用方注入运行锁释放动作，保证后台线程结束后不会泄漏锁。
+        self._on_finish = on_finish
+
+    def validate(self, request: StepRunRequest) -> PluginSpec:
+        """校验单步执行是否被允许；不通过时抛 :class:`StepRunnerError`。"""
+        spec = resolve_spec(request.step_name)
+        if spec.name in BLOCKED_STEPS:
+            raise StepRunnerError(
+                f"{spec.name} 不允许单步执行；审批必须通过审批接口",
+                code="STEP_NOT_ALLOWED",
+            )
+        if not spec.task_level:
+            raise StepRunnerError(
+                f"{spec.name} 是执行级步骤，不支持在任务内单步执行",
+                code="STEP_NOT_TASK_LEVEL",
+                status_code=422,
+            )
+        if not request.task_id:
+            raise StepRunnerError("任务级步骤必须指定 task_id", code="TASK_ID_REQUIRED", status_code=422)
+        if not self._store.run_dir(request.run_id).is_dir():
+            raise StepRunnerError("执行记录不存在", code="RUN_NOT_FOUND", status_code=404)
+        status = self._run_status(request.run_id)
+        if status in ACTIVE_RUN_STATUSES:
+            raise StepRunnerError(
+                f"执行处于 {status}，单步执行会与工作流写冲突；请等待执行结束或先暂停",
+                code="RUN_ACTIVE",
+            )
+        missing = dependencies_missing(self._store, request.run_id, spec, request.task_id)
+        if missing:
+            raise StepRunnerError(
+                f"{spec.name} 缺少已通过的前置步骤: {', '.join(missing)}",
+                code="STEP_DEPENDENCY_MISSING",
+            )
+        if spec.requires_confirmation and not request.confirm_write:
+            raise StepRunnerError(
+                f"{spec.name} 会产生外部写入；请显式确认后再执行",
+                code="CONFIRM_WRITE_REQUIRED",
+            )
+        return spec
+
+    def run(self, request: StepRunRequest) -> dict[str, Any]:
+        """校验后立即返回 202 语义结果，实际执行在后台线程完成。"""
+        spec = self.validate(request)
+        running = self._mark_running(spec, request)
+        thread = threading.Thread(
+            target=self._execute,
+            args=(spec, request),
+            name=f"step-run-{request.run_id}-{spec.name}",
+            daemon=True,
+        )
+        thread.start()
+        return {
+            "run_id": request.run_id,
+            "task_id": request.task_id,
+            "step": spec.name,
+            "status": "running",
+            "accepted": True,
+            "started_at": running.started_at,
+        }
+
+    def _mark_running(self, spec: PluginSpec, request: StepRunRequest) -> StepRecord:
+        existing = self._store.load(request.run_id, spec.name, request.task_id)
+        record = StepRecord(
+            name=spec.name,
+            title=spec.title,
+            status="running",
+            attempt=existing.attempt if existing else 0,
+            started_at=utc_now(),
+        )
+        self._store.save(request.run_id, record, request.task_id if spec.task_level else "")
+        return record
+
+    def _execute(self, spec: PluginSpec, request: StepRunRequest) -> None:
+        try:
+            code, _, _ = execute_once(
+                spec,
+                run_id=request.run_id,
+                task_id=request.task_id,
+                confirm_write=request.confirm_write,
+            )
+            logger.info(
+                "单步执行结束 run_id=%s task_id=%s step=%s exit=%s",
+                request.run_id, request.task_id, spec.name, code,
+            )
+        except StepRunnerError as exc:
+            self._write_failure(spec, request, str(exc))
+            logger.warning(
+                "单步执行被拒绝 run_id=%s task_id=%s step=%s reason=%s",
+                request.run_id, request.task_id, spec.name, exc,
+            )
+        except Exception as exc:
+            self._write_failure(spec, request, f"{type(exc).__name__}: {exc}")
+            logger.exception(
+                "单步执行失败 run_id=%s task_id=%s step=%s",
+                request.run_id, request.task_id, spec.name,
+            )
+        finally:
+            if self._on_finish is not None:
+                self._on_finish()
+
+    def _write_failure(self, spec: PluginSpec, request: StepRunRequest, message: str) -> None:
+        existing = self._store.load(request.run_id, spec.name, request.task_id)
+        record = StepRecord(
+            name=spec.name,
+            title=spec.title,
+            status="failed",
+            attempt=existing.attempt if existing else 0,
+            started_at=existing.started_at if existing else utc_now(),
+            finished_at=utc_now(),
+            error=StepError(code="STEP_EXECUTION_FAILED", message=message[:600], retryable=False),
+        )
+        self._store.save(request.run_id, record, request.task_id if spec.task_level else "")
+
+
+__all__ = [
+    "ACTIVE_RUN_STATUSES",
+    "BLOCKED_STEPS",
+    "StepRunRequest",
+    "StepRunner",
+    "StepRunnerError",
+    "default_store",
+    "dependencies_missing",
+    "execute_once",
+    "resolve_spec",
+    "state_from_records",
+]

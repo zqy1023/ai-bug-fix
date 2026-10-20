@@ -29,17 +29,23 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         if evidence.get("legacy_only") or evidence.get("legacy_dependency") or legacy_reference
         else str(state.get("framework") or "gathers")
     )
+    # 优先使用证据中的真实 carrier 目录（保留源码大小写）；没有证据时才回退到
+    # safe_carrier_name。Linux 上两者不同会写出一个模型从未修改过的目录。
+    report_dir = str(evidence.get("carrier_dir") or "").replace("\\", "/").strip("/") or (
+        f"{report_framework}/{carrier}"
+    )
     return {
         "task_id": str(state.get("task_id") or ""),
         "carrier": str(task.get("carrier") or ""),
         "biztype": str(task.get("biztype") or ""),
-        "terminal_status": (
-            "manual"
-            if str(state.get("review_mode") or "agent").lower() == "human"
-            else str(state.get("terminal_status") or "")
-        ),
+        # human 模式同样会交付分支并走人工审批，终态必须按真实记录推导，
+        # 不能再一律记成 manual，否则有提交的任务会被显示成"转人工报告"。
+        "terminal_status": str(state.get("terminal_status") or ""),
         "ai_workspace_path": str(state.get("ai_workspace_path") or ""),
-        "report_destination": f"{report_framework}/{carrier}/final.json",
+        "report_destination": f"{report_dir}/final.json",
+        "retry_reason": str(state.get("retry_reason") or ""),
+        "retry_target": str(state.get("retry_target") or ""),
+        "blocked_reason": str(state.get("blocked_reason") or ""),
     }
 
 

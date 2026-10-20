@@ -22,8 +22,12 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
     problem = state.get("problem")
     problem_payload = dict(problem) if isinstance(problem, dict) else {}
     # 审查结论以主图通道为准。review_agent 回写的是 verdict 而不是 result；
-    # review_mode=human 会在回归后直接结束，不会进入此交付步骤。
+    # human 模式跳过 AI 审查直接交付分支，交付门禁由人工在审批节点判定，
+    # 因此这里用 HUMAN 标记"未经 AI 审查"，不能让空结论被当成审查未通过。
+    review_mode = str(state.get("review_mode") or settings.default_review_mode).lower()
     review_decision = str(review_payload.get("verdict") or "")
+    if review_mode == "human" and not review_decision:
+        review_decision = "HUMAN"
     evidence = dict(state.get("evidence") or {})
     locate_payload = dict(state.get("locate") or {})
     legacy_reference = any(
@@ -40,6 +44,11 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         else str(state.get("framework") or "gathers")
     )
     report_carrier = WorkspaceManager.safe_carrier_name(str(task.get("carrier") or ""))
+    # 源码目录可能保留原始大小写（gathers/Airpak）。必须用证据里的真实路径，
+    # 否则在大小写敏感的文件系统上会交付一个与 final.json 实际位置不同的路径。
+    report_dir = str(evidence.get("carrier_dir") or "").replace("\\", "/").strip("/") or (
+        f"{report_framework}/{report_carrier}"
+    )
     analysis_only = bool(
         (state.get("evidence") or {}).get("legacy_only")
         or (state.get("evidence") or {}).get("legacy_dependency")
@@ -85,7 +94,7 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         "review_summary": str(review_payload.get("summary") or ""),
         "review_decision": review_decision,
         "analysis_only": analysis_only,
-        "report_paths": [f"{report_framework}/{report_carrier}/final.json"] if analysis_only else [],
+        "report_paths": [f"{report_dir}/final.json"] if analysis_only else [],
         "allow_push": bool(state.get("allow_push", state.get("git_push", False))),
         "require_push": bool(state.get("require_push", False)),
     }
@@ -96,6 +105,7 @@ def _patch(output: dict[str, Any]) -> dict[str, Any]:
         "delivery": dict(output),
         "repair_branch": str(output.get("repair_branch") or ""),
         "delivery_pushed": bool(output.get("pushed")),
+        "delivery_local_branch": bool(output.get("local_branch")),
         "delivery_commit": str(output.get("commit") or ""),
     }
 

@@ -18,6 +18,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
+from config.settings import settings
+
 _ALL_TOOLS = (
     "Read",
     "Glob",
@@ -40,9 +42,9 @@ class ClaudeAgentUnavailable(RuntimeError):
     pass
 
 
-_MAX_EVENT_TEXT = 2000
-_MAX_EVENT_VALUE = 200
-_MAX_EVENTS = 200
+_MAX_EVENT_TEXT = settings.claude_event_text_chars
+_MAX_EVENT_VALUE = settings.claude_event_value_chars
+_MAX_EVENTS = settings.claude_max_events
 _TOOL_INPUT_KEYS = (
     "file_path",
     "notebook_path",
@@ -139,7 +141,7 @@ def _public_events(message: Any) -> list[dict[str, Any]]:
                 {
                     "type": "tool_result",
                     "is_error": bool(getattr(block, "is_error", False)),
-                    "text": _clip(_text_of(getattr(block, "content", "")), _MAX_EVENT_VALUE * 4),
+                    "text": _clip(_text_of(getattr(block, "content", "")), settings.claude_event_tool_text_chars),
                 }
             )
             continue
@@ -431,7 +433,7 @@ def _debug_hook_event(event: dict[str, Any]) -> None:
             if type(event.get("message")).__name__ == "ResultMessage" else ""
         )
     encoded = json.dumps(safe_event, ensure_ascii=False, separators=(",", ":")) + chr(10)
-    max_bytes = 5 * 1024 * 1024
+    max_bytes = settings.claude_debug_log_max_bytes
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists() and path.stat().st_size + len(encoded.encode("utf-8")) > max_bytes:
@@ -468,8 +470,8 @@ async def _run(
     env: dict[str, str] | None = None,
     writable: bool = False,
     tools: Sequence[str] | None = None,
-    max_turns: int = 30,
-    max_tool_calls: int = 32,
+    max_turns: int = settings.claude_default_max_turns,
+    max_tool_calls: int = settings.claude_default_max_tool_calls,
     allowed_roots: Sequence[str | Path] | None = None,
 ) -> dict[str, Any]:
     """在限定工具和工作区范围内运行一次 Claude 查询。"""
@@ -479,14 +481,14 @@ async def _run(
     root = Path(workspace).resolve()
     raw_write_root = (env or {}).get("AI_REPAIR_WRITE_ROOT")
     write_root = Path(raw_write_root).resolve() if raw_write_root else root
-    # 读与写两份白名单：allowed_roots 是读范围（可含官方规范文件），
-    # write_root 是唯一可写目录。两者都必须落在工作区内。
+    # 读与写两份白名单：allowed_roots 是读范围（可含共享只读源码树和官方规范文件），
+    # write_root 是唯一可写目录。写范围必须落在任务工作区内；读范围由
+    # PreToolUse 的白名单逐路径校验，可以指向任务工作区之外的共享只读树。
     read_roots = [Path(item).resolve() for item in (allowed_roots or [write_root])]
     try:
-        for allowed_root in read_roots:
-            allowed_root.relative_to(root)
+        write_root.relative_to(root)
     except ValueError as error:
-        raise ValueError("AI 访问范围不在工作区内") from error
+        raise ValueError("AI 写入范围不在工作区内") from error
     sdk_env = {key: value for key, value in (env or {}).items() if key != "AI_REPAIR_WRITE_ROOT"}
     file_tools = resolve_tools(writable, tools)
 
@@ -629,9 +631,9 @@ def run_agent_once(
     env: dict[str, str] | None = None,
     writable: bool = False,
     tools: Sequence[str] | None = None,
-    max_turns: int = 30,
-    max_tool_calls: int = 32,
-    timeout_seconds: int = 900,
+    max_turns: int = settings.claude_default_max_turns,
+    max_tool_calls: int = settings.claude_default_max_tool_calls,
+    timeout_seconds: int = settings.claude_default_timeout_seconds,
     allowed_roots: Sequence[str | Path] | None = None,
 ) -> dict[str, Any]:
     """以一次性查询方式运行智能体，按配置限定工具和读写权限。"""
@@ -663,9 +665,9 @@ class ClaudeSession:
         *,
         tools: Sequence[str] | None = None,
         writable: bool = True,
-        max_turns: int = 30,
-        max_tool_calls: int = 32,
-        timeout_seconds: int = 900,
+        max_turns: int = settings.claude_default_max_turns,
+        max_tool_calls: int = settings.claude_default_max_tool_calls,
+        timeout_seconds: int = settings.claude_default_timeout_seconds,
         **kwargs
     ) -> None:
         """启动后台 SDK 生命周期并加载一次初始化 Prompt。"""
@@ -708,7 +710,7 @@ class ClaudeSession:
     def close(self) -> None:
         """关闭后台会话。"""
         self._requests.put(("", [self._workspace], self._workspace, None, None))
-        self._thread.join(timeout=30)
+        self._thread.join(timeout=settings.claude_thread_join_timeout_seconds)
 
     def _thread_main(self) -> None:
         asyncio.run(self._serve())

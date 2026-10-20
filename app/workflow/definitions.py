@@ -44,7 +44,8 @@ TASK_CONDITIONAL_TRANSITIONS = (
     (CLAIM, after_claim, (REPAIR, FINALIZE)),
     (REPAIR, after_repair, (VALIDATE, RETRY, FINALIZE)),
     (VALIDATE, after_validate_changes, (REGRESSION, RETRY, FINALIZE)),
-    (REGRESSION, after_regression, (REVIEW, RETRY, FINALIZE)),
+    # human 模式跳过 AI 审查直接交付分支，因此 REGRESSION 也可以直达 DELIVER。
+    (REGRESSION, after_regression, (REVIEW, DELIVER, RETRY, FINALIZE)),
     (REVIEW, after_review, (DELIVER, RETRY, FINALIZE)),
     # APPROVE 仅用于分支交付后的最终人工审批。
     (APPROVE, after_approval, (LOCATE, CLAIM, REPAIR, RETRY, FINALIZE)),

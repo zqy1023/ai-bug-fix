@@ -20,6 +20,10 @@ class VerifyInput(FrozenModel):
     ai_workspace_path: str
     # changed_files：字段说明见该模型文档与工作流契约。
     changed_files: list[str]
+    # source_project_path：共享只读源码树（已脱敏，仅供模型阅读）。
+    source_project_path: str = ""
+    # source_repo_path：未脱敏的干净 Git 检出，重放需要完整依赖与二进制资产。
+    source_repo_path: str = ""
     normalized_log: dict[str, Any] = {}  # 用于 response 重放验证
 
 

@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from functools import partial
+from pathlib import Path
 from typing import Any
 import atexit
 import threading
@@ -14,7 +16,7 @@ import threading
 from app.infrastructure.filesystem.workspace import WorkspaceConfig, WorkspaceManager
 from app.infrastructure.git.delivery import GitBranchDelivery, GitDeliveryConfig
 from app.infrastructure.es.logs import ESLogAdapter
-from app.infrastructure.config import load_config
+from app.infrastructure.config import RuntimeConfig, load_config
 from app.workflow.graph import build_graph as build_state_graph
 from app.workflow.graph import build_task_graph
 from app.workflow.definitions import PHASE_COMPOSITIONS
@@ -55,14 +57,18 @@ atexit.register(close_checkpoints)
 
 
 def _checkpoint_saver(runtime_dir: Any) -> SqliteSaver:
-    path = str((runtime_dir / "workflow-checkpoints.sqlite3").resolve())
+    path = str((runtime_dir / settings.workflow_checkpoint_db_name).resolve())
     with _CHECKPOINT_LOCK:
         connection = _CHECKPOINT_CONNECTIONS.get(path)
         if connection is None:
             runtime_dir.mkdir(parents=True, exist_ok=True)
-            connection = sqlite3.connect(path, check_same_thread=False, timeout=30)
+            connection = sqlite3.connect(
+                path,
+                check_same_thread=False,
+                timeout=settings.workflow_checkpoint_timeout_seconds,
+            )
             connection.execute("PRAGMA journal_mode=WAL")
-            connection.execute("PRAGMA busy_timeout=30000")
+            connection.execute(f"PRAGMA busy_timeout={settings.workflow_checkpoint_busy_timeout_ms}")
             _CHECKPOINT_CONNECTIONS[path] = connection
         saver = SqliteSaver(connection)
         saver.setup()
@@ -81,10 +87,18 @@ def _agent_builder(kind: str) -> Callable[[Any | None], CompiledStateGraph]:
     return build
 
 
-def build_services() -> WorkflowServices:
-    """按当前配置装配外部依赖。缺配置的字段保持空，对应步骤运行时失败。"""
+def build_services(
+    config: RuntimeConfig | None = None,
+    source_repo: Path | None = None,
+) -> WorkflowServices:
+    """按当前配置装配外部依赖。缺配置的字段保持空，对应步骤运行时失败。
+
+    源仓库同步由执行入口完成；只读的图装配（checkpoint 查询等）不触发网络操作。
+    """
     from app.infrastructure.config import create_es_client, index_days
-    config = load_config()
+    from app.infrastructure.git.source import git_auth_env
+    config = config or load_config()
+    resolved_source = source_repo if source_repo is not None else config.source_repo
     workspaces = WorkspaceManager(WorkspaceConfig(root_dir=config.workspace_root, project_subdir=config.project_subdir))
     log_source = None
     if config.log_es:
@@ -95,33 +109,54 @@ def build_services() -> WorkflowServices:
             scan,
             lambda prefix, days: index_days(prefix, days, config.log_tz_offset),
             config.log_tz_offset,
+            index_prefix=config.es_index_prefix,
+            scan_size=config.es_scan_size,
+            scroll=config.es_scroll,
+            excluded_messages=list(config.excluded_messages),
         )
     services = WorkflowServices(
-        source_repo=config.source_repo,
+        source_repo=resolved_source,
         project_subdir=config.project_subdir,
         verify_commands=list(config.verify_commands),
         git_push=config.git_push,
         git_remote=config.git_remote,
+        command_timeout_seconds=config.command_timeout_seconds,
+        replay_timeout_seconds=config.replay_timeout_seconds,
         workspaces=workspaces,
         delivery=GitBranchDelivery(
             GitDeliveryConfig(
                 remote_name=config.git_remote,
                 push=config.git_push,
-                source_repo=config.source_repo,
+                source_repo=resolved_source,
+                git_env=git_auth_env(config.git_username, config.git_password),
                 workspace_manager=workspaces,
             )
         ),
         log_source=log_source,
         ignore_errors=list(config.ignore_errors),
-        metadata={"independent_verify": _independent_verify},
+        metadata={
+            "independent_verify": partial(
+                _independent_verify,
+                timeout_seconds=config.replay_timeout_seconds,
+            )
+        },
     )
     return services
 
 
-def _independent_verify(payload: dict[str, Any]) -> dict[str, Any]:
+def _independent_verify(
+    payload: dict[str, Any],
+    *,
+    timeout_seconds: int = settings.replay_timeout_seconds,
+) -> dict[str, Any]:
     """两阶段验证：1) Python 语法检查 2) Response 重放验证（可选）。"""
+    import json
+    import os
     import py_compile
+    import shutil
     from pathlib import Path
+
+    from app.infrastructure.filesystem.safe_cleanup import remove_tree, temporary_directory
 
     # ========== 阶段 1: Python 语法检查 ==========
     files = [str(item) for item in payload.get("changed_files") or [] if str(item).endswith(".py")]
@@ -130,64 +165,125 @@ def _independent_verify(payload: dict[str, Any]) -> dict[str, Any]:
         return {"passed": False, "mode": "unavailable", "reason": "验证工作区不存在"}
     if not files:
         return {"passed": True, "mode": "syntax_only", "reason": "本轮仅修改非 Python 文件，未执行问题重放"}
-    for relative in files:
-        target = (workspace / relative).resolve()
-        try:
-            target.relative_to(workspace.resolve())
-        except ValueError:
-            return {"passed": False, "mode": "unavailable", "reason": "改动文件超出工作区"}
-        if not target.is_file():
-            return {"passed": False, "mode": "unavailable", "reason": f"改动文件不存在: {relative}"}
-        try:
-            py_compile.compile(str(target), doraise=True)
-        except py_compile.PyCompileError as error:
-            return {"passed": False, "mode": "syntax_only", "reason": f"语法检查失败: {relative}: {error.msg}"}
+    # py_compile 默认把 .pyc 写到源文件旁的 __pycache__，会污染隔离区和后续
+    # check_changes 的 diff。编译产物必须落在工作区外的临时目录。
+    with temporary_directory("ai-verify-pycache-") as pycache:
+        for relative in files:
+            target = (workspace / relative).resolve()
+            try:
+                target.relative_to(workspace.resolve())
+            except ValueError:
+                return {"passed": False, "mode": "unavailable", "reason": "改动文件超出工作区"}
+            if not target.is_file():
+                return {"passed": False, "mode": "unavailable", "reason": f"改动文件不存在: {relative}"}
+            try:
+                py_compile.compile(
+                    str(target),
+                    cfile=str(Path(pycache) / f"{abs(hash(relative))}.pyc"),
+                    doraise=True,
+                )
+            except py_compile.PyCompileError as error:
+                return {"passed": False, "mode": "syntax_only", "reason": f"语法检查失败: {relative}: {error.msg}"}
 
     # ========== 阶段 2: Response 重放验证（可选）==========
-    # 尝试从 payload 中提取 response 和 track_config，有这两个字段才执行重放
+    # response / track_config 既可能在记录顶层，也可能嵌在 req 对象里。
     normalized_log = payload.get("normalized_log")
-    if normalized_log and normalized_log.get("response") and normalized_log.get("track_config"):
-        from app.workflow.steps.verify_issue.replay_runner import run_replay
-        import json
+    if not isinstance(normalized_log, dict):
+        return {"passed": True, "mode": "syntax_only", "reason": f"语法检查通过: {len(files)} 个文件；未执行问题重放"}
+    carrier = str(normalized_log.get("carrier") or payload.get("carrier") or "")
+    req_data = normalized_log.get("req", {})
+    if isinstance(req_data, str):
+        try:
+            req_data = json.loads(req_data)
+        except json.JSONDecodeError:
+            req_data = {}
+    if not isinstance(req_data, dict):
+        req_data = {}
+    response_data = normalized_log.get("response") or req_data.get("response")
+    track_config_data = normalized_log.get("track_config") or req_data.get("track_config")
+    if not isinstance(response_data, str):
+        response_data = json.dumps(response_data, ensure_ascii=False) if response_data else ""
+    if not isinstance(track_config_data, str):
+        track_config_data = json.dumps(track_config_data, ensure_ascii=False) if track_config_data else ""
+    if not (carrier and req_data and response_data):
+        return {"passed": True, "mode": "syntax_only", "reason": f"语法检查通过: {len(files)} 个文件；未执行问题重放"}
 
-        carrier = str(normalized_log.get("carrier", ""))
-        req_data = normalized_log.get("req", {})
-        response_data = str(normalized_log.get("response", ""))
-        track_config_data = normalized_log.get("track_config", {})
+    from app.workflow.steps.verify_issue.replay_runner import run_replay
 
-        if carrier and req_data and response_data:
-            # 找到 gathers 根目录
-            gathers_root = workspace / "gathers"
-            if not gathers_root.is_dir():
-                return {"passed": False, "mode": "response_replay", "reason": "gathers 目录不存在，无法执行 response 重放"}
-
-            # 执行重放
-            replay_result = run_replay(
-                carrier=carrier,
-                req_json=json.dumps(req_data, ensure_ascii=False),
-                response_json=response_data,
-                track_config_json=json.dumps(track_config_data, ensure_ascii=False),
-                gathers_root=gathers_root,
-                timeout_seconds=30,
-            )
-
-            if not replay_result.success:
+    # 共享树是给模型阅读的脱敏快照：_sanitize_shared_tree 只保留 .py/.json 等
+    # 白名单后缀，会删除 py_rules_new.zip 这类运行资产。重放必须在未脱敏的
+    # 干净 Git 业务目录上建立基线，不能复用共享树。
+    clean_root = Path(str(payload.get("clean_source_path") or "")).resolve()
+    if not (clean_root.is_dir() and ((clean_root / "gathers").is_dir() or (clean_root / "spiders").is_dir())):
+        clean_root = None
+    shared_root = Path(str(payload.get("source_project_path") or "")).resolve()
+    if not shared_root.is_dir():
+        shared_root = None
+    baseline_root = clean_root or shared_root
+    # 重放需要 server_dev、framework 和公共库；任务工作区只有目标 carrier。
+    # 在基线同盘临时目录建立镜像（优先硬链接），再用 AI 工作区的 carrier 覆盖，
+    # 既保证导入完整，也不写回源仓库。
+    mirror_parent = baseline_root.parent if baseline_root is not None else workspace
+    with temporary_directory("ai-replay-workspace-", parent=mirror_parent) as directory:
+        replay_root = Path(directory) / "repo"
+        if baseline_root is not None:
+            try:
+                shutil.copytree(
+                    baseline_root, replay_root,
+                    copy_function=os.link,
+                    ignore=shutil.ignore_patterns(".git"),
+                )
+            except OSError:
+                remove_tree(replay_root)
+                shutil.copytree(
+                    baseline_root, replay_root,
+                    ignore=shutil.ignore_patterns(".git"),
+                )
+            replay_carrier = WorkspaceManager.find_carrier_dir(replay_root, "gathers", carrier)
+            source_carrier = WorkspaceManager.find_carrier_dir(workspace, "gathers", carrier)
+            if replay_carrier is None or source_carrier is None:
                 return {
                     "passed": False,
                     "mode": "response_replay",
-                    "reason": f"Response 重放验证失败: {replay_result.error}",
-                    "replay_exception_type": replay_result.exception_type,
+                    "reason": "重放工作区缺少目标 carrier 目录",
                 }
+            # 目标 carrier 必须与 AI 工作区完全一致（包括删除的文件）。
+            if not remove_tree(replay_carrier):
+                return {
+                    "passed": False,
+                    "mode": "response_replay",
+                    "reason": "重放工作区 carrier 清理被环境拦截",
+                }
+            shutil.copytree(source_carrier, replay_carrier, copy_function=shutil.copy2)
+        else:
+            replay_root = workspace
+        gathers_root = replay_root / "gathers"
+        if not gathers_root.is_dir():
+            return {"passed": False, "mode": "response_replay", "reason": "gathers 目录不存在，无法执行 response 重放"}
 
-            return {
-                "passed": True,
-                "mode": "response_replay",
-                "reason": f"语法检查 + Response 重放验证通过: {len(files)} 个文件",
-                "replay_output": replay_result.output[:500],  # 截取前 500 字符
-            }
+        replay_result = run_replay(
+            carrier=carrier,
+            req_json=json.dumps(req_data, ensure_ascii=False),
+            response_json=response_data,
+            track_config_json=track_config_data,
+            gathers_root=gathers_root,
+            timeout_seconds=timeout_seconds,
+        )
 
-    # 没有 response/track_config，只返回语法检查结果
-    return {"passed": True, "mode": "syntax_only", "reason": f"语法检查通过: {len(files)} 个文件；未执行问题重放"}
+    if not replay_result.success:
+        return {
+            "passed": False,
+            "mode": "response_replay",
+            "reason": f"Response 重放验证失败: {replay_result.error}",
+            "replay_exception_type": replay_result.exception_type,
+        }
+
+    return {
+        "passed": True,
+        "mode": "response_replay",
+        "reason": f"语法检查 + Response 重放验证通过: {len(files)} 个文件",
+        "replay_output": replay_result.output[: settings.replay_output_chars],  # 截取前若干字符
+    }
 
 
 _MAX_DIFF_SUMMARY_CHARS = settings.max_diff_summary_chars
@@ -338,6 +434,7 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
                     problem=dict(state.get("problem") or task.get("problem") or {}),
                     evidence=dict(state.get("evidence") or {}),
                     workspace_path=str(state.get("ai_workspace_path") or ""),
+                    source_project_path=str(state.get("source_project_path") or ""),
                     source_snapshot={
                         "baseline_dir": str(state.get("baseline_dir") or ""),
                         "baseline_manifest": dict(state.get("baseline_manifest") or {}),
@@ -363,6 +460,7 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
                     "run_id": str(state["run_id"]),
                     "baseline_manifest": dict(state.get("baseline_manifest") or {}),
                     "baseline_dir": str(state.get("baseline_dir") or ""),
+                    "source_project_path": str(state.get("source_project_path") or ""),
                 }
             else:
                 repair = state.get("repair")
@@ -418,6 +516,11 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
         record = StepRecord(name=spec.name, title=spec.title, status="running", started_at=utc_now(), attempt=int(state.get("attempt") or 1), input=dump_model(incoming))
         refs: list[ArtifactRef] = []
         try:
+            # Agent 调用通常持续数分钟：先写入 running 记录，让节点轨和步骤详情实时反映执行中。
+            store.save(
+                run_id, record, task_id,
+                input_view=spec.input_record, output_view=spec.output_record,
+            )
             final = graph.invoke(graph_input)
             record.duration_ms = round((time.perf_counter() - started) * 1000, 2)
             refs.append(ArtifactRef(

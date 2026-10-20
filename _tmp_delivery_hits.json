@@ -1,0 +1,58 @@
+[
+  {
+    "result": "MANUAL",
+    "step": "review_agent",
+    "reason": "变更仅涉及目标 carrier gathers/CCTCanada/main.py，确定性门禁、语法检查和回归均显示通过；修改逻辑与已观察到的根因（delivery_date 行取到 ELMIRA，parser_datetime 返回 datetime=null 的 TimeModel 后被写入 to_date 并触发下游时间格式化错误）相符。但问题验证为 syntax_only，明确未执行问题重放，且目标 carrier 下无测试、回归未覆盖新增分支，缺少能确定性证明 ELMIRA 场景已消除的证据，故判 MANUAL。",
+    "path": "runtime\\runs\\5a6e2d647c2e47f09602502c62f91f0b\\tasks\\CCTCanada__item__8107a43bfc64\\reports\\final.json",
+    "carrier": "CCTCanada"
+  },
+  {
+    "result": "MANUAL",
+    "step": "review_agent",
+    "reason": "本次修改仅涉及授权 carrier 的单个文件，声明与真实差异一致，变更范围、敏感信息、AST 三项确定性检查全部通过，语法检查和回归测试也通过；修改逻辑与时间格式错误的根因方向一致。但问题验证仅执行语法检查（verification_results 明确未执行问题重放），且新增分支没有回归覆盖证据，无法确认原始哨兵值 9999-12-31T23:59:59.9999999 已不再触发时间格式错误，因此不能判定 PASS，需要人工确认或补充最小验证。",
+    "path": "runtime\\runs\\5a6e2d647c2e47f09602502c62f91f0b\\tasks\\CMACGM__item__f26e0f5ada6a\\reports\\final.json",
+    "carrier": "CMACGM"
+  },
+  {
+    "result": "FAILED",
+    "step": "prepare_delivery",
+    "reason": "步骤 prepare_delivery 执行失败：交付失败（错误类型：AttributeError）（错误类型：StepFailed）",
+    "path": "runtime\\runs\\5a6e2d647c2e47f09602502c62f91f0b\\tasks\\CoscoShipping__item__329c471637c0\\reports\\final.json",
+    "carrier": "CoscoShipping"
+  },
+  {
+    "result": "MANUAL",
+    "step": "prepare_evidence",
+    "reason": "carrier dxdelivery 缺少新框架入口 gathers/dxdelivery/main.py，采集链路会执行旧框架 spiders/ 代码（转发点：spiders/DXDelivery），改 gathers/ 无法生效，转人工处理",
+    "path": "runtime\\runs\\5a6e2d647c2e47f09602502c62f91f0b\\tasks\\DXDelivery__framework.track_server__f80888c3dbcb\\reports\\final.json",
+    "carrier": "DXDelivery"
+  },
+  {
+    "result": "MANUAL",
+    "step": "review_agent",
+    "reason": "所有自动化门禁均通过，实际差异与声明一致，且修复逻辑与已观察到的根因相符；但问题验证仅执行了语法检查（mode=syntax_only，明确说明“未执行问题重放”），回归结果也无法确认覆盖新增的 2 个控制流分支，因此缺少证明该问题已在真实响应上修复的关键证据，不满足 PASS 条件；同时未发现可确认的代码缺陷，故判定为 MANUAL。",
+    "path": "runtime\\runs\\5a6e2d647c2e47f09602502c62f91f0b\\tasks\\Evdemolojistik__item__d783bf35a78f\\reports\\final.json",
+    "carrier": "Evdemolojistik"
+  },
+  {
+    "result": "MANUAL",
+    "step": "review_agent",
+    "reason": "变更范围合规且修复方向与已观察错误一致（错误 raw 'Friday, Oc' 正是按 'to' 切分 'October' 产生的截断），但原始问题验证仅执行了语法检查（mode=syntax_only，明确注明“未执行问题重放”），且回归未覆盖目标 carrier 的变更分支，没有确定性证据证明 from_date/to_date 已能正确解析。无已确认的阻断性代码缺陷，故不足以 PASS，也不构成 FAIL，判定 MANUAL。",
+    "path": "runtime\\runs\\5a6e2d647c2e47f09602502c62f91f0b\\tasks\\FragilePAK__item__32729828fa34\\reports\\final.json",
+    "carrier": "FragilePAK"
+  },
+  {
+    "result": "MANUAL",
+    "step": "review_agent",
+    "reason": "任务身份明确（service_name=gather.py.track, biztype=时间格式错误, carrier=GLS, framework=gathers），实际差异仅 gathers/GLS/main_base.py 且在 allowed_scope 内，声明与真实差异一致，变更范围/敏感信息/AST 门禁均通过，修复方向也与根因（无 param 分支用自然语言 arrivalTime 值解析日期）对应。但原始问题未被确定性重放（verification.mode=syntax_only，reason 明确“未执行问题重放”），新增分支在目标 carrier 下无测试且回归无法确认覆盖该场景，关键模型语义（datetime=None 是否能规避“时间格式错误”）依赖不可读取的 framework/TimeUtils 文件，无法在本审查内证实。无已确认代码缺陷，故不能判 FAIL，但证据不足以判 PASS，转人工确认。",
+    "path": "runtime\\runs\\5a6e2d647c2e47f09602502c62f91f0b\\tasks\\GLS__item__5dfa3db25f85\\reports\\final.json",
+    "carrier": "GLS"
+  },
+  {
+    "result": "MANUAL",
+    "step": "locate_agent",
+    "reason": "已确认异常是空的 'Bearer ' Authorization 头触发，但 Web 分支不含该头，真正构造点很可能在 gather_channel 指定的旧插件 spiders/XPOLogistics 或共享代理/客户端层；因预算内未能读取旧插件源码，根因尚不能确定，需补充旧插件实现与请求头运行时证据。；定位输出契约校验失败：预检候选文件不存在或是符号链接: common/client_utils.py；停止自动修复并转人工。",
+    "path": "runtime\\runs\\5a6e2d647c2e47f09602502c62f91f0b\\tasks\\XPOLogistics__framework.track_server__89568798d64d\\reports\\final.json",
+    "carrier": "XPOLogistics"
+  }
+]

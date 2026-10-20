@@ -245,9 +245,10 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
     framework = str(state["framework"])
     if framework not in {"gathers", "spiders"}:
         raise ValueError("审查输入缺少确定性框架")
-    carrier_root = Path(workspace) / framework / WorkspaceManager.safe_carrier_name(carrier)
-    if not carrier_root.is_dir():
+    carrier_root = WorkspaceManager.find_carrier_dir(workspace, framework, carrier)
+    if carrier_root is None:
         raise ValueError(f"工作区缺少审查目标 carrier: {carrier}")
+    carrier_dir = carrier_root.relative_to(Path(workspace).resolve()).as_posix()
     config = getattr(runtime, "config", None)
     config = config if isinstance(config, ReviewConfig) else ReviewConfig.load()
     changed_files = [str(item) for item in state.get("changed_files", [])]
@@ -291,7 +292,7 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
         gate_results=dict(state.get("gate_result") or {}),
         verification_results=dict(state.get("verify_result") or {}),
         regression_results=dict(state.get("regression_result") or {}),
-        allowed_scope=(f"{framework}/{WorkspaceManager.safe_carrier_name(carrier)}",),
+        allowed_scope=(carrier_dir,),
         stop_conditions=("必需验证证据缺失", "真实 diff 与声明不一致", "发现未授权范围"),
     )
     request = PromptRenderer().request(

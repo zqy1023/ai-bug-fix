@@ -20,6 +20,12 @@ class FinalizeInput(FrozenModel):
     ai_workspace_path: str = ""
     # report_destination：分析型报告在隔离区中的目标相对路径。
     report_destination: str = "reports/final.json"
+    # 重试节点的原因只存在于状态通道，没有 StepRecord；收尾时必须带上，
+    # 否则最终报告只能写"未提供更具体的失败原因"。
+    retry_reason: str = ""
+    retry_target: str = ""
+    # blocked_reason：repair_agent 给出的结构化阻塞原因。
+    blocked_reason: str = ""
 
 
 class FinalizeOutput(FrozenModel):

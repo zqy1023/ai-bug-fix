@@ -59,6 +59,8 @@ class DeliveryOutput(FrozenModel):
     commit: str = ""
     # pushed：字段说明见该模型文档与工作流契约。
     pushed: bool = False
+    # local_branch：未推送时提交已写回源仓库的本地修复分支。
+    local_branch: bool = False
 
 
 __all__ = ["DeliveryInput", "DeliveryOutput"]

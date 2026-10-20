@@ -33,10 +33,10 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
         decision = data.decision
 
     if decision == "REJECT":
-        if data.delivery_pushed:
+        if data.delivery_pushed or data.delivery_local_branch:
             if ctx.services.delivery is None:
                 raise StepFailed(
-                    "审批拒绝但交付服务未配置，无法删除已推送分支",
+                    "审批拒绝但交付服务未配置，无法删除已交付分支",
                     {"decision": "REJECT", "approval_cleanup_failed": True, "passed": False},
                     result="manual",
                 )
@@ -44,11 +44,12 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
                 ctx.services.delivery.discard_branch({
                     "source_repo_path": data.source_repo_path,
                     "repair_branch": data.repair_branch,
-                    "pushed": True,
+                    "pushed": data.delivery_pushed,
+                    "local_branch": data.delivery_local_branch,
                 })
             except DeliveryError as error:
                 raise StepFailed(
-                    f"审批拒绝，但清理远程分支失败：{error}",
+                    f"审批拒绝，但清理修复分支失败：{error}",
                     {"decision": "REJECT", "approval_cleanup_failed": True, "passed": False},
                     result="manual",
                 ) from error
@@ -67,16 +68,17 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
     )
     if gate.get("passed") is not True:
         reason = str(gate.get("reason") or "最终门禁失败")
-        if data.delivery_pushed:
+        if data.delivery_pushed or data.delivery_local_branch:
             try:
                 ctx.services.delivery.discard_branch({
                     "source_repo_path": data.source_repo_path,
                     "repair_branch": data.repair_branch,
-                    "pushed": True,
+                    "pushed": data.delivery_pushed,
+                    "local_branch": data.delivery_local_branch,
                 })
             except (DeliveryError, AttributeError) as error:
                 raise StepFailed(
-                    f"最终门禁失败，且清理远程分支失败：{error}",
+                    f"最终门禁失败，且清理修复分支失败：{error}",
                     {"decision": "REJECT", "approval_cleanup_failed": True, "passed": False, "reason": reason},
                     result="manual",
                 ) from error

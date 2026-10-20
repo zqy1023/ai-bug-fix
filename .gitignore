@@ -3,7 +3,6 @@
 **/*__pycache__
 **/*.pyc
 /venv/
-/output/
 **/*.vscode/
 **/__pycache__/
 **/.claude/settings.local.json
@@ -15,7 +14,5 @@ CLAUDE.local.md
 .mypy_cache/
 # 本地密钥与运行时数据，禁止入库
 .env
+# 运行时目录（默认项目根目录 runtime/）：记录、工作区、报告都在这里
 runtime/
-# 运行时目录（app/config.py 默认 root/.ai-repair）：记录、工作区、报告都在这里
-.ai-repair/
-reports/

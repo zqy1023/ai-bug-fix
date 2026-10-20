@@ -11,6 +11,7 @@ from app.agents.locate.config import LocateConfig
 from app.agents.locate.models import LocateInput, LocateOutput
 from app.agents.locate.provider import create_provider
 from app.agents.locate.state import LocateState
+from app.agents.policy import rules_text, shared_read_paths
 from app.infrastructure.filesystem.workspace import WorkspaceManager
 from app.infrastructure.redaction import redact_output
 from app.prompts import PromptRenderer
@@ -18,7 +19,21 @@ from app.prompts.context import model_name, prompt_context
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-_SHARED_READ_DIRECTORIES = ("framework", "gathers_base", "gather_providers", "common")
+
+def _evidence_target(
+    root: Path, value: Any, shared_root: Path | None
+) -> Path:
+    """把模型给出的证据路径解析到工作区或共享只读树，并拒绝越界写法。"""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("源码证据路径必须是非空字符串")
+    candidate = Path(value)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise ValueError(f"源码证据路径不是安全相对路径: {value}")
+    primary = (root / candidate).resolve(strict=False)
+    if primary.exists() or shared_root is None:
+        return primary
+    alternate = (shared_root / candidate).resolve(strict=False)
+    return alternate if alternate.exists() else primary
 
 
 def _relative_file(root: Path, value: Any, *, must_exist: bool = True) -> str:
@@ -43,19 +58,26 @@ def _relative_file(root: Path, value: Any, *, must_exist: bool = True) -> str:
     return relative
 
 
-def _read_roots(root: Path, carrier_dir: str, rules: list[str], legacy_carrier_dir: str = "") -> tuple[str, ...]:
-    paths = [root / carrier_dir]
+def _read_roots(
+    root: Path,
+    carrier_dir: str,
+    rules: list[str],
+    legacy_carrier_dir: str = "",
+    shared_root: Path | None = None,
+) -> tuple[str, ...]:
+    paths: list[Path] = [root / carrier_dir]
     if legacy_carrier_dir and legacy_carrier_dir != carrier_dir and (root / legacy_carrier_dir).is_dir():
         paths.append(root / legacy_carrier_dir)
-    paths.extend(root / name for name in _SHARED_READ_DIRECTORIES if (root / name).is_dir())
-    plugin_registry = root / "plugins.py"
-    if plugin_registry.is_file():
-        paths.append(plugin_registry)
+    # 任务工作区只复制目标 carrier；框架、公共库、插件注册和项目规范在共享只读树。
+    paths.extend(shared_read_paths(shared_root))
     paths.extend(root / item for item in rules)
-    return tuple(str(path.resolve()) for path in paths)
+    # 去重但保持顺序；read_roots 会原样进入权限白名单。
+    return tuple(str(path.resolve()) for path in dict.fromkeys(paths))
 
 
-def _snapshot_prompt_context(source_snapshot: dict[str, Any], framework: str) -> dict[str, Any]:
+def _snapshot_prompt_context(
+    source_snapshot: dict[str, Any], framework: str, shared_root: Path | None = None
+) -> dict[str, Any]:
     """给定位 Prompt 提供最小快照元数据，不暴露完整哈希 manifest。"""
     manifest = source_snapshot.get("baseline_manifest")
     manifest_count = len(manifest) if isinstance(manifest, dict) else 0
@@ -63,7 +85,10 @@ def _snapshot_prompt_context(source_snapshot: dict[str, Any], framework: str) ->
         file_count = int(source_snapshot.get("file_count") or manifest_count)
     except (TypeError, ValueError):
         file_count = manifest_count
-    return {"framework": framework, "file_count": max(0, file_count)}
+    context: dict[str, Any] = {"framework": framework, "file_count": max(0, file_count)}
+    if shared_root is not None and shared_root.is_dir():
+        context["shared_project_path"] = str(shared_root)
+    return context
 
 
 def _locate_contract_summary(error: BaseException) -> str:
@@ -82,20 +107,34 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
     evidence = incoming.evidence
     carrier_dir = str(evidence.get("carrier_dir") or "")
     framework = evidence.get("framework")
-    expected_dir = (
-        Path(str(framework)) / WorkspaceManager.safe_carrier_name(incoming.carrier)
+    shared_root = (
+        Path(incoming.source_project_path).resolve()
+        if incoming.source_project_path
+        else None
+    )
+    if shared_root is not None and not shared_root.is_dir():
+        shared_root = None
+    expected_path = (
+        WorkspaceManager.find_carrier_dir(root, str(framework), incoming.carrier)
         if framework in {"gathers", "spiders"}
         else None
     )
-    carrier_root = (root / expected_dir).resolve() if expected_dir is not None else root
+    expected_dir = (
+        expected_path.relative_to(root).as_posix()
+        if expected_path is not None
+        else None
+    )
+    carrier_root = expected_path if expected_path is not None else root
+    gathers_entry = WorkspaceManager.find_carrier_dir(root, "gathers", incoming.carrier)
     if (
         expected_dir is None
         or not carrier_root.is_dir()
-        or carrier_dir != expected_dir.as_posix()
+        or carrier_dir != expected_dir
         or (framework == "gathers" and not (carrier_root / "main.py").is_file())
         or (
             framework == "spiders"
-            and (root / "gathers" / WorkspaceManager.safe_carrier_name(incoming.carrier) / "main.py").is_file()
+            and gathers_entry is not None
+            and (gathers_entry / "main.py").is_file()
         )
     ):
         return _manual("源码快照框架与 prepare_evidence 结果不一致，停止并转人工")
@@ -124,8 +163,12 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
             f"{config.max_context_chars}；为避免丢失真实异常上下文，本次未截断输入，也未调用模型。"
         )
     rules = WorkspaceManager.readable_rule_paths(root)
-    legacy_carrier_dir = f"spiders/{WorkspaceManager.safe_carrier_name(incoming.carrier)}"
-    roots = _read_roots(root, carrier_dir, rules, legacy_carrier_dir)
+    legacy_root = WorkspaceManager.find_carrier_dir(root, "spiders", incoming.carrier)
+    legacy_carrier_dir = (
+        legacy_root.relative_to(root).as_posix() if legacy_root is not None else ""
+    )
+    roots = _read_roots(root, carrier_dir, rules, legacy_carrier_dir, shared_root)
+    project_rules = rules_text(root, *([shared_root] if shared_root else []))
     prepared_evidence = {
         key: evidence.get(key)
         for key in ("carrier_dir", "candidates", "symbols", "category", "extracted", "legacy_only", "legacy_dependency", "legacy_reason")
@@ -148,9 +191,13 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
         },
         # manifest 是完整性校验清单，可能包含大量文件哈希；定位只需要框架和规模，
         # 候选文件路径已由 prepared_source_evidence 单独提供，不应把整份 manifest 塞进 Prompt。
-        source_snapshot=_snapshot_prompt_context(incoming.source_snapshot, str(framework)),
+        source_snapshot=_snapshot_prompt_context(
+            incoming.source_snapshot, str(framework), shared_root
+        ),
         allowed_scope=(carrier_dir,),
         stop_conditions=("证据不足", "任务范围外", "源码快照与当前入口不一致"),
+        source_project_path=str(shared_root) if shared_root is not None else "",
+        project_rules=project_rules,
     )
     request = PromptRenderer().request(
         "locate",
@@ -176,7 +223,7 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
     output: LocateOutput | None = None
     try:
         output = LocateOutput.model_validate(payload)
-        _validate_output_paths(root, roots, carrier_root, output)
+        _validate_output_paths(root, roots, carrier_root, output, shared_root)
     except Exception as error:
         # 校验失败必须停止自动修复，但不能把 Agent 已提供的诊断证据全部清空。
         # 候选文件只保留目标 carrier 内的路径；共享层文件仍可留在 source_evidence
@@ -207,7 +254,7 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
             root, carrier_root, output.candidate_files
         )
         output.source_evidence = _safe_source_evidence(
-            root, roots, output.source_evidence
+            root, roots, output.source_evidence, shared_root
         )
         detail = redact_output(" ".join(str(error).split())) or type(error).__name__
         if detail not in output.evidence_gaps:
@@ -240,15 +287,17 @@ def _safe_carrier_candidates(
 
 
 def _safe_source_evidence(
-    root: Path, read_roots: tuple[str, ...], items: list[Any]
+    root: Path,
+    read_roots: tuple[str, ...],
+    items: list[Any],
+    shared_root: Path | None = None,
 ) -> list[Any]:
     """只保留获准只读根目录内的真实源码证据。"""
     allowed = tuple(Path(item).resolve() for item in read_roots)
     accepted: list[Any] = []
     for item in items:
         try:
-            relative = _relative_file(root, item.path)
-            target = (root / relative).resolve()
+            target = _evidence_target(root, item.path, shared_root)
             if any(target == base or target.is_relative_to(base) for base in allowed):
                 accepted.append(item)
         except (AttributeError, OSError, ValueError):
@@ -261,6 +310,7 @@ def _validate_output_paths(
     read_roots: tuple[str, ...],
     carrier_root: Path,
     output: LocateOutput,
+    shared_root: Path | None = None,
 ) -> None:
     allowed = tuple(Path(item).resolve() for item in read_roots)
     for value in output.candidate_files:
@@ -276,8 +326,7 @@ def _validate_output_paths(
             raise ValueError(f"共享层候选文件超出只读证据范围: {value}")
         output.recommended_scope = "project"
     for item in output.source_evidence:
-        relative = _relative_file(root, item.path)
-        target = (root / relative).resolve()
+        target = _evidence_target(root, item.path, shared_root)
         if not any(target == base or target.is_relative_to(base) for base in allowed):
             raise ValueError(f"模型输出源码证据超出只读范围: {item.path}")
 

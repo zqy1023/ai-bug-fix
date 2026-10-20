@@ -1,0 +1,109 @@
+/* 应用外壳：56px 固定导航 + 28px 底部状态条，内容区独立滚动。 */
+.app-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background:
+    radial-gradient(1200px 260px at 12% -8%, #e9f0ff 0%, rgba(233, 240, 255, 0) 62%),
+    var(--wb-canvas);
+}
+.app-main { flex: 1; min-height: 0; padding-top: var(--wb-nav-h); padding-bottom: var(--wb-status-h); }
+
+.app-nav {
+  position: fixed; inset: 0 0 auto 0; z-index: 50;
+  height: var(--wb-nav-h);
+  display: flex; align-items: center; gap: 28px;
+  padding: 0 24px;
+  background: rgba(255, 255, 255, 0.92);
+  border-bottom: 1px solid var(--wb-line);
+  backdrop-filter: saturate(180%) blur(12px);
+}
+.brand {
+  display: flex; align-items: center; gap: 10px;
+  border: 0; padding: 0; background: none; cursor: pointer;
+}
+.brand-mark {
+  width: 30px; height: 30px; display: grid; place-items: center; border-radius: 9px;
+  background: linear-gradient(150deg, #2e63f0, #1440b4);
+  color: #fff; font-size: 15px;
+  box-shadow: 0 4px 14px -6px rgba(27, 77, 216, 0.9);
+}
+.brand-copy { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; }
+.brand-copy strong { font-size: 13.5px; font-weight: 600; letter-spacing: 0.01em; }
+.brand-copy small {
+  font-family: var(--wb-mono); font-size: 9px; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--wb-ink-faint);
+}
+
+.app-nav-links { display: flex; align-items: center; gap: 4px; }
+.nav-link {
+  position: relative;
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 32px; padding: 0 12px; border: 0; border-radius: var(--wb-radius-sm);
+  background: transparent; color: var(--wb-ink-muted);
+  font-size: 12.5px; font-weight: 500; cursor: pointer;
+  transition: background 180ms ease, color 180ms ease;
+}
+.nav-link .anticon { font-size: 13px; color: var(--wb-ink-faint); transition: color 180ms ease; }
+.nav-link:hover { background: #f1f5fb; color: var(--wb-ink); }
+.nav-link.is-active { background: var(--wb-primary-soft); color: var(--wb-primary); }
+.nav-link.is-active .anticon { color: var(--wb-primary); }
+.nav-link.is-active::after {
+  content: ""; position: absolute; left: 12px; right: 12px; bottom: -13px;
+  height: 2px; border-radius: 2px; background: var(--wb-primary);
+}
+.nav-badge .ant-badge-count {
+  background: var(--wb-warning); box-shadow: 0 0 0 2px #fff; font-size: 10px; font-weight: 600;
+}
+
+.app-nav-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.health-pill {
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 26px; padding: 0 10px; border-radius: 999px;
+  border: 1px solid var(--wb-line); background: #fbfcfe;
+  color: var(--wb-ink-muted); font-size: 11.5px; white-space: nowrap;
+}
+.health-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--wb-ink-faint); flex-shrink: 0;
+}
+.health-dot.is-online { background: var(--wb-success); box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.14); }
+.health-dot.is-offline { background: var(--wb-danger); box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.14); }
+.health-dot.is-checking { background: var(--wb-warning); animation: wb-pulse 1.8s ease-in-out infinite; }
+
+.app-statusbar {
+  position: fixed; inset: auto 0 0 0; z-index: 40;
+  height: var(--wb-status-h);
+  display: flex; align-items: center; gap: 18px;
+  padding: 0 24px;
+  background: var(--wb-surface);
+  border-top: 1px solid var(--wb-line);
+  color: var(--wb-ink-faint);
+  font-size: 11px; font-variant-numeric: tabular-nums;
+}
+.app-statusbar > span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.app-statusbar .statusbar-tail { margin-left: auto; color: var(--wb-ink-muted); }
+
+/* 实时连接提示：SSE 状态单独一行，不打断布局。 */
+.live-line {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: -6px;
+  color: var(--wb-ink-faint); font-size: 11.5px;
+}
+.live-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--wb-ink-faint);
+}
+.live-line.is-open .live-dot { background: var(--wb-success); box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.13); }
+.live-line.is-connecting .live-dot { background: var(--wb-warning); animation: wb-pulse 1.8s ease-in-out infinite; }
+.live-line.is-error .live-dot { background: var(--wb-danger); }
+.live-line.is-closed .live-dot { background: var(--wb-ink-faint); }
+.live-line.is-polling .live-dot { background: var(--wb-warning); }
+.live-refreshing {
+  margin-left: 4px; padding: 0 6px; border-radius: 4px;
+  background: var(--wb-primary-soft); color: var(--wb-primary); font-size: 10.5px;
+}
+.workspace-tabs .ant-tabs-nav { margin-bottom: 12px; }
+
+@media (max-width: 1360px) {
+  .app-nav { gap: 18px; padding: 0 18px; }
+  .brand-copy small { display: none; }
+}

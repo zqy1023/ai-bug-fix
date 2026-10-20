@@ -132,8 +132,10 @@ def _extract(problem: dict[str, Any]) -> dict[str, str]:
     return result
 
 
-def _references_legacy(new_root: Path, legacy_root: Path) -> bool:
+def _references_legacy(new_root: Path | None, legacy_root: Path | None) -> bool:
     """检测新 carrier 源码是否显式引用旧 spiders 实现。"""
+    if new_root is None or legacy_root is None:
+        return False
     if not new_root.is_dir() or not legacy_root.is_dir():
         return False
     markers = ("from spiders", "import spiders", "spiders.", "spiders/")
@@ -149,9 +151,10 @@ def _references_legacy(new_root: Path, legacy_root: Path) -> bool:
     return False
 
 
-def _legacy_reason(carrier: str, chain: list[str]) -> str:
+def _legacy_reason(carrier: str, chain: list[str], new_dir: str = "") -> str:
     """旧框架转人工的原因文案，报告里直接可读。"""
-    missing_entry = f"缺少新框架入口 gathers/{carrier}/main.py"
+    entry = f"{new_dir}/main.py" if new_dir else f"gathers/{carrier}/main.py"
+    missing_entry = f"缺少新框架入口 {entry}"
     if chain:
         where = "、".join(chain[:3])
         return (
@@ -174,16 +177,19 @@ def run(ctx: StepContext, data: EvidenceInput) -> EvidenceOutput:
     if not root.is_dir():
         raise StepFailed(f"隔离工作区路径不存在: {root}")
     safe_carrier = WorkspaceManager.safe_carrier_name(data.carrier)
-    new_entry = root / "gathers" / safe_carrier / "main.py"
-    legacy_dir = root / "spiders" / safe_carrier
+    new_root = WorkspaceManager.find_carrier_dir(root, "gathers", data.carrier)
+    legacy_dir = WorkspaceManager.find_carrier_dir(root, "spiders", data.carrier)
     # 唯一框架门禁：新框架 main.py 存在即进入新框架；否则只在旧目录存在时转人工。
     if data.framework == "gathers":
-        if not new_entry.is_file():
+        if new_root is None or not (new_root / "main.py").is_file():
             raise StepFailed(f"快照框架为 gathers，但入口不存在: gathers/{safe_carrier}/main.py")
-        carrier_root = new_entry.parent
+        carrier_root = new_root
         carrier_dir = carrier_root.relative_to(root).as_posix()
     else:
-        if new_entry.is_file() or not legacy_dir.is_dir():
+        if (
+            (new_root is not None and (new_root / "main.py").is_file())
+            or legacy_dir is None
+        ):
             raise StepFailed("快照框架与源项目当前 carrier 入口不一致")
         carrier_root = legacy_dir
         carrier_dir = legacy_dir.relative_to(root).as_posix()
@@ -191,7 +197,7 @@ def run(ctx: StepContext, data: EvidenceInput) -> EvidenceOutput:
     # 是否允许修复由后续路由决定；这里不提前终止分析。
     legacy_dependency = (
         data.framework == "gathers"
-        and _references_legacy(root / "gathers" / safe_carrier, legacy_dir)
+        and _references_legacy(new_root, legacy_dir)
     )
     all_files = [
         path.relative_to(root).as_posix()
@@ -239,7 +245,13 @@ def run(ctx: StepContext, data: EvidenceInput) -> EvidenceOutput:
         legacy_only=legacy_only,
         legacy_dependency=legacy_dependency,
         legacy_reason=(
-            _legacy_reason(safe_carrier, [carrier_dir])
+            _legacy_reason(
+                safe_carrier,
+                [carrier_dir],
+                new_dir=(
+                    f"gathers/{new_root.name}" if new_root is not None else ""
+                ),
+            )
             if legacy_only
             else f"新框架 carrier 显式引用旧框架 spiders/{safe_carrier}；本任务仅分析、不修改。"
             if legacy_dependency

@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from app.infrastructure.config import load_config
 from app.infrastructure.records.store import RecordStore
 from app.infrastructure.redaction import public_exception
+from config.settings import settings
 
 router = APIRouter()
 SERVICE_NAME = "ai-repair-workbench"
@@ -140,11 +141,32 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
     results = [str(task["status"]).upper() for task in tasks]
     created = datetime.fromtimestamp(directory.stat().st_ctime, tz=timezone.utc).isoformat()
     updated = datetime.fromtimestamp(directory.stat().st_mtime, tz=timezone.utc).isoformat()
+    run_meta = _read_json(directory / "run.json", {})
     run_failure = _read_json(directory / "reports" / "run_failure.json", {})
-    status = "failed" if isinstance(run_failure, dict) and run_failure else ("waiting_approval" if pending else _derive_run_status(run_steps, tasks))
+    run_report = _read_json(directory / "reports" / "final.json", {})
+    identified_tasks = _identified_task_total(run_steps)
+    finalized = any(
+        step.get("name") == "finalize_execution" and step.get("status") == "succeeded"
+        for step in run_steps
+    )
+    if isinstance(run_failure, dict) and run_failure:
+        status = "failed"
+    elif pending:
+        status = "waiting_approval"
+    else:
+        status = _derive_run_status(
+            run_steps, tasks,
+            run_report=run_report if isinstance(run_report, dict) else {},
+            startup_state=str((run_meta or {}).get("startup_state") or ""),
+            finalized=finalized,
+        )
     return {
         "run_id": run_id,
         "status": status,
+        # 终态只认落盘报告或终局步骤：identify 成功但任务尚未派发的窗口不能被当成已完成。
+        "terminal": bool(run_failure) or bool(run_report) or finalized,
+        "identified_tasks": identified_tasks,
+        "dispatched_tasks": len(tasks),
         "run_error": run_failure if isinstance(run_failure, dict) else {},
         "created_at": created,
         "updated_at": updated,
@@ -201,7 +223,9 @@ def _report_from_steps(
     if not reason:
         evidence = next((item for item in reversed(ordered) if item.get("name") == "prepare_evidence"), None)
         evidence_output = evidence.get("output") if isinstance(evidence, dict) and isinstance(evidence.get("output"), dict) else {}
-        if evidence_output.get("legacy_only"):
+        # legacy_only 只表示“不能自动修复”，后续仍会进入 locate 人工分析；
+        # 只有证据准备确实是最后一步时才能把它当成任务终态。
+        if evidence_output.get("legacy_only") and terminal.get("name") == "prepare_evidence":
             terminal_name = "prepare_evidence"
             reason = str(evidence_output.get("legacy_reason") or evidence.get("summary") or
                          "证据准备确认该运输商只有旧框架实现，不能进入自动修复。")
@@ -267,7 +291,10 @@ def _task_status(steps: list[dict[str, Any]], approval: dict[str, Any] | None) -
         return "WAITING_APPROVAL"
     if any(s.get("status") == "failed" for s in steps):
         return "FAILED"
-    if any(s.get("name") == "finalize_execution" for s in steps):
+    if any(
+        s.get("name") == "finalize_execution" and s.get("status") in {"succeeded", "skipped"}
+        for s in steps
+    ):
         return "COMPLETED"
     return "RUNNING" if steps else "PENDING"
 
@@ -289,24 +316,59 @@ def _approval_pending(step: dict[str, Any] | None) -> bool:
     return isinstance(output, dict) and output.get("decision") == "PENDING"
 
 
-def _derive_run_status(steps: list[dict[str, Any]], tasks: list[dict[str, Any]]) -> str:
-    if not steps and not tasks:
-        return "pending"
-    if any(step.get("status") == "failed" for step in steps):
+def _identified_task_total(steps: list[dict[str, Any]]) -> int:
+    """identify_carrier 识别出的候选任务数；用于区分“待派发”和“确实没有错误”。"""
+    for step in steps:
+        if step.get("name") != "identify_carrier" or step.get("status") != "succeeded":
+            continue
+        output = step.get("output") if isinstance(step.get("output"), dict) else {}
+        tasks = output.get("tasks")
+        if isinstance(tasks, dict):
+            return len(tasks)
+        if isinstance(tasks, list):
+            return len(tasks)
+        return 0
+    return 0
+
+
+def _status_from_report(run_report: dict[str, Any], tasks: list[dict[str, Any]]) -> str:
+    """按落盘终态报告与任务结果收敛执行状态。"""
+    results = [str(task["status"]).upper() for task in tasks]
+    result = str(run_report.get("result") or run_report.get("status") or "").upper()
+    failed = any(item in {"FAILED", "FAIL", "REJECTED"} for item in results)
+    manual = any(item in {"MANUAL", "MANUAL_REVIEW_REQUIRED", "INSUFFICIENT_EVIDENCE"} for item in results)
+    succeeded = any(item in {"SUCCESS", "SUCCEEDED", "COMPLETED", "DELIVERED"} for item in results)
+    if result.startswith("CANCEL"):
+        return "cancelled"
+    if result in {"FAILED", "FAIL", "ERROR"}:
         return "failed"
-    if tasks and all(str(task["status"]).upper() not in {"RUNNING", "PENDING", "WAITING_APPROVAL", "QUEUED"} for task in tasks):
-        task_results = [str(task["status"]).upper() for task in tasks]
-        failed = any(result in {"FAILED", "FAIL", "REJECTED"} for result in task_results)
-        manual = any(result in {"MANUAL", "MANUAL_REVIEW_REQUIRED", "INSUFFICIENT_EVIDENCE"} for result in task_results)
-        succeeded = any(result in {"SUCCESS", "SUCCEEDED", "COMPLETED"} for result in task_results)
-        if manual:
-            # 人工介入不是成功；避免把包含 MANUAL 任务的整轮执行误标为已完成。
-            return "partial_failed"
-        if failed:
-            return "partial_failed" if succeeded else "failed"
-        return "completed"
-    if not tasks and any(step.get("name") == "identify_carrier" and step.get("status") in {"succeeded", "skipped"} for step in steps):
-        return "completed"
+    if manual:
+        # 人工介入不是成功；避免把包含 MANUAL 任务的整轮执行误标为已完成。
+        return "partial_failed"
+    if failed:
+        return "partial_failed" if succeeded else "failed"
+    return "succeeded"
+
+
+def _derive_run_status(
+    steps: list[dict[str, Any]],
+    tasks: list[dict[str, Any]],
+    *,
+    run_report: dict[str, Any] | None = None,
+    startup_state: str = "",
+    finalized: bool = False,
+) -> str:
+    """执行状态只由生命周期事实推导，不再用“无任务槽位”猜完成。
+
+    identify_carrier 成功到 task_dispatch 写入第一个任务槽位之间存在窗口，
+    该窗口内任务尚未派发但工作流已经运行，必须返回 running；只有终态报告
+    （或 finalize_execution 成功）才算结束。
+    """
+    if not steps and not tasks:
+        # 后台任务已接管但首条步骤尚未落盘：这是启动阶段（同步源码/拉取日志）。
+        return "running" if startup_state == "started" else "queued"
+    if run_report or finalized:
+        return _status_from_report(run_report or {}, tasks)
     return "running"
 
 
@@ -400,7 +462,7 @@ def start_run(
 ) -> dict[str, Any]:
     config = _config()
     if config.source_repo is None:
-        raise HTTPException(status_code=409, detail="未配置 AI_REPAIR_SOURCE_REPO，不能启动生产工作流")
+        raise HTTPException(status_code=409, detail="未配置 AI_REPAIR_SOURCE_URL 或 AI_REPAIR_SOURCE_REPO，不能启动生产工作流")
     run_id = _safe_id(request.run_id or uuid.uuid4().hex)
     with _RUN_LOCKS_GUARD:
         if run_id in _STARTED_RUNS or _store().run_dir(run_id).joinpath("run.json").exists():
@@ -523,14 +585,18 @@ from typing import Literal
 
 
 class V1StartRunRequest(BaseModel):
-    # log_days：本轮向 ES 回溯的天数，范围 1–30。
-    log_days: int = Field(default=1, ge=1, le=30)
+    # log_days：本轮向 ES 回溯的天数。
+    log_days: int = Field(default=1, ge=1, le=settings.workbench_max_log_days)
     # log_limit：本轮最多读取的日志数；0 表示采用服务端配置。
-    log_limit: int = Field(default=0, ge=0, le=10000)
+    log_limit: int = Field(default=0, ge=0, le=settings.workbench_max_log_limit)
     # review_mode：agent 表示 AI 审查，human 表示强制人工审查。
-    review_mode: Literal["agent", "human"] = "agent"
+    review_mode: Literal["agent", "human"] = settings.default_review_mode
     # max_attempts：单任务修复尝试总次数，包含首次执行。
-    max_attempts: int = Field(default=3, ge=1, le=5)
+    max_attempts: int = Field(
+        default=settings.default_max_attempts,
+        ge=1,
+        le=settings.workbench_max_attempts,
+    )
 
 
 class V1ApprovalDecision(BaseModel):
@@ -543,12 +609,16 @@ class V1ApprovalDecision(BaseModel):
 def _control_db():
     """Durable idempotency, stop-request and audit metadata, separate from workflow artifacts."""
     import sqlite3
-    runtime_dir = _config().runtime_dir
+    config = _config()
+    runtime_dir = config.runtime_dir
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(str(runtime_dir / "workbench-control.sqlite3"), timeout=10)
+    connection = sqlite3.connect(
+        str(runtime_dir / settings.workbench_control_db_name),
+        timeout=config.workbench_sqlite_timeout_seconds,
+    )
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute("PRAGMA busy_timeout=10000")
+    connection.execute(f"PRAGMA busy_timeout={config.workbench_sqlite_busy_timeout_ms}")
     connection.executescript("""
         CREATE TABLE IF NOT EXISTS idempotency_keys (
             key TEXT PRIMARY KEY, payload_hash TEXT NOT NULL, run_id TEXT NOT NULL, created_at TEXT NOT NULL
@@ -606,19 +676,26 @@ def _v1_run_summary(payload: dict[str, Any]) -> dict[str, Any]:
             ).fetchone()
         finally:
             connection.close()
-        all_steps = list(payload.get("steps") or []) + [
-            step for task in (payload.get("tasks") or []) for step in (task.get("steps") or [])
-        ]
-        active = any(step.get("status") in {"running", "waiting"} for step in all_steps)
-        paused_step = any(step.get("status") == "waiting" for step in all_steps)
-        if control and control["cancel_requested"]:
-            status = "cancel_requested" if active else "cancelled"
+        paused_step = any(
+            step.get("status") == "waiting"
+            for step in list(payload.get("steps") or [])
+            + [item for task in (payload.get("tasks") or []) for item in (task.get("steps") or [])]
+        )
+        # 控制标记与运行记录可能短暂不一致：只有运行已经落盘 cancelled 才展示已停止，
+        # 否则保持 cancel_requested，避免前端误判为可写状态。
+        if control and control["cancel_requested"] and status not in {
+            "succeeded", "failed", "partial_failed", "cancelled",
+        }:
+            status = "cancel_requested"
         elif control and control["pause_requested"]:
             status = "paused" if paused_step else "pause_requested"
     except Exception:
         logger.debug("读取执行控制状态失败 run_id=%s", run_id, exc_info=True)
     return {
         "run_id": run_id, "status": status,
+        "terminal": bool(payload.get("terminal")),
+        "identified_tasks": int(payload.get("identified_tasks") or 0),
+        "dispatched_tasks": int(payload.get("dispatched_tasks") or 0),
         "started_at": created, "finished_at": payload.get("finished_at"),
         "task_count": int(summary.get("tasks_total") or len(payload.get("tasks") or [])),
         "succeeded_tasks": int(summary.get("tasks_success") or 0),
@@ -718,11 +795,17 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
             "media_type": "application/json", "description": "Run 级终态总结",
             "size_bytes": None,
         })
+    # 只有“报告已落盘且图无后续节点”才算终态；等待审批、过渡窗口都继续推流。
+    terminal = bool(isinstance(run_report, dict) and run_report) and (
+        not next_nodes or status in {"succeeded", "failed", "partial_failed", "cancelled"}
+    )
+    if payload.get("run_error") or status == "cancelled":
+        terminal = True
     return {
-        **summary, "status": status,
+        **summary, "status": status, "terminal": terminal,
         "config": {
             "log_days": run_meta.get("log_days", 1), "log_limit": run_meta.get("log_limit", 0),
-            "review_mode": run_meta.get("review_mode", "agent"), "max_attempts": run_meta.get("max_attempts", 3),
+            "review_mode": run_meta.get("review_mode", settings.default_review_mode), "max_attempts": run_meta.get("max_attempts", settings.default_max_attempts),
         },
         "steps": steps, "tasks": tasks, "artifacts": artifacts,
         "run_report": run_report if isinstance(run_report, dict) else {},
@@ -770,8 +853,8 @@ def v1_dashboard(_: None = Depends(_authorize)) -> dict[str, Any]:
         except (OSError, ValueError, HTTPException):
             continue
     now = datetime.now(timezone.utc)
-    day_start = now - timedelta(hours=24)
-    week_start = now.date() - timedelta(days=6)
+    day_start = now - timedelta(hours=settings.dashboard_recent_hours)
+    week_start = now.date() - timedelta(days=settings.dashboard_trend_days - 1)
     recent = [item for item in summaries if _parse_time(item.get("started_at")) and _parse_time(item.get("started_at")) >= day_start]
     daily = {}
     for offset in range(7):
@@ -797,7 +880,12 @@ def v1_dashboard(_: None = Depends(_authorize)) -> dict[str, Any]:
 
 @router.get("/api/v1/runs")
 def v1_list_runs(
-    page: int = Query(default=1, ge=1), page_size: int = Query(default=20, ge=1, le=100),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(
+        default=settings.workbench_page_size,
+        ge=1,
+        le=settings.workbench_max_page_size,
+    ),
     status: str | None = None, keyword: str | None = Query(default=None, max_length=160),
     from_: str | None = Query(default=None, alias="from", max_length=40),
     to: str | None = Query(default=None, max_length=40), _: None = Depends(_authorize),
@@ -832,7 +920,7 @@ def v1_start_run(
 ) -> dict[str, Any]:
     config = _config()
     if config.source_repo is None:
-        raise HTTPException(status_code=409, detail="未配置 AI_REPAIR_SOURCE_REPO，不能启动生产工作流")
+        raise HTTPException(status_code=409, detail="未配置 AI_REPAIR_SOURCE_URL 或 AI_REPAIR_SOURCE_REPO，不能启动生产工作流")
     if not idempotency_key:
         raise HTTPException(status_code=400, detail="缺少 Idempotency-Key，请为本次启动生成唯一请求键")
 
@@ -1058,7 +1146,7 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
         "artifacts": artifacts,
         "config": {
             "log_days": run_meta.get("log_days", 1), "log_limit": run_meta.get("log_limit", 0),
-            "review_mode": run_meta.get("review_mode", "agent"), "max_attempts": run_meta.get("max_attempts", 3),
+            "review_mode": run_meta.get("review_mode", settings.default_review_mode), "max_attempts": run_meta.get("max_attempts", settings.default_max_attempts),
         },
     }
 
@@ -1133,18 +1221,29 @@ def _resume_workflow_background(
             logger.warning("跳过重复恢复的工作流 run_id=%s", run_id)
             return
     try:
-        from app.workflow.wiring import build_graph
+        from app.infrastructure.config import load_config, workflow_recursion_limit
+        from app.infrastructure.git.source import sync_source_repo
+        from app.workflow.wiring import build_graph, build_services
+
         store = _store()
-        graph = build_graph(store=store)
+        runtime_config = load_config()
+        # 恢复执行同样先同步源仓库；只读查询路径不会走到这里。
+        source_repo = sync_source_repo(runtime_config)
+        graph = build_graph(
+            store=store,
+            services=build_services(
+                config=runtime_config,
+                source_repo=source_repo,
+            ),
+        )
         loader = getattr(store, "load_run", None)
         run_meta = loader(run_id) if callable(loader) else _read_json(store.run_dir(run_id) / "run.json", {})
         if not isinstance(run_meta, dict):
             run_meta = {}
-        from app.infrastructure.config import workflow_recursion_limit
         config = {
             "configurable": {"thread_id": run_id},
             "recursion_limit": workflow_recursion_limit(
-                max_attempts=int(run_meta.get("max_attempts") or 3),
+                max_attempts=int(run_meta.get("max_attempts") or settings.default_max_attempts),
                 task_count_hint=int(run_meta.get("log_limit") or 50),
             ),
         }
@@ -1435,7 +1534,8 @@ def v1_run_events(run_id: str, _: None = Depends(_authorize)) -> StreamingRespon
                     previous = digest
                 else:
                     yield ": heartbeat\n\n"
-                if snapshot.get("status") in {"succeeded", "failed", "cancelled"}:
+                # 只按已确认的终态关流；派发窗口与等待审批都必须继续推送。
+                if snapshot.get("terminal"):
                     return
             except Exception:
                 logger.exception("运行事件流读取失败 run_id=%s", run_id)
@@ -1460,3 +1560,217 @@ def v1_control_audit(run_id: str, _: None = Depends(_authorize)) -> dict[str, An
         return {"items": [dict(row) for row in rows], "total": len(rows)}
     finally:
         connection.close()
+
+
+class V1StepRunRequest(BaseModel):
+    # confirm_write：写步骤必须显式确认，避免误触外部写入。
+    confirm_write: bool = False
+
+
+def _load_model_calls(run_id: str, task_id: str | None = None) -> list[dict[str, Any]]:
+    """按行读取 Provider 审计并按任务过滤；损坏行跳过，不伪造数据。"""
+    path = _store().run_dir(run_id) / "model_calls.jsonl"
+    items: list[dict[str, Any]] = []
+    if not path.is_file():
+        return items
+    with path.open("r", encoding="utf-8") as stream:
+        for line in stream:
+            if not line.strip():
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                logger.warning("忽略损坏的模型调用审计行 run_id=%s", run_id)
+                continue
+            if not isinstance(item, dict):
+                continue
+            if task_id and str(item.get("task_id") or "") != task_id:
+                continue
+            items.append(item)
+    return items
+
+
+def _step_context(record: Any) -> dict[str, Any]:
+    """步骤上下文白名单投影；不返回工作区绝对路径与完整输入输出。"""
+    output = record.output if isinstance(record.output, dict) else {}
+    plan = output.get("change_plan") if isinstance(output.get("change_plan"), dict) else {}
+    files = output.get("changed_files") if isinstance(output.get("changed_files"), list) else []
+    return {
+        "attempt": record.attempt,
+        "status": record.status,
+        "result": record.result,
+        "changed_files": [str(item) for item in files if str(item)][:50],
+        "change_plan_scope": str(plan.get("scope") or ""),
+        "delivery_status": str(output.get("delivery_status") or ""),
+        "counts": {str(key): len(value) for key, value in output.items() if isinstance(value, list)},
+        "flags": {
+            key: bool(output[key])
+            for key in ("legacy_only", "scope_escalation_required", "approval_pending")
+            if key in output
+        },
+    }
+
+
+@router.get("/api/v1/runs/{run_id}/board")
+def v1_run_board(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
+    """任务板首屏投影：只返回任务卡摘要与步骤状态，不携带 input/output。"""
+    store = _store()
+    payload = _run_payload(store, _safe_id(run_id))
+    tasks: list[dict[str, Any]] = []
+    for task in payload.get("tasks") or []:
+        steps = task.get("steps") or []
+        report = task.get("report") if isinstance(task.get("report"), dict) else {}
+        problem = task.get("problem") if isinstance(task.get("problem"), dict) else {}
+        tasks.append({
+            "task_id": task.get("task_id", ""),
+            "carrier": task.get("carrier", ""),
+            "biztype": task.get("biztype", ""),
+            "service_name": str(problem.get("service_name") or report.get("service_name") or ""),
+            "result": str(task.get("status") or "PENDING"),
+            "terminal_step": str(report.get("terminal_step") or ""),
+            "terminal_reason": str(report.get("terminal_reason") or ""),
+            "next_action": str(report.get("next_action") or ""),
+            "approval_pending": bool(task.get("approval_pending")),
+            "steps_count": len(steps),
+            "duration_ms": report.get("elapsed_ms"),
+            "step_statuses": {
+                str(step.get("name") or ""): str(step.get("status") or "")
+                for step in steps
+            },
+        })
+    return {
+        "run_id": str(payload.get("run_id") or run_id),
+        "summary": _v1_run_summary(payload),
+        "tasks": tasks,
+        "total": len(tasks),
+    }
+
+
+@router.get("/api/v1/runs/{run_id}/tasks/{task_id}/steps/{step_name}")
+def v1_get_step(
+    run_id: str, task_id: str, step_name: str, _: None = Depends(_authorize),
+) -> dict[str, Any]:
+    """单步详情：步骤记录、产物引用、关联模型调用与脱敏上下文。"""
+    run_id, task_id, step_name = _safe_id(run_id), _safe_id(task_id), _safe_id(step_name)
+    store = _store()
+    _run_payload(store, run_id)
+    record = store.load(run_id, step_name, task_id) or store.load(run_id, step_name)
+    if record is None:
+        raise HTTPException(status_code=404, detail="步骤记录不存在")
+    # Agent 记录的 name 是 repair_agent，审计里的 agent_role 是 repair；两者都接受。
+    roles = {record.name, record.name.removesuffix("_agent")}
+    calls = [
+        item for item in _load_model_calls(run_id, task_id)
+        if str(item.get("agent_role") or "") in roles
+        and int(item.get("attempt") or 0) == int(record.attempt or 0)
+    ]
+    started = _parse_time(record.started_at)
+    finished = _parse_time(record.finished_at)
+    if started:
+        calls = [
+            item for item in calls
+            if (moment := _parse_time(item.get("started_at")))
+            and moment >= started - timedelta(seconds=5)
+            and (finished is None or moment <= finished + timedelta(seconds=5))
+        ]
+    return {
+        "run_id": run_id,
+        "task_id": task_id,
+        "step": record.model_dump(mode="json"),
+        "artifacts": [ref.model_dump(mode="json") for ref in record.artifacts],
+        "model_call_ids": [str(item.get("model_call_id") or "") for item in calls],
+        "context": _step_context(record),
+    }
+
+
+@router.post("/api/v1/runs/{run_id}/tasks/{task_id}/steps/{step_name}/run", status_code=202)
+def v1_run_step(
+    run_id: str, task_id: str, step_name: str, request: V1StepRunRequest,
+    authorization: str | None = Header(default=None),
+    _: None = Depends(_authorize),
+) -> dict[str, Any]:
+    """基于已落盘记录单步执行一个步骤或 Agent；写操作必须显式确认。"""
+    from app.application.step_runner import StepRunRequest, StepRunner, StepRunnerError
+
+    run_id, task_id, step_name = _safe_id(run_id), _safe_id(task_id), _safe_id(step_name)
+    store = _store()
+
+    def _status(value: str) -> str:
+        return str(_v1_detail(value).get("status") or "")
+
+    actor = "bearer-token" if authorization else "local-user"
+    with _RUN_LOCKS_GUARD:
+        run_lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
+    if not run_lock.acquire(blocking=False):
+        message = "该执行正在被启动或重跑占用，请稍后重试"
+        _audit_control(run_id, task_id, f"step.run.rejected:{step_name}", actor, message)
+        raise HTTPException(status_code=409, detail={"code": "RUN_LOCKED", "message": message})
+    runner = StepRunner(store, run_status=_status, on_finish=run_lock.release)
+    try:
+        result = runner.run(StepRunRequest(
+            run_id=run_id, task_id=task_id, step_name=step_name,
+            confirm_write=request.confirm_write,
+        ))
+    except StepRunnerError as exc:
+        run_lock.release()
+        _audit_control(run_id, task_id, f"step.run.rejected:{step_name}", actor, str(exc))
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    except Exception:
+        run_lock.release()
+        raise
+    _audit_control(
+        run_id, task_id, f"step.run.requested:{step_name}", actor,
+        f"confirm_write={request.confirm_write}",
+    )
+    return result
+
+
+@router.get("/api/v1/runs/{run_id}/tasks/{task_id}/agent-calls/{model_call_id}")
+def v1_agent_call(
+    run_id: str, task_id: str, model_call_id: str, _: None = Depends(_authorize),
+) -> dict[str, Any]:
+    """单次 Agent 调用详情：调用元数据、提示词快照与工具事件。"""
+    run_id, task_id, model_call_id = _safe_id(run_id), _safe_id(task_id), _safe_id(model_call_id)
+    store = _store()
+    run_dir = store.run_dir(run_id)
+    if not run_dir.is_dir():
+        raise HTTPException(status_code=404, detail="运行记录不存在")
+    call = next(
+        (item for item in _load_model_calls(run_id, task_id)
+         if str(item.get("model_call_id") or "") == model_call_id),
+        None,
+    )
+    if call is None:
+        raise HTTPException(status_code=404, detail="模型调用记录不存在")
+    snapshot = _read_json(
+        run_dir / "tasks" / task_id / "audit" / "prompts" / f"{model_call_id}.json", {},
+    )
+    events: list[dict[str, Any]] = []
+    event_path = run_dir / "tasks" / task_id / "audit" / "agent_events.jsonl"
+    if event_path.is_file():
+        with event_path.open("r", encoding="utf-8") as stream:
+            for line in stream:
+                if not line.strip():
+                    continue
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("model_call_id") or "") != model_call_id:
+                    continue
+                if isinstance(item.get("event"), dict):
+                    events.append(item["event"])
+    return {
+        "run_id": run_id,
+        "task_id": task_id,
+        "call": call,
+        "prompt_snapshot": snapshot if isinstance(snapshot, dict) else {},
+        "prompt_snapshot_available": bool(isinstance(snapshot, dict) and snapshot),
+        "events": events,
+        "event_total": len(events),
+    }

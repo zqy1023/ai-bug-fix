@@ -79,7 +79,7 @@ app/
 | `claim_repair_slot` | 原子领取本轮修复资格 | `repair_agent` |
 | `repair_agent` | 仅修改授权范围内的目标 carrier | `validate_changes` |
 | `validate_changes` | `check_changes → verify_issue`，任一步失败即停止 | `run_regression` |
-| `run_regression` | 在本地准生产 Git 环境执行回归，不提交 | `review_agent`（agent 模式）或直接收尾（human 模式） |
+| `run_regression` | 在本地准生产 Git 环境执行回归，不提交 | `review_agent`（agent 模式）或直接交付分支（human 模式，跳过 AI 审查） |
 | `review_agent` | 只读审查真实 Diff、门禁、验证和回归报告 | 交付、回修或人工处理 |
 | `request_approval` | 交付方案人工决策；拒绝进入有上限的回修循环 | 收尾 |
 | `prepare_delivery` | 创建修复分支并按配置提交/推送 | `finalize_execution` |
@@ -114,6 +114,8 @@ Locate、Repair、Review Agent 仍分别是独立 Agent 子图，不与确定性
 ### 终态语义
 
 `status` 记录节点执行状态，`result` 记录业务结论。定位/审查返回 `MANUAL` 或证据不足时，`finalize_execution` 必须将最终报告写为 `MANUAL`，不能因节点自身 succeeded 而误记为 FAILED 或 SUCCESS。人工介入不等于审批；审批只处理存在明确方案且处于 interrupt 的任务。
+
+human 模式（人工审查）与 agent 模式的差异只在审查环节：回归通过后同样交付修复分支并进入交付审批，由人工审查分支内容。终态按真实交付记录推导——没有真实提交（远端分支或源仓库本地分支可查）时不会记为 `SUCCESS`。
 
 ## Agent 子图
 
@@ -150,11 +152,15 @@ Agent 子图的 `State` 使用 TypedDict：**新增字段必须显式声明**，
 - Provider 请求级模型调用审计：模型、Prompt 哈希、耗时、Token 用量（供应商未返回时为空）、工具调用统计与错误类型。
 - 运行状态快照 SSE 和控制操作审计查询。
 - 审批队列与 LangGraph checkpoint 恢复。
+- 任务板投影（`/runs/{run_id}/board`）与单步骤详情、关联模型调用、脱敏上下文检查器。
+- 单步骤重跑（`/runs/{run_id}/tasks/{task_id}/steps/{step_name}/run`）：仅在非活跃执行上允许，写步骤必须显式确认。
 - 产物读取限制在当前运行/任务目录，限制最大读取大小。
 
 工作台不提供知识案例或人工介入转派 API；人工决策只针对交付后的 `request_approval` 中断。旧 `apply_plan` 入口已退役，变更方案通过工作流的 `change_plan` 契约流转。
 
 模型调用审计文件写入 `<运行时目录>/runs/<run_id>/model_calls.jsonl`。历史运行不会补造缺失的模型调用记录。Token 等用量字段以 Provider 实际返回为准。
+
+提示词快照写入 `tasks/<task_id>/audit/prompts/<model_call_id>.json`，包含公共规则、角色提示词、任务上下文与字符数。快照由 `workbench_prompt_snapshot` 开关控制（默认开启），写入前按 `redact_output` 掩码凭据、把工作区绝对路径归一为项目相对路径，并按单段/总量上限截断；因此运行目录应视为包含业务上下文的高敏感数据，必须限制访问权限。
 
 运行与安全边界：
 
@@ -171,20 +177,21 @@ Agent 子图的 `State` 使用 TypedDict：**新增字段必须显式声明**，
 
 信息架构：
 
-- 异常分诊台：展示真实运行指标、最近执行、需关注的异常轮次、服务健康和 7 天趋势。
-- 执行记录：按关键词和状态检索轮次，创建扫描并进入运行详情。
-- 运行详情：步骤拓扑、任务列表、生命周期控制、审计与产物信息。
-- 任务诊断：终态结论、根因摘要、节点输入输出、模型调用元数据、产物预览与终态报告。
-- 最终审批：仅处理已进入交付门禁的方案；拒绝必须填写理由；服务端负责状态、权限和审计校验。
+- 执行阵列（`/runs`）：指标带、run 卡与任务热力条、状态/关键词筛选、分页和发起执行向导。
+- Run 工作区（`/runs/:runId`）：run 级拓扑、按优先级分组的任务板、暂停/恢复/停止、只读 checkpoint 时间线与控制审计。
+- Task 工作区（`/runs/:runId/tasks/:taskId`）：任务头、真实子图节点轨（组合阶段可展开）、步骤输入/输出/产物/错误、Agent 追踪与脱敏上下文检查器。
+- Agent 追踪：提示词分段（版本、hash、字符数）、工具调用时间线与模型输出/Token 统计，按 attempt 切换。
+- 交付审批（`/approvals`）：左队列右审阅；驳回必须填写理由并二次确认，批准保留分支供人工合并。
 
 设计和状态原则：
 
-1. 左侧为稳定一级导航，顶部提供执行搜索、服务状态和新建扫描入口。
-2. 总览优先显示需要决策、需要排查和执行中的轮次，再展示趋势；不生成虚构任务或示例运行数据。
+1. 顶部为 56px 固定导航（执行阵列、交付审批角标、服务健康），底部固定状态条展示服务、运行目录与待审批数量。
+2. 任务是最小观察单元：Run 页只承载任务卡与状态，步骤 I/O 与单步操作全部收敛到 Task 页。
 3. 运行状态和业务结论分开展示。等待、失败、拒绝、证据不足、交付等状态不能混为一类。
 4. 前端只展示后端授权的数据；产物通过受控 API 获取，不直接读取磁盘、Git 仓库、steps.json 或 LangGraph checkpoint。
-5. 人工决策入口收敛到交付后的最终审批。
-6. 令牌只保存在当前页面内存中。按钮状态不替代服务端的权限、状态机、输入校验、幂等和审计。
+5. 人工决策入口收敛到交付后的最终审批；`request_approval` 不提供单步执行入口。
+6. 单步执行是写操作：必须持运行锁、写入控制审计，写步骤需要显式确认；活跃执行由服务端拒绝并返回 409。
+7. 令牌只保存在当前页面内存中。按钮状态不替代服务端的权限、状态机、输入校验、幂等和审计。
 
 API 约定：所有控制面请求通过 `src/lib/api.ts` 发出，路径以 `/api/v1` 为前缀；健康检查使用 `/api/health`。类型集中于 `src/lib/types.ts`。前端不直接访问数据库、Git 或本地文件系统。
 
@@ -220,7 +227,7 @@ npm run build
 
 ## 真实数据单步调试
 
-单步命令必须使用整图执行产生的真实 `run_id` 和任务 `task_id`。步骤从 `.ai-repair/runs/<run_id>/steps.json` 与 artifact 重建输入，不接收 fixture、stub 或手写问题数据；缺少通过的前置记录时直接拒绝。
+单步命令必须使用整图执行产生的真实 `run_id` 和任务 `task_id`。步骤从 `runtime/runs/<run_id>/steps.json` 与 artifact 重建输入，不接收 fixture、stub 或手写问题数据；缺少通过的前置记录时直接拒绝。
 
 ```powershell
 .venv\Scripts\python.exe -m app.workflow.steps.normalize_error --run-id <real-run-id>
@@ -234,15 +241,28 @@ npm run build
 .venv\Scripts\python.exe -m app.entrypoint --run-id <run-id>
 ```
 
-运行记录目录通过 `AI_REPAIR_RUNTIME_DIR` 配置，默认位于项目根目录 `.ai-repair/`；Docker 部署固定挂载为 `/app/runtime`。
+运行记录目录通过 `AI_REPAIR_RUNTIME_DIR` 配置，未设置时默认是项目根目录 `runtime/`；Docker 部署把持久化卷挂载到 `/app/runtime`，运行记录目录也使用 `/app/runtime`。
+
+`runtime/workspaces` 是可重建缓存：`shared/<run>` 是本轮只读共享树，`ai/<run>-<task>` 是任务隔离区，`delivery/<branch>` 与 `regression/<task>` 是临时 Git 克隆。服务启动时会按 `AI_REPAIR_WORKSPACE_RETENTION_DAYS`（默认 7 天，仅清理已写终态报告的执行）回收 `shared`/`ai`，按 `AI_REPAIR_DELIVERY_WORKSPACE_TTL_HOURS`（默认 24 小时）回收 `delivery`/`regression`；设置 `AI_REPAIR_WORKSPACE_GC_ENABLED=false` 可关闭。审计事实保存在 `runtime/runs`，不参与回收。
+
+### 源仓库模式
+
+- **URL 模式（推荐）**：只配置 `AI_REPAIR_SOURCE_URL`（以及私有仓库的 `AI_REPAIR_GIT_USERNAME` / `AI_REPAIR_GIT_PASSWORD`）。系统把仓库克隆到 `<运行时目录>/source-repo`，每次执行工作流前执行 `fetch --prune` 并对齐远端默认分支，因此分支预检看到的是远端最新状态。凭据只注入 Git 子进程环境，不写入镜像的 `.git/config`。
+- **本地模式**：配置 `AI_REPAIR_SOURCE_REPO` 指向本地 Git 仓库，适用于离线开发。该模式不会自动 fetch，分支预检只反映本地仓库已有的远端跟踪引用。
+
+两种模式都通过 `AI_REPAIR_PROJECT_SUBDIR` 指定 `gathers/`、`spiders/` 所在的业务目录。
+
+修复分支固定为 `ai-bug-tasks/<biz_type>/<carrier>-<问题指纹>`。`biz_type` 直接作为一级目录（允许中文），同一业务类型的修复分支收敛在同一目录，不再因为中文被清洗成 `item`。
+
+URL 模式的镜像是**完整 Git 仓库**（引用、分支、对象都在，分支预检和回归/交付克隆都依赖它），但工作树用 `git sparse-checkout` 只物化 `AI_REPAIR_PROJECT_SUBDIR`。因此 `<运行时目录>/source-repo` 下只会看到 `.git` 和该业务目录，不会再把整仓库检出到磁盘；共享源码树同样用稀疏克隆创建。
 
 ## Docker 部署
 
 生产容器入口是根目录 `docker-compose.yml`，前端由 Nginx 同源代理到 FastAPI。
 
 1. 将根目录 `.env.example` 复制为 `.env`，填写所有真实连接参数与随机生成的 `WORKBENCH_API_TOKEN`。
-2. 设置 `AI_REPAIR_SOURCE_REPO_HOST_PATH` 为宿主机 Git 仓库路径，设置 `AI_REPAIR_RUNTIME_HOST_PATH` 为宿主机持久化运行数据目录。启动前创建该目录，并确认 `APP_UID`/`APP_GID` 对应用户可以写入源仓库和运行目录。
-3. 容器内源仓库固定挂载到 `/workspace/source`，运行数据固定挂载到 `/app/runtime`。API 的 `AI_REPAIR_SOURCE_REPO` 和 `AI_REPAIR_RUNTIME_DIR` 已覆盖为容器路径。
+2. 配置 `AI_REPAIR_SOURCE_URL` 及私有仓库凭据；设置 `AI_REPAIR_RUNTIME_HOST_PATH` 为宿主机持久化运行数据目录。启动前创建该目录，并确认 `APP_UID`/`APP_GID` 对应用户可以写入。
+3. 容器只需挂载运行数据到 `/app/runtime`；源仓库在运行时从远程克隆，容器必须能访问 Git 远程地址。`AI_REPAIR_RUNTIME_DIR` 在 compose 中固定为 `/app/runtime`。
 4. 构建机必须能够访问 `requirements.txt` 中声明的内部 `yq_common` 包地址。
 
 ```bash
@@ -252,7 +272,7 @@ docker compose ps
 docker compose logs -f api frontend
 ```
 
-前端默认监听 `http://localhost:8080`。API 不直接映射宿主机端口；远程部署必须在 HTTPS 反向代理后访问。源仓库挂载为读写模式，必须确认 Git 身份、分支策略和凭据可用。默认不自动推送，禁止自动合并。不要将 `.env`、密钥、源仓库或运行数据打入镜像。
+前端默认监听 `http://localhost:8080`。API 不直接映射宿主机端口；远程部署必须在 HTTPS 反向代理后访问。容器需要 Git 远程访问权限，必须确认 Git 身份、分支策略和凭据可用。默认不自动推送，禁止自动合并。不要将 `.env`、密钥或运行数据打入镜像。
 
 ## 延伸文档
 

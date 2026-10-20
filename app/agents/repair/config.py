@@ -26,12 +26,12 @@ DEFAULTS: dict[str, Any] = {
     "provider": "claude_session",
     "writable": True,
     "tools": list(WRITE_TOOLS),
-    "max_turns": 30,
-    "max_tool_calls": 32,
-    "max_context_chars": 100000,
-    "max_candidate_files": 8,
-    "max_diff_chars": 16000,
-    "timeout_seconds": 1800,
+    "max_turns": 16,
+    "max_tool_calls": 20,
+    "max_context_chars": 18000,
+    "max_candidate_files": 6,
+    "max_diff_chars": 12000,
+    "timeout_seconds": 480,
     "options": {},
 }
 
@@ -57,17 +57,17 @@ class RepairConfig:
     # tools：允许使用的工具白名单。
     tools: tuple[str, ...] = WRITE_TOOLS
     # max_turns：模型交互回合上限。
-    max_turns: int = 30
+    max_turns: int = 16
     # max_tool_calls：工具调用总数上限。
-    max_tool_calls: int = 32
+    max_tool_calls: int = 20
     # max_context_chars：模型上下文字符上限。
-    max_context_chars: int = 24000
+    max_context_chars: int = 18000
     # max_candidate_files：候选文件数量上限。
-    max_candidate_files: int = 8
+    max_candidate_files: int = 6
     # max_diff_chars：差异证据字符上限。
-    max_diff_chars: int = 16000
+    max_diff_chars: int = 12000
     # timeout_seconds：单次 Agent 超时秒数。
-    timeout_seconds: int = 1800
+    timeout_seconds: int = 480
     # options：Provider 扩展参数。
     options: Mapping[str, Any] = field(default_factory=dict)
     # source：当前配置来源。
@@ -105,7 +105,13 @@ class RepairConfig:
         turns = environment.get(f"{ENV_PREFIX}MAX_TURNS", "").strip()
         if turns:
             payload["max_turns"] = int(turns)
-        for field_name in ("MAX_TOOL_CALLS", "MAX_CONTEXT_CHARS", "MAX_CANDIDATE_FILES", "MAX_DIFF_CHARS"):
+        for field_name in (
+            "MAX_TOOL_CALLS",
+            "MAX_CONTEXT_CHARS",
+            "MAX_CANDIDATE_FILES",
+            "MAX_DIFF_CHARS",
+            "TIMEOUT_SECONDS",
+        ):
             value = environment.get(f"{ENV_PREFIX}{field_name}", "").strip()
             if value:
                 payload[field_name.lower()] = int(value)
@@ -128,13 +134,13 @@ class RepairConfig:
             raise RepairConfigError("repair.tools 必须是字符串数组")
         if tuple(tools) != WRITE_TOOLS:
             raise RepairConfigError("repair.tools 必须严格为 Read、Glob、Grep、Write、Edit")
-        max_turns = payload.get("max_turns", 30)
+        max_turns = payload.get("max_turns", 16)
         if not isinstance(max_turns, int) or max_turns < 1:
             raise RepairConfigError("repair.max_turns 必须是正整数")
-        limits = {key: payload.get(key, default) for key, default in (("max_tool_calls", 32), ("max_context_chars", 24000), ("max_candidate_files", 8), ("max_diff_chars", 16000))}
+        limits = {key: payload.get(key, default) for key, default in (("max_tool_calls", 20), ("max_context_chars", 18000), ("max_candidate_files", 6), ("max_diff_chars", 12000))}
         if any(not isinstance(value, int) or value < 1 for value in limits.values()):
             raise RepairConfigError("repair agent budget 必须是正整数")
-        timeout = payload.get("timeout_seconds", 1800)
+        timeout = payload.get("timeout_seconds", 480)
         if not isinstance(timeout, int) or timeout < 1:
             raise RepairConfigError("repair.timeout_seconds 必须是正整数")
         provider = payload.get("provider", "claude_session")

@@ -50,7 +50,7 @@ def prepare_run(
     if config.review_mode not in ("agent", "human"):
         raise ValueError("review_mode 只能是 agent 或 human")
     if config.source_repo is None:
-        raise RuntimeError("AI_REPAIR_SOURCE_REPO 未配置，禁止启动完整修复工作流")
+        raise RuntimeError("AI_REPAIR_SOURCE_URL 或 AI_REPAIR_SOURCE_REPO 未配置，禁止启动完整修复工作流")
 
     resolved = run_id or uuid.uuid4().hex
     store = RecordStore(config.runtime_dir)
@@ -59,7 +59,7 @@ def prepare_run(
         "project_subdir": str(config.project_subdir or ""),
         "log_service_name": config.log_service_name,
         "log_service_prefix": config.log_service_prefix,
-        "log_excluded_messages": list(config.ignore_errors),
+        "log_excluded_messages": list(config.excluded_messages),
         "log_excluded_biztypes": list(config.excluded_biztypes),
         "log_days": config.log_days,
         "log_limit": config.limit,
@@ -108,17 +108,23 @@ def run_workflow(
         run_id, overrides=overrides, allow_prepared=prepared
     )
     try:
-        from app.workflow.wiring import build_graph
+        from app.infrastructure.git.source import sync_source_repo
+        from app.workflow.wiring import build_graph, build_services
 
-        graph = build_graph(store=store)
+        # URL 模式在执行入口克隆/拉取镜像，分支预检和交付都基于同一份最新远端状态。
+        source_repo = sync_source_repo(config)
+        graph = build_graph(
+            store=store,
+            services=build_services(config=config, source_repo=source_repo),
+        )
         final_state = graph.invoke(
             {
                 "schema_version": 2,
                 "run_id": resolved,
-                "source_repo_path": str(config.source_repo),
+                "source_repo_path": str(source_repo or ""),
                 "log_service_name": config.log_service_name,
                 "log_service_prefix": config.log_service_prefix,
-                "log_excluded_messages": list(config.ignore_errors),
+                "log_excluded_messages": list(config.excluded_messages),
                 "log_excluded_biztypes": list(config.excluded_biztypes),
                 "log_days": config.log_days,
                 "log_limit": config.limit,

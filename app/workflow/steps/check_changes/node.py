@@ -9,9 +9,10 @@ from app.domain.errors import StepFailed
 from app.application.context import StepContext
 from app.workflow.steps.check_changes.models import CheckInput, CheckOutput, FileEvidence
 from app.workflow.steps.check_changes.verification import validate_changed_files
+from config.settings import settings
 
 
-MAX_OUTPUT_ITEMS = 200
+MAX_OUTPUT_ITEMS = settings.check_changes_max_output_items
 _TRUNCATED_REASON = "…其余 {count} 条已省略"
 
 

@@ -38,13 +38,16 @@ def run(ctx: StepContext, data: SourceSnapshotInput) -> SourceSnapshotOutput:
         raise StepFailed(public_exception(error, prefix="源码快照源仓库无法读取")) from error
     from app.infrastructure.filesystem.workspace import WorkspaceManager
 
-    carrier = WorkspaceManager.safe_carrier_name(data.carrier)
-    new_root = root / "gathers" / carrier
-    legacy_root = root / "spiders" / carrier
-    has_new = (new_root / "main.py").is_file()
-    has_legacy = legacy_root.is_dir()
+    # 源码目录常带原始大小写（如 gathers/Airpak），必须按磁盘真实路径定位；
+    # casefold 后的名字在 Linux 上找不到目录，也会让 manifest 与 Git 路径不一致。
+    new_root = WorkspaceManager.find_carrier_dir(root, "gathers", data.carrier)
+    legacy_root = WorkspaceManager.find_carrier_dir(root, "spiders", data.carrier)
+    has_new = new_root is not None and (new_root / "main.py").is_file()
+    has_legacy = legacy_root is not None
     if not has_new and not has_legacy:
-        raise StepFailed(f"源码快照找不到 carrier: {data.carrier}")
+        raise StepFailed(
+            f"源码快照找不到 carrier（源码中可能已删除或重命名）: {data.carrier}"
+        )
 
     # 同时快照新旧框架的同名 carrier（如果两者都存在），以便只读定位能够核对
     # 新框架是否调用旧实现；是否允许修改由定位结论和后续范围门禁决定。
@@ -52,7 +55,7 @@ def run(ctx: StepContext, data: SourceSnapshotInput) -> SourceSnapshotOutput:
     roots = [
         path.relative_to(root).as_posix()
         for path, exists in ((new_root, has_new), (legacy_root, has_legacy))
-        if exists
+        if exists and path is not None
     ]
 
     task_dir = ctx.store.task_dir(ctx.run.run_id, data.task_id)

@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
+
+from app.infrastructure.filesystem.safe_cleanup import temporary_directory
+from app.infrastructure.filesystem.workspace import WorkspaceManager
+from config.settings import settings
 
 
 class ReplayResult:
@@ -35,7 +39,9 @@ try:
     gather_main_path = Path(payload["gather_main_path"]).resolve()
     sys.path.insert(0, str(gather_main_path.parent.parent))
     from server_dev import main
-    from framework.model.track_model import TrackRequestItemModel, TrackModel, TrackRequestConfigModel
+    # 业务仓库的模型定义在 framework/models.py；曾按旧目录 framework/model/track_model
+    # 硬编码，仓库结构变化后所有重放都会先报 No module named 'framework.model'。
+    from framework.models import TrackRequestItemModel, TrackModel, TrackRequestConfigModel
 
     req_data = payload["req"]
     response_data = payload["response"]
@@ -63,10 +69,12 @@ try:
         "result": result.model_dump() if hasattr(result, "model_dump") else str(result),
     }, ensure_ascii=False))
 except Exception as error:
+    import traceback
     print(json.dumps({
         "success": False,
         "exception_type": type(error).__name__,
-        "error": "重放目标执行失败",
+        "error": str(error)[:2000],
+        "traceback": traceback.format_exc()[-4000:],
     }, ensure_ascii=False), file=sys.stderr)
     sys.exit(1)
 '''
@@ -79,13 +87,19 @@ def run_replay(
     response_json: str,
     track_config_json: str,
     gathers_root: Path,
-    timeout_seconds: int = 30,
+    timeout_seconds: int = settings.replay_timeout_seconds,
 ) -> ReplayResult:
     """执行 response 重放；carrier 路径和 JSON 输入均按数据处理，不插入源码。"""
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", carrier) or carrier in {".", ".."}:
         return ReplayResult(False, error="carrier 名称包含非法路径字符")
     root = gathers_root.resolve()
-    gather_path = (root / carrier / "main.py").resolve()
+    # 源码目录可能保留原始大小写（gathers/Airpak），按磁盘真实路径解析。
+    carrier_dir = WorkspaceManager.find_child_dir(root, carrier)
+    gather_path = (
+        (carrier_dir / "main.py").resolve()
+        if carrier_dir is not None
+        else (root / carrier / "main.py").resolve()
+    )
     try:
         gather_path.relative_to(root)
     except ValueError:
@@ -104,18 +118,24 @@ def run_replay(
     except (json.JSONDecodeError, TypeError) as error:
         return ReplayResult(False, error="重放输入 JSON 无效", exception_type=type(error).__name__)
 
-    with tempfile.TemporaryDirectory(prefix="ai-replay-") as directory:
+    with temporary_directory("ai-replay-") as directory:
         input_path = Path(directory) / "input.json"
         input_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         try:
-            result = subprocess.run(
-                [sys.executable, "-c", _REPLAY_SCRIPT, str(input_path)],
-                capture_output=True,
-                text=True,
-                timeout=max(1, int(timeout_seconds)),
-                cwd=str(root.parent),
-                check=False,
-            )
+            with temporary_directory("ai-replay-pycache-") as pycache:
+                result = subprocess.run(
+                    [sys.executable, "-c", _REPLAY_SCRIPT, str(input_path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=max(1, int(timeout_seconds)),
+                    cwd=str(root.parent),
+                    check=False,
+                    env={
+                        **os.environ,
+                        "PYTHONPYCACHEPREFIX": str(pycache),
+                        "PYTHONDONTWRITEBYTECODE": "1",
+                    },
+                )
         except subprocess.TimeoutExpired:
             return ReplayResult(
                 False,
@@ -134,8 +154,9 @@ def run_replay(
             error_data = {"error": "重放子进程失败", "exception_type": "SubprocessError"}
         return ReplayResult(
             False,
-            error="重放执行失败",
+            error=str(error_data.get("error") or "重放执行失败"),
             exception_type=str(error_data.get("exception_type") or ""),
+            traceback=str(error_data.get("traceback") or ""),
         )
 
     # 允许被测代码向 stdout 打日志，读取最后一行结构化结果。
@@ -149,8 +170,9 @@ def run_replay(
         if isinstance(output_data, dict) and output_data.get("success") is False:
             return ReplayResult(
                 False,
-                error="重放目标执行失败",
+                error=str(output_data.get("error") or "重放目标执行失败"),
                 exception_type=str(output_data.get("exception_type") or ""),
+                traceback=str(output_data.get("traceback") or ""),
             )
     return ReplayResult(False, error="重放脚本未输出有效的成功 JSON", output=stdout[-4000:])
 

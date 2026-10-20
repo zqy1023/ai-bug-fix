@@ -7,23 +7,17 @@
 from __future__ import annotations
 
 import hashlib
-import os
-import shutil
-import stat
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from app.infrastructure.commands.runner import run_fixed_commands
+from app.infrastructure.filesystem.safe_cleanup import remove_tree
 from app.infrastructure.filesystem.workspace import WorkspaceError, WorkspaceManager
 from app.infrastructure.redaction import public_exception
+from config.settings import settings
 from git import Repo
-
-
-def _force_remove(func: Any, path: str, _exc_info: Any) -> None:
-    os.chmod(path, stat.S_IWRITE)
-    func(path)
 
 
 class RegressionRunner:
@@ -34,10 +28,12 @@ class RegressionRunner:
         workspace_manager: WorkspaceManager,
         commands: Sequence[Sequence[str]],
         source_repo: str | Path | None = None,
+        timeout_seconds: int = settings.command_timeout_seconds,
     ) -> None:
         self._workspaces = workspace_manager
         self._commands = [list(command) for command in commands]
         self._source_repo = source_repo
+        self._timeout_seconds = max(1, int(timeout_seconds))
 
     def run(self, state: Mapping[str, Any]) -> dict[str, Any]:
         ai_workspace = state.get("ai_workspace_path")
@@ -76,18 +72,15 @@ class RegressionRunner:
                     if marker in error_text
                     else None
                 )
-                cleanup_error: OSError | None = None
+                cleanup_failed = False
                 if stale_path is not None:
-                    try:
-                        shutil.rmtree(stale_path, onerror=_force_remove)
-                    except OSError as stale_error:
-                        cleanup_error = stale_error
+                    cleanup_failed = not remove_tree(stale_path)
                 try:
                     workspace = self._workspaces.create_regression_workspace(
                         source_repo, task_key, ai_workspace, changed
                     )
                 except WorkspaceError as retry_error:
-                    if stale_path is None or cleanup_error is not None or "已存在" in str(retry_error):
+                    if stale_path is None or cleanup_failed or "已存在" in str(retry_error):
                         raise WorkspaceError(
                             f"{retry_error}；可能有残留回归工作区需手工清理"
                         ) from retry_error
@@ -101,7 +94,7 @@ class RegressionRunner:
             hashes_before = _changed_hashes(project, changed)
             commands_to_run = _commands_for(self._commands, changed)
             if commands_to_run:
-                result = run_fixed_commands(project, commands_to_run)
+                result = run_fixed_commands(project, commands_to_run, timeout_seconds=self._timeout_seconds)
             else:
                 # 全部命令都是"仅在有 .py 改动时执行"的语法检查且本轮没有 .py 改动：
                 # 没有需要执行的命令，按通过处理，而不是把缺参的原始命令塞回去假失败。
@@ -119,18 +112,16 @@ class RegressionRunner:
         except Exception as error:
             failure = {"passed": False, "mode": "regression", "reason": public_exception(error, prefix="回归环境执行失败")}
         finally:
-            try:
-                if repo is not None:
+            if repo is not None:
+                try:
                     repo.close()
-                if workspace is not None:
-                    try:
-                        shutil.rmtree(workspace)
-                    except OSError:
-                        # Windows 上可能需要先去掉只读属性再清理。
-                        shutil.rmtree(workspace, onerror=_force_remove)
-            except OSError as error:
-                # 清理失败不能覆盖已经得到的回归业务结论。
-                result["cleanup_error"] = f"回归工作区清理失败: {error}"
+                except Exception:
+                    pass
+            if workspace is not None:
+                # 临时工作区清理失败（包括环境删除守卫抛 SystemExit）不能杀死
+                # 工作流线程，也不能覆盖已经得到的回归业务结论。
+                if not remove_tree(workspace):
+                    result["cleanup_error"] = "回归工作区清理失败，已交由启动回收处理"
         if failure is not None:
             if result:
                 failure["regression"] = result
@@ -147,9 +138,27 @@ class RegressionRunner:
                 "reason": "准生产回归命令违反约束，产生了提交",
             }
         if status_before != status_after or hashes_before != hashes_after:
+            # 只报"修改了工作区"无法排查：把新增/消失的 Git 状态行和哈希变化文件
+            # 一并带出，交付报告和重试反馈才能定位是哪条命令产生的副作用。
+            added = sorted(set(status_after.splitlines()) - set(status_before.splitlines()))
+            removed = sorted(set(status_before.splitlines()) - set(status_after.splitlines()))
+            hash_changes = sorted(
+                key
+                for key in set(hashes_before) | set(hashes_after)
+                if hashes_before.get(key) != hashes_after.get(key)
+            )
             return {
                 "passed": False, "mode": "regression",
-                "regression": {**result, "passed": False, "reason": "准生产回归命令修改了工作区文件"},
+                "regression": {
+                    **result,
+                    "passed": False,
+                    "reason": "准生产回归命令修改了工作区文件",
+                    "workspace_changes": {
+                        "status_added": added[:20],
+                        "status_removed": removed[:20],
+                        "hashes_changed": hash_changes[:20],
+                    },
+                },
                 "reason": "准生产回归命令必须只测试，不得改变代码或生成未跟踪文件",
             }
         return {"passed": True, "mode": "regression", "regression": result, "reason": ""}

@@ -6,13 +6,14 @@ services:
     env_file:
       - .env
     environment:
-      AI_REPAIR_SOURCE_REPO: /workspace/source
-      AI_REPAIR_RUNTIME_DIR: /app/runtime/.ai-repair
+      AI_REPAIR_RUNTIME_DIR: /app/runtime
+      # 容器内固定绑定 8000：nginx 与健康检查都依赖这个端口。
+      WORKBENCH_BIND_HOST: 0.0.0.0
+      WORKBENCH_BIND_PORT: "8000"
       WORKBENCH_API_TOKEN: ${WORKBENCH_API_TOKEN:?Set WORKBENCH_API_TOKEN in .env}
       PYTHONUNBUFFERED: "1"
     user: "${APP_UID:-1000}:${APP_GID:-1000}"
     volumes:
-      - ${AI_REPAIR_SOURCE_REPO_HOST_PATH:?Set AI_REPAIR_SOURCE_REPO_HOST_PATH to the host Git repository}:/workspace/source:rw
       - ${AI_REPAIR_RUNTIME_HOST_PATH:?Set AI_REPAIR_RUNTIME_HOST_PATH to a persistent host directory}:/app/runtime:rw
     expose:
       - "8000"

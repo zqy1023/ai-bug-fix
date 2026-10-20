@@ -9,9 +9,10 @@ from app.application.context import StepContext
 from app.infrastructure.redaction import redact_output
 from app.workflow.steps.run_regression.models import RegressionInput, RegressionOutput
 from app.workflow.steps.run_regression.regression import RegressionRunner
+from config.settings import settings
 
 # 每条命令留存脱敏后输出的尾部。定位失败原因看的是报错现场，尾部最有信息量。
-_TAIL_CHARS = 8000
+_TAIL_CHARS = settings.regression_tail_chars
 
 
 def _entry(raw: dict[str, Any]) -> dict[str, Any]:
@@ -46,6 +47,7 @@ def run(ctx: StepContext, data: RegressionInput) -> RegressionOutput:
         ctx.services.workspaces,
         ctx.services.verify_commands,
         ctx.services.source_repo,
+        timeout_seconds=ctx.services.command_timeout_seconds,
     ).run(
         {
             "ai_workspace_path": data.ai_workspace_path,
@@ -58,14 +60,23 @@ def run(ctx: StepContext, data: RegressionInput) -> RegressionOutput:
     regression = result.get("regression")
     results = regression.get("results") if isinstance(regression, dict) else None
     results = results if isinstance(results, list) else []
+    workspace_changes = (
+        regression.get("workspace_changes") if isinstance(regression, dict) else None
+    )
     reason = str(result.get("reason") or "")
     count = len(results)
     # 没跑成命令（环境建立失败、未配置命令）时没有报告可留，只报原因。
-    if results:
+    if results or workspace_changes:
+        report: dict[str, Any] = {
+            "reason": reason,
+            "commands": [_entry(item) for item in results],
+        }
+        if workspace_changes:
+            report["workspace_changes"] = workspace_changes
         ctx.emit_artifact(
             "regression_report",
             "artifacts/regression_report.json",
-            {"reason": reason, "commands": [_entry(item) for item in results]},
+            report,
         )
     output = RegressionOutput(passed=result.get("passed") is True, reason=reason, command_count=count)
     if not output.passed:

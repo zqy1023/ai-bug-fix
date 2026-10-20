@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from config.settings import settings
+
 if TYPE_CHECKING:
     from app.infrastructure.filesystem.workspace import WorkspaceManager
     from app.infrastructure.git.delivery import GitBranchDelivery
@@ -29,7 +31,11 @@ class WorkflowServices:
     # git_push：是否允许交付阶段推送修复分支。
     git_push: bool = False
     # git_remote：检查未合并分支与交付时使用的同一远程名。
-    git_remote: str = "origin"
+    git_remote: str = settings.default_git_remote
+    # command_timeout_seconds：固定验证命令超时秒数。
+    command_timeout_seconds: int = settings.command_timeout_seconds
+    # replay_timeout_seconds：response 重放超时秒数。
+    replay_timeout_seconds: int = settings.replay_timeout_seconds
     # workspaces：工作区快照、隔离、回归目录的管理器。
     workspaces: WorkspaceManager | None = None
     # delivery：创建修复分支、提交和可选推送的适配器。

@@ -39,6 +39,7 @@ def _call(
     调用统计与审计属于元数据，不混进业务结果：业务结果要按契约当模型输出用，
     元数据只走状态通道。运输商目录由系统定位，不交给模型搜索。
     """
+    from app.agents.policy import rules_text, shared_read_paths
     from app.infrastructure.filesystem.workspace import WorkspaceError, WorkspaceManager
 
     workspace = str(state["ai_workspace_path"])
@@ -52,8 +53,17 @@ def _call(
         if evidence.get("legacy_only") or evidence.get("framework") != "gathers":
             raise WorkspaceError("纯旧框架任务不进入 repair_agent")
         carrier_dir = str(evidence["carrier_dir"])
-        expected = f"gathers/{WorkspaceManager.safe_carrier_name(carrier)}"
-        if carrier_dir != expected or not (Path(workspace) / carrier_dir / "main.py").is_file():
+        carrier_root = WorkspaceManager.find_carrier_dir(workspace, "gathers", carrier)
+        expected = (
+            carrier_root.relative_to(Path(workspace).resolve()).as_posix()
+            if carrier_root is not None
+            else ""
+        )
+        if (
+            carrier_root is None
+            or carrier_dir != expected
+            or not (carrier_root / "main.py").is_file()
+        ):
             raise WorkspaceError(f"evidence 未指向唯一新框架入口: {carrier_dir}")
     except (WorkspaceError, KeyError) as error:
         return {
@@ -61,8 +71,19 @@ def _call(
             "reason": public_exception(error, prefix="修复工作区校验失败"),
             "changed_files": [],
         }, {}, {}, ""
-    # 读写范围均绑定到已经验证的新框架 carrier 目录。
-    readable = [carrier_dir, *WorkspaceManager.readable_rule_paths(workspace)]
+    shared_root = Path(str(state.get("source_project_path") or "")).resolve()
+    if not shared_root.is_dir():
+        shared_root = None
+    # 写入范围绑定到已经验证的新框架 carrier 目录；框架和公共库只读。
+    readable = [
+        str(carrier_root.resolve()),
+        *(str(path.resolve()) for path in shared_read_paths(shared_root)),
+        *(
+            str((Path(workspace) / item).resolve())
+            for item in WorkspaceManager.readable_rule_paths(workspace)
+        ),
+    ]
+    read_roots = tuple(dict.fromkeys(readable))
     baseline_manifest = dict(state.get("baseline_manifest") or {})
     baseline_dir = str(state.get("baseline_dir") or "")
     if not baseline_manifest or not baseline_dir:
@@ -79,8 +100,7 @@ def _call(
         symbols=evidence.get("symbols") or {},
         category=str(evidence.get("category") or ""),
     )
-    read_roots = tuple(str(Path(workspace) / item) for item in readable)
-    write_root = str((Path(workspace) / carrier_dir).resolve())
+    write_root = str(Path(carrier_root).resolve())
     prompt_input = prompt_context(
         "repair",
         {**state, "run_id": str(state["run_id"]), "task_id": task, "carrier": carrier},
@@ -101,6 +121,8 @@ def _call(
         changed_files=tuple(str(item) for item in state.get("changed_files") or []),
         allowed_scope=(carrier_dir,),
         stop_conditions=("Locate 未确认根因", "共享层根因", "目标 carrier 外修改"),
+        source_project_path=str(shared_root) if shared_root is not None else "",
+        project_rules=rules_text(Path(workspace), *([shared_root] if shared_root else [])),
     )
     request = PromptRenderer().request(
         "repair",

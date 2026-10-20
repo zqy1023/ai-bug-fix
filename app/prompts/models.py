@@ -58,6 +58,10 @@ class PromptContext(BaseModel):
     budget: dict[str, int]
     # retry_feedback：字段说明见该模型文档与工作流契约。
     retry_feedback: str = ""
+    # source_project_path：本轮共享只读源码树路径；为空表示只有任务工作区。
+    source_project_path: str = ""
+    # project_rules：项目规范正文，供 Agent 在修改前核对约束。
+    project_rules: str = ""
 
 
 class PromptDocument(BaseModel):

@@ -26,6 +26,8 @@ class RepairState(TypedDict, total=False):
     problem: dict[str, Any]
     # ai_workspace_path：该模型字段用于承载对应契约中的结构化数据。
     ai_workspace_path: str
+    # source_project_path：本轮共享只读源码树，用于读取框架和公共库。
+    source_project_path: str
     # attempt：该模型字段用于承载对应契约中的结构化数据。
     attempt: int
     # retry_reason：该模型字段用于承载对应契约中的结构化数据。

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Iterator
 from typing import Any
 
@@ -52,12 +53,19 @@ def _record(value: Any, position: int) -> dict[str, Any]:
     return value
 
 
+# 去重键忽略时间值本身，否则同一异常在不同时间发生会被拆成多个任务；
+# 展示给 Agent 的 normalized_error 仍保留真实时间戳，供判断解析格式。
+_VOLATILE_TIMESTAMP = re.compile(
+    r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b"
+)
+
+
 def _key(record: dict[str, Any]) -> str:
     identity = [
         record["service_name"],
         record["biztype"],
         record["carrier"],
-        record["normalized_error"],
+        _VOLATILE_TIMESTAMP.sub("<timestamp>", record["normalized_error"]),
     ]
     encoded = json.dumps(identity, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()

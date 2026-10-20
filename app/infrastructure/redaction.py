@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import re
 
+from app.domain.errors import DeliveryError, StepFailed
+
 # 命中敏感键名后把取值掩码成 ***，键名保留：说得出"哪个字段泄露了"才有排查价值。
 _SECRET_WORDS = re.compile(
     r"(?i)\b(token|secret|password|passwd|authorization|cookie|bearer)\b\s*[:=]?\s*\S+"
@@ -16,6 +18,9 @@ _SECRET_WORDS = re.compile(
 # 只属于运行记录的额外规则。共用规则一次只吃一个 ``\S+``：JSON 里键名带引号时它
 # 只吃掉引号，跟在 Bearer 后面的令牌本体留在明文里。所以先按行内结构整段掩码，
 # 再套共用规则兜底。
+_UNSAFE_DETAIL = re.compile(r"\binput_(?:value|type)\s*=\s*[^\r\n]*", re.IGNORECASE)
+_MAX_PUBLIC_MESSAGE_CHARS = 500
+
 _REPORT_ONLY = (
     re.compile(
         r"(?i)\"?(?:authorization|proxy-authorization|cookie|set-cookie)\"?\s*[:=]\s*[^\r\n,;}]+"
@@ -44,14 +49,27 @@ def redact_output(text: str) -> str:
 def public_exception(error: BaseException, *, prefix: str) -> str:
     """返回可持久化的异常摘要。
 
-    默认只保留异常类型，避免把密钥、单号或模型原文写进步骤记录。
-    pydantic ``ValidationError`` 只保留字段名和错误类型，不保留输入值。
+    业务异常（``StepFailed`` / ``DeliveryError``）的消息本身就是给人看的失败原因，
+    脱敏后保留并限长；其它异常只保留异常类型，避免把密钥、单号或模型原文写进
+    步骤记录。pydantic ``ValidationError`` 只保留字段名和错误类型，不保留输入值。
     """
     error_type = type(error).__name__ or "Exception"
     detail = _validation_detail(error)
     if detail:
         return f"{prefix}（错误类型：{error_type}：{detail}）"
+    message = _business_message(error)
+    if message:
+        return f"{prefix}：{message}（错误类型：{error_type}）"
     return f"{prefix}（错误类型：{error_type}）"
+
+
+def _business_message(error: BaseException) -> str:
+    """脱敏并限长业务异常消息；非业务异常不暴露正文。"""
+    if not isinstance(error, (StepFailed, DeliveryError)):
+        return ""
+    text = _UNSAFE_DETAIL.sub("", str(error))
+    text = redact_output(" ".join(text.split())).strip()
+    return text[:_MAX_PUBLIC_MESSAGE_CHARS]
 
 
 def _validation_detail(error: BaseException) -> str:

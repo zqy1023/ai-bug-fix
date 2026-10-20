@@ -4,21 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.infrastructure.filesystem.workspace import WorkspaceManager
 from app.application.contracts import AgentRole
 from app.prompts.models import PromptContext
-
-
-def framework_for(workspace: str, carrier: str) -> str:
-    """使用与预检相同的物理执行条件判定框架。"""
-    from pathlib import Path
-
-    root = Path(workspace).resolve()
-    if (root / "gathers" / WorkspaceManager.safe_carrier_name(carrier) / "main.py").is_file():
-        return "gathers"
-    if (root / "spiders" / WorkspaceManager.safe_carrier_name(carrier)).is_dir():
-        return "spiders"
-    raise ValueError(f"工作区没有可执行的 carrier 实现: {carrier}")
 
 
 def prompt_context(
@@ -39,6 +26,8 @@ def prompt_context(
     regression_results: dict[str, Any] | None = None,
     allowed_scope: tuple[str, ...] = (),
     stop_conditions: tuple[str, ...] = (),
+    source_project_path: str = "",
+    project_rules: str = "",
 ) -> PromptContext:
     """从 ES 原始问题和图身份字段创建不可变 PromptContext。"""
     problem = state.get("problem")
@@ -80,6 +69,8 @@ def prompt_context(
         allowed_write_roots=write_roots,
         budget=budget,
         retry_feedback=retry_feedback,
+        source_project_path=source_project_path,
+        project_rules=project_rules,
     )
 
 
@@ -96,4 +87,4 @@ def model_name(runtime: Any) -> str:
     return model
 
 
-__all__ = ["framework_for", "model_name", "prompt_context"]
+__all__ = ["model_name", "prompt_context"]

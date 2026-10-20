@@ -30,6 +30,8 @@ class LocateInput(FrozenModel):
     evidence: dict[str, Any]
     # workspace_path：只读定位 Agent 唯一允许访问的隔离工作区。
     workspace_path: str
+    # source_project_path：本轮共享只读源码树，用于读取框架和公共库证据。
+    source_project_path: str = ""
     # source_snapshot：字段说明见该模型文档与工作流契约。
     source_snapshot: dict[str, Any]
 

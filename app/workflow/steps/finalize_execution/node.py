@@ -28,7 +28,14 @@ def run(ctx: StepContext, data: FinalizeInput) -> FinalizeOutput:
     records = [record for record in ctx.store.list_steps(ctx.run.run_id, data.task_id) if record.name != _SELF]
     terminal_status = "CANCELLED" if cancellation_requested(ctx.store.root, ctx.run.run_id) else data.terminal_status
     result = _delivery_status(records, terminal_status)
-    terminal_step, terminal_reason, next_action = _terminal_details(records, terminal_status, result)
+    terminal_step, terminal_reason, next_action = _terminal_details(
+        records,
+        terminal_status,
+        result,
+        retry_reason=data.retry_reason,
+        retry_target=data.retry_target,
+        blocked_reason=data.blocked_reason,
+    )
     finished_at = datetime.now(timezone.utc).isoformat()
     locate = _output(records, "locate_agent")
     repair = _output(records, "repair_agent")
@@ -78,6 +85,7 @@ def _record_reason(record: StepRecord | None) -> str:
     candidates = [
         getattr(error, "message", "") if error else "",
         output.get("terminal_reason"), output.get("legacy_reason"),
+        output.get("blocked_reason"),
         output.get("failure_reason"), output.get("reason"),
         output.get("summary"), output.get("message"), record.summary,
     ]
@@ -89,7 +97,13 @@ def _record_reason(record: StepRecord | None) -> str:
 
 
 def _terminal_details(
-    records: list[StepRecord], terminal_status: str, result: str
+    records: list[StepRecord],
+    terminal_status: str,
+    result: str,
+    *,
+    retry_reason: str = "",
+    retry_target: str = "",
+    blocked_reason: str = "",
 ) -> tuple[str, str, str]:
     """从持久化步骤事实生成终态原因；不依赖模型自称成功。"""
     ordered = sorted(records, key=lambda item: str(item.finished_at or item.started_at or ""))
@@ -152,11 +166,19 @@ def _terminal_details(
         if item.status == "failed" or str(item.result or "").upper() in {"FAIL", "FAILED", "REJECTED"}
     ]
     if outcome in {"FAILED", "FAIL"} or failed_records:
-        failed = failed_records[-1] if failed_records else latest
-        name = failed.name if failed else "workflow"
-        reason = _record_reason(failed) or "任务未通过自动修复门禁，现有步骤记录未提供更具体的失败原因。"
+        # 重试节点没有 StepRecord；有失败记录时以它为准，否则以 retry_target
+        # 指向的节点为准，不能把上一条成功记录说成失败节点。
+        failed = failed_records[-1] if failed_records else None
+        name = failed.name if failed is not None else (retry_target or (latest.name if latest else "workflow"))
+        reason = (
+            (_record_reason(failed) if failed is not None else "")
+            or str(retry_reason or "").strip()
+            or str(blocked_reason or "").strip()
+            or (_record_reason(latest) if failed is None else "")
+            or "任务未通过自动修复门禁，现有步骤记录未提供更具体的失败原因。"
+        )
         followups = {
-            "prepare_source_snapshot": "检查源仓库和目标 carrier 路径后重试。",
+            "prepare_source_snapshot": "检查源仓库中目标 carrier 是否仍存在（可能已删除或重命名）以及路径大小写后重试。",
             "prepare_evidence": "检查证据准备错误并补齐源码或运行证据后重试。",
             "locate_agent": "核对定位证据与目标文件范围后重新定位。",
             "claim_repair_slot": "确认本轮修复资格以及重复任务去重结果。",
@@ -168,7 +190,7 @@ def _terminal_details(
             "review_agent": "按审查报告修正风险项后重新提交审查。",
             "prepare_delivery": "检查分支创建、文件复制和交付记录。",
         }
-        return (name, reason, followups.get(name, "检查失败节点的错误和产物，明确修复方案后重试或转人工。"))
+        return (name, reason, followups.get(name, followups.get(retry_target, "检查失败节点的错误和产物，明确修复方案后重试或转人工。")))
 
     if outcome == "SUCCESS":
         delivery = next((item for item in reversed(ordered) if item.name == "prepare_delivery"), None)
@@ -244,8 +266,24 @@ def _delivery_status(records: list[StepRecord], terminal_status: str) -> str:
         and str(record.result or "").upper() not in _FAILED_RESULTS
         for record in records
     ):
-        return "SUCCESS"
+        # 步骤都"成功"不等于交付成功：没有真实提交（远端或源仓库本地分支可查）
+        # 就不能对外声称自动交付，否则界面上会出现查不到的"已提交"。
+        return "SUCCESS" if _delivery_recorded(records) else "FAILED"
     return "FAILED"
+
+
+def _delivery_recorded(records: list[StepRecord]) -> bool:
+    """确认本轮确实产出过修复提交，并且提交落到了远端或源仓库本地分支。"""
+    delivery = next(
+        (record for record in reversed(records) if record.name == "prepare_delivery"),
+        None,
+    )
+    if delivery is None or delivery.status not in {"succeeded", "skipped"}:
+        return False
+    output = delivery.output if isinstance(delivery.output, dict) else {}
+    commit = str(output.get("commit") or "").strip()
+    landed = bool(output.get("pushed") or output.get("local_branch"))
+    return bool(commit) and landed
 
 
 def _legacy_only(records: list[StepRecord]) -> bool:

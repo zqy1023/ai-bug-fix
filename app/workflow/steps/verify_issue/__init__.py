@@ -18,6 +18,8 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         "problem_key": str(task.get("problem_key") or ""),
         "ai_workspace_path": str(state.get("ai_workspace_path") or ""),
         "changed_files": [str(item) for item in state.get("changed_files") or []],
+        "source_project_path": str(state.get("source_project_path") or ""),
+        "source_repo_path": str(state.get("source_repo_path") or ""),
         "normalized_log": problem,  # 传递完整的 problem 数据用于 response 重放
     }
 

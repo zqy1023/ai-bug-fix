@@ -31,6 +31,8 @@ class ApprovalInput(FrozenModel):
     source_repo_path: str = ""
     repair_branch: str = ""
     delivery_pushed: bool = False
+    # 未推送时本地修复分支同样需要在拒绝后清理。
+    delivery_local_branch: bool = False
 
 
 class ApprovalOutput(FrozenModel):

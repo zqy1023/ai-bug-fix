@@ -6,17 +6,13 @@ codes
 .claude
 .vscode
 __pycache__
-output/
-.ai-repair/
 *.log
 # Secrets and local-only state
 .git
 .env
 .env.*
 !.env.example
-.ai-repair/
 runtime/
-output/
 
 # Frontend build dependencies and output
 frontend/node_modules/

@@ -27,12 +27,12 @@ DEFAULTS: dict[str, Any] = {
     "enabled": True,
     "provider": "claude_session",
     "tools": list(READ_ONLY_TOOLS),
-    "max_turns": 20,
-    "max_tool_calls": 24,
-    "max_context_chars": 24000,
-    "max_candidate_files": 8,
-    "max_diff_chars": 16000,
-    "timeout_seconds": 900,
+    "max_turns": 12,
+    "max_tool_calls": 16,
+    "max_context_chars": 18000,
+    "max_candidate_files": 6,
+    "max_diff_chars": 12000,
+    "timeout_seconds": 480,
     "options": {},
 }
 
@@ -56,17 +56,17 @@ class ReviewConfig:
     # tools：只读工具白名单。
     tools: tuple[str, ...] = READ_ONLY_TOOLS
     # max_turns：模型交互回合上限。
-    max_turns: int = 20
+    max_turns: int = 12
     # max_tool_calls：工具调用总数上限。
-    max_tool_calls: int = 24
+    max_tool_calls: int = 16
     # max_context_chars：上下文字符上限。
-    max_context_chars: int = 24000
+    max_context_chars: int = 18000
     # max_candidate_files：候选文件数量上限。
-    max_candidate_files: int = 8
+    max_candidate_files: int = 6
     # max_diff_chars：差异证据字符上限。
-    max_diff_chars: int = 16000
+    max_diff_chars: int = 12000
     # timeout_seconds：单次审查超时秒数。
-    timeout_seconds: int = 900
+    timeout_seconds: int = 480
     # options：Provider 扩展参数。
     options: Mapping[str, Any] = field(default_factory=dict)
     # source：当前配置来源。
@@ -104,7 +104,13 @@ class ReviewConfig:
         turns = environment.get(f"{ENV_PREFIX}MAX_TURNS", "").strip()
         if turns:
             payload["max_turns"] = int(turns)
-        for field_name in ("MAX_TOOL_CALLS", "MAX_CONTEXT_CHARS", "MAX_CANDIDATE_FILES", "MAX_DIFF_CHARS"):
+        for field_name in (
+            "MAX_TOOL_CALLS",
+            "MAX_CONTEXT_CHARS",
+            "MAX_CANDIDATE_FILES",
+            "MAX_DIFF_CHARS",
+            "TIMEOUT_SECONDS",
+        ):
             value = environment.get(f"{ENV_PREFIX}{field_name}", "").strip()
             if value:
                 payload[field_name.lower()] = int(value)
@@ -124,13 +130,13 @@ class ReviewConfig:
             raise ReviewConfigError("review.tools 必须是字符串数组")
         if tuple(tools) != READ_ONLY_TOOLS:
             raise ReviewConfigError("review.tools 必须严格为 Read、Glob、Grep")
-        max_turns = payload.get("max_turns", 20)
+        max_turns = payload.get("max_turns", 12)
         if not isinstance(max_turns, int) or max_turns < 1:
             raise ReviewConfigError("review.max_turns 必须是正整数")
-        limits = {key: payload.get(key, default) for key, default in (("max_tool_calls", 24), ("max_context_chars", 24000), ("max_candidate_files", 8), ("max_diff_chars", 16000))}
+        limits = {key: payload.get(key, default) for key, default in (("max_tool_calls", 16), ("max_context_chars", 18000), ("max_candidate_files", 6), ("max_diff_chars", 12000))}
         if any(not isinstance(value, int) or value < 1 for value in limits.values()):
             raise ReviewConfigError("review agent budget 必须是正整数")
-        timeout = payload.get("timeout_seconds", 900)
+        timeout = payload.get("timeout_seconds", 480)
         if not isinstance(timeout, int) or timeout < 1:
             raise ReviewConfigError("review.timeout_seconds 必须是正整数")
         provider = payload.get("provider", "claude_session")

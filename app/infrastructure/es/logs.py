@@ -6,6 +6,8 @@ import json
 from collections.abc import Iterator
 from typing import Any
 
+from config.settings import settings
+
 
 class ESLogAdapter:
     """按显式查询条件读取 ES，并规范化单条日志。"""
@@ -16,12 +18,23 @@ class ESLogAdapter:
         scanner: Any,
         index_provider: Any,
         tz_offset: int,
+        *,
+        index_prefix: str = settings.es_index_prefix,
+        scan_size: int = settings.es_scan_size,
+        scroll: str = settings.es_scroll,
+        excluded_messages: list[str] | None = None,
     ) -> None:
         """注入 ES 客户端、扫描器、索引提供器与业务时区。"""
         self._client = client
         self._scanner = scanner
         self._index_provider = index_provider
         self._tz_offset = int(tz_offset)
+        self._index_prefix = index_prefix
+        self._scan_size = max(1, int(scan_size))
+        self._scroll = scroll
+        self._excluded_messages = list(
+            settings.default_excluded_messages if excluded_messages is None else excluded_messages
+        )
 
     def fetch(
         self,
@@ -43,7 +56,7 @@ class ESLogAdapter:
         funnel = {"es_hits": 0, "unparseable": 0, "parsed": 0}
         # 索引名按 UTC 日期切，而拉取窗口按业务时区：本地一整天一定横跨两个
         # UTC 日期索引（0 点后的日志在"昨天"的索引里），所以多取一个索引。
-        indices = self._index_provider("logstash-gather-", days + 1)
+        indices = self._index_provider(self._index_prefix, days + 1)
         gte = "now/d" if days == 1 else f"now-{days - 1}d/d"
         # ES 的 now/d 默认按 UTC 切零点；必须显式给业务时区，否则会漏掉本地 0 点后的日志
         sign = "+" if self._tz_offset >= 0 else "-"
@@ -62,10 +75,8 @@ class ESLogAdapter:
                         },
                     ],
                     "must_not": [
-                        {"match_phrase": {"message": rule}} for rule in excluded_messages
-                    ] + [
-                        # Redis 连接异常属于日志采集基础设施故障，不应被识别为 carrier 业务问题。
-                        {"match_phrase": {"message": "redis.exceptions.ConnectionError"}},
+                        {"match_phrase": {"message": rule}}
+                        for rule in dict.fromkeys([*excluded_messages, *self._excluded_messages])
                     ] + [
                         {"match_phrase": {"biztype": biztype}} for biztype in excluded_biztypes
                     ],
@@ -76,8 +87,8 @@ class ESLogAdapter:
             client=self._client,
             query=query,
             index=",".join(indices),
-            size=100,
-            scroll="2m",
+            size=self._scan_size,
+            scroll=self._scroll,
             raise_on_error=True,
         )
         for hit in hits:

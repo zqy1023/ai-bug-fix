@@ -13,6 +13,7 @@ from pathlib import Path
 _AUDIT_LOCK = threading.Lock()
 
 from app.domain.json_text import loads_object
+from config.settings import settings
 
 
 def parse_result(raw: dict[str, Any], role: str) -> dict[str, Any]:
@@ -149,6 +150,7 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
         )
         # 事件只在任务级审计文件保存，Run 级调用记录保留引用与计数，避免双份存储。
         record["events"] = []
+        record["prompt_snapshot"] = _persist_prompt_snapshot(record, request)
         _persist_model_call(record)
         return raw
     except Exception as exc:
@@ -181,6 +183,7 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
             else "empty"
         )
         record["events"] = []
+        record["prompt_snapshot"] = _persist_prompt_snapshot(record, request)
         _persist_model_call(record)
         raise
 
@@ -232,6 +235,101 @@ def _persist_agent_events(
             run_id, task_id, call_id,
         )
         return "", 0
+
+
+def _persist_prompt_snapshot(record: dict[str, Any], request: Any) -> str:
+    """把脱敏、限长的提示词快照写入任务审计目录；返回相对路径。
+
+    ``model_calls.jsonl`` 只保存 hash 与字符数，无法支撑"查看提示词"。快照是审计
+    策略的显式扩展：默认开启、统一脱敏、按上限截断，且只在任务级目录内落盘。
+    """
+    if not settings.workbench_prompt_snapshot:
+        return ""
+    run_id = str(record.get("run_id") or "")
+    task_id = str(record.get("task_id") or "")
+    call_id = str(record.get("model_call_id") or "")
+    if (
+        not run_id or not task_id or not call_id
+        or "/" in run_id or "/" in task_id
+        or chr(92) in run_id + task_id or ".." in run_id or ".." in task_id
+    ):
+        return ""
+    try:
+        from app.infrastructure.config import load_config
+
+        run_root = Path(load_config().runtime_dir).resolve() / "runs" / run_id
+        roots = [
+            str(item)
+            for item in (
+                *tuple(getattr(request, "allowed_read_roots", ()) or ()),
+                *tuple(getattr(request, "allowed_write_roots", ()) or ()),
+            )
+            if str(item)
+        ]
+        system_prompt = str(getattr(request, "system_prompt", "") or "")
+        common, separator, role = system_prompt.partition(chr(10) * 2 + "---" + chr(10) * 2)
+        context = getattr(request, "prompt_context", {})
+        context_text = (
+            json.dumps(context, ensure_ascii=False, default=str)
+            if isinstance(context, dict) else str(context or "")
+        )
+        sections = {
+            "system_prompt_common": common if separator else system_prompt,
+            "system_prompt_role": role if separator else "",
+            "task_prompt": str(getattr(request, "prompt", "") or ""),
+            "prompt_context": context_text,
+        }
+        limit = settings.workbench_prompt_max_chars
+        rendered: dict[str, str] = {}
+        truncated = False
+        for key, value in sections.items():
+            text, was_cut = _snapshot_text(value, roots, limit)
+            rendered[key] = text
+            truncated = truncated or was_cut
+        payload = {
+            "model_call_id": call_id,
+            "run_id": run_id,
+            "task_id": task_id,
+            "agent_role": str(record.get("agent_role") or ""),
+            "attempt": int(record.get("attempt") or 1),
+            "model": str(record.get("model") or ""),
+            "prompt_version": str(record.get("prompt_version") or ""),
+            "prompt_hash": str(record.get("prompt_hash") or ""),
+            **rendered,
+            "chars": {key: len(value) for key, value in sections.items()},
+            "truncated": truncated,
+            "redacted": True,
+        }
+        target = run_root / "tasks" / task_id / "audit" / "prompts" / f"{call_id}.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(target.name + ".tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+        temporary.replace(target)
+        return target.relative_to(run_root).as_posix()
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "提示词快照持久化失败 run_id=%s task_id=%s call_id=%s",
+            run_id, task_id, call_id,
+        )
+        return ""
+
+
+def _snapshot_text(value: str, roots: list[str], limit: int) -> tuple[str, bool]:
+    """先归一化绝对工作区路径，再遮蔽凭据并按上限截断。"""
+    text = str(value or "")
+    normalized = text
+    for root in roots:
+        if not root:
+            continue
+        for variant in {root, root.replace(chr(92), "/")}:
+            if variant:
+                normalized = normalized.replace(variant, "<workspace>")
+    return _audit_text(normalized, limit), len(normalized) > limit
 
 
 def _audit_text(value: Any, limit: int) -> str:

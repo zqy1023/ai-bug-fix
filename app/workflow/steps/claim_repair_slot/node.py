@@ -16,7 +16,7 @@ from app.workflow.steps.claim_repair_slot.models import ClaimInput, ClaimOutput
 from config.settings import settings
 
 
-_CLAIM_TTL = timedelta(hours=24)
+_CLAIM_TTL = timedelta(hours=settings.repair_claim_ttl_hours)
 
 
 def _claim_key(source: str, branch: str, problem_key: str) -> str:
@@ -26,9 +26,12 @@ def _claim_key(source: str, branch: str, problem_key: str) -> str:
 
 def _claim_connection(root: Path) -> sqlite3.Connection:
     root.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(str(root / "repair-claims.sqlite3"), timeout=10)
+    connection = sqlite3.connect(
+        str(root / settings.repair_claims_db_name),
+        timeout=settings.repair_claims_timeout_seconds,
+    )
     connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute("PRAGMA busy_timeout=10000")
+    connection.execute(f"PRAGMA busy_timeout={settings.repair_claims_busy_timeout_ms}")
     connection.execute(
         "CREATE TABLE IF NOT EXISTS repair_claims ("
         "claim_key TEXT PRIMARY KEY, source_repo TEXT NOT NULL, branch TEXT NOT NULL, "

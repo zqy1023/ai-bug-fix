@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from app.workflow.state import WorkflowState
 from app.domain.decisions import locate_disposition
+from config.settings import settings
 from langgraph.graph import END
 
 DISCOVER = "discover_logs"
@@ -76,8 +77,15 @@ def _delivery_status(state: WorkflowState) -> str:
     return (summary or delivery).upper()
 
 
+def _finalized_status(state: WorkflowState) -> str:
+    """只有 finalize_execution 写出的 task_summary 才表示任务已经收尾。"""
+    return str((state.get("task_summary") or {}).get("delivery_status") or "").upper()
+
+
 def _retry_or_finalize(state: WorkflowState) -> str:
-    return FINALIZE if int(state.get("attempt") or 1) >= int(state.get("max_attempts") or 3) else RETRY
+    return FINALIZE if int(state.get("attempt") or 1) >= int(
+        state.get("max_attempts") or settings.default_max_attempts
+    ) else RETRY
 
 
 def _locate_references_legacy(locate: dict) -> bool:
@@ -155,9 +163,9 @@ def after_regression(state: WorkflowState) -> str:
         return FINALIZE
     if _result(state) != "passed":
         return _retry_or_finalize(state)
-    # human 模式明确跳过 AI 审查，直接生成待人工审查的终态报告。
-    if str(state.get("review_mode") or "agent").lower() == "human":
-        return FINALIZE
+    # human 模式跳过 AI 审查，但仍要产出修复分支：交付后由人工在审批节点审查分支。
+    if str(state.get("review_mode") or settings.default_review_mode).lower() == "human":
+        return DELIVER
     return REVIEW
 
 
@@ -213,7 +221,7 @@ def after_delivery(state: WorkflowState) -> str:
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
         return FINALIZE
     # 已有未合并修复分支时预检直接跳过，不创建报告分支，也不进入审批。
-    if _delivery_status(state) == "SKIPPED":
+    if _finalized_status(state) == "SKIPPED":
         return END
     evidence = state.get("evidence") or {}
     locate = state.get("locate") or {}
@@ -222,14 +230,17 @@ def after_delivery(state: WorkflowState) -> str:
         or evidence.get("legacy_dependency")
         or state.get("scope_escalation_required")
         or str((state.get("review") or {}).get("verdict") or "").upper() == "MANUAL"
-        or _delivery_status(state) in {"FAILED", "MANUAL"}
+        # 只认 finalize_execution 已写出的结论。源码交付自身失败时 delivery 也会是
+        # FAILED，若据此判定分析任务，就会绕过 finalize_execution 直接结束任务。
+        or _finalized_status(state) in {"FAILED", "MANUAL"}
         or str(locate.get("status") or "") != "LOCATED"
         or str(locate.get("recommended_scope") or "") != "carrier"
         or str(locate.get("category") or "") != "carrier"
         or _locate_references_legacy(locate)
     )
     if analysis_only:
-        # 报告交付失败也结束当前任务，不能回到 FINALIZE 再次进入报告交付形成死循环。
+        # 这里只覆盖 finalize_execution 之后的报告交付（含报告交付失败），
+        # 不能回到 FINALIZE 再次进入报告交付形成死循环。
         return END
     return APPROVE if _result(state) == "passed" else FINALIZE
 
@@ -243,8 +254,6 @@ def after_finalize(state: WorkflowState) -> str:
         return END
     # 明确拒绝或分支清理失败后不得再创建报告分支，避免重新引入被拒绝的分支。
     if str(state.get("decision") or "").upper() == "REJECT" or state.get("approval_cleanup_failed"):
-        return END
-    if str(state.get("review_mode") or "agent").lower() == "human":
         return END
     evidence = state.get("evidence") or {}
     locate = state.get("locate") or {}

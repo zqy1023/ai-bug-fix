@@ -20,6 +20,7 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         "source_repo_path": str(state.get("source_repo_path") or ""),
         "repair_branch": str(state.get("repair_branch") or ""),
         "delivery_pushed": bool(state.get("delivery_pushed")),
+        "delivery_local_branch": bool(state.get("delivery_local_branch")),
         "ai_workspace_path": str(state.get("ai_workspace_path") or ""),
         "changed_files": [str(item) for item in state.get("changed_files") or []],
         "baseline_manifest": dict(state.get("baseline_manifest") or {}),
@@ -57,7 +58,8 @@ SPEC = StepSpec(
     output_model=ApprovalOutput,
     input_builder=_input,
     output_patch=_patch,
-    depends_on=(Dependency("prepare_delivery", "task"), Dependency("review_agent", "task")),
+    # 只依赖交付：human 模式跳过 AI 审查，没有 review_agent 记录也要能进入审批。
+    depends_on=(Dependency("prepare_delivery", "task"),),
     next_step="finalize_execution",
 )
 

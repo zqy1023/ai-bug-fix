@@ -10,7 +10,7 @@ COPY config ./config
 COPY workbench ./workbench
 COPY server.py ./server.py
 COPY __init__.py ./__init__.py
-RUN useradd --create-home --uid 10001 app && mkdir -p /app/.ai-repair /app/runtime && chown -R app:app /app
+RUN useradd --create-home --uid 10001 app && mkdir -p /app/runtime && chown -R app:app /app
 USER app
 EXPOSE 8000
 CMD ["python", "server.py"]

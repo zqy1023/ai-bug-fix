@@ -9,10 +9,13 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
+import stat
 import tempfile
 from collections.abc import Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -39,8 +42,41 @@ class DeliveryPort(Protocol):
 # 与运行记录共用 ``app.infrastructure.redaction.mask_secrets``。
 _LONG_NUMBER = re.compile(r"\d{8,}")
 _MAX_COMMENT_CHARS = settings.max_commit_comment_chars
-_MAX_AUDIT_BYTES = 512 * 1024
+_MAX_AUDIT_BYTES = settings.git_audit_max_bytes
 _logger = logging.getLogger(__name__)
+
+
+def _force_remove(path: Path) -> None:
+    """删除交付临时目录，兼容 Windows 只读文件。
+
+    克隆出来的 ``.git/objects`` 多是硬链接且带只读属性，裸
+    ``shutil.rmtree(ignore_errors=True)`` 会静默失败，交付工作区因此长期残留。
+    """
+    def onerror(function, failed_path, exc_info):
+        try:
+            os.chmod(failed_path, stat.S_IWRITE)
+            function(failed_path)
+        except OSError:
+            raise exc_info[1]
+
+    if not path.exists() and not path.is_symlink():
+        return
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path, onerror=onerror)
+    else:
+        path.unlink()
+
+
+def _cleanup_quietly(path: Path) -> None:
+    """清理失败不能掩盖真正的交付错误，只记日志。
+
+    环境级删除守卫可能抛 ``SystemExit``（BaseException），不能让它穿透
+    ``finally`` 杀死工作流线程，否则交付临时克隆会长期残留。
+    """
+    try:
+        _force_remove(path)
+    except (OSError, SystemExit):
+        _logger.warning("交付临时工作区清理失败: %s", path, exc_info=True)
 
 
 def _clone_repo(git_root: Path, target: Path) -> Repo:
@@ -53,11 +89,17 @@ def _clone_repo(git_root: Path, target: Path) -> Repo:
         return Repo.clone_from(str(git_root), str(target), local=True)
     except Exception as local_error:
         if target.exists():
-            shutil.rmtree(target, ignore_errors=True)
+            _cleanup_quietly(target)
         try:
             return Repo.clone_from(str(git_root), str(target))
         except Exception:
             raise local_error from None
+
+
+def _is_ref_rejected(error: Exception) -> bool:
+    """判断推送失败是否因为远端已有分支且不可快进。"""
+    text = str(error).lower()
+    return any(marker in text for marker in ("non-fast-forward", "[rejected]", "fetch first"))
 
 
 def _one_line(value: Any, limit: int = _MAX_COMMENT_CHARS) -> str:
@@ -81,11 +123,20 @@ class GitDeliveryConfig:
     # remote_name：用于比较分支和推送的 Git 远程名称。
     remote_name: str = settings.default_git_remote
     # push：是否将已提交的修复分支推送到远端。
-    push: bool = True
+    push: bool = settings.default_git_push
     # source_repo：包含 Git 元数据的源仓库路径。
     source_repo: Path | None = None
+    # git_env：推送时注入的 Git 子进程环境（HTTPS 凭据），不落盘。
+    git_env: Mapping[str, str] | None = None
     # workspace_manager：负责隔离工作区路径与文件同步的管理器。
     workspace_manager: WorkspaceManager | None = None
+
+
+def _git_environment(repo: Repo, env: Mapping[str, str] | None):
+    """按需为 Git 子进程注入 HTTPS 凭据环境；凭据不写入仓库配置。"""
+    if env:
+        return repo.git.custom_environment(**env)
+    return nullcontext()
 
 
 class GitBranchDelivery:
@@ -100,14 +151,16 @@ class GitBranchDelivery:
         self._workspaces = self._config.workspace_manager or WorkspaceManager()
 
     def discard_branch(self, state: Mapping[str, Any]) -> dict[str, Any]:
-        """最终审批拒绝时删除本任务已推送的修复分支，不触碰默认分支。"""
+        """最终审批拒绝时删除本任务已交付的修复分支，不触碰默认分支。"""
         branch = str(state.get("repair_branch") or "")
         source_repo = state.get("source_repo_path") or self._config.source_repo
         if not branch or not self._BRANCH.fullmatch(branch):
             raise DeliveryError("拒绝审批时缺少合法修复分支名")
         if not source_repo:
             raise DeliveryError("拒绝审批时缺少源仓库，无法清理修复分支")
-        if not state.get("pushed"):
+        pushed = bool(state.get("pushed"))
+        local_branch = bool(state.get("local_branch"))
+        if not pushed and not local_branch:
             return {"deleted": False, "reason": "branch_not_pushed"}
         if branch in {"main", "master", "develop"}:
             raise DeliveryError("拒绝删除受保护的默认分支")
@@ -116,12 +169,17 @@ class GitBranchDelivery:
             repo = Repo(branch_root, search_parent_directories=True)
         except Exception as error:
             raise DeliveryError(f"无法打开源 Git 仓库以清理分支: {branch_root}") from error
-        if self._config.remote_name not in {remote.name for remote in repo.remotes}:
+        remote_names = {remote.name for remote in repo.remotes}
+        if pushed and self._config.remote_name not in remote_names:
             raise DeliveryError(f"远程不存在，无法删除被拒绝的分支: {self._config.remote_name}")
         try:
-            repo.git.push(self._config.remote_name, "--delete", branch)
+            with _git_environment(repo, self._config.git_env):
+                if pushed:
+                    repo.git.push(self._config.remote_name, "--delete", branch)
+                if local_branch and branch in {head.name for head in repo.heads}:
+                    repo.git.branch("-D", branch)
         except Exception as error:
-            raise DeliveryError(f"删除被拒绝的远程修复分支失败: {branch}") from error
+            raise DeliveryError(f"删除被拒绝的修复分支失败: {branch}") from error
         return {"deleted": True, "repair_branch": branch}
 
     def deliver(self, state: Mapping[str, Any]) -> dict[str, Any]:
@@ -151,6 +209,7 @@ class GitBranchDelivery:
         delivery_repo: Repo | None = None
         commit = None
         pushed = False
+        local_branch = False
         report_files: list[str] = []
         try:
             workspace = self._delivery_workspace(git_root, str(branch))
@@ -243,12 +302,43 @@ class GitBranchDelivery:
                 # 用源仓库的 Repo 按 SHA refspec 推送会报 bad object。
                 try:
                     remote_url = repo.git.remote("get-url", self._config.remote_name).strip()
-                    delivery_repo.git.push(remote_url, f"HEAD:refs/heads/{branch}")
+                    self._reject_existing_remote_branch(
+                        delivery_repo, remote_url, str(branch), commit.hexsha
+                    )
+                    with _git_environment(delivery_repo, self._config.git_env):
+                        delivery_repo.git.push(remote_url, f"HEAD:refs/heads/{branch}")
+                    self._verify_remote_branch(
+                        delivery_repo, remote_url, str(branch), commit.hexsha
+                    )
                     pushed = True
+                except DeliveryError:
+                    # 已带状态的校验失败直接上抛，保留"远端查不到该分支"这类精确原因。
+                    raise
+                except Exception as error:
+                    rejected = _is_ref_rejected(error)
+                    raise DeliveryError(
+                        (
+                            f"远端已存在同名修复分支，拒绝覆盖: {branch}"
+                            if rejected
+                            else f"修复分支推送失败: {branch}"
+                        ),
+                        status="GIT_BRANCH_EXISTS" if rejected else "GIT_PUSH_FAILED",
+                        branch_workspace_path=str(git_root),
+                        commit=commit.hexsha,
+                    ) from error
+            else:
+                # 不推送时提交只存在于临时克隆；必须写回源仓库的本地分支。
+                # 否则 finally 删除临时工作区后提交对象不可达，修复结果等于丢失。
+                try:
+                    delivery_repo.git.push(str(git_root), f"HEAD:refs/heads/{branch}")
+                    self._verify_local_branch(git_root, str(branch), commit.hexsha)
+                    local_branch = True
+                except DeliveryError:
+                    raise
                 except Exception as error:
                     raise DeliveryError(
-                        f"修复分支推送失败: {branch}",
-                        status="GIT_PUSH_FAILED",
+                        f"修复分支写入本地仓库失败: {branch}",
+                        status="GIT_LOCAL_BRANCH_FAILED",
                         branch_workspace_path=str(git_root),
                         commit=commit.hexsha,
                     ) from error
@@ -259,7 +349,7 @@ class GitBranchDelivery:
             except Exception:
                 pass
             if workspace is not None:
-                shutil.rmtree(workspace, ignore_errors=True)
+                _cleanup_quietly(workspace)
 
         if commit is None:  # pragma: no cover - 提交失败都在上面抛出
             raise DeliveryError("修复分支没有生成提交")
@@ -269,26 +359,124 @@ class GitBranchDelivery:
             "repair_branch": str(branch),
             "commit": commit.hexsha,
             "pushed": pushed,
+            "local_branch": local_branch,
             "report_paths": [str(git_root / path) for path in report_files],
             "merge_request_created": False,
             "auto_merged": False,
         }
 
+    def _reject_existing_remote_branch(
+        self,
+        repo: Repo,
+        remote_url: str,
+        branch: str,
+        commit: str,
+    ) -> None:
+        """远端已有同名修复分支时提前失败，不靠 push 的 non-fast-forward 兜底。
+
+        ``repair_branch_preflight`` 只反映本轮开始时的状态；交付阶段远端可能已经被
+        上一次推送或其他环境占用。直接 push 会得到含糊的 non-fast-forward，
+        看起来像"推了但没成"，这里给出可操作结论：先合并或删除该分支。
+        """
+        try:
+            with _git_environment(repo, self._config.git_env):
+                output = repo.git.ls_remote(remote_url, f"refs/heads/{branch}")
+        except Exception:
+            # 查询不到远端时交给 push 自己判断，避免把网络抖动当成分支冲突。
+            return
+        target = f"refs/heads/{branch}"
+        if any(line.split()[-1:] == [target] for line in output.splitlines()):
+            raise DeliveryError(
+                f"远端已存在同名修复分支，拒绝覆盖: {branch}",
+                status="GIT_BRANCH_EXISTS",
+                commit=commit,
+            )
+
+    def _verify_remote_branch(
+        self,
+        repo: Repo,
+        remote_url: str,
+        branch: str,
+        commit: str,
+    ) -> None:
+        """推送后回读远端引用，确认分支确实指向本次提交。
+
+        ``git push`` 退出码为 0 不等于引用已经可查：镜像里的提交只在临时克隆里，
+        临时工作区随即被删除。这里用 ``ls-remote`` 回读，避免"显示已提交、实际
+        远端什么都没有"这种不可核对的交付结论。
+        """
+        try:
+            with _git_environment(repo, self._config.git_env):
+                output = repo.git.ls_remote(remote_url, f"refs/heads/{branch}")
+        except Exception as error:
+            raise DeliveryError(
+                f"推送后无法校验远端分支: {branch}",
+                status="GIT_PUSH_UNVERIFIED",
+                commit=commit,
+            ) from error
+        for line in output.splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[1] == f"refs/heads/{branch}":
+                if parts[0] != commit:
+                    raise DeliveryError(
+                        f"远端分支指向的提交与本次提交不一致: {branch}",
+                        status="GIT_PUSH_UNVERIFIED",
+                        commit=commit,
+                    )
+                return
+        raise DeliveryError(
+            f"推送后远端仍没有该修复分支: {branch}",
+            status="GIT_PUSH_UNVERIFIED",
+            commit=commit,
+        )
+
+    @staticmethod
+    def _verify_local_branch(git_root: Path, branch: str, commit: str) -> None:
+        """回读源仓库本地分支，确认提交真的落到了源仓库。"""
+        try:
+            repo = Repo(git_root)
+        except Exception as error:
+            raise DeliveryError(
+                f"无法打开源仓库校验本地修复分支: {branch}",
+                status="GIT_LOCAL_BRANCH_UNVERIFIED",
+                commit=commit,
+            ) from error
+        try:
+            actual = str(repo.git.rev_parse(f"refs/heads/{branch}")).strip()
+        except Exception as error:
+            raise DeliveryError(
+                f"源仓库没有该修复分支: {branch}",
+                status="GIT_LOCAL_BRANCH_UNVERIFIED",
+                commit=commit,
+            ) from error
+        finally:
+            try:
+                repo.close()
+            except Exception:
+                pass
+        if actual != commit:
+            raise DeliveryError(
+                f"源仓库修复分支指向的提交与本次提交不一致: {branch}",
+                status="GIT_LOCAL_BRANCH_UNVERIFIED",
+                commit=commit,
+            )
+
     def _delivery_workspace(self, git_root: Path, branch: str) -> Path:
         """克隆一个只用于本次交付的临时工作区，不碰源仓库的检出。"""
-        target = self._workspaces.allocate("delivery", branch)
-        shutil.rmtree(target, ignore_errors=True)
+        # 目录名用可读的分支短名；分支全名仍保存在记录里，不依赖目录名还原。
+        target = self._workspaces.allocate("delivery", branch.replace("/", "-"), readable=True)
+        _cleanup_quietly(target)
         try:
             _clone_repo(git_root, target)
         except Exception as error:
-            shutil.rmtree(target, ignore_errors=True)
+            _cleanup_quietly(target)
             raise DeliveryError(f"交付工作区克隆失败: {git_root}") from error
         return target
 
     def _repo_root(self, source_repo: Any) -> Path:
         """定位源仓库中的**业务项目目录**。
 
-        必须走 ``WorkspaceManager.project_root``：``AI_REPAIR_SOURCE_REPO`` 指向
+        必须走 ``WorkspaceManager.project_root``：本地模式下 ``AI_REPAIR_SOURCE_REPO`` 指向
         仓库根，而 ``gathers/``、``spiders/`` 位于 ``AI_REPAIR_PROJECT_SUBDIR``
         之下。直接拿仓库根去解析 carrier 会一路报"工作区缺少目标 carrier"。
         """
@@ -406,7 +594,11 @@ class GitBranchDelivery:
                 if not source_file.is_file() or source_file.is_symlink():
                     raise DeliveryError(f"禁止交付非普通文件: {raw_file}")
                 candidate.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source_file, candidate)
+                # copy2 会保留源文件 mtime，而 Git 的 stat cache 以 mtime+size 判断
+                # 是否需要重新比对。大小不变的同秒改动会被当成"无差异"。写入后把
+                # mtime 刷新到当前时间，强制 Git 重新计算内容。
+                shutil.copyfile(source_file, candidate)
+                os.utime(candidate, None)
             elif candidate.exists():
                 candidate.unlink()
             copied.append(relative.as_posix())
@@ -424,7 +616,7 @@ class GitBranchDelivery:
         if not isinstance(raw_paths, list):
             return []
         copied: list[str] = []
-        expected_carrier = WorkspaceManager.safe_carrier_name(carrier)
+        expected_carrier = WorkspaceManager.safe_carrier_name(carrier).casefold()
         for raw_path in raw_paths:
             source = Path(str(raw_path))
             if not source.is_absolute():
@@ -436,20 +628,20 @@ class GitBranchDelivery:
                 _logger.warning("跳过工作区外的报告: %s", raw_path)
                 continue
             parts = relative.parts
-            if any(part.casefold() in {".ai-repair", "artifacts", ".git"} for part in parts):
+            if any(part.casefold() in {settings.artifact_dir_name.casefold(), "artifacts", ".git"} for part in parts):
                 _logger.warning("跳过不安全路径中的报告: %s", raw_path)
                 continue
             valid_markdown = (
                 source.suffix == ".md"
                 and len(parts) >= 2
                 and parts[0] in {"gathers", "spiders"}
-                and parts[1] == expected_carrier
+                and parts[1].casefold() == expected_carrier
             )
             valid_final_json = (
                 source.suffix == ".json"
                 and len(parts) == 3
                 and parts[0] in {"gathers", "spiders"}
-                and parts[1] == expected_carrier
+                and parts[1].casefold() == expected_carrier
                 and parts[2] == "final.json"
             )
             if not source.is_file() or not (valid_markdown or valid_final_json):
@@ -458,7 +650,8 @@ class GitBranchDelivery:
             destination = destination_root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             if source != destination:
-                shutil.copy2(source, destination)
+                shutil.copyfile(source, destination)
+                os.utime(destination, None)
             copied.append(relative.as_posix())
         return copied
 
@@ -526,13 +719,13 @@ class GitBranchDelivery:
         """
         carrier = str(state.get("carrier") or "unknown")
         status = str(state.get("delivery_status") or "REPAIR")
-        lines = [f"bug-repair-tasks: {carrier} ({status})"]
+        lines = [f"{settings.repair_branch_prefix}: {carrier} ({status})"]
 
         error = _one_line(state.get("error"))
         if error:
             lines += ["", f"error: {error}"]
 
-        analysis = _one_line(state.get("repair_analysis"), limit=800)
+        analysis = _one_line(state.get("repair_analysis"), limit=settings.commit_analysis_chars)
         summary = _one_line(state.get("repair_summary"))
         if analysis or summary:
             lines += ["", "repair:"]

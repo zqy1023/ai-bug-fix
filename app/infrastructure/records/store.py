@@ -27,9 +27,10 @@ from app.domain.keys import safe_name
 from app.domain.models import utc_now
 from app.application.audit import SCHEMA_VERSION, ArtifactRef, StepError, StepRecord
 from app.workflow.spec import RecordView
+from config.settings import settings
 
 # 单条记录的硬上限：大字段移出后不该再接近 MB，撞上就是"漏了搬字段"。
-_JSON_MAX_BYTES = 1 * 1024 * 1024
+_JSON_MAX_BYTES = settings.record_json_max_bytes
 
 # v0 → v1 的字段改名与取值映射。
 _V0_STATUS = {"passed": "succeeded"}
@@ -132,7 +133,7 @@ class RecordStore:
         size = len(json.dumps(body, ensure_ascii=False).encode("utf-8"))
         if size > _JSON_MAX_BYTES:
             raise StepFailed(
-                f"步骤记录 {record.name} 达 {size} 字节，超过 1MB，大字段必须先落 artifact",
+                f"步骤记录 {record.name} 达 {size} 字节，超过 {_JSON_MAX_BYTES} 字节上限，大字段必须先落 artifact",
                 code="ARTIFACT_INVALID_FORMAT",
             )
         with self._lock, _process_lock(self.run_dir(run_id) / ".steps.lock"):

@@ -80,6 +80,9 @@ def run_stage(
             )
         parsed = parse_input(spec.name, spec.input_builder(state))
         record.input = dump_model(parsed)
+        # 长步骤（证据准备、回归、交付）可能执行数十秒；先落 running 记录，
+        # 工作台才能在执行期间展示“执行中”，而不是一直停留在待执行。
+        store.save(run_id, record, task_id, **_views(spec))
         run_context = RunContext(
             run_id=run_id,
             started_at=record.started_at,

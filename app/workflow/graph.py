@@ -88,8 +88,10 @@ def build_task_graph(
         if name == RETRY:
             def retry_node(state: dict[str, Any]) -> dict[str, Any]:
                 # Agent/审批重试前恢复不可变基线，避免在上一次失败的半成品上继续修改。
+                # 审查重试是复查同一份改动，重置工作区会删掉待审内容，必须跳过。
+                target = str(state.get("retry_target") or "")
                 manager = workspace_manager
-                if manager is not None:
+                if manager is not None and target != REVIEW:
                     try:
                         task = dict(state.get("task") or {})
                         manager.reset_task_workspace(
@@ -124,33 +126,42 @@ def build_task_graph(
                             "retry_target": "__retry_reset_failed__",
                             "retry_reason": public_exception(error, prefix="重试前恢复隔离工作区失败"),
                         }
-                return {
+                patch: dict[str, Any] = {
                     "attempt": int(state.get("attempt") or 1) + 1,
                     "decision": "PENDING",
                     "approval_granted": False,
                     "review_decision": "",
-                    "locate": {},
-                    "repair": {},
                     "review": {},
-                    "evidence": {},
-                    "changed_files": [],
-                    "repair_changed_files": [],
-                    "change_plan": {},
-                    "scope_escalation_required": False,
-                    "repair_slot_claimed": kept_repair_slot(state),
-                    "check_passed": False,
-                    "verify_passed": False,
-                    "regression_passed": False,
-                    "gate_result": {},
-                    "verify_result": {},
-                    "regression_result": {},
                     "delivery": {},
                     "delivery_pushed": False,
+                    "delivery_local_branch": False,
                     "delivery_commit": "",
                     "repair_branch": "",
                     "approval_cleanup_failed": False,
+                    "blocked_reason": "",
+                    "repair_slot_claimed": kept_repair_slot(state),
                     "last_result": "passed",
                 }
+                if target != REVIEW:
+                    # 只有复查保留改动与验证结论；修复/定位重试都要从基线重新开始。
+                    patch.update({
+                        "repair": {},
+                        "changed_files": [],
+                        "repair_changed_files": [],
+                        "change_plan": {},
+                        "scope_escalation_required": False,
+                        "check_passed": False,
+                        "verify_passed": False,
+                        "regression_passed": False,
+                        "gate_result": {},
+                        "verify_result": {},
+                        "regression_result": {},
+                    })
+                if target == LOCATE:
+                    # 重试定位要清掉旧结论；重试修复必须保留 LOCATED 结论和
+                    # 确定性 evidence，否则 repair_agent 输入校验会直接失败。
+                    patch["locate"] = {}
+                return patch
             graph.add_node(name, retry_node)
         else:
             graph.add_node(name, nodes[name])
