@@ -499,3 +499,28 @@ def test_single_step_execution_cannot_bypass_pending_approval_after_run_failure(
 
     assert raised.value.code == "TASK_AWAITING_APPROVAL"
 
+@pytest.mark.parametrize(
+    ("retry_target", "expected_phase"),
+    [
+        ("locate_agent", LOCATE),
+        ("repair_agent", REPAIR),
+        ("validate_changes", VALIDATE),
+        ("run_regression", REGRESSION),
+        ("review_agent", REVIEW),
+        ("prepare_delivery", DELIVER),
+    ],
+)
+def test_rejected_approval_routes_through_retry_gate_to_the_selected_phase(retry_target, expected_phase):
+    state = {
+        "last_result": "failed",
+        "decision": "REJECT",
+        "retry_target": retry_target,
+        "attempt": 1,
+        "max_attempts": 3,
+    }
+
+    from app.workflow.routes import RETRY
+
+    assert after_approval(state) == RETRY
+    assert after_retry(state) == expected_phase
+
