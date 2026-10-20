@@ -333,6 +333,7 @@ def test_background_failure_report_persists_redacted_actionable_reason(monkeypat
     api_module._record_background_failure(
         "run-id",
         StepFailed("delivery failed: Authorization: Bearer secret-token-123456"),
+        phase="approval_recovery",
     )
 
     payload = json.loads((run_dir / "reports" / "run_failure.json").read_text(encoding="utf-8"))
@@ -340,6 +341,8 @@ def test_background_failure_report_persists_redacted_actionable_reason(monkeypat
     assert "delivery failed" in payload["message"]
     assert "secret-token-123456" not in payload["message"]
     assert payload["error_type"] == "StepFailed"
+    assert payload["terminal_step"] == "approval_recovery"
+    assert "重新提交决策" in payload["next_action"]
 
 
 def test_task_detail_api_exposes_run_recovery_failure(monkeypatch, tmp_path):
