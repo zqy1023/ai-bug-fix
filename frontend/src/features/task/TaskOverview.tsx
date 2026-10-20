@@ -13,7 +13,7 @@ import { formatDuration } from '../../lib/format';
 import { StatusBadge } from '../../components/StatusBadge';
 
 type Dict = Record<string, unknown>;
-type Tone = 'success' | 'danger' | 'running' | 'waiting' | 'manual' | 'neutral' | 'pending';
+type Tone = 'success' | 'danger' | 'running' | 'waiting' | 'manual' | 'neutral' | 'pending' | 'skipped';
 
 const STEP_LABELS: Record<string, string> = {
   discover_logs: '拉取异常日志',
@@ -71,7 +71,8 @@ function toneForStep(step?: StepRecord): Tone {
   if (step.status === 'running') return 'running';
   if (step.status === 'waiting') return 'waiting';
   if (['MANUAL', 'INSUFFICIENT_EVIDENCE'].includes(result)) return 'manual';
-  if (step.status === 'succeeded' || step.status === 'skipped') return 'success';
+  if (step.status === 'skipped') return 'skipped';
+  if (step.status === 'succeeded') return 'success';
   return 'pending';
 }
 
@@ -82,6 +83,7 @@ function toneText(tone: Tone): string {
     running: '执行中',
     waiting: '等待处理',
     manual: '需人工处理',
+    skipped: '已跳过',
     neutral: '未执行',
     pending: '未开始',
   })[tone];
@@ -135,6 +137,7 @@ function StageItem({ title, steps, hint }: { title: string; steps: Array<StepRec
   else if (completed.some((step) => toneForStep(step) === 'running')) tone = 'running';
   else if (completed.some((step) => toneForStep(step) === 'waiting')) tone = 'waiting';
   else if (completed.some((step) => toneForStep(step) === 'manual')) tone = 'manual';
+  else if (completed.every((step) => toneForStep(step) === 'skipped')) tone = 'skipped';
   else if (completed.length) tone = 'success';
 
   return (
@@ -145,7 +148,8 @@ function StageItem({ title, steps, hint }: { title: string; steps: Array<StepRec
             : tone === 'running' ? <ClockCircleOutlined />
               : tone === 'manual' ? <FileTextOutlined />
                 : tone === 'waiting' ? <ClockCircleOutlined />
-                  : <span className="overview-stage-empty" />}
+                  : tone === 'skipped' ? <StopOutlined />
+                    : <span className="overview-stage-empty" />}
       </span>
       <div className="overview-stage-copy">
         <strong>{title}</strong>
