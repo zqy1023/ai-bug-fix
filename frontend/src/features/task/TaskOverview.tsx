@@ -11,6 +11,7 @@ import { api } from '../../lib/api';
 import { queryKeys } from '../../lib/queryKeys';
 import { formatDuration } from '../../lib/format';
 import { StatusBadge } from '../../components/StatusBadge';
+import { CodeDiffViewer } from '../../components/CodeDiffViewer';
 
 type Dict = Record<string, unknown>;
 type Tone = 'success' | 'danger' | 'running' | 'waiting' | 'manual' | 'neutral' | 'pending' | 'skipped';
@@ -313,13 +314,7 @@ export function TaskOverview({
 
   const resultText = resultHeadline(result, analysisOnly, deliveredCode, landed, changedCount, changeEvidenceKnown, finalApprovalPending, resultFailed);
   const description = resultDescription(analysisOnly, landed, deliveredCode, changedCount, changeEvidenceKnown, finalApprovalPending, result, resultFailed);
-  const diffText = useMemo(() => {
-    const payload = diffQuery.data?.content;
-    if (typeof payload === 'string') return payload;
-    const parsed = dict(payload);
-    if (typeof parsed.diff === 'string') return parsed.diff;
-    return payload ? JSON.stringify(payload, null, 2) : '';
-  }, [diffQuery.data?.content]);
+  const diffPayload = diffQuery.data?.content;
 
   const copyCommit = async () => {
     if (!commit) return;
@@ -679,21 +674,15 @@ export function TaskOverview({
       <Drawer
         title={`代码差异 · ${text(diffArtifact?.path) || 'diff.json'}`}
         placement="right"
-        width="min(960px, 88vw)"
+        width="min(1400px, 96vw)"
         open={diffOpen}
         onClose={() => setDiffOpen(false)}
-        styles={{ body: { paddingTop: 12 } }}
+        styles={{ body: { padding: 10, overflow: 'hidden' } }}
       >
         {diffQuery.isLoading ? <Skeleton active paragraph={{ rows: 8 }} />
           : diffQuery.isError ? <Empty description="差异产物读取失败，请从 check_changes 步骤核对错误。" />
-            : diffText ? (
-              <pre className="overview-diff-viewer">{diffText.split(/\r?\n/).map((line, index) => {
-                const kind = line.startsWith('+++') || line.startsWith('---') ? 'header'
-                  : line.startsWith('+') ? 'add' : line.startsWith('-') ? 'remove'
-                    : line.startsWith('@@') ? 'hunk' : 'context';
-                return <span key={index} className={`overview-diff-line is-${kind}`}>{line || ' '}</span>;
-              })}</pre>
-            ) : <Empty description="该任务没有完整差异文本产物" />}
+            : diffPayload ? <CodeDiffViewer payload={diffPayload} />
+              : <Empty description="该任务没有完整差异文本产物" />}
       </Drawer>
     </div>
   );
