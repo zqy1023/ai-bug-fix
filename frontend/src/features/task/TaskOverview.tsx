@@ -64,6 +64,12 @@ function rawString(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
+function shortText(value: string, maxChars = 220): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, maxChars).trimEnd()}…`;
+}
+
 function objects(value: unknown): Dict[] {
   return Array.isArray(value) ? value.filter((item) => item !== null && typeof item === 'object' && !Array.isArray(item)).map((item) => item as Dict) : [];
 }
@@ -135,21 +141,21 @@ function resultHeadline(result: string, analysisOnly: boolean, deliveredCode: bo
 }
 
 function resultDescription(analysisOnly: boolean, delivered: boolean, deliveredCode: boolean, changedCount: number, changeEvidenceKnown: boolean, finalApprovalPending: boolean, result: string, executionFailed: boolean): string {
-  if (executionFailed || result === 'FAILED' || result === 'FAIL') return '至少一个关键步骤没有通过或分支交付失败。请先查看终止节点、错误原因和交付记录；没有可靠提交证据时不会显示为已交付。';
-  if (finalApprovalPending) return 'AI 审查要求人工复核，候选源码分支已成功提交。现在等待最终人工审批；系统不会自动合并。';
-  if (analysisOnly && delivered) return '本次提交的是 final.json 分析报告，不包含源码修复。工作流不会自动合并分支。';
-  if (analysisOnly && changedCount > 0 && changeEvidenceKnown) return `确定性门禁发现 ${changedCount} 个源码文件有变化，但本次交付只包含分析报告；源码没有随该分支提交。`;
-  if (analysisOnly && changedCount > 0) return `修复 Agent 声明涉及 ${changedCount} 个文件，但尚无实际差异证据；当前路径只交付分析报告。`;
-  if (analysisOnly) return '当前任务走分析报告交付路径，源码修改不会随这份报告自动提交。';
-  if (deliveredCode) return `已检测到 ${changedCount} 个源码文件变更并提交修复分支；后续由你在 Git 上人工审查和合并。`;
-  if (changedCount > 0 && !changeEvidenceKnown) return '目前只有修复 Agent 的文件声明，尚无基线差异核验；这不代表这些文件确实发生了变化。';
-  if (changedCount > 0) return '确定性门禁确认隔离工作区有源码差异，但没有确认这些源码已提交到可核验的分支。';
-  if (changeEvidenceKnown) return '确定性门禁没有发现真实源码差异；如果本轮有修改声明，系统不会把声明当作实际改动。';
-  if (result === 'MANUAL' || result === 'INSUFFICIENT_EVIDENCE') return '当前结论要求人工分析或补充证据；页面会明确区分分析结果与实际源码交付。';
-  if (result === 'FAILED' || result === 'FAIL') return '请查看下方终止节点与错误原因；没有确认的分支提交不会被展示为已交付。';
-  return '关键结论、实际变更、验证审查与 Git 交付分别列出，执行过程详情默认收起。';
+  if (executionFailed || result === 'FAILED' || result === 'FAIL') return '任务未完成；请查看停止原因和失败节点。';
+  if (finalApprovalPending) return '源码分支已提交，等待最终审批；系统不会自动合并。';
+  if (analysisOnly && delivered) return '仅提交 final.json 分析报告，源码改动未随分支交付。';
+  if (analysisOnly && changedCount > 0 && changeEvidenceKnown) return `检测到 ${changedCount} 个源码文件有改动，但本次只交付分析报告。`;
+  if (analysisOnly && changedCount > 0) return `检测到 ${changedCount} 个修改声明，尚未核实真实差异；本次只交付分析报告。`;
+  if (analysisOnly) return '本次仅交付分析报告，未提交源码修复。';
+  if (deliveredCode) return `已交付 ${changedCount} 个源码变更文件，等待你检查并手动合并。`;
+  if (changedCount > 0 && !changeEvidenceKnown) return '修改文件尚未完成基线比对，不能确认实际差异。';
+  if (changedCount > 0) return '已发现源码差异，但尚无可靠的分支交付证据。';
+  if (changeEvidenceKnown) return '基线比对未发现源码差异。';
+  if (result === 'MANUAL' || result === 'INSUFFICIENT_EVIDENCE') return '证据不足或超出自动修复范围，需人工处理。';
+  if (['RUNNING', 'PENDING', 'QUEUED', 'WAITING_APPROVAL'].includes(result)) return '任务仍在执行或等待人工决策。';
+  if (delivered) return '交付记录已生成。';
+  return result ? '任务已结束；详情见下方各阶段结果。' : '任务结果待确认。';
 }
-
 function StageItem({ title, steps, hint }: { title: string; steps: Array<StepRecord | undefined>; hint?: string }) {
   const completed = steps.filter(Boolean) as StepRecord[];
   let tone: Tone = 'pending';
@@ -305,6 +311,7 @@ export function TaskOverview({
     checkStep?.artifacts?.find((artifact) => artifact.name === 'diff' || artifact.path.endsWith('/diff.json'))
   ), [checkStep?.artifacts]);
   const [diffOpen, setDiffOpen] = useState(false);
+  const [selectedDiffPath, setSelectedDiffPath] = useState('');
   const diffQuery = useQuery({
     queryKey: queryKeys.artifactContent(detail.run_id, diffArtifact?.path || '', task.task_id),
     queryFn: () => api.artifactContent(detail.run_id, diffArtifact!.path, task.task_id),
@@ -437,11 +444,17 @@ export function TaskOverview({
             <div className="analysis-result">
               <div className="analysis-root-cause">
                 <label>根因摘要</label>
-                <p className="analysis-root-cause-summary">{rootCause || analysisSummary || '已完成定位，尚未生成简短根因摘要。'}</p>
+                <p className="analysis-root-cause-summary">{shortText(rootCause || analysisSummary || '已完成定位，尚未生成简短根因摘要。')}</p>
               </div>
-              {(analysisSummary && analysisSummary !== rootCause || facts.length > 0 || evidence.length > 0 || evidenceGaps.length > 0) && (
+              {(rootCause.length > 220 || (analysisSummary && analysisSummary !== rootCause) || facts.length > 0 || evidence.length > 0 || evidenceGaps.length > 0) && (
                 <details className="overview-inline-details analysis-evidence-details">
-                  <summary>查看完整分析与证据（{facts.length + evidence.length + evidenceGaps.length} 项）</summary>
+                  <summary>查看完整分析与证据（{facts.length + evidence.length + evidenceGaps.length + (rootCause.length > 220 ? 1 : 0)} 项）</summary>
+                  {rootCause.length > 220 && (
+                    <div className="analysis-detail-block">
+                      <label>完整根因</label>
+                      <p>{rootCause}</p>
+                    </div>
+                  )}
                   {analysisSummary && analysisSummary !== rootCause && (
                     <div className="analysis-detail-block">
                       <label>定位摘要</label>
@@ -512,7 +525,18 @@ export function TaskOverview({
                   <li key={`${text(file.path)}-${index}`}>
                     <span className={`file-change-mark is-${String(file.status || 'modified').toLowerCase()}`} />
                     <span className="file-change-status">{fileStatusLabel(file.status)}</span>
-                    <code title={text(file.path)}>{text(file.path)}</code>
+                    <button
+                      type="button"
+                      className="changed-file-path-button"
+                      title={text(file.path)}
+                      disabled={!diffArtifact}
+                      onClick={() => {
+                        setSelectedDiffPath(text(file.path));
+                        setDiffOpen(true);
+                      }}
+                    >
+                      <code>{text(file.path)}</code>
+                    </button>
                     <span className="file-change-lines">
                       {Number(file.added || 0) > 0 && <b className="diff-add">+{Number(file.added)}</b>}
                       {Number(file.removed || 0) > 0 && <b className="diff-remove">−{Number(file.removed)}</b>}
@@ -528,7 +552,18 @@ export function TaskOverview({
                       <li key={`${text(file.path)}-more-${index}`}>
                         <span className={`file-change-mark is-${String(file.status || 'modified').toLowerCase()}`} />
                         <span className="file-change-status">{fileStatusLabel(file.status)}</span>
-                        <code title={text(file.path)}>{text(file.path)}</code>
+                        <button
+                      type="button"
+                      className="changed-file-path-button"
+                      title={text(file.path)}
+                      disabled={!diffArtifact}
+                      onClick={() => {
+                        setSelectedDiffPath(text(file.path));
+                        setDiffOpen(true);
+                      }}
+                    >
+                      <code>{text(file.path)}</code>
+                    </button>
                         <span className="file-change-lines">
                           {Number(file.added || 0) > 0 && <b className="diff-add">+{Number(file.added)}</b>}
                           {Number(file.removed || 0) > 0 && <b className="diff-remove">−{Number(file.removed)}</b>}
@@ -681,7 +716,13 @@ export function TaskOverview({
       >
         {diffQuery.isLoading ? <Skeleton active paragraph={{ rows: 8 }} />
           : diffQuery.isError ? <Empty description="差异产物读取失败，请从 check_changes 步骤核对错误。" />
-            : diffPayload ? <CodeDiffViewer payload={diffPayload} />
+            : diffPayload ? (
+              <CodeDiffViewer
+                payload={diffPayload}
+                selectedPath={selectedDiffPath}
+                onSelectedPathChange={setSelectedDiffPath}
+              />
+            )
               : <Empty description="该任务没有完整差异文本产物" />}
       </Drawer>
     </div>
