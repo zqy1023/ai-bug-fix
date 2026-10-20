@@ -165,6 +165,14 @@ export function ReviewPane({ item }: { item: ApprovalItem }) {
         <Fact label="审批到期">{item.expires_at ? formatTime(item.expires_at) : '未设置'}</Fact>
       </div>
 
+      {task?.approval_pending && text(asObject(taskDetail?.run_error).status).toUpperCase() === 'FAILED' && (
+        <section className="review-recovery-warning" role="alert">
+          <strong>上次审批恢复失败</strong>
+          <p>{shortText(stringField(asObject(taskDetail?.run_error), 'terminal_reason', 'message') || '后台恢复未完成，待审批记录仍保留。', 220)}</p>
+          <span>修复运行环境后，可重新提交决策；恢复失败不会被当成已重跑。</span>
+        </section>
+      )}
+
       <section className="review-section review-original-error">
         <header className="review-subhead">
           <h3><WarningOutlined /> 原始 Error</h3>
