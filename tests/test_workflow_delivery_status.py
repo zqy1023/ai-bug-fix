@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from app.workflow.routes import DELIVER, END, FINALIZE, after_delivery, after_finalize
 from app.workflow.steps.finalize_execution.node import _delivery_status
 from app.infrastructure.redaction import public_exception
+from app.workflow.steps.prepare_delivery import _input as build_delivery_input
 
 
 def test_source_delivery_failure_is_not_reclassified_as_analysis_only():
@@ -84,3 +85,47 @@ def test_attribute_error_summary_keeps_safe_missing_attribute_detail():
 
     assert "WorkspaceManager" in message
     assert "project_root" in message
+
+
+
+def test_failed_final_summary_does_not_route_into_analysis_report_delivery():
+    state = {
+        "last_result": "passed",
+        "task_summary": {"delivery_status": "FAILED"},
+        "delivery": {},
+        "review": {"verdict": "MANUAL"},
+        "locate": {
+            "status": "LOCATED",
+            "recommended_scope": "carrier",
+            "category": "carrier",
+        },
+        "ai_workspace_path": "/workspace/task",
+    }
+
+    assert after_finalize(state) == END
+
+
+def test_delivery_input_does_not_infer_analysis_only_from_failure_status():
+    state = {
+        "task_id": "TestCarrier__framework.track_server__issue",
+        "task": {"task_id": "TestCarrier__framework.track_server__issue",
+                 "carrier": "TestCarrier", "biztype": "framework.track_server"},
+        "task_summary": {"delivery_status": "FAILED"},
+        "delivery": {"delivery_status": "FAILED"},
+        "review": {"verdict": "PASS", "summary": "review passed"},
+        "locate": {
+            "status": "LOCATED",
+            "recommended_scope": "carrier",
+            "category": "carrier",
+        },
+        "evidence": {"carrier_dir": "gathers/TestCarrier"},
+        "framework": "gathers",
+        "ai_workspace_path": "/workspace/task",
+        "changed_files": ["gathers/TestCarrier/main.py"],
+        "problem": {"error": "test error", "fingerprint": "test"},
+    }
+
+    result = build_delivery_input(state)
+
+    assert result["analysis_only"] is False
+    assert result["report_paths"] == []
