@@ -202,8 +202,13 @@ def after_approval(state: WorkflowState) -> str:
         return FINALIZE
 
     approval_result = _result(state)
-    # 人工明确拒绝后进入有上限的回修循环，不得继续 apply 或交付。
+    # Rejected approval must carry a known target all the way from API to route.
+    # Never allow legacy/malformed checkpoints to fall through after_retry's generic repair fallback.
     if str(state.get("decision") or "").upper() == "REJECT" or approval_result == "rejected":
+        target = str(state.get("retry_target") or "")
+        allowed_targets = {LOCATE, REPAIR, VALIDATE, REGRESSION, REVIEW, DELIVER}
+        if target not in allowed_targets:
+            return FINALIZE
         return _retry_or_finalize(state)
 
     # 其他非通过状态：终止
