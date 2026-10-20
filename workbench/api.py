@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 from app.infrastructure.config import load_config
 from app.infrastructure.records.store import RecordStore
 from app.infrastructure.redaction import public_exception
-from app.workflow.steps.request_approval.models import APPROVAL_RETRY_TARGETS, RetryTarget
+from app.domain.approval import APPROVAL_RETRY_TARGETS, RetryTarget
 from config.settings import settings
 
 router = APIRouter()
