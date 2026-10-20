@@ -488,3 +488,30 @@
   overflow: hidden;
   overflow-wrap: anywhere;
 }
+
+
+.changed-file-path-button {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.changed-file-path-button code {
+  display: block;
+  width: 100%;
+  padding: 0;
+}
+.changed-file-path-button:hover code {
+  color: var(--wb-primary);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+}
+.changed-file-path-button:disabled {
+  cursor: not-allowed;
+  opacity: .6;
+}
