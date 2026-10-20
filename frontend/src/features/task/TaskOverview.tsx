@@ -288,7 +288,9 @@ export function TaskOverview({
   const reviewSummary = getText(review, 'summary') || stepSummary(reviewStep);
   const findings = strings(review.findings);
   const requiredChanges = strings(review.required_changes);
-  const verifyPassed = verify.passed === true;
+  const verifyMode = getText(verify, 'mode');
+  const syntaxOnlyVerification = verifyMode === 'syntax_only';
+  const verifyPassed = verify.passed === true && !syntaxOnlyVerification;
   const regressionPassed = regression.passed === true;
   const qualitySteps = [verifyStep, regressionStep].filter(Boolean) as StepRecord[];
   const qualityFailed = qualitySteps.some((step) => toneForStep(step) === 'danger');
@@ -296,6 +298,7 @@ export function TaskOverview({
   const terminalReasonFromFailure = terminalReason || (
     [...steps].reverse().find((step) => step.status === 'failed')?.error?.message || ''
   );
+  const originalErrorPreview = originalError.split(/\\r?\\n/)[0] || originalError;
 
   const diffArtifact = useMemo(() => (
     checkStep?.artifacts?.find((artifact) => artifact.name === 'diff' || artifact.path.endsWith('/diff.json'))
@@ -427,11 +430,15 @@ export function TaskOverview({
           </header>
           {originalError && (
             <details className="overview-inline-details task-original-error-details">
-              <summary><WarningOutlined /> 查看原始 Error 日志</summary>
+              <summary>
+                <WarningOutlined /> 原始 Error
+                <span className="task-original-error-preview">{originalErrorPreview}</span>
+                <span className="task-original-error-expand">查看全文</span>
+              </summary>
               <pre className="task-original-error-text">{originalError}</pre>
             </details>
           )}
-          {rootCause || analysisSummary || facts.length > 0 || evidence.length > 0 ? (
+          {rootCause || analysisSummary || facts.length > 0 || evidence.length > 0 || evidenceGaps.length > 0 ? (
             <div className="analysis-result">
               <div className="analysis-root-cause">
                 <label>根因摘要</label>
@@ -489,11 +496,7 @@ export function TaskOverview({
           </header>
           {analysisOnly && (
             <div className="overview-note is-warning">
-              {changedCount > 0 && changeEvidenceKnown
-                ? `确定性门禁确认有 ${changedCount} 个源码文件发生变化，但本次交付是分析报告模式；这些源码未提交到报告分支。`
-                : changedCount > 0
-                  ? `修复 Agent 声明涉及 ${changedCount} 个文件，但没有完成实际差异核验；本次分支只提交分析报告。`
-                  : '本次走分析报告交付路径，没有确认源码修改随分支提交。'}
+              本次仅提交分析报告；源码改动未随该分支交付。
             </div>
           )}
           {repairStep && (getText(repair, 'summary', 'analysis') || stepSummary(repairStep)) && (
@@ -570,17 +573,24 @@ export function TaskOverview({
           <div className="quality-check-list">
             <div className="quality-check-row">
               <span>问题验证</span>
-              <strong className={verifyPassed ? 'is-good' : verifyStep ? 'is-bad' : 'is-muted'}>
-                {verifyPassed ? '通过' : verifyStep ? '未通过' : '未执行'}
+              <strong className={syntaxOnlyVerification ? 'is-muted' : verifyPassed ? 'is-good' : verifyStep ? 'is-bad' : 'is-muted'}>
+                {syntaxOnlyVerification ? '仅语法检查' : verifyPassed ? '通过' : verifyStep ? '未通过' : '未执行'}
               </strong>
-              <small>{getText(verify, 'mode')}{getText(verify, 'reason') ? ` · ${getText(verify, 'reason')}` : ''}</small>
+              <small className="quality-detail-clamp">
+                {syntaxOnlyVerification
+                  ? '未执行原始问题重放'
+                  : getText(verify, 'mode')}{getText(verify, 'reason') && !syntaxOnlyVerification ? ` · ${getText(verify, 'reason')}` : ''}
+              </small>
             </div>
             <div className="quality-check-row">
               <span>回归测试</span>
               <strong className={regressionPassed ? 'is-good' : regressionStep ? 'is-bad' : 'is-muted'}>
                 {regressionPassed ? '通过' : regressionStep ? '未通过' : '未执行'}
               </strong>
-              <small>{regression.command_count !== undefined ? `${String(regression.command_count)} 条命令` : ''}{getText(regression, 'reason') ? ` · ${getText(regression, 'reason')}` : ''}</small>
+              <small className="quality-detail-clamp">
+                {regression.command_count !== undefined ? `${String(regression.command_count)} 条命令` : '未记录命令数'}
+                {getText(regression, 'reason') ? ` · ${getText(regression, 'reason')}` : ''}
+              </small>
             </div>
           </div>
           <div className="review-result-block">
