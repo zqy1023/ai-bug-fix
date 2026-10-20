@@ -370,13 +370,30 @@ export function TaskOverview({
           {terminalReasonFromFailure && (
             <div className={`outcome-reason ${resultFailed ? 'is-danger' : ''}`}>
               <span>{resultFailed ? '停止原因' : '结论说明'}</span>
-              <p>{shortText(terminalReasonFromFailure, 220)}</p>
+              <div className="outcome-reason-copy">
+                <p>{shortText(terminalReasonFromFailure, 220)}</p>
+                {terminalReasonFromFailure.length > 220 && (
+                  <details className="overview-inline-details">
+                    <summary>查看完整原因</summary>
+                    <p>{terminalReasonFromFailure}</p>
+                  </details>
+                )}
+              </div>
             </div>
           )}
           {nextAction && (
             <div className="outcome-next-action">
               <ArrowRightOutlined />
-              <div><span>建议下一步</span><strong>{shortText(nextAction, 150)}</strong></div>
+              <div>
+                <span>下一步</span>
+                <strong>{shortText(nextAction, 150)}</strong>
+                {nextAction.length > 150 && (
+                  <details className="overview-inline-details">
+                    <summary>查看完整建议</summary>
+                    <p>{nextAction}</p>
+                  </details>
+                )}
+              </div>
             </div>
           )}
         </div>
