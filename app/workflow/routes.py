@@ -216,61 +216,58 @@ def after_approval(state: WorkflowState) -> str:
     return FINALIZE
 
 
-def after_delivery(state: WorkflowState) -> str:
-    """分析报告分支交付后直接结束；源码修复分支交付后进入唯一最终审批。"""
-    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
-        return FINALIZE
-    # 已有未合并修复分支时预检直接跳过，不创建报告分支，也不进入审批。
-    if _finalized_status(state) == "SKIPPED":
-        return END
+def _analysis_only_task(state: WorkflowState) -> bool:
+    """仅按明确的业务分流原因判断报告交付，不用 FAILED/MANUAL 终态反推原因。
+
+    交付失败是执行失败，绝不能因此被重新归类为分析报告任务。
+    """
+    if str((state.get("delivery") or {}).get("delivery_status") or "").upper() == "FAILED":
+        return False
     evidence = state.get("evidence") or {}
     locate = state.get("locate") or {}
-    analysis_only = bool(
+    review = state.get("review") or {}
+    if (
         evidence.get("legacy_only")
         or evidence.get("legacy_dependency")
         or state.get("scope_escalation_required")
-        or str((state.get("review") or {}).get("verdict") or "").upper() == "MANUAL"
-        # 只认 finalize_execution 已写出的结论。源码交付自身失败时 delivery 也会是
-        # FAILED，若据此判定分析任务，就会绕过 finalize_execution 直接结束任务。
-        or _finalized_status(state) in {"FAILED", "MANUAL"}
-        or str(locate.get("status") or "") != "LOCATED"
+        or str(review.get("verdict") or "").upper() == "MANUAL"
+    ):
+        return True
+    # 只有确实产生了定位结论时，才能依据定位结果转分析报告。
+    if not locate:
+        return False
+    return bool(
+        str(locate.get("status") or "").upper() in {"MANUAL", "INSUFFICIENT_EVIDENCE"}
         or str(locate.get("recommended_scope") or "") != "carrier"
         or str(locate.get("category") or "") != "carrier"
         or _locate_references_legacy(locate)
     )
-    if analysis_only:
-        # 这里只覆盖 finalize_execution 之后的报告交付（含报告交付失败），
-        # 不能回到 FINALIZE 再次进入报告交付形成死循环。
+
+
+def after_delivery(state: WorkflowState) -> str:
+    """源码交付失败必须回到终态记录失败；分析报告交付失败也不得伪装为人工分析完成。"""
+    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
+        return FINALIZE
+    if _finalized_status(state) == "SKIPPED":
         return END
-    return APPROVE if _result(state) == "passed" else FINALIZE
+    if _result(state) != "passed" or str((state.get("delivery") or {}).get("delivery_status") or "").upper() == "FAILED":
+        return FINALIZE
+    if _analysis_only_task(state):
+        return END
+    return APPROVE
 
 
 def after_finalize(state: WorkflowState) -> str:
-    """对已完成根因分析但不允许自动修改的任务，交付 final.json 分支后结束。"""
+    """只为明确分流到分析报告的任务交付 final.json；失败任务不伪装成分析报告。"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED":
         return END
-    # 已有未合并修复分支时本轮任务已被跳过，不得再创建报告分支。
     if _delivery_status(state) == "SKIPPED":
         return END
-    # 明确拒绝或分支清理失败后不得再创建报告分支，避免重新引入被拒绝的分支。
     if str(state.get("decision") or "").upper() == "REJECT" or state.get("approval_cleanup_failed"):
         return END
-    evidence = state.get("evidence") or {}
-    locate = state.get("locate") or {}
-    analysis_only = bool(
-        evidence.get("legacy_only")
-        or evidence.get("legacy_dependency")
-        or state.get("scope_escalation_required")
-        or str((state.get("review") or {}).get("verdict") or "").upper() == "MANUAL"
-        or _delivery_status(state) in {"FAILED", "MANUAL"}
-        or (locate and (
-            str(locate.get("status") or "") != "LOCATED"
-            or str(locate.get("recommended_scope") or "") != "carrier"
-            or str(locate.get("category") or "") != "carrier"
-            or _locate_references_legacy(locate)
-        ))
-    )
-    return DELIVER if analysis_only and state.get("ai_workspace_path") else END
+    if str((state.get("delivery") or {}).get("delivery_status") or "").upper() == "FAILED":
+        return END
+    return DELIVER if _analysis_only_task(state) and state.get("ai_workspace_path") else END
 
 
 __all__ = [
