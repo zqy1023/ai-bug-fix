@@ -29,12 +29,32 @@ function pairEvents(events: AgentEvent[]): Call[] {
 }
 
 /** 工具调用时间线：结果默认截断为 3 行，避免长输出淹没追踪视图。 */
-export function ToolCallTimeline({ events }: { events: AgentEvent[] }) {
+export function ToolCallTimeline({
+  events, expectedCount,
+}: { events: AgentEvent[]; expectedCount?: number }) {
   const calls = pairEvents(events);
   const [openResult, setOpenResult] = useState<Record<number, boolean>>({});
 
   if (!calls.length) {
-    return <EmptyState title="没有工具调用" description="本次模型调用未使用工具，或审计未记录工具事件。" compact />;
+    if (typeof expectedCount === 'number' && expectedCount > 0) {
+      return (
+        <EmptyState
+          title="工具事件明细缺失"
+          description={`调用记录显示使用了 ${expectedCount} 次工具，但服务端没有返回对应事件。`}
+          compact
+        />
+      );
+    }
+    if (expectedCount === 0) {
+      return <EmptyState title="本次没有工具调用" description="调用记录确认未使用工具。" compact />;
+    }
+    return (
+      <EmptyState
+        title="工具事件暂无记录"
+        description="服务端未提供工具调用数量，无法确认本次是否使用了工具。"
+        compact
+      />
+    );
   }
 
   const toggle = (index: number) => setOpenResult((current) => ({ ...current, [index]: !current[index] }));
