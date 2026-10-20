@@ -99,6 +99,15 @@ export interface TaskSummary {
 export interface TaskDetailResponse {
   run_id: string;
   run_status: RunStatus;
+  run_error?: {
+    status?: string;
+    error_type?: string;
+    message?: string;
+    failed_at?: string;
+    terminal_step?: string;
+    terminal_reason?: string;
+    next_action?: string;
+  };
   config: Record<string, unknown>;
   task: TaskSummary & { steps: StepRecord[]; report: WorkflowReport };
   artifacts: ArtifactRef[];
