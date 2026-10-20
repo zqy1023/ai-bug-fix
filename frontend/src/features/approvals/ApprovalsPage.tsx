@@ -61,7 +61,7 @@ export function ApprovalsPage() {
       <div className="page-heading">
         <div>
           <h2>交付审批</h2>
-          <p>审查已通过验证、回归与 AI 审查的修复方案；这也是整条流水线唯一的人工节点。</p>
+          <p>核对原始异常、代码差异和验证结果；批准后由你手动合并，驳回可指定回退节点。</p>
         </div>
         <div className="page-heading-actions">
           <span className="heading-count"><SafetyCertificateOutlined /> 待决策 <strong>{items.length}</strong></span>
