@@ -397,7 +397,13 @@ export function TaskOverview({
           <StageItem title="AI 审查" steps={[reviewStep]} hint={reviewVerdict ? ({
             PASS: '审查通过，进入分支交付',
             FAIL: '审查未通过，触发回修',
-            MANUAL: analysisOnly ? '仅交付报告，不进入源码审批' : '源码分支提交后进入人工审批',
+            MANUAL: analysisOnly
+              ? '仅交付报告，不进入源码审批'
+              : finalApprovalPending
+                ? '源码分支已提交，等待最终审批'
+                : landed
+                  ? '源码分支已提交，待最终审批'
+                  : '先提交候选分支，再人工复核',
           } as Record<string, string>)[reviewVerdict] || reviewVerdict : '未执行'} />
           <StageItem title="Git 交付" steps={[deliveryStep]} hint={landed ? analysisOnly ? '分析报告分支已提交' : '修复分支已提交' : deliveryStep ? toneText(toneForStep(deliveryStep)) : '未交付'} />
         </div>
@@ -513,7 +519,11 @@ export function TaskOverview({
             <div><h3>验证与审查</h3><span>{analysisOnly
               ? '当前分支交付的是分析报告，不进入源码修复审批'
               : 'AI 审查不是人工审批；最终人工审批只在源码分支成功提交后出现'}</span></div>
-            {reviewVerdict && <Tag color={reviewVerdict === 'PASS' ? 'success' : reviewVerdict === 'FAIL' ? 'error' : 'gold'}>{({ PASS: 'AI 审查通过', FAIL: 'AI 审查未通过', MANUAL: analysisOnly ? '报告路径' : '交付后人工复核' } as Record<string, string>)[reviewVerdict] || reviewVerdict}</Tag>}
+            {reviewVerdict && <Tag color={reviewVerdict === 'PASS' ? 'success' : reviewVerdict === 'FAIL' ? 'error' : 'gold'}>{({
+              PASS: 'AI 审查通过',
+              FAIL: 'AI 审查未通过',
+              MANUAL: analysisOnly ? '报告路径' : finalApprovalPending ? '等待最终审批' : landed ? '已交付，待审批' : '先交付再审批',
+            } as Record<string, string>)[reviewVerdict] || reviewVerdict}</Tag>}
           </header>
           <div className="quality-check-list">
             <div className="quality-check-row">
