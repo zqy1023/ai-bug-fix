@@ -368,3 +368,32 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+
+.review-recovery-warning {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 12px;
+  border: 1px solid #f2c2bf;
+  border-left: 3px solid #dc2626;
+  border-radius: 7px;
+  background: #fff7f7;
+}
+.review-recovery-warning > strong {
+  color: #991b1b;
+  font-size: 12px;
+  font-weight: 700;
+}
+.review-recovery-warning > p {
+  margin: 0;
+  color: #7f1d1d;
+  font-size: 11.5px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.review-recovery-warning > span {
+  color: #9f4242;
+  font-size: 10.5px;
+  line-height: 1.55;
+}
