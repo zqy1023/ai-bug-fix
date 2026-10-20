@@ -114,6 +114,9 @@ function resultHeadline(result: string, analysisOnly: boolean, deliveredCode: bo
   if (result === 'REJECTED') return '变更已被拒绝';
   if (analysisOnly && delivered) return '分析报告已提交';
   if (deliveredCode) return '源码修改已提交';
+  if (analysisOnly && changedCount > 0 && changeEvidenceKnown) return '源码有改动，但本次仅交付分析报告';
+  if (analysisOnly && changedCount > 0) return '仅交付分析报告，源码声明尚未核验';
+  if (analysisOnly) return '本次走分析报告交付路径';
   if (changedCount > 0 && changeEvidenceKnown) return '检测到代码改动，但尚未完成源码交付';
   if (changedCount > 0) return '修复 Agent 声明了改动，尚未完成差异核验';
   if (['MANUAL', 'INSUFFICIENT_EVIDENCE'].includes(result)) return '分析结束，需人工处理';
@@ -125,6 +128,9 @@ function resultHeadline(result: string, analysisOnly: boolean, deliveredCode: bo
 function resultDescription(analysisOnly: boolean, delivered: boolean, deliveredCode: boolean, changedCount: number, changeEvidenceKnown: boolean, result: string, executionFailed: boolean): string {
   if (executionFailed || result === 'FAILED' || result === 'FAIL') return '至少一个关键步骤没有通过或分支交付失败。请先查看终止节点、错误原因和交付记录；没有可靠提交证据时不会显示为已交付。';
   if (analysisOnly && delivered) return '本次提交的是 final.json 分析报告，不包含源码修复。工作流不会自动合并分支。';
+  if (analysisOnly && changedCount > 0 && changeEvidenceKnown) return `确定性门禁发现 ${changedCount} 个源码文件有变化，但本次交付只包含分析报告；源码没有随该分支提交。`;
+  if (analysisOnly && changedCount > 0) return `修复 Agent 声明涉及 ${changedCount} 个文件，但尚无实际差异证据；当前路径只交付分析报告。`;
+  if (analysisOnly) return '当前任务走分析报告交付路径，源码修改不会随这份报告自动提交。';
   if (deliveredCode) return `已检测到 ${changedCount} 个源码文件变更并提交修复分支；后续由你在 Git 上人工审查和合并。`;
   if (changedCount > 0 && !changeEvidenceKnown) return '目前只有修复 Agent 的文件声明，尚无基线差异核验；这不代表这些文件确实发生了变化。';
   if (changedCount > 0) return '确定性门禁确认隔离工作区有源码差异，但没有确认这些源码已提交到可核验的分支。';
