@@ -49,7 +49,8 @@ def test_rejection_routes_through_bounded_retry_not_success():
 
     assert after_approval(state) == RETRY
     assert after_retry(state) == VALIDATE
-    assert after_retry({**state, "attempt": 3}) == VALIDATE
+    # The attempt bound is enforced by the approval router before entering retry_prepare.
+    assert after_approval({**state, "attempt": 3}) == FINALIZE
 
 
 def test_approval_node_preserves_rejection_reason_and_target(monkeypatch):
