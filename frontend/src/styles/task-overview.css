@@ -200,3 +200,12 @@
   .execution-section-heading { align-items: flex-start; flex-wrap: wrap; }
   .execution-section-heading > .ant-btn { margin-left: 42px; }
 }
+
+.analysis-facts { display: flex; flex-direction: column; gap: 5px; }
+.analysis-facts > label { color: var(--wb-ink-faint); font-size: 10.5px; font-weight: 600; }
+.analysis-facts > ul { display: flex; flex-direction: column; gap: 5px; margin: 0; padding-left: 17px; }
+.analysis-facts li { color: var(--wb-ink-muted); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.file-change-status { flex-shrink: 0; min-width: 34px; padding: 1px 4px; border-radius: 4px; background: #f1f5f9; color: #64748b; text-align: center; font-size: 9px; line-height: 16px; }
+.file-change-mark.is-added + .file-change-status { background: #ecfdf3; color: #15803d; }
+.file-change-mark.is-deleted + .file-change-status { background: #fff1f2; color: #b91c1c; }
+.file-change-mark.is-modified + .file-change-status { background: #eff6ff; color: #1d4ed8; }
