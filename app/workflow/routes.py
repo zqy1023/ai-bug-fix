@@ -170,29 +170,29 @@ def after_regression(state: WorkflowState) -> str:
 
 
 def after_review(state: WorkflowState) -> str:
-    """审查后路由：PASS 进入分支交付，FAIL 有界重试，MANUAL 生成分析报告。
+    """AI 审查后先完成分支交付；只有分支成功落地后才进入最终人工审批。
 
-    审查子图回写的结论字段是 ``verdict``；``result`` 只在人工审查恢复时出现。
+    PASS：交付分支后进入最终审批。
+    MANUAL：AI 无法自动给出确定结论，但它不是“转分析报告”；仍交付候选修复分支，
+    由最终人工审批检查真实 diff 并决定保留或拒绝。
+    FAIL：在上限内回修，超过上限后由 finalize 记录失败。
     """
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
         return FINALIZE
+    if _result(state) == "failed":
+        return _retry_or_finalize(state)
+
     review = state.get("review") or {}
     result = str(review.get("verdict") or review.get("result") or "").upper()
 
-    # MANUAL：证据不足，停止自动处理并转人工线下排查。
-    # 这里没有待审批方案，不能送进审批节点。
-    if result == "MANUAL":
-        return FINALIZE
-
-    # FAIL：回到重试或终止
-    if result == "FAIL" or _result(state) == "failed":
+    if result == "FAIL":
         return _retry_or_finalize(state)
 
-    # 审查通过后先交付分支，人工审批统一放在交付完成之后。
-    if result == "PASS":
+    # MANUAL 不代表进入审批态。此时分支还未提交，必须先完成交付。
+    if result in {"PASS", "MANUAL"}:
         return DELIVER
 
-    # 其他情况终止
+    # 缺失或未知审查结论属于工作流契约异常，不能擅自放行。
     return FINALIZE
 
 
@@ -235,7 +235,6 @@ def _analysis_only_task(state: WorkflowState) -> bool:
         evidence.get("legacy_only")
         or evidence.get("legacy_dependency")
         or state.get("scope_escalation_required")
-        or str(review.get("verdict") or "").upper() == "MANUAL"
         or locate_status in {"MANUAL", "INSUFFICIENT_EVIDENCE"}
     ):
         return True
