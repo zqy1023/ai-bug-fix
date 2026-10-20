@@ -566,6 +566,6 @@ def test_unexpected_branch_cleanup_exception_stays_a_blocked_rejection(monkeypat
     assert raised.value.result == "manual"
     assert raised.value.output["decision"] == "REJECT"
     assert raised.value.output["approval_cleanup_failed"] is True
-    assert raised.value.output["retry_target"] if "retry_target" in raised.value.output else True
+    assert "retry_target" not in raised.value.output
     assert "git ref update failed" not in str(raised.value.output.get("reason") or "")
 
