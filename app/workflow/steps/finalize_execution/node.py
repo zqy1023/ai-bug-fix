@@ -115,6 +115,17 @@ def _terminal_details(
                 "收到停止请求，任务已在安全节点边界终止。",
                 "确认停止原因；需要继续时重新发起执行。")
 
+    # 最后一个真实失败步骤是终态原因；不能让较早的 MANUAL 结论覆盖交付异常。
+    failed_step = next((item for item in reversed(ordered) if item.status == "failed"), None)
+    if failed_step is not None:
+        reason = _record_reason(failed_step) or f"步骤 {failed_step.name} 执行失败。"
+        followups = {
+            "prepare_delivery": "检查交付工作区、文件复制、Git 暂存与提交错误日志后重试交付。",
+            "review_agent": "检查审查输入证据、模型原始输出和审查契约。",
+            "run_regression": "检查回归报告、命令输出和运行环境。",
+        }
+        return (failed_step.name, reason, followups.get(failed_step.name, "检查失败节点的输入、输出和错误记录后重试。"))
+
     evidence = next((item for item in ordered if item.name == "prepare_evidence"), None)
     evidence_output = evidence.output if evidence and isinstance(evidence.output, dict) else {}
     if evidence_output.get("legacy_only") or evidence_output.get("legacy_dependency"):
@@ -252,6 +263,11 @@ def _delivery_status(records: list[StepRecord], terminal_status: str) -> str:
     results = {str(record.result or "").upper() for record in records}
     if str(terminal_status or "").upper() == "CANCELLED":
         return "CANCELLED"
+    # 执行步骤真实失败优先于“转人工”业务结论。否则 review=MANUAL 后，
+    # prepare_delivery 再失败会被 MANUAL 覆盖，任务板错误地显示在分析报告列。
+    failed_records = [record for record in records if record.status == "failed"]
+    if failed_records:
+        return "FAILED"
     if (
         _legacy_only(records)
         or str(terminal_status or "").upper() == "MANUAL"
