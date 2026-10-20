@@ -3,6 +3,9 @@ from types import SimpleNamespace
 from app.workflow.routes import DELIVER, END, FINALIZE, after_delivery, after_finalize
 from app.workflow.steps.finalize_execution.node import _delivery_status
 from app.infrastructure.redaction import public_exception
+from app.domain.errors import StepFailed
+from app.workflow.steps.prepare_delivery.models import DeliveryInput
+from app.workflow.steps.prepare_delivery.node import run as run_prepare_delivery
 from app.workflow.steps.prepare_delivery import _input as build_delivery_input
 
 
@@ -171,3 +174,33 @@ def test_failed_locate_does_not_use_stale_legacy_candidate_as_business_routing()
 
     assert result["analysis_only"] is False
     assert result["report_paths"] == []
+
+
+def test_delivery_attribute_error_writes_safe_trace_frames_into_step_output():
+    class BrokenDelivery:
+        def deliver(self, state):
+            raise AttributeError("'DeliveryAdapter' object has no attribute 'deliver_report'")
+
+    context = SimpleNamespace(
+        run=SimpleNamespace(run_id="run-test"),
+        services=SimpleNamespace(delivery=BrokenDelivery()),
+    )
+    data = DeliveryInput(
+        task_id="Carrier__biztype__issue",
+        carrier="Carrier",
+        repair_branch="ai-bug-tasks/biztype/Carrier-issue",
+        ai_workspace_path="/workspace/Carrier",
+        changed_files=[],
+        analysis_only=True,
+        report_paths=["gathers/Carrier/final.json"],
+    )
+
+    try:
+        run_prepare_delivery(context, data)
+    except StepFailed as error:
+        assert error.output["exception_type"] == "AttributeError"
+        assert "deliver_report" in error.output["reason"]
+        assert error.output["diagnostic_frames"]
+        assert any(frame["function"] == "run" for frame in error.output["diagnostic_frames"])
+    else:
+        raise AssertionError("Expected delivery AttributeError to fail the step")
