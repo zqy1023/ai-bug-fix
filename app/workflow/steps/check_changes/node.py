@@ -80,46 +80,49 @@ def _render_diff(
             safe_before = True
             if before_file is not None and baseline is not None:
                 safe_before = not before_file.is_symlink() and _under(baseline, before_file)
-            if safe_current and safe_before:
-                before_exists = bool(before_file and before_file.is_file())
-                after_exists = current_file.is_file()
-                before_text = read_text_cached(before_file) if before_exists else ""
-                after_text = read_text_cached(current_file) if after_exists else ""
-                if before_text is not None and after_text is not None:
-                    unified = list(difflib.unified_diff(
-                        before_text.splitlines(),
-                        after_text.splitlines(),
-                        fromfile=f"a/{relative}",
-                        tofile=f"b/{relative}",
-                        n=3,
-                        lineterm="",
-                    ))
-                    if unified:
-                        body_lines = unified[2:]
-                        truncated_lines = len(body_lines) > MAX_LINES_PER_FILE
-                        if truncated_lines:
-                            unified = [*unified[:2], *body_lines[:MAX_LINES_PER_FILE]]
-                        block: list[str] = []
-                        for line in unified:
-                            if line.startswith(("--- ", "+++ ")):
-                                block.append(line)
-                                continue
-                            marker = line[:1] if line[:1] in {"+", "-", " ", "@"} else " "
-                            body = line[1:] if marker != "@" else line
-                            if len(body) > MAX_LINE_CHARS:
-                                body = f"{body[:MAX_LINE_CHARS - 1]}…"
-                            block.append(body if marker == "@" else f"{marker}{body}")
-                        if truncated_lines:
-                            block.append(f"# 单文件差异已截断，最多保留 {MAX_LINES_PER_FILE} 行差异内容")
-                        block_text = "\n".join(block)
-                        block_bytes = len(block_text.encode("utf-8"))
-                        if used_diff_bytes + block_bytes <= _REVIEW_DIFF_BUDGET:
-                            parts.append(block_text)
-                            used_diff_bytes += block_bytes
-                        else:
-                            omitted_diff_files += 1
-                    # A readable current/baseline pair is authoritative even for an empty file diff.
-                    continue
+            if not safe_current or not safe_before:
+                # Never fall back to cached line text for a symlink or a path outside the
+                # workspace/baseline roots; source safety takes precedence over diff display.
+                continue
+            before_exists = bool(before_file and before_file.is_file())
+            after_exists = current_file.is_file()
+            before_text = read_text_cached(before_file) if before_exists else ""
+            after_text = read_text_cached(current_file) if after_exists else ""
+            if before_text is not None and after_text is not None:
+                unified = list(difflib.unified_diff(
+                    before_text.splitlines(),
+                    after_text.splitlines(),
+                    fromfile=f"a/{relative}",
+                    tofile=f"b/{relative}",
+                    n=3,
+                    lineterm="",
+                ))
+                if unified:
+                    body_lines = unified[2:]
+                    truncated_lines = len(body_lines) > MAX_LINES_PER_FILE
+                    if truncated_lines:
+                        unified = [*unified[:2], *body_lines[:MAX_LINES_PER_FILE]]
+                    block: list[str] = []
+                    for line in unified:
+                        if line.startswith(("--- ", "+++ ")):
+                            block.append(line)
+                            continue
+                        marker = line[:1] if line[:1] in {"+", "-", " ", "@"} else " "
+                        body = line[1:] if marker != "@" else line
+                        if len(body) > MAX_LINE_CHARS:
+                            body = f"{body[:MAX_LINE_CHARS - 1]}…"
+                        block.append(body if marker == "@" else f"{marker}{body}")
+                    if truncated_lines:
+                        block.append(f"# 单文件差异已截断，最多保留 {MAX_LINES_PER_FILE} 行差异内容")
+                    block_text = "\n".join(block)
+                    block_bytes = len(block_text.encode("utf-8"))
+                    if used_diff_bytes + block_bytes <= _REVIEW_DIFF_BUDGET:
+                        parts.append(block_text)
+                        used_diff_bytes += block_bytes
+                    else:
+                        omitted_diff_files += 1
+                # A readable current/baseline pair is authoritative even for an empty file diff.
+                continue
 
         # Fallback for legacy/oversized files where full source text cannot be read.
         lines = list(item.get("lines") or [])
