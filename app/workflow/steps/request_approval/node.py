@@ -5,14 +5,12 @@ from __future__ import annotations
 from app.domain.errors import DeliveryError, StepFailed
 from app.application.context import StepContext
 from app.workflow.steps.request_approval.approval import final_gate
-from app.workflow.steps.request_approval.models import ApprovalInput, ApprovalOutput
+from app.workflow.steps.request_approval.models import (
+    APPROVAL_RETRY_TARGETS,
+    ApprovalInput,
+    ApprovalOutput,
+)
 from langgraph.types import interrupt
-
-
-_ALLOWED_RETRY_TARGETS = {
-    "locate_agent", "repair_agent", "validate_changes",
-    "run_regression", "review_agent", "prepare_delivery",
-}
 
 
 def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
@@ -26,7 +24,7 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
             "approval_fingerprint": data.approval_fingerprint,
             "changed_files": list(data.changed_files),
             "actions": ["APPROVE", "REJECT"],
-            "retry_targets": sorted(_ALLOWED_RETRY_TARGETS),
+            "retry_targets": sorted(APPROVAL_RETRY_TARGETS),
         })
         if isinstance(resumed, dict):
             decision = str(resumed.get("decision") or "PENDING").upper()
@@ -44,7 +42,7 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
         decision = data.decision
 
     if decision == "REJECT":
-        if retry_target not in _ALLOWED_RETRY_TARGETS:
+        if retry_target not in APPROVAL_RETRY_TARGETS:
             raise StepFailed(
                 "驳回恢复节点无效，拒绝执行",
                 {"decision": "REJECT", "passed": False, "reason": "驳回恢复节点无效", "retry_target": ""},
