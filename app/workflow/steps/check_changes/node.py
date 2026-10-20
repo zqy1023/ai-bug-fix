@@ -56,19 +56,21 @@ def _render_diff(
     parts: list[str] = []
 
     for item in files:
-        relative = str(item.get("path") or "").replace("\\", "/").strip("/")
+        relative = str(item.get("path") or "").replace("\\", "/").strip()
+        relative_path = Path(relative)
         status = str(item.get("status") or "modified").lower()
         if (
             not relative
-            or Path(relative).is_absolute()
-            or ".." in Path(relative).parts
+            or relative_path.is_absolute()
+            or ".." in relative_path.parts
             or not relative.lower().endswith(".py")
             or item.get("in_scope") is not True
         ):
             continue
+        relative = relative_path.as_posix()
 
         # Generate contextual hunks from the source snapshot where the text is readable.
-        if root is not None and not any(Path(relative).parts[0] == ".git" for _ in (0,)):
+        if root is not None:
             current_file = root / relative
             before_file = baseline / relative if baseline is not None else None
             safe_current = not current_file.is_symlink() and _under(root, current_file)
