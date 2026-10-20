@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
-from app.infrastructure.filesystem.diff import MAX_LINE_CHARS
+from app.infrastructure.filesystem.diff import MAX_FILE_BYTES, MAX_LINE_CHARS, read_text_cached
 from app.domain.errors import StepFailed
 from app.application.context import StepContext
 from app.workflow.steps.check_changes.models import CheckInput, CheckOutput, FileEvidence
@@ -65,6 +66,107 @@ def _render_diff(files: list[dict[str, Any]]) -> str:
     return "\n".join(parts)
 
 
+
+
+# Inline text sources let the workbench render an editor-style, side-by-side diff.
+# Limits prevent a large carrier file set from bloating the persisted workflow artifact.
+_REVIEW_CONTENT_BUDGET = 1_000_000
+_REVIEW_CONTENT_FILES = 40
+
+
+def _under(root: Path, candidate: Path) -> bool:
+    try:
+        candidate.resolve(strict=False).relative_to(root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _render_file_contents(
+    files: list[dict[str, Any]],
+    workspace_path: str,
+    baseline_path: str,
+    carrier: str,
+) -> list[dict[str, Any]]:
+    """为审批 UI 保留受限的修改前/修改后文本，不暴露范围外或非 Python 文件。"""
+    workspace = Path(workspace_path).resolve()
+    baseline = Path(baseline_path).resolve() if baseline_path else None
+    try:
+        carrier_roots = WorkspaceManager.locate_carrier_roots(workspace, carrier)
+    except Exception:
+        carrier_roots = []
+
+    payload: list[dict[str, Any]] = []
+    used = 0
+    for item in files:
+        relative = str(item.get("path") or "").replace("\\\\", "/").strip("/")
+        status = str(item.get("status") or "").lower()
+        if (
+            not relative
+            or Path(relative).is_absolute()
+            or ".." in Path(relative).parts
+            or not relative.lower().endswith(".py")
+            or item.get("in_scope") is not True
+            or status not in {"added", "modified", "deleted"}
+            or not carrier_roots
+        ):
+            continue
+
+        current_file = workspace / relative
+        if not any(_under(root, current_file) for root in carrier_roots):
+            continue
+        if current_file.is_symlink():
+            continue
+        before_file = baseline / relative if baseline else None
+        if before_file is not None and not _under(baseline, before_file):
+            continue
+        if before_file is not None and before_file.is_symlink():
+            continue
+
+        before_exists = bool(before_file and before_file.is_file())
+        after_exists = current_file.is_file()
+        before = read_text_cached(before_file) if before_exists else ""
+        after = read_text_cached(current_file) if after_exists else ""
+        unavailable = (
+            (before_exists and before is None)
+            or (after_exists and after is None)
+        )
+        if unavailable:
+            payload.append({
+                "path": relative,
+                "status": status,
+                "available": False,
+                "reason": f"文件超过 {MAX_FILE_BYTES} 字节或不是 UTF-8 文本，未内嵌完整源码",
+                "before": "",
+                "after": "",
+            })
+            continue
+
+        before_text = before or ""
+        after_text = after or ""
+        size = len(before_text.encode("utf-8")) + len(after_text.encode("utf-8"))
+        if len(payload) >= _REVIEW_CONTENT_FILES or used + size > _REVIEW_CONTENT_BUDGET:
+            payload.append({
+                "path": relative,
+                "status": status,
+                "available": False,
+                "reason": "达到本次差异文本的总容量上限，未内嵌完整源码",
+                "before": "",
+                "after": "",
+            })
+            continue
+        used += size
+        payload.append({
+            "path": relative,
+            "status": status,
+            "available": True,
+            "reason": "",
+            "before": before_text,
+            "after": after_text,
+        })
+    return payload
+
+
 def _evidence(raw: dict[str, Any]) -> FileEvidence:
     """把门禁的逐文件结论转成落盘契约。"""
     return FileEvidence(
@@ -100,7 +202,18 @@ def run(ctx: StepContext, data: CheckInput) -> CheckOutput:
     files = _limit_items(all_files, kind="files")
     failures = _limit_items(list(result.get("failures") or []), kind="failures")
     # 判定失败也要留下完整差异：下一轮修复看的就是这份。
-    ctx.emit_artifact("diff", "artifacts/diff.json", {"diff": _render_diff(all_files)})
+    # 同时为 UI 提供修改前/修改后源码，有限大小内嵌且只允许目标 carrier Python 文件。
+    diff_payload = {
+        "format": "side_by_side_v1",
+        "diff": _render_diff(all_files),
+        "files": _render_file_contents(
+            all_files,
+            data.ai_workspace_path,
+            data.baseline_dir,
+            data.carrier,
+        ),
+    }
+    ctx.emit_artifact("diff", "artifacts/diff.json", diff_payload)
     output = CheckOutput(
         passed=result.get("passed") is True,
         reason=str(result.get("reason") or ""),
