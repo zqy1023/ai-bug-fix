@@ -353,3 +353,106 @@
   .quality-check-row { grid-template-columns: 78px minmax(0, 1fr); }
   .quality-check-row > small { grid-column: 1 / -1; }
 }
+
+
+/* Task detail: one-screen summaries with source evidence behind deliberate disclosure. */
+.outcome-description {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.analysis-root-cause-summary {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.task-original-error-details {
+  border-color: #f0d9ac;
+  background: #fffcf5;
+}
+.task-original-error-details summary {
+  color: #92400e;
+}
+.task-original-error-details summary .anticon {
+  margin-right: 5px;
+}
+.task-original-error-text {
+  margin: 9px 0 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid #f3e5c8;
+  border-radius: 6px;
+  background: #fff;
+  color: #3f3422;
+  font-family: var(--wb-mono);
+  font-size: 11px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.analysis-evidence-details > summary,
+.review-full-details > summary {
+  font-weight: 600;
+}
+.analysis-detail-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--wb-line-soft);
+}
+.analysis-detail-block > label {
+  color: var(--wb-ink-faint);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+.analysis-detail-block > p {
+  color: var(--wb-ink-muted);
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.analysis-detail-block > ul {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0;
+  padding-left: 17px;
+}
+.analysis-detail-block > ul li {
+  color: var(--wb-ink-muted);
+  font-size: 11.5px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.analysis-detail-block .source-evidence-row:first-of-type {
+  border-top: 0;
+}
+.review-summary-compact {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.review-summary-full {
+  color: var(--wb-ink-muted);
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.change-summary {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 600px) {
+  .analysis-root-cause-summary { -webkit-line-clamp: 5; }
+  .task-original-error-text { max-height: 180px; font-size: 10.5px; }
+  .analysis-detail-block > p,
+  .analysis-detail-block > ul li { font-size: 11.5px; }
+}
