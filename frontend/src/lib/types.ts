@@ -132,6 +132,14 @@ export interface CheckpointHistoryResponse {
   total: number;
 }
 
+export type ApprovalRetryTarget =
+  | 'locate_agent'
+  | 'repair_agent'
+  | 'validate_changes'
+  | 'run_regression'
+  | 'review_agent'
+  | 'prepare_delivery';
+
 export interface ApprovalItem {
   approval_id: string;
   run_id: string;
