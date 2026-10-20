@@ -56,11 +56,9 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         (state.get("evidence") or {}).get("legacy_only")
         or (state.get("evidence") or {}).get("legacy_dependency")
         or state.get("scope_escalation_required")
-        # review=MANUAL 是明确的业务分流；FAILED 等终态/执行状态不是分流依据。
-        # 否则任一上游失败都会被误标为 analysis_only，掩盖真正失败节点。
-        or str((state.get("review") or {}).get("verdict") or "").upper() == "MANUAL"
-        # 只有明确的 MANUAL / 证据不足结论，或 LOCATED 但不属于 carrier 范围，
-        # 才是分析报告分流。FAILED、空状态和 Agent 执行异常必须保持失败语义。
+        # 定位阶段判定不支持自动修改时，只提交 final.json 分析报告。
+        # Review Agent 的 MANUAL 不在这里分流：该任务已进入修复/验证/审查链，
+        # 必须先提交候选源码分支，再进入最终人工审批。
         or locate_status in {"MANUAL", "INSUFFICIENT_EVIDENCE"}
         or (
             locate_status == "LOCATED"
