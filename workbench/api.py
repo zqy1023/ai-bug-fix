@@ -1152,9 +1152,11 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
             "size_bytes": None, "task_id": task_id,
         })
     run_meta = _read_json(store.run_dir(run_id) / "run.json", {})
+    run_error = _read_json(store.run_dir(run_id) / "reports" / "run_failure.json", {})
     return {
         "run_id": run_id,
         "run_status": _v1_run_summary(payload)["status"],
+        "run_error": run_error if isinstance(run_error, dict) else {},
         "task": {
             "task_id": task_id, "carrier": source.get("carrier", ""),
             "biztype": source.get("biztype", ""), "result": source.get("status", "PENDING"),
