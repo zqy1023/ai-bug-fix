@@ -569,3 +569,15 @@ def test_unexpected_branch_cleanup_exception_stays_a_blocked_rejection(monkeypat
     assert "retry_target" not in raised.value.output
     assert "git ref update failed" not in str(raised.value.output.get("reason") or "")
 
+def test_retry_reset_failure_stops_before_any_agent_reexecutes():
+    state = {
+        "last_result": "failed",
+        "terminal_status": "failed",
+        "retry_target": "__retry_reset_failed__",
+        "retry_reason": "无法恢复隔离工作区基线",
+        "attempt": 2,
+        "max_attempts": 3,
+    }
+
+    assert after_retry(state) == FINALIZE
+
