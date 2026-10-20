@@ -426,7 +426,7 @@ export function TaskOverview({
           <header className="overview-card-head">
             <div className="overview-card-icon"><FileSearchOutlined /></div>
             <div><h3>根因分析</h3><span>先看结论，证据按需展开</span></div>
-            {category && <Tag>{category}</Tag>}
+            {category && !['carrier', 'unknown', 'none', 'null', '-'].includes(category.toLowerCase()) && <Tag>{category}</Tag>}
           </header>
           {originalError && (
             <details className="overview-inline-details task-original-error-details">
@@ -470,7 +470,7 @@ export function TaskOverview({
                       ))}
                     </div>
                   )}
-                  {scope && <div className="analysis-meta"><span><b>建议范围</b>{scope}</span></div>}
+                  {scope && <div className="analysis-meta"><span><b>建议范围</b>{scope.toLowerCase() === 'carrier' ? '单一承运商' : scope.toLowerCase() === 'project' ? '项目 / 共享层' : scope}</span></div>}
                   {evidenceGaps.length > 0 && (
                     <div className="analysis-detail-block">
                       <label>证据缺口（{evidenceGaps.length}）</label>
