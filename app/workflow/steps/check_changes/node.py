@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from app.infrastructure.filesystem.diff import MAX_FILE_BYTES, MAX_LINE_CHARS, read_text_cached
+from app.infrastructure.filesystem.workspace import WorkspaceManager
 from app.domain.errors import StepFailed
 from app.application.context import StepContext
 from app.workflow.steps.check_changes.models import CheckInput, CheckOutput, FileEvidence
@@ -99,7 +100,7 @@ def _render_file_contents(
     payload: list[dict[str, Any]] = []
     used = 0
     for item in files:
-        relative = str(item.get("path") or "").replace("\\\\", "/").strip("/")
+        relative = str(item.get("path") or "").replace("\\", "/").strip("/")
         status = str(item.get("status") or "").lower()
         if (
             not relative
