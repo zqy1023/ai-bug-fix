@@ -129,3 +129,22 @@ def test_delivery_input_does_not_infer_analysis_only_from_failure_status():
 
     assert result["analysis_only"] is False
     assert result["report_paths"] == []
+
+
+def test_failed_locate_status_is_not_analysis_only():
+    state = {
+        "task_id": "TestCarrier__framework.track_server__issue",
+        "task": {"task_id": "TestCarrier__framework.track_server__issue",
+                 "carrier": "TestCarrier", "biztype": "framework.track_server"},
+        "review": {},
+        "locate": {"status": "FAILED"},
+        "framework": "gathers",
+        "ai_workspace_path": "/workspace/task",
+        "changed_files": [],
+        "problem": {"error": "test error", "fingerprint": "test"},
+    }
+
+    result = build_delivery_input(state)
+
+    assert result["analysis_only"] is False
+    assert result["report_paths"] == []
