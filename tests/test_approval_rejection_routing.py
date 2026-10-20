@@ -391,3 +391,18 @@ def test_task_detail_api_exposes_run_recovery_failure(monkeypatch, tmp_path):
     assert response["run_error"]["error_type"] == "RuntimeError"
     assert response["task"]["approval_pending"] is True
 
+def test_v1_rejection_api_requires_an_explicit_retry_target():
+    from fastapi import HTTPException
+    import workbench.api as api_module
+
+    request = api_module.V1ApprovalDecision(
+        decision="reject",
+        reason="代码修改有误",
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        api_module.v1_decide_approval("run-id:task-id", request, background=None)
+
+    assert raised.value.status_code == 422
+    assert "明确指定回退节点" in raised.value.detail
+
