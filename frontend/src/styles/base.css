@@ -34,7 +34,7 @@
 
 * { box-sizing: border-box; }
 html, body, #root { margin: 0; min-height: 100%; }
-body { min-width: 1280px; background: var(--wb-canvas); font-size: 13px; }
+body { min-width: 320px; background: var(--wb-canvas); font-size: 13px; }
 button, input, textarea, select { font: inherit; }
 button { color: inherit; }
 a, .link-button { color: var(--wb-primary); cursor: pointer; }
