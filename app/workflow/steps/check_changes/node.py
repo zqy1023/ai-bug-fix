@@ -40,32 +40,88 @@ def _limit_items(items: list[Any], *, kind: str) -> list[Any]:
     return [*items[:MAX_OUTPUT_ITEMS], placeholder]
 
 
-def _render_diff(files: list[dict[str, Any]]) -> str:
-    """把逐文件差异行拼成可直接阅读的 unified diff 文本。
+def _render_diff(
+    files: list[dict[str, Any]],
+    workspace_path: str = "",
+    baseline_path: str = "",
+) -> str:
+    """渲染带上下文的代码差异；完整源码快照超预算时仍能看到修改附近的原文。
 
-    ``validate_changed_files`` 的每文件结论里只留了增删行数，没有行内容；这里从
-    工作区与基线副本重新取一次（``file_changes`` 带缓存），把"改了哪几行"完整落盘。
-    这里不再截断：审查要看的就是完整差异，记录里只留逐文件摘要与产物引用。
+    优先从目标 carrier 的工作区和不可变基线生成标准 unified diff（每个修改块带
+    3 行上下文），但只把 diff 片段写入 artifact。对超大/非 UTF-8 文件或不可用的
+    历史记录，退回门禁已经生成的增删行证据。范围外文件不输出源码内容。
     """
+    root = Path(workspace_path).resolve() if workspace_path else None
+    baseline = Path(baseline_path).resolve() if baseline_path else None
     parts: list[str] = []
+
     for item in files:
+        relative = str(item.get("path") or "").replace("\\", "/").strip("/")
+        status = str(item.get("status") or "modified").lower()
+        if (
+            not relative
+            or Path(relative).is_absolute()
+            or ".." in Path(relative).parts
+            or not relative.lower().endswith(".py")
+            or item.get("in_scope") is not True
+        ):
+            continue
+
+        # Generate contextual hunks from the source snapshot where the text is readable.
+        if root is not None and not any(Path(relative).parts[0] == ".git" for _ in (0,)):
+            current_file = root / relative
+            before_file = baseline / relative if baseline is not None else None
+            safe_current = not current_file.is_symlink() and _under(root, current_file)
+            safe_before = before_file is None or (
+                not before_file.is_symlink() and _under(baseline, before_file)
+            )
+            if safe_current and safe_before:
+                before_exists = bool(before_file and before_file.is_file())
+                after_exists = current_file.is_file()
+                before_text = read_text_cached(before_file) if before_exists else ""
+                after_text = read_text_cached(current_file) if after_exists else ""
+                if before_text is not None and after_text is not None:
+                    unified = list(difflib.unified_diff(
+                        before_text.splitlines(),
+                        after_text.splitlines(),
+                        fromfile=f"a/{relative}",
+                        tofile=f"b/{relative}",
+                        n=3,
+                        lineterm="",
+                    ))
+                    if unified:
+                        block: list[str] = []
+                        for line in unified:
+                            if line.startswith(("--- ", "+++ ")):
+                                block.append(line)
+                                continue
+                            marker = line[:1] if line[:1] in {"+", "-", " ", "@"} else " "
+                            body = line[1:] if marker != "@" else line
+                            if len(body) > MAX_LINE_CHARS:
+                                body = f"{body[:MAX_LINE_CHARS - 1]}…"
+                            block.append(body if marker == "@" else f"{marker}{body}")
+                        parts.append("\n".join(block))
+                    # A readable current/baseline pair is authoritative even for an empty file diff.
+                    continue
+
+        # Fallback for legacy/oversized files where full source text cannot be read.
         lines = list(item.get("lines") or [])
         if not lines:
             continue
         block = [
-            f"--- a/{item['path']}\n"
-            f"+++ b/{item['path']}\n"
-            f"@@ {item.get('status')} +{item.get('added', 0)} -{item.get('removed', 0)} @@"
+            f"--- a/{relative}",
+            f"+++ b/{relative}",
+            f"@@ {status} +{item.get('added', 0)} -{item.get('removed', 0)} @@",
         ]
         for line in lines:
-            marker = {"add": "+", "del": "-", "hunk": "@@"}.get(str(line.get("type")), " ")
+            kind = str(line.get("type") or "")
+            marker = {"add": "+", "del": "-", "hunk": ""}.get(kind, " ")
             text = str(line.get("text") or "")
             if len(text) > MAX_LINE_CHARS:
-                text = f"{text[:MAX_LINE_CHARS]}…"
+                text = f"{text[:MAX_LINE_CHARS - 1]}…"
             block.append(f"{marker}{text}")
         parts.append("\n".join(block))
     return "\n".join(parts)
-
 
 
 
@@ -207,7 +263,7 @@ def run(ctx: StepContext, data: CheckInput) -> CheckOutput:
     # 同时为 UI 提供修改前/修改后源码，有限大小内嵌且只允许目标 carrier Python 文件。
     diff_payload = {
         "format": "side_by_side_v1",
-        "diff": _render_diff(all_files),
+        "diff": _render_diff(all_files, data.ai_workspace_path, data.baseline_dir),
         "files": _render_file_contents(
             all_files,
             data.ai_workspace_path,
