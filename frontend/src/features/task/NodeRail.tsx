@@ -57,12 +57,13 @@ function failureReason(records: StepRecord[]): string {
 }
 
 export function NodeRail({
-  steps, selected, onSelect, task,
+  steps, selected, onSelect, task, recoveryError,
 }: {
   steps: StepRecord[];
   selected: string;
   onSelect: (name: string) => void;
   task?: TaskDetailResponse['task'];
+  recoveryError?: TaskDetailResponse['run_error'];
 }) {
   const activeStage = stageForStep(selected)?.key;
   const [expanded, setExpanded] = useState<Record<string, boolean>>({ [activeStage ?? '']: true });
@@ -137,8 +138,11 @@ export function NodeRail({
       } else {
         row.reason = failureReason(row.records);
       }
+      if (recoveryError && row.stage.key === 'request_approval') {
+        row.reason = '后台恢复失败；审批中断仍保留，请在交付审批页重试';
+      }
       if (analysisDelivery && row.stage.key === 'prepare_delivery' && !row.reason) {
-        row.reason = '终局报告生成后提交分析报告分支';
+        row.reason = '生成终局报告后提交分析报告分支';
       }
       // finalize_execution 负责写终态报告，分析类任务的报告交付也属于正常收尾；
       // 其他终态后的记录通常是重试/取消清理残留，单独标出。
@@ -161,7 +165,7 @@ export function NodeRail({
       ...ordered.filter((row) => row.records.length > 0),
       ...ordered.filter((row) => row.records.length === 0),
     ];
-  }, [steps, task, analysisDelivery]);
+  }, [steps, task, analysisDelivery, recoveryError]);
 
   const executedRows = rows.filter((row) => row.order > 0).sort((left, right) => left.order - right.order);
   const skippedCount = rows.filter((row) => row.records.length > 0 && row.status === 'skipped').length;
@@ -183,6 +187,13 @@ export function NodeRail({
         <span>任务节点</span>
         <span className="node-rail-count">{steps.length} 步</span>
       </div>
+
+      {recoveryError && (
+        <div className="node-recovery-warning" role="alert">
+          <strong>审批恢复失败</strong>
+          <span>{String(recoveryError.terminal_reason || recoveryError.message || '后台恢复执行失败。').replace(/\\s+/g, ' ').slice(0, 180)}</span>
+        </div>
+      )}
 
       {executedRows.length > 0 && (
         <div className="node-summary">
