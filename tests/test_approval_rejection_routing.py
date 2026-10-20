@@ -525,3 +525,47 @@ def test_rejected_approval_routes_through_retry_gate_to_the_selected_phase(retry
     assert after_approval(state) == RETRY
     assert after_retry(state) == expected_phase
 
+def test_unexpected_branch_cleanup_exception_stays_a_blocked_rejection(monkeypatch):
+    import app.workflow.steps.request_approval.node as approval_node
+
+    monkeypatch.setattr(
+        approval_node,
+        "interrupt",
+        lambda _payload: {
+            "decision": "REJECT",
+            "approval_fingerprint": "fingerprint",
+            "reason": "修改不符合要求",
+            "retry_target": "repair_agent",
+        },
+    )
+
+    def fail_cleanup(_payload):
+        raise RuntimeError("git ref update failed")
+
+    data = ApprovalInput(
+        task_id="Carrier__framework.track_server__issue",
+        decision="PENDING",
+        carrier="Carrier",
+        source_repo_path="/repo",
+        repair_branch="repair/carrier",
+        delivery_pushed=True,
+        ai_workspace_path="/workspace/task",
+        changed_files=["gathers/Carrier/main.py"],
+        baseline_dir="",
+        approval_fingerprint="fingerprint",
+    )
+    ctx = SimpleNamespace(
+        services=SimpleNamespace(
+            delivery=SimpleNamespace(discard_branch=fail_cleanup),
+        )
+    )
+
+    with pytest.raises(StepFailed) as raised:
+        approval_node.run(ctx, data)
+
+    assert raised.value.result == "manual"
+    assert raised.value.output["decision"] == "REJECT"
+    assert raised.value.output["approval_cleanup_failed"] is True
+    assert raised.value.output["retry_target"] if "retry_target" in raised.value.output else True
+    assert "git ref update failed" not in str(raised.value.output.get("reason") or "")
+
