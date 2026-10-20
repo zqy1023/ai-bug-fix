@@ -94,7 +94,15 @@ def build_task_graph(
                 # 这些重试阶段要继续审查/验证已修改的工作区，不能先恢复成基线。
                 preserve_workspace_targets = {VALIDATE, REGRESSION, REVIEW, DELIVER}
                 preserve_workspace = target in preserve_workspace_targets
-                if manager is not None and not preserve_workspace:
+                if not preserve_workspace and manager is None:
+                    return {
+                        "attempt": int(state.get("attempt") or 1),
+                        "last_result": "failed",
+                        "terminal_status": "failed",
+                        "retry_target": "__retry_reset_failed__",
+                        "retry_reason": "重试前未配置工作区管理器，无法安全恢复代码基线",
+                    }
+                if not preserve_workspace:
                     try:
                         task = dict(state.get("task") or {})
                         manager.reset_task_workspace(
