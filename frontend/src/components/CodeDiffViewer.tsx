@@ -382,7 +382,10 @@ export function CodeDiffViewer({
                     <CodePane side="old" rows={activeRows} scrollRef={oldScrollRef} onScroll={syncOldToNew} />
                     <CodePane side="new" rows={activeRows} scrollRef={newScrollRef} onScroll={syncNewToOld} />
                   </div>
-                  <p>这条历史记录没有保存修改前/修改后的完整文件，当前只能提供差异片段；新生成的任务会保存受限的源码快照。</p>
+                  <p>
+                    完整源码当前不可用，以下仅显示已保存的差异片段。
+                    {activeFile.reason ? `原因：${activeFile.reason}` : '请在任务产物中确认原始与修改后的文件快照。'}
+                  </p>
                 </div>
               )}
             </div>
