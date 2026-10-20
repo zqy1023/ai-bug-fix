@@ -3,7 +3,7 @@ import { App, Button, Drawer, Empty, Skeleton, Tag } from 'antd';
 import {
   ArrowRightOutlined, BranchesOutlined, CheckCircleOutlined, ClockCircleOutlined,
   CodeOutlined, CopyOutlined, DiffOutlined, FileSearchOutlined, FileTextOutlined,
-  GitlabOutlined, SafetyCertificateOutlined, StopOutlined,
+  GitlabOutlined, SafetyCertificateOutlined, StopOutlined, WarningOutlined,
 } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import type { StepRecord, TaskDetailResponse } from '../../lib/types';
@@ -53,7 +53,14 @@ function getText(source: Dict, ...keys: string[]): string {
 }
 
 function strings(value: unknown): string[] {
-  return Array.isArray(value) ? value.map((item) => String(item ?? '').trim()).filter(Boolean) : [];
+  const placeholders = new Set(['-', '—', '–', 'n/a', 'na', 'none', 'null', 'undefined']);
+  return Array.isArray(value)
+    ? value.map((item) => String(item ?? '').trim()).filter((item) => item && !placeholders.has(item.toLowerCase()))
+    : [];
+}
+
+function rawString(value: unknown): string {
+  return typeof value === 'string' ? value : '';
 }
 
 function objects(value: unknown): Dict[] {
@@ -190,6 +197,8 @@ export function TaskOverview({
   const { message } = App.useApp();
   const task = detail.task;
   const steps = task.steps ?? [];
+  const problem = dict(task.problem);
+  const originalError = rawString(problem.error) || rawString(problem.raw_error);
   const report = dict(task.report);
   const result = String(task.result || getText(report, 'result', 'status') || '').toUpperCase();
 
@@ -413,48 +422,61 @@ export function TaskOverview({
         <section className="overview-card analysis-card">
           <header className="overview-card-head">
             <div className="overview-card-icon"><FileSearchOutlined /></div>
-            <div><h3>根因分析</h3><span>定位 Agent 的业务结论与源码证据</span></div>
+            <div><h3>根因分析</h3><span>先看结论，证据按需展开</span></div>
             {category && <Tag>{category}</Tag>}
           </header>
-          {rootCause || analysisSummary || facts.length > 0 ? (
+          {originalError && (
+            <details className="overview-inline-details task-original-error-details">
+              <summary><WarningOutlined /> 查看原始 Error 日志</summary>
+              <pre className="task-original-error-text">{originalError}</pre>
+            </details>
+          )}
+          {rootCause || analysisSummary || facts.length > 0 || evidence.length > 0 ? (
             <div className="analysis-result">
-              {rootCause && <div className="analysis-root-cause"><label>判断的根因</label><p>{rootCause}</p></div>}
-              {analysisSummary && analysisSummary !== rootCause && <p className="analysis-summary">{analysisSummary}</p>}
-              {facts.length > 0 && (
-                <div className="analysis-facts">
-                  <label>定位依据</label>
-                  <ul>{facts.slice(0, 3).map((fact, index) => <li key={`${index}-${fact}`}>{fact}</li>)}</ul>
-                  {facts.length > 3 && (
-                    <details className="overview-inline-details">
-                      <summary>更多定位依据（{facts.length - 3}）</summary>
-                      <ul>{facts.slice(3).map((fact, index) => <li key={`${index + 3}-${fact}`}>{fact}</li>)}</ul>
-                    </details>
+              <div className="analysis-root-cause">
+                <label>根因摘要</label>
+                <p className="analysis-root-cause-summary">{rootCause || analysisSummary || '已完成定位，尚未生成简短根因摘要。'}</p>
+              </div>
+              {(analysisSummary && analysisSummary !== rootCause || facts.length > 0 || evidence.length > 0 || evidenceGaps.length > 0) && (
+                <details className="overview-inline-details analysis-evidence-details">
+                  <summary>查看完整分析与证据（{facts.length + evidence.length + evidenceGaps.length} 项）</summary>
+                  {analysisSummary && analysisSummary !== rootCause && (
+                    <div className="analysis-detail-block">
+                      <label>定位摘要</label>
+                      <p>{analysisSummary}</p>
+                    </div>
                   )}
-                </div>
-              )}
-              {(scope || evidence.length > 0) && (
-                <div className="analysis-meta">
-                  {scope && <span><b>建议范围</b>{scope}</span>}
-                  {evidence.length > 0 && <span><b>源码证据</b>{evidence.length} 条</span>}
-                </div>
-              )}
-              {evidence.slice(0, 3).map((item, index) => (
-                <div className="source-evidence-row" key={`${text(item.path)}-${index}`}>
-                  <code>{text(item.path) || '源码位置未记录'}{text(item.symbol) ? ` · ${text(item.symbol)}` : ''}</code>
-                  {text(item.finding) && <p>{text(item.finding)}</p>}
-                </div>
-              ))}
-              {evidenceGaps.length > 0 && (
-                <details className="overview-inline-details">
-                  <summary>证据缺口（{evidenceGaps.length}）</summary>
-                  <ul>{evidenceGaps.map((item) => <li key={item}>{item}</li>)}</ul>
+                  {facts.length > 0 && (
+                    <div className="analysis-detail-block">
+                      <label>定位依据</label>
+                      <ul>{facts.map((fact, index) => <li key={`${index}-${fact}`}>{fact}</li>)}</ul>
+                    </div>
+                  )}
+                  {evidence.length > 0 && (
+                    <div className="analysis-detail-block">
+                      <label>源码证据（{evidence.length}）</label>
+                      {evidence.map((item, index) => (
+                        <div className="source-evidence-row" key={`${text(item.path)}-${index}`}>
+                          <code>{text(item.path) || '源码位置未记录'}{text(item.symbol) ? ` · ${text(item.symbol)}` : ''}</code>
+                          {text(item.finding) && <p>{text(item.finding)}</p>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {scope && <div className="analysis-meta"><span><b>建议范围</b>{scope}</span></div>}
+                  {evidenceGaps.length > 0 && (
+                    <div className="analysis-detail-block">
+                      <label>证据缺口（{evidenceGaps.length}）</label>
+                      <ul>{evidenceGaps.map((item) => <li key={item}>{item}</li>)}</ul>
+                    </div>
+                  )}
                 </details>
               )}
             </div>
           ) : (
             <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="定位步骤尚未产出根因结论" />
           )}
-          {locateStep && <button type="button" className="overview-text-link" onClick={() => onOpenStep('locate_agent')}>查看定位步骤记录 <ArrowRightOutlined /></button>}
+          {locateStep && <button type="button" className="overview-text-link" onClick={() => onOpenStep('locate_agent')}>查看定位步骤 <ArrowRightOutlined /></button>}
         </section>
 
         <section className="overview-card changes-card">
@@ -475,7 +497,10 @@ export function TaskOverview({
             </div>
           )}
           {repairStep && (getText(repair, 'summary', 'analysis') || stepSummary(repairStep)) && (
-            <p className="change-summary">{getText(repair, 'summary', 'analysis') || stepSummary(repairStep)}</p>
+            <details className="overview-inline-details">
+              <summary>查看修复说明</summary>
+              <p className="change-summary">{getText(repair, 'summary', 'analysis') || stepSummary(repairStep)}</p>
+            </details>
           )}
           {changedFiles.length > 0 ? (
             <>
@@ -485,7 +510,7 @@ export function TaskOverview({
                 {changeEvidenceKnown && <span className="diff-remove">−{removed}</span>}
               </div>
               <ul className="changed-file-list">
-                {changedFiles.slice(0, 5).map((file, index) => (
+                {changedFiles.slice(0, 3).map((file, index) => (
                   <li key={`${text(file.path)}-${index}`}>
                     <span className={`file-change-mark is-${String(file.status || 'modified').toLowerCase()}`} />
                     <span className="file-change-status">{fileStatusLabel(file.status)}</span>
@@ -497,7 +522,24 @@ export function TaskOverview({
                   </li>
                 ))}
               </ul>
-              {changedCount > 5 && <div className="overview-muted-line">另有 {changedCount - 5} 个文件，完整清单见确定性门禁输出。</div>}
+              {changedCount > 3 && (
+                <details className="overview-inline-details">
+                  <summary>其余 {changedCount - 3} 个文件</summary>
+                  <ul className="changed-file-list">
+                    {changedFiles.slice(3).map((file, index) => (
+                      <li key={`${text(file.path)}-more-${index}`}>
+                        <span className={`file-change-mark is-${String(file.status || 'modified').toLowerCase()}`} />
+                        <span className="file-change-status">{fileStatusLabel(file.status)}</span>
+                        <code title={text(file.path)}>{text(file.path)}</code>
+                        <span className="file-change-lines">
+                          {Number(file.added || 0) > 0 && <b className="diff-add">+{Number(file.added)}</b>}
+                          {Number(file.removed || 0) > 0 && <b className="diff-remove">−{Number(file.removed)}</b>}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
             </>
           ) : (
             <div className="overview-no-change">
@@ -545,16 +587,25 @@ export function TaskOverview({
             <label>{analysisOnly ? 'AI 审查结论（报告路径）' : 'AI 审查结论（非最终审批）'}</label>
             {reviewStep ? (
               <>
-                <p>{reviewSummary || '审查步骤已执行，但没有记录摘要。'}</p>
-                {findings.length > 0 && (
-                  <ul className="review-findings">
-                    {findings.slice(0, 3).map((finding) => <li key={finding}>{finding}</li>)}
-                  </ul>
-                )}
-                {requiredChanges.length > 0 && (
-                  <details className="overview-inline-details">
-                    <summary>需要处理的事项（{requiredChanges.length}）</summary>
-                    <ul>{requiredChanges.map((item) => <li key={item}>{item}</li>)}</ul>
+                <p className="review-summary-compact">{reviewSummary || '审查步骤已执行，但没有记录摘要。'}</p>
+                {(reviewSummary.length > 180 || findings.length > 0 || requiredChanges.length > 0) && (
+                  <details className="overview-inline-details review-full-details">
+                    <summary>展开完整审查内容{findings.length ? ` · ${findings.length} 项发现` : ''}</summary>
+                    <p className="review-summary-full">{reviewSummary || '未记录审查摘要。'}</p>
+                    {findings.length > 0 && (
+                      <div className="analysis-detail-block">
+                        <label>审查发现</label>
+                        <ul className="review-findings">
+                          {findings.map((finding) => <li key={finding}>{finding}</li>)}
+                        </ul>
+                      </div>
+                    )}
+                    {requiredChanges.length > 0 && (
+                      <div className="analysis-detail-block">
+                        <label>需要处理的事项（{requiredChanges.length}）</label>
+                        <ul>{requiredChanges.map((item) => <li key={item}>{item}</li>)}</ul>
+                      </div>
+                    )}
                   </details>
                 )}
               </>
