@@ -27,7 +27,7 @@ export function ApprovalQueue({
     return (
       <EmptyState
         title="没有待审批交付"
-        description="自动链路运行到这里才会产生审批项；审批通过后分支保留供人工合并。"
+        description="通过交付门禁的源码分支会出现在这里。"
         compact
       />
     );
@@ -61,7 +61,7 @@ export function ApprovalQueue({
                   <span className="approval-queue-meta">
                     <ClockCircleOutlined /> {formatTime(item.created_at)}
                     <span className="dot-sep">·</span>
-                    {item.changed_files?.length ?? 0} 个文件
+                    修改文件 {item.changed_files?.length ?? 0}
                   </span>
                   <span className="approval-queue-run">run:{item.run_id}</span>
                 </span>
