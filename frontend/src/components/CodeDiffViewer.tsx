@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState, type RefObject } from 'react';
 import { Empty, Tag } from 'antd';
 import { FileCodeOutlined } from '@ant-design/icons';
 
@@ -239,7 +239,7 @@ function CodePane({
 }: {
   side: 'old' | 'new';
   rows: DiffRow[];
-  scrollRef: React.RefObject<HTMLDivElement | null>;
+  scrollRef: RefObject<HTMLDivElement | null>;
   onScroll: () => void;
 }) {
   return (
