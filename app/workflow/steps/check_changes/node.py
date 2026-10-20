@@ -75,9 +75,9 @@ def _render_diff(
             current_file = root / relative
             before_file = baseline / relative if baseline is not None else None
             safe_current = not current_file.is_symlink() and _under(root, current_file)
-            safe_before = before_file is None or (
-                not before_file.is_symlink() and _under(baseline, before_file)
-            )
+            safe_before = True
+            if before_file is not None and baseline is not None:
+                safe_before = not before_file.is_symlink() and _under(baseline, before_file)
             if safe_current and safe_before:
                 before_exists = bool(before_file and before_file.is_file())
                 after_exists = current_file.is_file()
