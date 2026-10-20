@@ -47,8 +47,8 @@ class ApprovalRequest(BaseModel):
     decision: str
     # reason：人工操作说明，用于审计与终态报告。
     reason: str = ""
-    # retry_target：驳回后重新执行的工作流阶段；旧 API 默认回到代码修复。
-    retry_target: str = "repair_agent"
+    # retry_target：驳回后必须明确指定的工作流阶段。
+    retry_target: str | None = None
 
 
 def _authorize(authorization: str | None = Header(default=None)) -> None:
@@ -552,6 +552,8 @@ def decide_approval(
     decision = request.decision.upper()
     if decision not in {"APPROVE", "REJECT"}:
         raise HTTPException(status_code=422, detail="变更审批 decision 只能是 APPROVE 或 REJECT")
+    if decision == "REJECT" and not request.retry_target:
+        raise HTTPException(status_code=422, detail="驳回必须明确指定回退节点")
     run_id, task_id = _safe_id(run_id), _safe_id(task_id)
     store = _store()
     run = _run_payload(store, run_id)
@@ -571,7 +573,7 @@ def decide_approval(
     fingerprint = str(approval_input.get("approval_fingerprint") or "")
     resume_payload = {"decision": decision, "approval_fingerprint": fingerprint}
     if decision == "REJECT":
-        retry_target = str(request.retry_target or "repair_agent")
+        retry_target = str(request.retry_target)
         if retry_target not in {
             "locate_agent", "repair_agent", "validate_changes",
             "run_regression", "review_agent", "prepare_delivery",
