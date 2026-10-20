@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Button, Collapse, Result, Skeleton } from 'antd';
+import { Button, Result, Skeleton } from 'antd';
 import { CodeOutlined, DownOutlined, RightOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import { api, ApiError } from '../../lib/api';
