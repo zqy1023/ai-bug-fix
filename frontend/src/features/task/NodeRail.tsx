@@ -51,7 +51,7 @@ function failureReason(records: StepRecord[]): string {
       || FAILED_RESULTS.has(String(record.result || '').toUpperCase()),
   );
   if (!failed) return '';
-  const summary = String(failed.summary || failed.error?.message || '').replace(/\\s+/g, ' ').trim();
+  const summary = String(failed.summary || failed.error?.message || '').replace(/\s+/g, ' ').trim();
   if (!summary) return '';
   return summary.length > 116 ? `${summary.slice(0, 116).trimEnd()}…` : summary;
 }
@@ -191,7 +191,7 @@ export function NodeRail({
       {recoveryError && (
         <div className="node-recovery-warning" role="alert">
           <strong>审批恢复失败</strong>
-          <span>{String(recoveryError.terminal_reason || recoveryError.message || '后台恢复执行失败。').replace(/\\s+/g, ' ').slice(0, 180)}</span>
+          <span>{String(recoveryError.terminal_reason || recoveryError.message || '后台恢复执行失败。').replace(/\s+/g, ' ').slice(0, 180)}</span>
         </div>
       )}
 
