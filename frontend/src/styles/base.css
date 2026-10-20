@@ -187,3 +187,42 @@ code, pre, .tabular { font-family: var(--wb-mono); font-variant-numeric: tabular
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
 }
+
+
+/* Long primitive JSON values stay compact until the reviewer opens them. */
+.json-long-value {
+  display: inline-block;
+  vertical-align: top;
+  max-width: min(100%, 760px);
+  margin-left: 6px;
+  color: var(--wb-ink-faint);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+.json-long-value summary {
+  display: inline-block;
+  padding: 1px 5px;
+  border: 1px solid var(--wb-line-soft);
+  border-radius: 4px;
+  background: #f8fafc;
+  cursor: pointer;
+  user-select: none;
+}
+.json-long-value summary:hover { color: var(--wb-primary); border-color: #c7d7ff; }
+.json-long-value pre {
+  max-width: min(72vw, 860px);
+  max-height: 280px;
+  overflow: auto;
+  margin: 5px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--wb-line-soft);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--wb-ink);
+  font-family: var(--wb-mono);
+  font-size: 11px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.json-primitive .json-long-value { display: block; margin: 6px 0 0; }
