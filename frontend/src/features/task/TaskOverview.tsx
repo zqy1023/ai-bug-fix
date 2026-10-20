@@ -208,6 +208,10 @@ export function TaskOverview({
   const originalError = rawString(problem.error).trim() || rawString(problem.raw_error).trim();
   const report = dict(task.report);
   const result = String(task.result || getText(report, 'result', 'status') || '').toUpperCase();
+  const runError = dict(detail.run_error);
+  const recoveryFailed = task.approval_pending === true
+    && detail.run_status === 'failed'
+    && getText(runError, 'status').toUpperCase() === 'FAILED';
 
   const locateStep = stepOf(steps, 'locate_agent');
   const repairStep = stepOf(steps, 'repair_agent');
@@ -264,7 +268,7 @@ export function TaskOverview({
   const landed = Boolean(commit && (pushed || localBranch) && deliveryStep?.status === 'succeeded');
   const analysisOnly = deliveryInput.analysis_only === true;
   const finalApprovalPending = Boolean(
-    !analysisOnly && landed && (
+    !recoveryFailed && !analysisOnly && landed && (
       task.approval_pending === true
       || approvalStep?.status === 'waiting'
       || result === 'WAITING_APPROVAL'
@@ -282,8 +286,12 @@ export function TaskOverview({
       return leftTime - rightTime;
     })
     .slice(-1)[0];
-  const terminalReason = getText(report, 'terminal_reason') || getText(finalStep?.output ?? {}, 'terminal_reason') || '';
-  const nextAction = getText(report, 'next_action') || getText(finalStep?.output ?? {}, 'next_action') || '';
+  const terminalReason = (recoveryFailed
+    ? getText(runError, 'terminal_reason', 'message')
+    : '') || getText(report, 'terminal_reason') || getText(finalStep?.output ?? {}, 'terminal_reason') || '';
+  const nextAction = (recoveryFailed
+    ? getText(runError, 'next_action')
+    : '') || getText(report, 'next_action') || getText(finalStep?.output ?? {}, 'next_action') || '';
   const rootCause = getText(locate, 'root_cause', 'analysis');
   const analysisSummary = getText(locate, 'summary') || stepSummary(locateStep) || getText(report, 'root_cause');
   const category = getText(locate, 'category');
@@ -301,10 +309,12 @@ export function TaskOverview({
   const regressionPassed = regression.passed === true;
   const qualitySteps = [verifyStep, regressionStep].filter(Boolean) as StepRecord[];
   const qualityFailed = qualitySteps.some((step) => toneForStep(step) === 'danger');
-  const resultFailed = ['FAILED', 'FAIL'].includes(result) || qualityFailed || deliveryStep?.status === 'failed';
-  const terminalReasonFromFailure = terminalReason || (
-    [...steps].reverse().find((step) => step.status === 'failed')?.error?.message || ''
-  );
+  const resultFailed = recoveryFailed || ['FAILED', 'FAIL'].includes(result) || qualityFailed || deliveryStep?.status === 'failed';
+  const terminalReasonFromFailure = recoveryFailed
+    ? terminalReason || '驳回请求已受理，但后台恢复执行失败。'
+    : terminalReason || (
+      [...steps].reverse().find((step) => step.status === 'failed')?.error?.message || ''
+    );
   const originalErrorPreview = originalError.split(/\r?\n/)[0] || originalError;
 
   const diffArtifact = useMemo(() => (
@@ -349,10 +359,14 @@ export function TaskOverview({
         <div className="outcome-hero-main">
           <div className="outcome-eyebrow">任务结果</div>
           <div className="outcome-title-row">
-            <h2>{resultText}</h2>
-            <StatusBadge kind="task" value={finalApprovalPending ? 'WAITING_APPROVAL' : task.result} />
+            <h2>{recoveryFailed ? '驳回后的恢复失败' : resultText}</h2>
+            <StatusBadge kind="task" value={recoveryFailed ? 'FAILED' : finalApprovalPending ? 'WAITING_APPROVAL' : task.result} />
           </div>
-          <p className="outcome-description">{description}</p>
+          <p className="outcome-description">
+            {recoveryFailed
+              ? '审批请求已受理，但后台没有完成恢复执行。请核对失败原因；待审批记录仍保留，可修复环境后重新提交决策。'
+              : description}
+          </p>
           {terminalReasonFromFailure && (
             <div className={`outcome-reason ${resultFailed ? 'is-danger' : ''}`}>
               <span>{resultFailed ? '停止原因' : '结论说明'}</span>
