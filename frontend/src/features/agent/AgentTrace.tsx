@@ -99,7 +99,7 @@ export function AgentTrace({
             size="small"
             value={currentAttempt}
             style={{ width: 140 }}
-            options={attempts.map((value) => ({ value, label: `attempt ${value}` }))}
+            options={attempts.map((value) => ({ value, label: `第 ${value} 次` }))}
             onChange={(value) => {
               const target = [...calls].reverse().find((call) => call.attempt === value);
               if (target) setSelectedId(target.model_call_id);
@@ -116,9 +116,9 @@ export function AgentTrace({
         <>
           <div className="agent-call-summary">
             <span>调用 #{shortId(selected.model_call_id, 6)}</span>
-            <span>attempt {selected.attempt}</span>
+            <span>第 {selected.attempt} 次</span>
             <span>{agentRoleLabel(role)}</span>
-            <span>{formatTokens(selected.total_tokens)} tokens</span>
+            <span>{formatTokens(selected.total_tokens)} Token</span>
             <span>{formatDuration(selected.duration_ms)}</span>
             <span className={selected.status === 'succeeded' ? 'text-success' : selected.status === 'failed' ? 'text-danger' : ''}>
               {callStatusLabel(selected.status)}
