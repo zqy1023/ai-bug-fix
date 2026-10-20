@@ -38,6 +38,14 @@ function stringField(source: Dict, ...keys: string[]): string {
   return '';
 }
 
+function rawStringField(source: Dict, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return '';
+}
+
 function statusLabel(status: unknown): string {
   switch (text(status).toLowerCase()) {
     case 'added':
@@ -182,7 +190,7 @@ export function ReviewPane({ item }: { item: ApprovalItem }) {
 
   const problem = asObject(task?.problem);
   // identify_carrier preserves the error field from the normalized ES record as the original log text.
-  const originalError = stringField(problem, 'error', 'raw_error');
+  const originalError = rawStringField(problem, 'error', 'raw_error');
   const serviceName = stringField(problem, 'service_name');
   const totalAdded = changedFiles.reduce((sum, file) => sum + (Number(file.added) || 0), 0);
   const totalRemoved = changedFiles.reduce((sum, file) => sum + (Number(file.removed) || 0), 0);
