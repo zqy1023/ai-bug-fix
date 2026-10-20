@@ -282,8 +282,20 @@ export function CodeDiffViewer({
   const fullText = typeof payload === 'string' ? payload : asText(record.diff);
   const primary = useMemo(() => sourceFilesFromPayload(payload), [payload]);
   const files = useMemo(() => {
-    if (primary.length) return primary;
-    return fallbackFiles(fullText);
+    const fragments = new Map(fallbackFiles(fullText).map((file) => [file.path, file] as const));
+    if (primary.length) {
+      // A file can be listed in the side-by-side payload but omitted from full source
+      // because of a size/budget limit. Keep that file selectable and show its diff
+      // fragment instead of rendering two blank panes.
+      return primary.map((file) => {
+        if (file.available) return file;
+        const fallback = fragments.get(file.path);
+        return fallback
+          ? { ...file, before: fallback.before, after: fallback.after, reason: file.reason || fallback.reason }
+          : file;
+      });
+    }
+    return [...fragments.values()];
   }, [primary, fullText]);
 
   const fileRows = useMemo(
