@@ -45,6 +45,13 @@ function rawStringField(source: Dict, ...keys: string[]): string {
   return '';
 }
 
+function shortText(value: string, maxChars = 200): string {
+  const normalized = value.replace(/\\s+/g, ' ').trim();
+  return normalized.length > maxChars
+    ? `${normalized.slice(0, maxChars).trimEnd()}…`
+    : normalized;
+}
+
 function stepOf(steps: StepRecord[], name: string): StepRecord | undefined {
   return [...steps].reverse().find((step) => step.name === name);
 }
@@ -121,7 +128,13 @@ export function ReviewPane({ item }: { item: ApprovalItem }) {
         <div>
           <span className="review-kicker">交付审批 · {item.approval_id}</span>
           <h2>{item.carrier || '未识别运输商'}</h2>
-          <p>{item.summary || '后端未提供摘要，请结合原始异常与真实代码差异判断。'}</p>
+          <p>{shortText(item.summary || '结合原始异常与实际代码差异进行核对。', 180)}</p>
+          {(item.summary?.length ?? 0) > 180 && (
+            <details className="review-text-details">
+              <summary>完整摘要</summary>
+              <p>{item.summary}</p>
+            </details>
+          )}
         </div>
         <Tag color={item.scope === 'carrier' ? 'blue' : 'orange'}>
           {item.scope === 'carrier' ? '运输商范围' : '项目 / 共享范围'}
@@ -154,35 +167,51 @@ export function ReviewPane({ item }: { item: ApprovalItem }) {
 
       <section className="review-section review-original-error">
         <header className="review-subhead">
-          <h3><WarningOutlined /> 原始异常日志 <Tag>error 原文</Tag></h3>
-          <span>与 AI 根因分析分开显示</span>
+          <h3><WarningOutlined /> 原始 Error</h3>
+          <span>原文保留，不用根因摘要替代</span>
         </header>
         {taskQuery.isLoading ? (
-          <Skeleton active title={false} paragraph={{ rows: 3 }} />
+          <Skeleton active title={false} paragraph={{ rows: 2 }} />
         ) : originalError ? (
-          <pre className="review-original-error-text">{originalError}</pre>
+          <details className="review-original-error-details">
+            <summary>
+              <span>展开原始日志</span>
+              <code>{shortText(originalError.split(/\\r?\\n/)[0] || originalError, 160)}</code>
+            </summary>
+            <pre className="review-original-error-text">{originalError}</pre>
+          </details>
         ) : (
           <div className="review-inline-empty">
-            任务详情未记录原始 error 字段。本页不会用 AI 根因摘要代替原始日志；请进入任务详情核对规范化日志产物。
+            未记录原始 error 字段。
             <Button
               type="link"
               size="small"
               onClick={() => navigate(`/runs/${encodeURIComponent(item.run_id)}/tasks/${encodeURIComponent(item.task_id)}`)}
             >
-              打开任务详情
+              查看任务详情
             </Button>
           </div>
         )}
         {taskQuery.isError && (
-          <div className="review-inline-error">任务详情加载失败，无法读取原始异常和逐文件门禁证据。</div>
+          <div className="review-inline-error">任务详情读取失败，无法展示原始日志。</div>
         )}
       </section>
 
       <section className="review-section">
         <h3>方案说明</h3>
-        <p className="review-rationale">
-          {item.change_plan?.rationale || '未提供额外方案说明；请以确定性差异和逐文件证据为准。'}
-        </p>
+        {item.change_plan?.rationale ? (
+          <>
+            <p className="review-rationale">{shortText(item.change_plan.rationale, 220)}</p>
+            {item.change_plan.rationale.length > 220 && (
+              <details className="review-text-details">
+                <summary>展开完整方案说明</summary>
+                <p>{item.change_plan.rationale}</p>
+              </details>
+            )}
+          </>
+        ) : (
+          <p className="review-rationale">未提供额外方案说明。</p>
+        )}
         {edits.length > 0 && (
           <ul className="review-edit-list">
             {edits.map((edit) => (
