@@ -141,6 +141,7 @@ def build_task_graph(
                     "delivery_commit": "",
                     "repair_branch": "",
                     "approval_cleanup_failed": False,
+                    "approval_recovery_blocked": False,
                     "blocked_reason": "",
                     "repair_slot_claimed": kept_repair_slot(state),
                     "last_result": "passed",
