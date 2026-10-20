@@ -67,6 +67,7 @@
 .overview-stage-copy > span { color: var(--wb-ink-faint); font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
 .overview-stage.is-danger .overview-stage-copy > span { color: #b91c1c; }
 .overview-stage.is-manual .overview-stage-copy > span, .overview-stage.is-waiting .overview-stage-copy > span { color: #a16207; }
+.overview-stage.is-skipped .overview-stage-mark, .overview-stage.is-skipped .overview-stage-copy > span { color: var(--wb-ink-faint); }
 .overview-stage-empty { width: 11px; height: 11px; margin: 2px 1px 0; border: 1px solid #cbd5e1; border-radius: 50%; }
 
 /* Four result cards carry the answers operators need; details remain selectively expandable. */
