@@ -1004,7 +1004,12 @@ def v1_start_run(
     return {"run_id": run_id, "status": "accepted", "idempotent_replay": False}
 
 
-def _record_background_failure(run_id: str, error: Exception) -> None:
+def _record_background_failure(
+    run_id: str,
+    error: Exception,
+    *,
+    phase: str = "workflow_startup",
+) -> None:
     """将图外异常写成可查询的终态产物，避免后台任务失败后 Run 永久显示运行中。"""
     try:
         logger.error("后台工作流异常 run_id=%s", run_id, exc_info=(type(error), error, error.__traceback__))
@@ -1019,11 +1024,18 @@ def _record_background_failure(run_id: str, error: Exception) -> None:
         # Persist only the redacted public exception summary: business failures retain
         # actionable detail; unexpected exceptions reveal only their type, never raw inputs.
         reason = public_exception(error, prefix="后台工作流异常")
+        next_action = (
+            "检查审批恢复时的服务端异常；确认环境正常后，可回到交付审批重新提交决策。"
+            if phase == "approval_recovery"
+            else "检查工作流恢复时的服务端异常；修复原因后再恢复本轮执行。"
+            if phase == "workflow_resume"
+            else "检查启动配置、工作流装配和服务端异常；修复原因后重新执行。"
+        )
         payload = {
             "status": "FAILED", "error_type": type(error).__name__,
             "message": reason,
-            "terminal_step": "workflow_startup", "terminal_reason": reason,
-            "next_action": "检查配置、工作流图装配错误和服务端异常堆栈，修复后重新执行。",
+            "terminal_step": phase, "terminal_reason": reason,
+            "next_action": next_action,
             "failed_at": now,
         }
         temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1291,13 +1303,18 @@ def _resume_workflow_background(
             failure_path.unlink()
         stale_run_report = store.run_dir(run_id) / "reports" / "final.json"
         stale_payload = _read_json(stale_run_report, {})
-        if isinstance(stale_payload, dict) and stale_payload.get("terminal_step") == "workflow_startup" and stale_payload.get("result") == "FAILED":
+        if (
+            isinstance(stale_payload, dict)
+            and stale_payload.get("terminal_step") in {"workflow_startup", "approval_recovery", "workflow_resume"}
+            and stale_payload.get("result") == "FAILED"
+        ):
             stale_run_report.unlink(missing_ok=True)
         from app.entrypoint import _write_run_report_if_terminal
         _write_run_report_if_terminal(store, run_id, graph, final_state=final_state)
     except Exception as exc:
         logger.exception("恢复工作流失败 run_id=%s", run_id)
-        _record_background_failure(run_id, exc)
+        phase = "approval_recovery" if resume_payload is not None else "workflow_resume"
+        _record_background_failure(run_id, exc, phase=phase)
     finally:
         run_lock.release()
 
