@@ -467,3 +467,35 @@ def test_after_approval_never_routes_rejection_to_a_guessed_retry_target(retry_t
 
     assert after_approval(state) == FINALIZE
 
+def test_single_step_execution_cannot_bypass_pending_approval_after_run_failure(monkeypatch, tmp_path):
+    import app.application.step_runner as step_runner
+
+    records = [
+        SimpleNamespace(
+            name="request_approval",
+            status="waiting",
+            output={"decision": "PENDING"},
+        )
+    ]
+    store = SimpleNamespace(
+        run_dir=lambda _run_id: tmp_path,
+        list_steps=lambda _run_id, _task_id: records,
+    )
+    spec = SimpleNamespace(
+        name="repair_agent",
+        task_level=True,
+        requires_confirmation=True,
+    )
+    monkeypatch.setattr(step_runner, "resolve_spec", lambda _name: spec)
+    runner = step_runner.StepRunner(store, run_status=lambda _run_id: "failed")
+
+    with pytest.raises(step_runner.StepRunnerError) as raised:
+        runner.validate(step_runner.StepRunRequest(
+            run_id="run-id",
+            task_id="task-id",
+            step_name="repair_agent",
+            confirm_write=True,
+        ))
+
+    assert raised.value.code == "TASK_AWAITING_APPROVAL"
+
