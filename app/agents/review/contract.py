@@ -99,7 +99,12 @@ def validate_shape(payload: dict[str, Any]) -> tuple[bool, str]:
 
 
 def judge(payload: dict[str, Any]) -> ReviewVerdict:
-    """MANUAL 表示转人工审批（按通过处理），PASS 通过，FAIL 未通过。"""
+    """判定审查输出。
+
+    MANUAL 表示 AI 无法独立关闭审查，需转最终人工审批；它按可交付处理，
+    不等于“只提交分析报告”。主图必须先提交源码分支，成功后才允许挂起审批。
+    PASS 通过；FAIL 未通过并进入有界回修。
+    """
     valid, reason = validate_shape(payload)
     if not valid:
         return ReviewVerdict(False, False, reason)
