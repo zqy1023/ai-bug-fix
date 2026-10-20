@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Button, Drawer, FloatButton, Result, Skeleton } from 'antd';
-import { FileSearchOutlined } from '@ant-design/icons';
+import { Button, Collapse, Result, Skeleton } from 'antd';
+import { CodeOutlined, DownOutlined, RightOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import { api, ApiError } from '../../lib/api';
 import { queryKeys } from '../../lib/queryKeys';
@@ -9,16 +9,17 @@ import { TaskHeader } from './TaskHeader';
 import { NodeRail } from './NodeRail';
 import { StepDetail } from './StepDetail';
 import { ContextInspector } from './ContextInspector';
-import { TaskConclusion, analysisOf } from './TaskConclusion';
+import { TaskOverview } from './TaskOverview';
 import { defaultStep, stepRecord } from './stages';
 import { EmptyState } from '../../components/EmptyState';
 
-const ACTIVE = new Set(['queued', 'running', 'pause_requested', 'cancel_requested']);
+const ACTIVE = new Set(['queued', 'running', 'pause_requested', 'cancel_requested', 'waiting_approval']);
 
 export function TaskWorkspace() {
   const { runId = '', taskId = '' } = useParams();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const [executionOpen, setExecutionOpen] = useState(Boolean(searchParams.get('step')));
 
   const task = useQuery({
     queryKey: queryKeys.task(runId, taskId),
@@ -28,15 +29,14 @@ export function TaskWorkspace() {
   });
 
   const steps = task.data?.task.steps ?? [];
-  const [conclusionOpen, setConclusionOpen] = useState(false);
   const selected = searchParams.get('step') || (steps.length ? defaultStep(steps) : '');
   const step = useMemo(() => (selected ? stepRecord(steps, selected) : undefined), [steps, selected]);
 
   const detail = useQuery({
     queryKey: queryKeys.step(runId, taskId, selected),
     queryFn: () => api.step(runId, taskId, selected),
-    enabled: Boolean(runId && taskId && selected && step),
-    refetchInterval: 5000,
+    enabled: Boolean(executionOpen && runId && taskId && selected && step),
+    refetchInterval: executionOpen && ACTIVE.has(task.data?.run_status ?? '') ? 5000 : false,
   });
 
   const selectStep = (name: string) => {
@@ -44,10 +44,13 @@ export function TaskWorkspace() {
     next.set('step', name);
     next.delete('trace');
     setSearchParams(next, { replace: true });
+    setExecutionOpen(true);
   };
 
+  const openExecution = () => setExecutionOpen(true);
+
   if (task.isLoading) {
-    return <div className="page"><Skeleton active paragraph={{ rows: 10 }} /></div>;
+    return <div className="page"><Skeleton active paragraph={{ rows: 8 }} /></div>;
   }
   if (task.isError) {
     const notFound = task.error instanceof ApiError && task.error.status === 404;
@@ -57,7 +60,7 @@ export function TaskWorkspace() {
           status={notFound ? '404' : 'error'}
           title={notFound ? '任务不存在' : '任务详情加载失败'}
           subTitle={task.error instanceof ApiError ? task.error.message : '请检查工作流服务'}
-          extra={<Button type="primary" onClick={() => navigate(`/runs/${encodeURIComponent(runId)}`)}>返回执行工作区</Button>}
+          extra={<Button type="primary" onClick={() => navigate(`/runs/${encodeURIComponent(runId)}`)}>返回运行批次</Button>}
         />
       </div>
     );
@@ -65,64 +68,66 @@ export function TaskWorkspace() {
   if (!task.data) return null;
 
   const runActive = ACTIVE.has(task.data.run_status);
-  const hasAnalysis = Boolean(analysisOf(steps));
+  const executedCount = steps.filter((record) => record.status !== 'pending').length;
+  const terminalStep = task.data.task.report?.terminal_step || '';
 
   return (
     <div className="page task-workspace">
       <TaskHeader detail={task.data} />
-      {!steps.length ? (
-        <EmptyState
-          title="该任务还没有步骤记录"
-          description="任务可能仍在排队，或执行记录尚未落盘。"
-          action={<Button onClick={() => void task.refetch()}>刷新</Button>}
-        />
-      ) : (
-        <div className="task-layout">
-          <NodeRail steps={steps} selected={selected} onSelect={selectStep} task={task.data.task} />
-          <div className="task-main">
-            {step ? (
-              <StepDetail
-                runId={runId}
-                taskId={taskId}
-                step={step}
-                detail={detail.data}
-                runActive={runActive}
-              />
-            ) : (
-              <EmptyState
-                title={selected ? '该步骤尚未执行' : '选择一个步骤'}
-                description={selected
-                  ? '执行推进到该节点后会生成输入、输出与审计记录。'
-                  : '从左侧任务节点轨选择要观察的步骤。'}
-              />
-            )}
-            <ContextInspector context={detail.data?.context} />
-          </div>
-        </div>
-      )}
+      <TaskOverview detail={task.data} onOpenStep={selectStep} />
 
-      {hasAnalysis && (
-        <>
-          <FloatButton
-            icon={<FileSearchOutlined />}
-            description="分析结论"
-            shape="square"
-            type="primary"
-            className="conclusion-fab"
-            onClick={() => setConclusionOpen(true)}
-          />
-          <Drawer
-            title="任务分析结论"
-            placement="right"
-            width={560}
-            open={conclusionOpen}
-            onClose={() => setConclusionOpen(false)}
-            styles={{ body: { paddingTop: 8 } }}
+      <section className="execution-section">
+        <header className="execution-section-heading">
+          <div className="execution-heading-icon"><CodeOutlined /></div>
+          <div className="execution-heading-copy">
+            <h3>执行记录与调试</h3>
+            <p>输入、输出、Agent 会话、错误日志、产物和单步重跑都在这里；默认收起，避免干扰任务结论。</p>
+          </div>
+          <Button
+            type={executionOpen ? 'default' : 'primary'}
+            onClick={() => setExecutionOpen((open) => !open)}
+            icon={executionOpen ? <DownOutlined /> : <RightOutlined />}
           >
-            <TaskConclusion task={task.data.task} />
-          </Drawer>
-        </>
-      )}
+            {executionOpen ? '收起详情' : '查看节点详情'}
+          </Button>
+        </header>
+
+        {executionOpen && (
+          steps.length ? (
+            <div className="task-layout">
+              <NodeRail steps={steps} selected={selected} onSelect={selectStep} task={task.data.task} />
+              <div className="task-main">
+                {step ? (
+                  <StepDetail
+                    runId={runId}
+                    taskId={taskId}
+                    step={step}
+                    detail={detail.data}
+                    runActive={runActive}
+                  />
+                ) : (
+                  <EmptyState
+                    title={selected ? '该步骤尚未执行' : '当前没有步骤记录'}
+                    description="执行推进后会生成步骤输入、输出和审计信息。"
+                  />
+                )}
+                <ContextInspector context={detail.data?.context} />
+              </div>
+            </div>
+          ) : (
+            <EmptyState
+              title="暂无原子步骤记录"
+              description="任务可能仍在排队，或者后端尚未落盘步骤执行记录。"
+              action={<Button onClick={() => void task.refetch()}>刷新任务</Button>}
+            />
+          )
+        )}
+
+        <footer className="execution-section-footer">
+          <span>已记录 {steps.length} 个步骤{steps.length ? ` · ${executedCount} 个已开始或已结束` : ''}</span>
+          {terminalStep && <span>业务停止点：{terminalStep}</span>}
+        </footer>
+      </section>
     </div>
   );
 }
