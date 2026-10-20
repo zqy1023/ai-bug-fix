@@ -269,6 +269,22 @@ class StepRunner:
                 f"执行处于 {status}，单步执行会与工作流写冲突；请等待执行结束或先暂停",
                 code="RUN_ACTIVE",
             )
+        # A failed background resume can leave the persisted approval interrupt pending while
+        # the run-level status is FAILED. Do not allow step-level writes to bypass that gate.
+        task_steps = self._store.list_steps(request.run_id, request.task_id)
+        latest_approval = next(
+            (record for record in reversed(task_steps) if record.name == "request_approval"),
+            None,
+        )
+        approval_output = latest_approval.output if latest_approval and isinstance(latest_approval.output, dict) else {}
+        if latest_approval and (
+            latest_approval.status in {"waiting", "running"}
+            or str(approval_output.get("decision") or "").upper() == "PENDING"
+        ):
+            raise StepRunnerError(
+                "该任务仍处于交付审批中，不能通过单步执行绕过审批；请先在交付审批页完成或恢复决策",
+                code="TASK_AWAITING_APPROVAL",
+            )
         missing = dependencies_missing(self._store, request.run_id, spec, request.task_id)
         if missing:
             raise StepRunnerError(
