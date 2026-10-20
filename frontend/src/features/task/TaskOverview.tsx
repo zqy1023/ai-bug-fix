@@ -521,11 +521,11 @@ export function TaskOverview({
         {diffQuery.isLoading ? <Skeleton active paragraph={{ rows: 8 }} />
           : diffQuery.isError ? <Empty description="差异产物读取失败，请从 check_changes 步骤核对错误。" />
             : diffText ? (
-              <pre className="overview-diff-viewer">{diffText.split(/\\r?\\n/).map((line, index) => {
+              <pre className="overview-diff-viewer">{diffText.split(/\r?\n/).map((line, index) => {
                 const kind = line.startsWith('+++') || line.startsWith('---') ? 'header'
                   : line.startsWith('+') ? 'add' : line.startsWith('-') ? 'remove'
                     : line.startsWith('@@') ? 'hunk' : 'context';
-                return <span key={index} className={`overview-diff-line is-${kind}`}>{line || ' '}{'\\n'}</span>;
+                return <span key={index} className={`overview-diff-line is-${kind}`}>{line || ' '}</span>;
               })}</pre>
             ) : <Empty description="该任务没有完整差异文本产物" />}
       </Drawer>
