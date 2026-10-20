@@ -384,7 +384,11 @@ export function TaskOverview({
           <StageItem title="根因定位" steps={[locateStep]} hint={locateStep ? toneText(toneForStep(locateStep)) : '未开始'} />
           <StageItem title="代码修改" steps={[repairStep, checkStep]} hint={analysisOnly ? '未随报告分支交付源码' : changedCount ? (changeEvidenceKnown ? `${changedCount} 个实际变更文件` : `${changedCount} 个文件声明待核验`) : changeEvidenceKnown ? '基线比对未发现差异' : repairStep ? toneText(toneForStep(repairStep)) : '未开始'} />
           <StageItem title="验证与回归" steps={[verifyStep, regressionStep]} hint={qualitySteps.length ? qualityFailed ? '验证未通过' : '验证节点已执行' : '未执行'} />
-          <StageItem title="审查结论" steps={[reviewStep]} hint={reviewVerdict ? ({ PASS: '审查通过', FAIL: '审查未通过', MANUAL: '需人工判断' } as Record<string, string>)[reviewVerdict] || reviewVerdict : '未执行'} />
+          <StageItem title="AI 审查" steps={[reviewStep]} hint={reviewVerdict ? ({
+            PASS: '审查通过，进入分支交付',
+            FAIL: '审查未通过，触发回修',
+            MANUAL: analysisOnly ? '仅交付报告，不进入源码审批' : '源码分支提交后进入人工审批',
+          } as Record<string, string>)[reviewVerdict] || reviewVerdict : '未执行'} />
           <StageItem title="Git 交付" steps={[deliveryStep]} hint={landed ? analysisOnly ? '分析报告分支已提交' : '修复分支已提交' : deliveryStep ? toneText(toneForStep(deliveryStep)) : '未交付'} />
         </div>
       </section>
@@ -496,8 +500,10 @@ export function TaskOverview({
         <section className="overview-card quality-card">
           <header className="overview-card-head">
             <div className="overview-card-icon"><SafetyCertificateOutlined /></div>
-            <div><h3>验证与审查</h3><span>明确显示验证证据和 Review Agent 结论</span></div>
-            {reviewVerdict && <Tag color={reviewVerdict === 'PASS' ? 'success' : reviewVerdict === 'FAIL' ? 'error' : 'gold'}>{({ PASS: '审查通过', FAIL: '审查未通过', MANUAL: '需人工判断' } as Record<string, string>)[reviewVerdict] || reviewVerdict}</Tag>}
+            <div><h3>验证与审查</h3><span>{analysisOnly
+              ? '当前分支交付的是分析报告，不进入源码修复审批'
+              : 'AI 审查不是人工审批；最终人工审批只在源码分支成功提交后出现'}</span></div>
+            {reviewVerdict && <Tag color={reviewVerdict === 'PASS' ? 'success' : reviewVerdict === 'FAIL' ? 'error' : 'gold'}>{({ PASS: 'AI 审查通过', FAIL: 'AI 审查未通过', MANUAL: analysisOnly ? '报告路径' : '交付后人工复核' } as Record<string, string>)[reviewVerdict] || reviewVerdict}</Tag>}
           </header>
           <div className="quality-check-list">
             <div className="quality-check-row">
@@ -516,7 +522,7 @@ export function TaskOverview({
             </div>
           </div>
           <div className="review-result-block">
-            <label>审查结果</label>
+            <label>{analysisOnly ? 'AI 审查结论（报告路径）' : 'AI 审查结论（非最终审批）'}</label>
             {reviewStep ? (
               <>
                 <p>{reviewSummary || '审查步骤已执行，但没有记录摘要。'}</p>
