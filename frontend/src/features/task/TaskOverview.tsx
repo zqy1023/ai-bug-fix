@@ -309,6 +309,16 @@ export function TaskOverview({
     }
   };
 
+  const copyBranch = async () => {
+    if (!branch) return;
+    try {
+      await navigator.clipboard.writeText(branch);
+      message.success('分支名已复制');
+    } catch {
+      message.warning('复制失败，请手动选择分支名');
+    }
+  };
+
   return (
     <div className="task-overview">
       <section className={`task-outcome-hero ${resultFailed ? 'is-danger' : deliveredCode || deliveredReport ? 'is-delivered' : ['MANUAL', 'INSUFFICIENT_EVIDENCE'].includes(result) ? 'is-manual' : ''}`}>
@@ -555,9 +565,10 @@ export function TaskOverview({
                 <KeyValue label="交付位置" value={pushed ? '已推送远端' : localBranch ? '仅写入本地仓库' : '未确认推送或落地'} />
                 <KeyValue label="提交内容" value={analysisOnly ? (reportPaths.join('、') || 'final.json 分析报告') : changedCount ? `${changedCount} 个源码文件` : '未记录源码文件清单'} />
               </div>
-              {commit && (
+              {(branch || commit) && (
                 <div className="overview-card-actions">
-                  <Button size="small" icon={<CopyOutlined />} onClick={() => void copyCommit()}>复制 Commit SHA</Button>
+                  {branch && <Button size="small" icon={<CopyOutlined />} onClick={() => void copyBranch()}>复制分支名</Button>}
+                  {commit && <Button size="small" icon={<CopyOutlined />} onClick={() => void copyCommit()}>复制 Commit SHA</Button>}
                   {deliveryStep && <Button size="small" type="link" onClick={() => onOpenStep('prepare_delivery')}>交付步骤记录</Button>}
                 </div>
               )}
