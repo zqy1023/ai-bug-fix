@@ -431,9 +431,9 @@ export function TaskOverview({
           {changedFiles.length > 0 ? (
             <>
               <div className="change-count-line">
-                <strong>{changedCount} 个变更文件</strong>
-                <span className="diff-add">+{added}</span>
-                <span className="diff-remove">−{removed}</span>
+                <strong>{changeEvidenceKnown ? `${changedCount} 个真实变更文件` : `${changedCount} 个声明文件（待核验）`}</strong>
+                {changeEvidenceKnown && <span className="diff-add">+{added}</span>}
+                {changeEvidenceKnown && <span className="diff-remove">−{removed}</span>}
               </div>
               <ul className="changed-file-list">
                 {changedFiles.slice(0, 5).map((file, index) => (
