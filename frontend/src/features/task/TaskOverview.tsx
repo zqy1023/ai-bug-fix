@@ -212,8 +212,15 @@ export function TaskOverview({
   const claimedFilePaths = strings(repair.changed_files);
   const gateFiles = objects(gate.files).filter((file) => text(file.path) && text(file.status) !== 'truncated');
   const fileByPath = new Map<string, Dict>(gateFiles.map((file) => [text(file.path), file] as const));
-  const changeEvidenceKnown = Boolean(checkStep && Object.keys(gate).length > 0);
   const claim = dict(gate.claim);
+  const gateScope = dict(gate.scope);
+  // A step record alone is not proof that diffing completed: blocked checks can emit an
+  // output-shaped object without the actual-vs-baseline claim. Require that evidence.
+  const hasActualClaim = Array.isArray(claim.actual);
+  const changeEvidenceKnown = Boolean(
+    checkStep && hasActualClaim
+    && (gateScope.diffable === true || Number(gateScope.baseline_files || 0) > 0),
+  );
   const actualFilePaths = strings(claim.actual);
   const actualFromFileEvidence = gateFiles
     .filter((file) => ['added', 'modified', 'deleted', 'changed', 'modified_too_large'].includes(text(file.status).toLowerCase()))
