@@ -108,8 +108,9 @@ function fileStatusLabel(value: unknown): string {
   return '修改';
 }
 
-function resultHeadline(result: string, analysisOnly: boolean, deliveredCode: boolean, delivered: boolean, changedCount: number, changeEvidenceKnown: boolean, executionFailed: boolean): string {
+function resultHeadline(result: string, analysisOnly: boolean, deliveredCode: boolean, delivered: boolean, changedCount: number, changeEvidenceKnown: boolean, finalApprovalPending: boolean, executionFailed: boolean): string {
   if (executionFailed || ['FAILED', 'FAIL'].includes(result)) return '任务未完成';
+  if (finalApprovalPending) return '源码分支已提交，等待最终审批';
   if (result === 'CANCELLED') return '任务已取消';
   if (result === 'REJECTED') return '变更已被拒绝';
   if (analysisOnly && delivered) return '分析报告已提交';
@@ -125,8 +126,9 @@ function resultHeadline(result: string, analysisOnly: boolean, deliveredCode: bo
   return result ? '任务已结束' : '任务结果待确认';
 }
 
-function resultDescription(analysisOnly: boolean, delivered: boolean, deliveredCode: boolean, changedCount: number, changeEvidenceKnown: boolean, result: string, executionFailed: boolean): string {
+function resultDescription(analysisOnly: boolean, delivered: boolean, deliveredCode: boolean, changedCount: number, changeEvidenceKnown: boolean, finalApprovalPending: boolean, result: string, executionFailed: boolean): string {
   if (executionFailed || result === 'FAILED' || result === 'FAIL') return '至少一个关键步骤没有通过或分支交付失败。请先查看终止节点、错误原因和交付记录；没有可靠提交证据时不会显示为已交付。';
+  if (finalApprovalPending) return 'AI 审查要求人工复核，候选源码分支已成功提交。现在等待最终人工审批；系统不会自动合并。';
   if (analysisOnly && delivered) return '本次提交的是 final.json 分析报告，不包含源码修复。工作流不会自动合并分支。';
   if (analysisOnly && changedCount > 0 && changeEvidenceKnown) return `确定性门禁发现 ${changedCount} 个源码文件有变化，但本次交付只包含分析报告；源码没有随该分支提交。`;
   if (analysisOnly && changedCount > 0) return `修复 Agent 声明涉及 ${changedCount} 个文件，但尚无实际差异证据；当前路径只交付分析报告。`;
@@ -198,6 +200,7 @@ export function TaskOverview({
   const regressionStep = stepOf(steps, 'run_regression');
   const reviewStep = stepOf(steps, 'review_agent');
   const deliveryStep = stepOf(steps, 'prepare_delivery');
+  const approvalStep = stepOf(steps, 'request_approval');
   const finalStep = stepOf(steps, 'finalize_execution');
 
   const locate = dict(locateStep?.output);
@@ -244,6 +247,13 @@ export function TaskOverview({
   const localBranch = delivery.local_branch === true;
   const landed = Boolean(commit && (pushed || localBranch) && deliveryStep?.status === 'succeeded');
   const analysisOnly = deliveryInput.analysis_only === true;
+  const finalApprovalPending = Boolean(
+    !analysisOnly && landed && (
+      task.approval_pending === true
+      || approvalStep?.status === 'waiting'
+      || result === 'WAITING_APPROVAL'
+    ),
+  );
   const deliveredCode = landed && !analysisOnly;
   const deliveredReport = landed && analysisOnly;
   const reportPaths = strings(deliveryInput.report_paths);
@@ -289,8 +299,8 @@ export function TaskOverview({
     staleTime: 60_000,
   });
 
-  const resultText = resultHeadline(result, analysisOnly, deliveredCode, landed, changedCount, changeEvidenceKnown, resultFailed);
-  const description = resultDescription(analysisOnly, landed, deliveredCode, changedCount, changeEvidenceKnown, result, resultFailed);
+  const resultText = resultHeadline(result, analysisOnly, deliveredCode, landed, changedCount, changeEvidenceKnown, finalApprovalPending, resultFailed);
+  const description = resultDescription(analysisOnly, landed, deliveredCode, changedCount, changeEvidenceKnown, finalApprovalPending, result, resultFailed);
   const diffText = useMemo(() => {
     const payload = diffQuery.data?.content;
     if (typeof payload === 'string') return payload;
@@ -321,12 +331,12 @@ export function TaskOverview({
 
   return (
     <div className="task-overview">
-      <section className={`task-outcome-hero ${resultFailed ? 'is-danger' : deliveredCode || deliveredReport ? 'is-delivered' : ['MANUAL', 'INSUFFICIENT_EVIDENCE'].includes(result) ? 'is-manual' : ''}`}>
+      <section className={`task-outcome-hero ${resultFailed ? 'is-danger' : deliveredCode || deliveredReport || finalApprovalPending ? 'is-delivered' : ['MANUAL', 'INSUFFICIENT_EVIDENCE'].includes(result) ? 'is-manual' : ''}`}>
         <div className="outcome-hero-main">
           <div className="outcome-eyebrow">任务结果</div>
           <div className="outcome-title-row">
             <h2>{resultText}</h2>
-            <StatusBadge kind="task" value={task.result} />
+            <StatusBadge kind="task" value={finalApprovalPending ? 'WAITING_APPROVAL' : task.result} />
           </div>
           <p className="outcome-description">{description}</p>
           {terminalReasonFromFailure && (
