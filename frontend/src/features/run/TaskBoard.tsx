@@ -8,6 +8,7 @@ type Column = { key: string; title: string; hint: string; tasks: BoardTask[] };
 function columnOf(task: BoardTask): string {
   const result = String(task.result || '').toUpperCase();
   if (task.approval_pending || result === 'WAITING_APPROVAL') return 'waiting';
+  if (result === 'PAUSED') return 'paused';
   if (['FAILED', 'FAIL', 'REJECTED'].includes(result)) return 'failed';
   if (['MANUAL', 'INSUFFICIENT_EVIDENCE'].includes(result)) return 'manual';
   if (['SUCCESS', 'SUCCEEDED', 'DELIVERED'].includes(result)) return 'success';
@@ -18,6 +19,7 @@ const COLUMN_META = [
   { key: 'waiting', title: '待交付审批', hint: '唯一需要人工决策' },
   { key: 'failed', title: '失败', hint: '需检查错误与产物' },
   { key: 'running', title: '运行中 / 排队', hint: '自动链路推进中' },
+  { key: 'paused', title: '已暂停', hint: '单步已结束，等待继续操作' },
   { key: 'manual', title: '分析报告', hint: '无需系统内操作' },
   { key: 'success', title: '自动交付', hint: '分支已产出待合并' },
 ];
@@ -55,7 +57,7 @@ export function TaskBoard({ tasks, onOpen }: { tasks: BoardTask[]; onOpen: (task
                 <div className="task-card-foot">
                   <span>{task.steps_count} 步 · {formatDuration(task.duration_ms)}</span>
                   {(task.current_step || task.terminal_step) && (
-                    <code>{['RUNNING', 'RETRYING', 'PENDING'].includes(String(task.result).toUpperCase()) ? '当前 ' : '终态 '}{task.current_step || task.terminal_step}</code>
+                    <code>{['RUNNING', 'RETRYING', 'PENDING', 'PAUSED', 'WAITING_APPROVAL'].includes(String(task.result).toUpperCase()) ? '当前 ' : '终态 '}{task.current_step || task.terminal_step}</code>
                   )}
                   {(task.attempt ?? 0) > 1 && <span>第 {task.attempt} 次尝试</span>}
                 </div>
