@@ -239,9 +239,13 @@ def bind(
             action = "finalize_execution"
         # 审批拒绝是业务决定而非节点崩溃；保留 REJECT 决定供路由进入有上限的回修循环。
         if result.failure is None:
-            # 业务结论正常回写；正常节点执行必须清除上一次残留的重试目标。
             patch = spec.patch(result.output)
-            patch["retry_target"] = ""
+            # A business FAIL is an ordinary node return, so LangGraph RetryPolicy cannot
+            # see it. Convert only explicitly retryable phases into bounded graph retries.
+            target = _retry_target_for_step(spec.name) if result.status == "failed" else ""
+            patch["retry_target"] = target
+            if target:
+                patch["retry_reason"] = summary_of(result.output) or f"{spec.name} 返回失败结论"
         elif (
             spec.name == "request_approval"
             and str(result.output.get("decision") or "").upper() == "REJECT"
