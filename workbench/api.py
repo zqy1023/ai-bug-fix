@@ -1471,11 +1471,17 @@ def _resume_workflow_background(
         if not run_lock.acquire(blocking=False):
             logger.warning("跳过重复恢复的工作流 run_id=%s", run_id)
             return
+    heartbeat_stop: threading.Event | None = None
+    heartbeat_thread: threading.Thread | None = None
     try:
         from app.infrastructure.config import load_config, workflow_recursion_limit
         from app.workflow.wiring import build_graph, build_services
 
         store = _store()
+        LifecycleStore(store.root).update_run(
+            run_id, status="running", phase="workflow_resume", current_step="", error={},
+        )
+        heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(run_id)
         runtime_config = load_config()
         # 恢复时让 checkpoint 指向的 sync_source_repo 节点执行；
         # 不能在 graph.invoke 之前再次同步，否则原生重试仍然无法接管。
@@ -1527,11 +1533,16 @@ def _resume_workflow_background(
             stale_run_report.unlink(missing_ok=True)
         from app.entrypoint import _write_run_report_if_terminal
         _write_run_report_if_terminal(store, run_id, graph, final_state=final_state)
+        _complete_run_lifecycle(run_id, store)
     except Exception as exc:
         logger.exception("恢复工作流失败 run_id=%s", run_id)
         phase = "approval_recovery" if resume_payload is not None else "workflow_resume"
         _record_background_failure(run_id, exc, phase=phase)
     finally:
+        if heartbeat_stop is not None:
+            heartbeat_stop.set()
+        if heartbeat_thread is not None:
+            heartbeat_thread.join(timeout=1)
         run_lock.release()
 
 
