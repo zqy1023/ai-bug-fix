@@ -3,9 +3,9 @@ import { App, Button, Drawer, Empty, Skeleton, Tag } from 'antd';
 import {
   ArrowRightOutlined, BranchesOutlined, CheckCircleOutlined, ClockCircleOutlined,
   CodeOutlined, CopyOutlined, DiffOutlined, FileSearchOutlined, FileTextOutlined,
-  GitlabOutlined, SafetyCertificateOutlined, StopOutlined, WarningOutlined,
+  GitlabOutlined, ReloadOutlined, SafetyCertificateOutlined, StopOutlined, WarningOutlined,
 } from '@ant-design/icons';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { StepRecord, TaskDetailResponse } from '../../lib/types';
 import { api } from '../../lib/api';
 import { queryKeys } from '../../lib/queryKeys';
@@ -202,6 +202,7 @@ export function TaskOverview({
   onOpenStep: (stepName: string) => void;
 }) {
   const { message } = App.useApp();
+  const queryClient = useQueryClient();
   const task = detail.task;
   const steps = task.steps ?? [];
   const problem = dict(task.problem);
@@ -344,6 +345,30 @@ export function TaskOverview({
   const resultText = resultHeadline(result, analysisOnly, deliveredCode, landed, changedCount, changeEvidenceKnown, finalApprovalPending, resultFailed);
   const description = resultDescription(analysisOnly, landed, deliveredCode, changedCount, changeEvidenceKnown, finalApprovalPending, result, resultFailed);
   const diffPayload = diffQuery.data?.content;
+  const runTerminal = ['failed', 'partial_failed', 'succeeded', 'cancelled'].includes(detail.run_status);
+  const canRetryWholeTask = ['FAILED', 'FAIL'].includes(result)
+    && Boolean(finalStep)
+    && !deliveryStep
+    && !taskActive
+    && !taskPaused
+    && !task.approval_pending
+    && runTerminal
+    && !getText(runError, 'status');
+  const retryTaskMutation = useMutation({
+    mutationFn: () => api.retryTask(detail.run_id, task.task_id),
+    onSuccess: async (response) => {
+      message.success(response.message || `已提交 Task 重试（第 ${response.attempt} 次尝试）`);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.run(detail.run_id) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.board(detail.run_id) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.task(detail.run_id, task.task_id) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.dashboard }),
+      ]);
+    },
+    onError: (error) => {
+      message.error(error instanceof Error ? error.message : 'Task 重试提交失败');
+    },
+  });
 
   const copyCommit = async () => {
     if (!commit) return;
@@ -377,6 +402,16 @@ export function TaskOverview({
             <StatusBadge kind="task" value={taskActive
               ? lifecycleStatus === 'retrying' || result === 'RETRYING' ? 'RETRYING' : 'RUNNING'
               : taskPaused ? 'PAUSED' : recoveryFailed ? 'FAILED' : finalApprovalPending ? 'WAITING_APPROVAL' : task.result} />
+            {canRetryWholeTask && (
+              <Button
+                type="primary"
+                icon={<ReloadOutlined />}
+                loading={retryTaskMutation.isPending}
+                onClick={() => retryTaskMutation.mutate()}
+              >
+                从任务起点重试
+              </Button>
+            )}
           </div>
           <p className="outcome-description">
             {taskActive
