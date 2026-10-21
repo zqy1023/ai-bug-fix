@@ -30,7 +30,7 @@ export function RunGraph({ run }: { run: RunDetail }) {
     const tasks = run.tasks ?? [];
     const taskStates = tasks.map((task) => String(task.result || '').toUpperCase());
     const terminal = run.terminal ?? TERMINAL_RUN.has(run.status);
-    const tasksRunning = taskStates.some((state) => state === 'RUNNING' || state === 'PENDING');
+    const tasksRunning = taskStates.some((state) => ['RUNNING', 'RETRYING', 'PENDING'].includes(state));
     const tasksWaiting = tasks.some((task) => task.approval_pending);
     const tasksFailed = taskStates.some((state) => ['FAILED', 'FAIL', 'REJECTED'].includes(state));
 
