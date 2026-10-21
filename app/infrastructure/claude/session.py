@@ -256,10 +256,32 @@ def resolve_tools(writable: bool, tools: Sequence[str] | None = None) -> list[st
 # 拒绝原因要结构化：模型会逐字读回这段文案。写成"禁止修改"会诱导它直接宣布
 # "我无法修改"并放弃；明确指出"可以写进 change_plan 转分析报告"才是可用信息。
 _SCOPE_DENIED_HINT = (
-    "该路径在目标 carrier 之外。若根因确实在此，请不要放弃：把修复方案写进输出 JSON 的 "
-    "change_plan（scope=project、edits[].content 给完整文件内容）。"
-    "工作流只会据此生成分析报告转人工线下处理，不会自动修改共享层。"
+    "请核对 allowed_read_roots 中的真实路径。只读定位仅记录 source_evidence、"
+    "evidence_gaps 和 recommended_scope，不要增加输出协议之外的字段。共享层禁止写入。"
 )
+
+
+def _mapped_tool_input(tool_name: str, values: dict[str, Any], root: Path, read_roots: Sequence[Path]) -> dict[str, Any]:
+    """将逻辑相对路径映射到唯一获准的真实只读文件，SDK 和 hook 使用同一入参。"""
+    if tool_name not in {"Read", "Glob", "Grep"}:
+        return values
+    mapped = dict(values)
+    for key in ("file_path", "path"):
+        raw = mapped.get(key)
+        if not isinstance(raw, str) or not raw or Path(raw).is_absolute() or ".." in Path(raw).parts:
+            continue
+        primary = (root / raw).resolve()
+        if primary.exists() and any(_path_is_under(base, primary) for base in read_roots):
+            continue
+        candidates: set[Path] = set()
+        for base in read_roots:
+            for ancestor in (base, *list(base.parents)[:3]):
+                candidate = (ancestor / raw).resolve()
+                if candidate.exists() and _path_is_under(base, candidate):
+                    candidates.add(candidate)
+        if len(candidates) == 1:
+            mapped[key] = str(next(iter(candidates)))
+    return mapped
 
 
 def _check_tool_access(
@@ -288,7 +310,7 @@ def _check_tool_access(
     if tool_name in {"Glob", "Grep", "Read"} and any(
         not any(_path_is_under(base, path) for base in readable) for path in paths
     ):
-        return "deny", f"scope_denied: 只允许读取目标运输商目录。{_SCOPE_DENIED_HINT}"
+        return "deny", f"scope_denied: 路径不在获准只读范围内。{_SCOPE_DENIED_HINT}"
     if tool_name in {"Write", "Edit"} and any(
         not any(_path_is_under(base, path) for base in roots) for path in paths
     ):
@@ -473,6 +495,7 @@ async def _run(
     max_turns: int = settings.claude_default_max_turns,
     max_tool_calls: int = settings.claude_default_max_tool_calls,
     allowed_roots: Sequence[str | Path] | None = None,
+    allowed_write_roots: Sequence[str | Path] | None = None,
 ) -> dict[str, Any]:
     """在限定工具和工作区范围内运行一次 Claude 查询。"""
     ClaudeAgentOptions, ResultMessage, query = _sdk()
@@ -487,6 +510,8 @@ async def _run(
     read_roots = [Path(item).resolve() for item in (allowed_roots or [write_root])]
     try:
         write_root.relative_to(root)
+        for allowed in allowed_write_roots or [write_root]:
+            Path(allowed).resolve().relative_to(root)
     except ValueError as error:
         raise ValueError("AI 写入范围不在工作区内") from error
     sdk_env = {key: value for key, value in (env or {}).items() if key != "AI_REPAIR_WRITE_ROOT"}
@@ -523,11 +548,12 @@ async def _run(
         elif not isinstance(tool_input, dict):
             decision, reason = "deny", "工具输入不是对象"
         else:
+            tool_input = _mapped_tool_input(tool_name, tool_input, root, read_roots)
             decision, reason = _check_tool_access(
                 tool_name,
                 tool_input,
                 root,
-                write_root,
+                [Path(item).resolve() for item in (allowed_write_roots or [write_root])],
                 set(file_tools),
                 read_roots,
             )
@@ -545,6 +571,7 @@ async def _run(
                 "hookEventName": "PreToolUse",
                 "permissionDecision": decision,
                 "permissionDecisionReason": reason,
+                **({"updatedInput": tool_input} if decision == "allow" and isinstance(tool_input, dict) else {}),
             }
         }
 
@@ -635,6 +662,7 @@ def run_agent_once(
     max_tool_calls: int = settings.claude_default_max_tool_calls,
     timeout_seconds: int = settings.claude_default_timeout_seconds,
     allowed_roots: Sequence[str | Path] | None = None,
+    allowed_write_roots: Sequence[str | Path] | None = None,
 ) -> dict[str, Any]:
     """以一次性查询方式运行智能体，按配置限定工具和读写权限。"""
     return asyncio.run(
@@ -647,6 +675,7 @@ def run_agent_once(
             max_turns=max_turns,
             max_tool_calls=max_tool_calls,
             allowed_roots=allowed_roots,
+            allowed_write_roots=allowed_write_roots,
         ), timeout=max(1, int(timeout_seconds)))
     )
 
@@ -696,11 +725,15 @@ class ClaudeSession:
         write_root: str | Path,
         context_prompt: str | None = None,
         allowed_roots: Sequence[str | Path] | None = None,
+        allowed_write_roots: Sequence[str | Path] | None = None,
     ) -> dict[str, Any]:
         """提交一个任务，复用同一 SDK 会话并等待结果。"""
         result: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
         read_roots = [Path(item).resolve() for item in (allowed_roots or [write_root])]
-        self._requests.put((prompt, read_roots, Path(write_root).resolve(), context_prompt, result))
+        write_roots = [Path(item).resolve() for item in (allowed_write_roots or [write_root])]
+        if any(not path.is_relative_to(self._workspace) for path in write_roots):
+            raise ValueError("写入范围越出任务工作区")
+        self._requests.put((prompt, read_roots, write_roots, context_prompt, result))
         try:
             return result.get(timeout=self._timeout_seconds + 30)
         except queue.Empty:
@@ -753,6 +786,7 @@ class ClaudeSession:
             elif not isinstance(tool_name, str) or not isinstance(tool_input, dict):
                 decision, reason = "deny", "工具输入无效"
             else:
+                tool_input = _mapped_tool_input(tool_name, tool_input, self._workspace, current_read_roots)
                 decision, reason = _check_tool_access(
                     tool_name,
                     tool_input,
@@ -775,6 +809,7 @@ class ClaudeSession:
                     "hookEventName": "PreToolUse",
                     "permissionDecision": decision,
                     "permissionDecisionReason": reason,
+                **({"updatedInput": tool_input} if decision == "allow" and isinstance(tool_input, dict) else {}),
                 }
             }
 

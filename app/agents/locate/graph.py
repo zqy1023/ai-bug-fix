@@ -68,14 +68,8 @@ def _read_roots(
     legacy_carrier_dir: str = "",
     shared_root: Path | None = None,
 ) -> tuple[str, ...]:
-    paths: list[Path] = [root / carrier_dir]
-    if legacy_carrier_dir and legacy_carrier_dir != carrier_dir and (root / legacy_carrier_dir).is_dir():
-        paths.append(root / legacy_carrier_dir)
-    # 任务工作区只复制目标 carrier；框架、公共库、插件注册和项目规范在共享只读树。
-    paths.extend(shared_read_paths(shared_root))
-    paths.extend(root / item for item in rules)
-    # 去重但保持顺序；read_roots 会原样进入权限白名单。
-    return tuple(str(path.resolve()) for path in dict.fromkeys(paths))
+    from app.agents.policy import carrier_read_paths
+    return tuple(str(path) for path in carrier_read_paths(root, root / carrier_dir, shared_root, Path(carrier_dir).name))
 
 
 def _snapshot_prompt_context(
@@ -346,14 +340,20 @@ def _validate_output_paths(
         target = _evidence_target(root, value, shared_root)
         if target.is_relative_to(carrier_root):
             continue
-        # 共享候选只允许作为证据，升级范围后由主图转人工分析，不能扩大写权限。
+        # candidate_files 是调查文件，不是修改声明；不能据此升级写入范围。
         if not any(target == base or target.is_relative_to(base) for base in allowed):
             raise ValueError(f"共享层候选文件超出只读证据范围: {value}")
-        output.recommended_scope = "project"
     for item in output.source_evidence:
         target = _evidence_target(root, item.path, shared_root)
         if not any(target == base or target.is_relative_to(base) for base in allowed):
             raise ValueError(f"模型输出源码证据超出只读范围: {item.path}")
+    from app.agents.policy import carrier_write_paths
+    writable = carrier_write_paths(root, carrier_root.name)
+    for value in output.proposed_edit_files:
+        relative = _relative_file(root, value, must_exist=False)
+        target = (root / relative).resolve()
+        if not any(target.is_relative_to(base) for base in writable):
+            output.recommended_scope = "project"
 
 
 def _manual(reason: str) -> dict[str, Any]:

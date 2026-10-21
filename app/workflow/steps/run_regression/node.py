@@ -95,6 +95,8 @@ def run(ctx: StepContext, data: RegressionInput) -> RegressionOutput:
         status="verified" if result.get("passed") is True else "failed",
         reason=reason,
         command_count=count,
+        commands=[_entry(item) for item in results],
+        report_path="artifacts/regression_report.json" if results or workspace_changes else "",
     )
     if not output.passed:
         raise StepFailed(output.reason or "准生产回归失败", output.model_dump())

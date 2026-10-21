@@ -52,22 +52,8 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
     report_dir = str(evidence.get("carrier_dir") or "").replace("\\", "/").strip("/") or (
         f"{report_framework}/{report_carrier}"
     )
-    analysis_only = bool(
-        (state.get("evidence") or {}).get("legacy_only")
-        or (state.get("evidence") or {}).get("legacy_dependency")
-        or state.get("scope_escalation_required")
-        # 定位阶段判定不支持自动修改时，只提交 final.json 分析报告。
-        # Review Agent 的 MANUAL 不在这里分流：该任务已进入修复/验证/审查链，
-        # 必须先提交候选源码分支，再进入最终人工审批。
-        or locate_status in {"MANUAL", "INSUFFICIENT_EVIDENCE"}
-        or (
-            locate_status == "LOCATED"
-            and (locate_scope != "carrier" or locate_category != "carrier")
-        )
-        # 旧框架引用必须来自有效的业务定位结论；避免失败重试残留的候选路径
-        # 把定位执行异常错误转换成可交付的分析任务。
-        or (locate_status in {"LOCATED", "MANUAL", "INSUFFICIENT_EVIDENCE"} and legacy_reference)
-    )
+    from app.workflow.routes import _analysis_only_task
+    analysis_only = _analysis_only_task(state)
     return {
         "task_id": task_id,
         "carrier": str(task.get("carrier") or ""),

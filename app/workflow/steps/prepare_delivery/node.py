@@ -50,9 +50,23 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
             store.write_artifact(ctx.run.run_id, receipt_path, value, data.task_id)
 
     try:
+        repair_bundle = {}
+        if store is not None:
+            records = {record.name: record.output for record in store.list_steps(ctx.run.run_id, data.task_id)}
+            repair_bundle = {
+                "locate": records.get("locate_agent", {}), "repair": records.get("repair_agent", {}),
+                "review": records.get("review_agent", {}),
+                "validation": {key: records.get(key, {}) for key in ("check_changes", "syntax_regression", "verify_issue", "run_regression")},
+            }
+            gate = store.load(ctx.run.run_id, "check_changes", data.task_id)
+            if gate:
+                for ref in gate.artifacts:
+                    if ref.name == "diff":
+                        repair_bundle["diff"] = str(store.read_ref(ctx.run.run_id, ref, data.task_id).get("diff") or "")
         result = ctx.services.delivery.deliver(
             {
                 "task_id": data.task_id,
+                "repair_bundle": repair_bundle,
                 "delivery_receipt": receipt,
                 "persist_delivery": persist_delivery,
                 "carrier": data.carrier,

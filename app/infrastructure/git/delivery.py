@@ -260,6 +260,8 @@ class GitBranchDelivery:
                 carrier=str(state.get("carrier") or ""),
             )
             audit_files = self._copy_audit_records(source_root, delivery_project, state)
+            from app.infrastructure.git.repair_bundle import write_repair_bundle
+            audit_files.extend(write_repair_bundle(delivery_project, state))
             paths_to_add = sorted({*changed_files, *report_files, *audit_files})
             if not paths_to_add:
                 raise DeliveryError("没有可提交的修复文件或报告")

@@ -222,6 +222,7 @@
     }
   ],
   "candidate_files": ["与问题直接相关的最小候选文件路径"],
+  "proposed_edit_files": ["真正需要修改的文件；不要列只为调查读取的共享模型或基类"],
   "evidence_gaps": ["影响根因判断的未解决问题"],
   "recommended_scope": "carrier | project | manual",
   "summary": "一句话总结定位结论、证据强度和主要限制"

@@ -244,19 +244,7 @@ def run(ctx: StepContext, data: EvidenceInput) -> EvidenceOutput:
         extracted=_extract(data.problem),
         legacy_only=legacy_only,
         legacy_dependency=legacy_dependency,
-        legacy_reason=(
-            _legacy_reason(
-                safe_carrier,
-                [carrier_dir],
-                new_dir=(
-                    f"gathers/{new_root.name}" if new_root is not None else ""
-                ),
-            )
-            if legacy_only
-            else f"新框架 carrier 显式引用旧框架 spiders/{safe_carrier}；本任务仅分析、不修改。"
-            if legacy_dependency
-            else ""
-        ),
+        legacy_reason="",
     )
 
 

@@ -250,27 +250,18 @@ def _independent_verify(
                     baseline_root, replay_root,
                     ignore=shutil.ignore_patterns(".git"),
                 )
-            replay_carrier = WorkspaceManager.find_carrier_dir(replay_root, "gathers", carrier)
-            source_carrier = WorkspaceManager.find_carrier_dir(workspace, "gathers", carrier)
-            if replay_carrier is None or source_carrier is None:
-                return {
-                    "passed": False,
-                    "mode": "response_replay",
-                    "reason": "重放工作区缺少目标 carrier 目录",
-                }
-            # 目标 carrier 必须与 AI 工作区完全一致（包括删除的文件）。
-            if not remove_tree(replay_carrier):
-                return {
-                    "passed": False,
-                    "mode": "response_replay",
-                    "reason": "重放工作区 carrier 清理被环境拦截",
-                }
-            shutil.copytree(source_carrier, replay_carrier, copy_function=shutil.copy2)
+            for framework in ("gathers", "spiders"):
+                source_carrier = WorkspaceManager.find_carrier_dir(workspace, framework, carrier)
+                replay_carrier = WorkspaceManager.find_carrier_dir(replay_root, framework, carrier)
+                if source_carrier is None:
+                    continue
+                destination = replay_carrier or replay_root / framework / source_carrier.name
+                if destination.exists() and not remove_tree(destination):
+                    return {"passed": False, "mode": "response_replay", "reason": "重放工作区 carrier 清理失败"}
+                shutil.copytree(source_carrier, destination, copy_function=shutil.copy2)
         else:
             replay_root = workspace
         gathers_root = replay_root / "gathers"
-        if not gathers_root.is_dir():
-            return {"passed": False, "mode": "response_replay", "reason": "gathers 目录不存在，无法执行 response 重放"}
 
         replay_result = run_replay(
             carrier=carrier,
@@ -287,13 +278,20 @@ def _independent_verify(
             "mode": "response_replay",
             "reason": f"Response 重放验证失败: {replay_result.error}",
             "replay_exception_type": replay_result.exception_type,
+            "replay_error": replay_result.error,
+            "replay_traceback": replay_result.traceback,
+            "replay_output": replay_result.output,
+            "replay_command": getattr(replay_result, "command", []),
+            "replay_returncode": getattr(replay_result, "returncode", None),
         }
 
     return {
         "passed": True,
         "mode": "response_replay",
         "reason": f"语法检查 + Response 重放验证通过: {len(files)} 个文件",
-        "replay_output": replay_result.output[: settings.replay_output_chars],  # 截取前若干字符
+        "replay_output": replay_result.output,
+        "replay_command": getattr(replay_result, "command", []),
+            "replay_returncode": getattr(replay_result, "returncode", None),
     }
 
 
@@ -731,18 +729,9 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
                     kind == "locate"
                     and (
                         failed
-                        or bool((state.get("evidence") or {}).get("legacy_only"))
-                        or bool((state.get("evidence") or {}).get("legacy_dependency"))
                         or str(view.recommended_scope or "") != "carrier"
                         or str(view.category or "") != "carrier"
-                        or any(
-                            str(item.path or "").replace("\\", "/").startswith("spiders/")
-                            for item in view.source_evidence
-                        )
-                        or any(
-                            str(item).replace("\\", "/").startswith("spiders/")
-                            for item in view.candidate_files
-                        )
+
                     )
                 ) or (kind == "review" and str(view.verdict or "").upper() == "MANUAL")
                 else "failed" if failed else "passed"

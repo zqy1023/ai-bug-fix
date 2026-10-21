@@ -1,6 +1,8 @@
 """09 准生产回归的输入输出契约。"""
 
 from __future__ import annotations
+from typing import Any
+from pydantic import Field
 
 from app.workflow.spec import FrozenModel
 
@@ -31,6 +33,8 @@ class RegressionOutput(FrozenModel):
     # command_count：字段说明见该模型文档与工作流契约。
     command_count: int = 0
     status: str = "verified"
+    commands: list[dict[str, Any]] = Field(default_factory=list)
+    report_path: str = ""
 
 
 __all__ = ["RegressionInput", "RegressionOutput"]

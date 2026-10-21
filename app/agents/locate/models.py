@@ -81,6 +81,8 @@ class LocateOutput(FrozenModel):
     source_evidence: list[SourceEvidence] = Field(default_factory=list)
     # candidate_files：字段说明见该模型文档与工作流契约。
     candidate_files: list[str] = Field(default_factory=list)
+    # 调查文件与拟修改目标分离，读取共享证据不代表需要修改共享层。
+    proposed_edit_files: list[str] = Field(default_factory=list)
     # evidence_gaps：字段说明见该模型文档与工作流契约。
     evidence_gaps: list[str] = Field(default_factory=list)
     # recommended_scope：字段说明见该模型文档与工作流契约。

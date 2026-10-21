@@ -140,13 +140,7 @@ def after_locate(state: WorkflowState) -> str:
         return FINALIZE
     if _result(state) == "failed":
         return _retry_or_finalize(state)
-    # 旧框架任务只做根因分析；即使 Locate 返回 LOCATED，也不能进入自动修复。
-    evidence = state.get("evidence") or {}
-    if evidence.get("legacy_only") or evidence.get("legacy_dependency"):
-        return FINALIZE
     locate = state.get("locate") or {}
-    if _locate_references_legacy(locate):
-        return FINALIZE
     if (
         str(locate.get("recommended_scope") or "") != "carrier"
         or str(locate.get("category") or "") != "carrier"
@@ -253,16 +247,14 @@ def _analysis_only_task(state: WorkflowState) -> bool:
         return False
     evidence = state.get("evidence") or {}
     if (
-        evidence.get("legacy_only")
-        or evidence.get("legacy_dependency")
-        or state.get("scope_escalation_required")
+        state.get("scope_escalation_required")
+        or str(((state.get("repair") or {}).get("change_plan") or {}).get("scope") or "") == "manual"
         or locate_status in {"MANUAL", "INSUFFICIENT_EVIDENCE"}
     ):
         return True
     return bool(
         str(locate.get("recommended_scope") or "") != "carrier"
         or str(locate.get("category") or "") != "carrier"
-        or _locate_references_legacy(locate)
     )
 
 

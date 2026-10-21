@@ -38,6 +38,8 @@ class VerifyOutput(FrozenModel):
     reason: str = ""
     # mode：实际执行的验证级别。
     mode: str = "custom"
+    replay: dict[str, Any] = {}
+    report_path: str = ""
 
 
 __all__ = ["VerifyInput", "VerifyOutput"]

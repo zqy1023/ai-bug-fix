@@ -2096,6 +2096,48 @@ def v1_run_board(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
     }
 
 
+def _reinvestigate_task(run_id: str, task_id: str, background: BackgroundTasks) -> dict[str, Any]:
+    """为人工任务建立独立调查 Run，保留原报告、分支、回执和审批检查点。"""
+    from app.infrastructure.config import load_config
+    from app.workflow.wiring import build_graph, build_services
+    from app.workflow.routes import IDENTIFY
+    from app.application.audit import StepRecord
+    import shutil
+
+    store = _store()
+    config = load_config()
+    graph = build_graph(store=store, services=build_services(config=config, source_repo=config.source_repo), config=config)
+    snapshot = graph.get_state({"configurable": {"thread_id": run_id}})
+    values = dict(snapshot.values or {})
+    original = next((item for item in values.get("tasks", []) if item.get("task_id") == task_id), None)
+    if original is None:
+        raise HTTPException(status_code=409, detail="检查点中缺少原始任务输入，无法重新调查")
+    new_id = uuid.uuid4().hex
+    task = {**original, "problem_key": str(original.get("problem_key") or task_id) + "-revision-" + new_id[:8]}
+    task.pop("repair_branch", None)
+    task["_workflow_attempt"] = 1
+    metadata = {**store.load_run(run_id), "parent_run_id": run_id, "parent_task_id": task_id,
+                "reinvestigation": True, "startup_state": "started"}
+    store.create_run(new_id, metadata)
+    artifact_dir = store.run_dir(run_id) / "artifacts"
+    if artifact_dir.is_dir():
+        shutil.copytree(artifact_dir, store.run_dir(new_id) / "artifacts")
+    for record in store.list_steps(run_id):
+        if record.name not in {"sync_source_repo", "discover_logs", "normalize_error", "deduplicate_error", "identify_carrier"}:
+            continue
+        payload = record.model_dump()
+        payload["input"] = {**payload.get("input", {}), "run_id": new_id} if "run_id" in payload.get("input", {}) else payload.get("input", {})
+        store.save(new_id, StepRecord.model_validate(payload))
+    values.update(run_id=new_id, tasks=[task], task_cursor=0, task_results=[], task_id="", task={},
+                  attempt=1, automatic_attempt=1, terminal_status="", task_summary={}, last_result="passed")
+    graph.update_state({"configurable": {"thread_id": new_id}}, values, as_node=IDENTIFY)
+    LifecycleStore(store.root).update_run(new_id, status="queued", worker_active=False, phase="reinvestigation")
+    _audit_control(new_id, task_id, "task.reinvestigate_requested", "api", f"parent_run={run_id}")
+    background.add_task(_resume_workflow_background, new_id)
+    return {"run_id": new_id, "task_id": task_id, "status": "retry_requested",
+            "message": "已创建独立调查执行；原人工报告、分支和审批记录保留。"}
+
+
 @router.post("/api/v1/runs/{run_id}/tasks/{task_id}/retry", status_code=202)
 def v1_retry_task(
     run_id: str, task_id: str, background: BackgroundTasks,
@@ -2110,7 +2152,7 @@ def v1_retry_task(
     run_id, task_id = _safe_id(run_id), _safe_id(task_id)
     store = _store()
     detail = _v1_detail(run_id)
-    if detail["status"] not in {"failed", "partial_failed", "succeeded"} or detail.get("worker_active"):
+    if detail.get("worker_active"):
         raise HTTPException(status_code=409, detail="只有已停止的 Run 才能重试单个任务")
     if (store.run_dir(run_id) / "reports" / "run_failure.json").is_file():
         raise HTTPException(status_code=409, detail="该 Run 存在运行级异常，请先使用 Run 级重试；不能只重跑其中一个 Task")
@@ -2118,6 +2160,10 @@ def v1_retry_task(
     task_detail = v1_get_task(run_id, task_id, None)
     task_payload = task_detail.get("task") if isinstance(task_detail.get("task"), dict) else {}
     task_result = str(task_payload.get("result") or "").upper()
+    if task_result in {"MANUAL", "INSUFFICIENT_EVIDENCE"}:
+        return _reinvestigate_task(run_id, task_id, background)
+    if detail["status"] not in {"failed", "partial_failed", "succeeded"}:
+        raise HTTPException(status_code=409, detail="失败任务只能在 Run 停止后重试")
     if task_result not in {"FAILED", "FAIL"}:
         raise HTTPException(status_code=409, detail=f"当前 Task 结论为 {task_result or 'UNKNOWN'}，只允许重试终态失败任务")
     if task_payload.get("approval_pending"):

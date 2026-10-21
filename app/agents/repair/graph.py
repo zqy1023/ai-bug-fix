@@ -50,10 +50,11 @@ def _call(
         return {"passed": False, "reason": "缺少 locate_agent 的 LOCATED 结论", "changed_files": []}, {}, {}, ""
     try:
         evidence = dict(state["evidence"])
-        if evidence.get("legacy_only") or evidence.get("framework") != "gathers":
-            raise WorkspaceError("纯旧框架任务不进入 repair_agent")
+        framework = str(evidence.get("framework") or "")
+        if framework not in {"gathers", "spiders"}:
+            raise WorkspaceError("修复框架必须为 gathers 或 spiders")
         carrier_dir = str(evidence["carrier_dir"])
-        carrier_root = WorkspaceManager.find_carrier_dir(workspace, "gathers", carrier)
+        carrier_root = WorkspaceManager.find_carrier_dir(workspace, framework, carrier)
         expected = (
             carrier_root.relative_to(Path(workspace).resolve()).as_posix()
             if carrier_root is not None
@@ -62,7 +63,7 @@ def _call(
         if (
             carrier_root is None
             or carrier_dir != expected
-            or not (carrier_root / "main.py").is_file()
+            or (framework == "gathers" and not (carrier_root / "main.py").is_file())
         ):
             raise WorkspaceError(f"evidence 未指向唯一新框架入口: {carrier_dir}")
     except (WorkspaceError, KeyError) as error:
@@ -75,14 +76,8 @@ def _call(
     if not shared_root.is_dir():
         shared_root = None
     # 写入范围绑定到已经验证的新框架 carrier 目录；框架和公共库只读。
-    readable = [
-        str(carrier_root.resolve()),
-        *(str(path.resolve()) for path in shared_read_paths(shared_root)),
-        *(
-            str((Path(workspace) / item).resolve())
-            for item in WorkspaceManager.readable_rule_paths(workspace)
-        ),
-    ]
+    from app.agents.policy import carrier_read_paths, carrier_write_paths
+    readable = [str(path) for path in carrier_read_paths(Path(workspace), carrier_root, shared_root, carrier)]
     read_roots = tuple(dict.fromkeys(readable))
     baseline_manifest = dict(state.get("baseline_manifest") or {})
     baseline_dir = str(state.get("baseline_dir") or "")
@@ -111,7 +106,7 @@ def _call(
             "deterministic_analysis": deterministic_analysis,
         },
         read_roots=read_roots,
-        write_roots=(write_root,),
+        write_roots=tuple(str(path) for path in carrier_write_paths(Path(workspace), carrier)),
         budget={"max_tool_calls": config.max_tool_calls, "max_turns": config.max_turns},
         retry_feedback=str(state.get("retry_reason") or ""),
         source_snapshot={
@@ -119,7 +114,7 @@ def _call(
             "baseline_manifest": baseline_manifest,
         },
         changed_files=tuple(str(item) for item in state.get("changed_files") or []),
-        allowed_scope=(carrier_dir,),
+        allowed_scope=tuple(path.relative_to(Path(workspace).resolve()).as_posix() for path in carrier_write_paths(Path(workspace), carrier)),
         stop_conditions=("Locate 未确认根因", "共享层根因", "目标 carrier 外修改"),
         source_project_path=str(shared_root) if shared_root is not None else "",
         project_rules=rules_text(Path(workspace), *([shared_root] if shared_root else [])),

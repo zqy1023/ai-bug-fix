@@ -41,21 +41,28 @@ def run(ctx: StepContext, data: VerifyInput) -> VerifyOutput:
             else "独立验证返回无效"
         )
         raise StepFailed(reason, {"passed": False, "reason": reason, "mode": "unavailable"})
+    import json
+    safe_report = json.loads(redact_output(json.dumps(verified, ensure_ascii=False, default=str)))
+    ctx.emit_artifact("verification_report", "artifacts/verification_report.json", safe_report)
+    replay = {key: value for key, value in safe_report.items() if key.startswith("replay_")}
+    details = {"replay": replay, "report_path": "artifacts/verification_report.json"}
     if verified.get("status") == "unverified":
         return VerifyOutput(
             passed=False,
             status="unverified",
             reason=str(verified.get("reason") or "业务问题未验证"),
             mode=str(verified.get("mode") or "unverified"),
+            **details,
         )
     if verified.get("passed") is not True:
         reason = redact_output(" ".join(str(verified.get("reason") or "独立验证失败").split()))[:2000]
-        raise StepFailed(reason, {"passed": False, "reason": reason, "mode": str(verified.get("mode") or "unavailable")})
+        raise StepFailed(reason, {"passed": False, "reason": reason, "mode": str(verified.get("mode") or "unavailable"), **details})
     return VerifyOutput(
         passed=True,
         status=str(verified.get("status") or "verified"),
         reason=str(verified.get("reason") or ""),
         mode=str(verified.get("mode") or "custom"),
+        **details,
     )
 
 

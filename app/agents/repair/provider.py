@@ -79,6 +79,7 @@ class ClaudeSessionProvider(RepairProvider):
                 request.prompt,
                 request.write_root,
                 allowed_roots=request.allowed_read_roots,
+                allowed_write_roots=request.allowed_write_roots,
             ))
             if result.get("reason") == "AGENT_TIMEOUT":
                 drop_session(request.agent_role, session_key)
@@ -111,6 +112,7 @@ class ClaudeQueryProvider(RepairProvider):
                 max_tool_calls=self.config.max_tool_calls,
                 timeout_seconds=self.config.timeout_seconds,
                 allowed_roots=request.allowed_read_roots,
+                allowed_write_roots=request.allowed_write_roots,
             ))
         except TimeoutError:
             return {"passed": False, "reason": "AGENT_TIMEOUT"}

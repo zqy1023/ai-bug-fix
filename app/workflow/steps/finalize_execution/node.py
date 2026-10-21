@@ -48,6 +48,16 @@ def run(ctx: StepContext, data: FinalizeInput) -> FinalizeOutput:
         "elapsed_ms": round(sum(record.duration_ms for record in records), 2),
         "tokens": _tokens(ctx, data.task_id),
         "root_cause": str(locate.get("root_cause") or locate.get("analysis") or ""),
+        "locate_status": locate.get("status"),
+        "category": locate.get("category"),
+        "recommended_scope": locate.get("recommended_scope"),
+        "facts": locate.get("facts", []),
+        "source_evidence": locate.get("source_evidence", []),
+        "evidence_gaps": locate.get("evidence_gaps", []),
+        "candidate_files": locate.get("candidate_files", []),
+        "change_plan": repair.get("change_plan", {}),
+        "blocked_reason": repair.get("blocked_reason", ""),
+        "validation": {record.name: record.output for record in records if record.name in {"verify_issue", "syntax_regression", "run_regression"}},
         "change_summary": str(repair.get("summary") or repair.get("analysis") or ""),
         "completed_steps": [record.name for record in records if record.status in {"succeeded", "skipped"}],
     }
@@ -139,20 +149,6 @@ def _terminal_details(
             "run_regression": "检查回归报告、命令输出和运行环境。",
         }
         return (failed_step.name, reason, followups.get(failed_step.name, "检查失败节点的输入、输出和错误记录后重试。"))
-
-    evidence = next((item for item in ordered if item.name == "prepare_evidence"), None)
-    evidence_output = evidence.output if evidence and isinstance(evidence.output, dict) else {}
-    if evidence_output.get("legacy_only") or evidence_output.get("legacy_dependency"):
-        reason = str(
-            evidence_output.get("legacy_reason")
-            or _record_reason(evidence)
-            or "目标 carrier 涉及旧框架实现，不能进入自动源码修改路径。"
-        )
-        return (
-            "prepare_evidence",
-            reason,
-            "查看已提交的 final.json 分析报告；该任务未自动修改任何源码。",
-        )
 
     manual_names = ("locate_agent", "review_agent", "prepare_evidence", "repair_agent", "prepare_source_snapshot")
     if outcome == "MANUAL" or status == "MANUAL":
@@ -287,8 +283,7 @@ def _delivery_status(records: list[StepRecord], terminal_status: str) -> str:
     if _final_source_approval_accepted(records):
         return "SUCCESS"
     if (
-        _legacy_only(records)
-        or str(terminal_status or "").upper() == "MANUAL"
+        str(terminal_status or "").upper() == "MANUAL"
         or bool(results & {"MANUAL", "INSUFFICIENT_EVIDENCE"})
     ):
         return "MANUAL"

@@ -278,6 +278,10 @@ Locate Agent 的结论是调查线索，不是无条件可信的修改指令。�
 - `summary`：字符串，描述实际完成的工作，不夸大验证结果。
 - `change_plan`：对象，记录完整的变更方案。
 
+新旧框架目标运输商都允许修复，严格限于 allowed_write_roots。必须把可复现问题的验证脚本
+或回归测试写入目标运输商目录，列入 changed_files，并在 change_plan 中说明运行命令、
+预期结果、实际验证情况。共享层不能修改。不要把真实业务凭据或单号硬编码到脚本中。
+
 `scope` 只能取 `carrier`、`project`、`manual`。
 
 当 `scope=carrier` 时，edits 记录实际执行的修改及其对应证据。
