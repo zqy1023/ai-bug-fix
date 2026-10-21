@@ -18,6 +18,7 @@ from app.workflow.definitions import TASK_CONDITIONAL_TRANSITIONS, TASK_NODE_NAM
 from app.workflow.routes import (
     RUN_PREPARE,
     SOURCE_SYNC,
+    after_source_sync,
     after_run_prepare,
     APPROVE,
     CHECK,
@@ -315,7 +316,7 @@ def build_graph(
     graph.add_node(TASK_COLLECT, collect)
 
     graph.add_edge(START, SOURCE_SYNC)
-    graph.add_edge(SOURCE_SYNC, RUN_PREPARE)
+    graph.add_conditional_edges(SOURCE_SYNC, after_source_sync, [RUN_PREPARE, END])
     graph.add_conditional_edges(RUN_PREPARE, after_run_prepare, [IDENTIFY, END])
     graph.add_conditional_edges(IDENTIFY, after_identify, [TASK_DISPATCH, END])
     graph.add_conditional_edges(TASK_DISPATCH, after_dispatch, [RUN_TASK, END])
