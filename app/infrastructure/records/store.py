@@ -180,10 +180,11 @@ class RecordStore:
                     run_id, status="paused", phase=phase, current_step=phase,
                     attempt=record.attempt, error=error,
                 )
-            elif record.status == "failed":
+            elif record.status == "failed" or str(record.result or "").upper() in {"FAIL", "FAILED", "REJECTED"}:
                 lifecycle.update_run(
                     run_id, status="retrying", phase=phase, current_step=phase,
                     attempt=record.attempt, error=error,
+                    last_error_summary=record.summary or "",
                 )
             else:
                 lifecycle.update_run(
@@ -218,6 +219,15 @@ class RecordStore:
                 terminal_reason=str(output.get("terminal_reason") or record.summary or ""),
                 next_action=str(output.get("next_action") or ""),
                 error=error,
+            )
+        elif record.status == "succeeded" and str(record.result or "").upper() in {"FAIL", "FAILED", "REJECTED"}:
+            # Business FAIL/REJECTED is an executed step, not an exception, but its
+            # router may still send the task through retry_prepare.
+            reason = record.summary or f"{phase} returned {record.result}"
+            lifecycle.update_task(
+                run_id, task_id, status="retrying", **common,
+                last_error={"code": "BUSINESS_STEP_FAILED", "message": reason[:1200]},
+                last_error_summary=reason[:1200],
             )
         elif record.status == "failed":
             # The graph may still route this failure through retry_prepare; don't
