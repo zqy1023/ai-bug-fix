@@ -895,9 +895,11 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
         row = connection.execute(
             "SELECT pause_requested,cancel_requested FROM run_control WHERE run_id=?", (run_id,)
         ).fetchone()
-        if row and row["cancel_requested"]:
+        terminal_run_statuses = {"succeeded", "partial_failed", "failed", "cancelled"}
+        # Stale control flags must not overwrite an already settled Run result.
+        if row and row["cancel_requested"] and status not in terminal_run_statuses:
             status = "cancelled" if not next_nodes and not summary.get("worker_active") else "cancel_requested"
-        elif row and row["pause_requested"]:
+        elif row and row["pause_requested"] and status not in terminal_run_statuses:
             has_waiting_step = any(step.get("status") == "waiting" for step in steps)
             has_waiting_step = has_waiting_step or any(
                 step.get("status") == "waiting"
