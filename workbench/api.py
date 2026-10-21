@@ -1423,6 +1423,87 @@ def v1_pause_run(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
     return {"run_id": run_id, "status": "pause_requested", "message": "已请求暂停；当前节点完成或到达安全边界后生效"}
 
 
+@router.post("/api/v1/runs/{run_id}/retry", status_code=202)
+def v1_retry_run(run_id: str, background: BackgroundTasks, _: None = Depends(_authorize)) -> dict[str, Any]:
+    """重试失败的 Run：优先从 LangGraph checkpoint 恢复，仅允许安全的启动阶段从头重启。"""
+    run_id = _safe_id(run_id)
+    store = _store()
+    detail = _v1_detail(run_id)
+    if detail["status"] != "failed":
+        raise HTTPException(status_code=409, detail="只有终态失败的 Run 才能重试；活动执行请使用停止或暂停")
+    with _RUN_LOCKS_GUARD:
+        lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
+    if not lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="该 Run 仍被后台工作线程占用，状态正在收敛")
+
+    try:
+        checkpoint = detail.get("checkpoint") if isinstance(detail.get("checkpoint"), dict) else {}
+        run_meta = store.load_run(run_id)
+        if checkpoint.get("resumable"):
+            mode = "resume"
+            worker = _resume_workflow_background
+        else:
+            steps = store.list_steps(run_id)
+            raw_steps = _read_json(store.steps_path(run_id), {})
+            task_slots = raw_steps.get("tasks", []) if isinstance(raw_steps, dict) else []
+            run_step_names = {step.name for step in steps}
+            # From-scratch retry is safe only before log discovery/task dispatch.
+            # A sync_source_repo-only run may have no checkpoint in older LangGraph versions.
+            safe_startup_retry = not task_slots and run_step_names.issubset({"sync_source_repo"})
+            if not safe_startup_retry:
+                raise HTTPException(
+                    status_code=409,
+                    detail="当前 Run 没有可恢复的 checkpoint，且已进入业务步骤；请在任务详情中重试失败节点，不能覆盖历史执行。",
+                )
+            mode = "restart"
+            run_json = store.run_dir(run_id) / "run.json"
+            run_meta["startup_state"] = "queued"
+            temporary = run_json.with_name("run.json.retry.tmp")
+            temporary.write_text(json.dumps(run_meta, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(run_json)
+            reports = store.run_dir(run_id) / "reports"
+            (reports / "run_failure.json").unlink(missing_ok=True)
+            (reports / "final.json").unlink(missing_ok=True)
+            LifecycleStore(store.root).update_run(
+                run_id, status="queued", phase="retry_queued", current_step="",
+                started_at=None, finished_at=None, error={},
+                error_type="", error_message="", terminal_reason="", next_action="",
+            )
+            overrides = {
+                "log_days": int(run_meta.get("log_days") or 1),
+                "log_limit": int(run_meta.get("log_limit") or 0),
+                "review_mode": str(run_meta.get("review_mode") or settings.default_review_mode),
+                "max_attempts": int(run_meta.get("max_attempts") or settings.default_max_attempts),
+            }
+            worker = _run_workflow_background_v1
+
+        connection = _control_db()
+        try:
+            connection.execute(
+                "INSERT INTO run_control(run_id,pause_requested,cancel_requested,updated_at) VALUES(?,0,0,?) "
+                "ON CONFLICT(run_id) DO UPDATE SET pause_requested=0,cancel_requested=0,updated_at=excluded.updated_at",
+                (run_id, datetime.now(timezone.utc).isoformat()),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        _audit_control(run_id, "", "run.retry_requested", "api", f"mode={mode}")
+    except Exception:
+        lock.release()
+        raise
+
+    if mode == "resume":
+        background.add_task(_resume_workflow_background, run_id, lock)
+    else:
+        background.add_task(worker, run_id, overrides, lock)
+    return {
+        "run_id": run_id,
+        "status": "retry_requested",
+        "mode": mode,
+        "message": "已提交 Run 重试；请观察当前节点、尝试次数和生命周期状态。",
+    }
+
+
 @router.post("/api/v1/runs/{run_id}/resume", status_code=202)
 def v1_resume_run(run_id: str, background: BackgroundTasks, _: None = Depends(_authorize)) -> dict[str, Any]:
     run_id = _safe_id(run_id)
