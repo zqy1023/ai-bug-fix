@@ -81,6 +81,18 @@ def _sha256(path: Path) -> str:
     return sha256_cached(path)
 
 
+def _is_workflow_report(relative: str, scope: Path | None) -> bool:
+    """判断是否为工作流生成的 carrier 根目录报告副本。
+
+    ``finalize_execution`` 为分析报告交付写入 ``<framework>/<Carrier>/final.json``。
+    它属于运行产物，不是修复 Agent 声明的源码变更；重试确定性检查时必须忽略，
+    否则上一次终态报告会被误报为 ``UNDECLARED_CHANGE``。
+    """
+    if scope is None:
+        return False
+    return _norm(relative) == _norm(f"{scope.as_posix().rstrip('/')}/final.json")
+
+
 def _actual_changed_files(
     root: Path, baseline: dict[str, str], scope: Path | None = None
 ) -> set[str]:
@@ -100,6 +112,7 @@ def _actual_changed_files(
         for key, value in baseline.items()
         if (
             (not prefix or _norm(key).startswith(normalized_prefix))
+            and not _is_workflow_report(key, scope)
             and not any(part in _IGNORED_PARTS for part in Path(key).parts)
             and not any(WorkspaceManager._is_skipped_dir(part) for part in Path(key).parts[:-1])
             and not WorkspaceManager._is_sensitive(Path(key).name)
@@ -115,7 +128,8 @@ def _actual_changed_files(
         relative = path.relative_to(root).as_posix()
         relative_parts = Path(relative).parts
         if (
-            any(part in _IGNORED_PARTS for part in relative_parts)
+            _is_workflow_report(relative, scope)
+            or any(part in _IGNORED_PARTS for part in relative_parts)
             or any(WorkspaceManager._is_skipped_dir(part) for part in relative_parts[:-1])
             or WorkspaceManager._is_sensitive(path.name)
         ):

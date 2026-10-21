@@ -48,7 +48,7 @@ def test_shared_candidates_and_evidence_use_same_safe_resolution(tmp_path: Path)
                           candidate_files=["common/helper.py"],
                           source_evidence=[{"path": "common/helper.py", "symbol": "value", "finding": "fact"}])
     _validate_output_paths(root, (str(carrier), str(common)), carrier, output, shared)
-    assert output.recommended_scope == "project"
+    assert output.recommended_scope == "carrier"
     for path in ("../outside.py", "common/missing.py", "other/carrier.py"):
         output.candidate_files = [path]
         with pytest.raises(ValueError):

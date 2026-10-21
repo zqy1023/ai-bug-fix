@@ -25,6 +25,8 @@ export function taskFailure(detail: TaskDetailResponse): string {
 }
 
 export function taskCanRetry(detail: TaskDetailResponse): boolean {
+  const manual = ['MANUAL', 'INSUFFICIENT_EVIDENCE'].includes(taskState(detail.task));
+  if (manual) return !detail.worker_active && !detail.task.approval_pending;
   return taskHasFailed(detail.task)
     && ['failed', 'partial_failed', 'succeeded'].includes(detail.run_status)
     && !detail.worker_active && !detail.task.approval_pending

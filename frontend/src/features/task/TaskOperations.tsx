@@ -29,6 +29,7 @@ export const TaskOperations: FC<TaskOperationsProps> = ({ detail, onInspect, onR
     mutationFn: () => api.retryTask(detail.run_id, detail.task.task_id),
     onSuccess: async (response) => {
       message.success(response.message);
+      if (response.run_id && response.run_id !== detail.run_id) navigate(`/runs/${encodeURIComponent(response.run_id)}/tasks/${encodeURIComponent(detail.task.task_id)}`);
       await Promise.all([
         client.invalidateQueries({ queryKey: queryKeys.task(detail.run_id, detail.task.task_id) }),
         client.invalidateQueries({ queryKey: queryKeys.run(detail.run_id) }),
@@ -52,7 +53,7 @@ export const TaskOperations: FC<TaskOperationsProps> = ({ detail, onInspect, onR
         <div className="task-operations-buttons">
           <Tooltip title="重新获取任务状态"><Button aria-label="刷新任务" icon={<ReloadOutlined spin={refreshing} />} onClick={onRefresh} /></Tooltip>
           <Button icon={<FileSearchOutlined />} onClick={onInspect}>{failed ? '定位失败节点' : '执行记录'}</Button>
-          {taskCanRetry(detail) && <Button type="primary" icon={<ReloadOutlined />} loading={retry.isPending} onClick={() => retry.mutate()}>重试此任务</Button>}
+          {taskCanRetry(detail) && <Button type="primary" icon={<ReloadOutlined />} loading={retry.isPending} onClick={() => retry.mutate()}>{['MANUAL', 'INSUFFICIENT_EVIDENCE'].includes(taskState(detail.task)) ? '重新调查此任务' : '重试此任务'}</Button>}
           {detail.task.approval_pending && <Button type="primary" onClick={() => navigate('/approvals')}>处理审批 <ArrowRightOutlined /></Button>}
           {detail.run_error?.status && detail.run_error.error_type !== 'WORKFLOW_FAILED' && (
             <Button onClick={() => navigate(`/runs/${encodeURIComponent(detail.run_id)}`)}>处理批次异常 <ArrowRightOutlined /></Button>

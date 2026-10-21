@@ -26,7 +26,7 @@ def test_source_delivery_failure_is_not_reclassified_as_analysis_only():
     assert after_finalize(state) == END
 
 
-def test_explicit_legacy_analysis_task_delivers_report_then_ends():
+def test_legacy_carrier_uses_source_delivery_and_approval():
     state = {
         "last_result": "passed",
         "delivery": {"delivery_status": "SUCCESS"},
@@ -35,8 +35,8 @@ def test_explicit_legacy_analysis_task_delivers_report_then_ends():
         "ai_workspace_path": "/workspace/task",
     }
 
-    assert after_finalize(state) == DELIVER
-    assert after_delivery(state) == END
+    assert after_finalize(state) == END
+    assert after_delivery(state) == APPROVE
 
 
 def test_review_manual_submits_source_branch_before_final_approval():

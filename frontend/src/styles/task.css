@@ -323,7 +323,7 @@
 .business-note p { margin: 5px 0 0; color: var(--wb-ink-muted); font-size: 12px; line-height: 1.6; }
 .step-summary {
   margin: 6px 0 0; color: var(--wb-ink-muted); font-size: 12px; line-height: 1.6;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  display: block; overflow: visible; white-space: pre-wrap; overflow-wrap: anywhere;
 }
 
 /* 分析结论抽屉：结论卡放进 Drawer 时去掉卡片外框，避免盒中盒。 */

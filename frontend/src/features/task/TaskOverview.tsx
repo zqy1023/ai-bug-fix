@@ -496,7 +496,7 @@ export function TaskOverview({
             <div className="analysis-result">
               <div className="analysis-root-cause">
                 <label>根因摘要</label>
-                <p className="analysis-root-cause-summary">{shortText(rootCause || analysisSummary || '已完成定位，尚未生成简短根因摘要。')}</p>
+                <p className="analysis-root-cause-summary">{rootCause || analysisSummary || '尚未生成根因结论。'}</p>
               </div>
               {(rootCause.length > 220 || (analysisSummary && analysisSummary !== rootCause) || facts.length > 0 || evidence.length > 0 || evidenceGaps.length > 0) && (
                 <details className="overview-inline-details analysis-evidence-details">

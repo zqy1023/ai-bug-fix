@@ -23,11 +23,12 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _patch(output: dict[str, Any]) -> dict[str, Any]:
-    """预检结论回写状态；纯旧框架仍需 Locate 分析，但不进入修复。"""
-    patch: dict[str, Any] = {"evidence": output}
-    if output.get("legacy_only") or output.get("legacy_dependency"):
-        patch["terminal_status"] = "manual"
-    return patch
+    """预检结论回写状态；新旧框架都交给 Locate 决定是否可修复。
+
+    ``legacy_only`` / ``legacy_dependency`` 只是证据标签，不能在预检阶段
+    把任务提前终止，否则旧框架永远到不了 repair_agent。
+    """
+    return {"evidence": output}
 
 
 SPEC = StepSpec(

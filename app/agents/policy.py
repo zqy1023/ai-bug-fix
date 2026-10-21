@@ -142,7 +142,7 @@ class ToolPolicy:
         elif request.agent_role == "repair":
             expected_reads = tuple(carrier_read_paths(workspace, expected_carrier, shared_root, carrier))
         else:
-            expected_reads = (expected_carrier,)
+            expected_reads = tuple(dict.fromkeys([expected_carrier, *carrier_write_paths(workspace, carrier)]))
         expected_reads = tuple(dict.fromkeys(expected_reads))
 
         actual_reads = tuple(Path(value).resolve() for value in request.allowed_read_roots)

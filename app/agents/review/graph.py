@@ -270,7 +270,8 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
         max_chars=config.max_context_chars,
         max_candidates=config.max_candidate_files,
     )
-    roots = (str(carrier_root.resolve()),)
+    from app.agents.policy import carrier_write_paths
+    roots = tuple(str(path) for path in dict.fromkeys([carrier_root.resolve(), *carrier_write_paths(Path(workspace), carrier)]))
     request_context = prompt_context(
         "review",
         state,

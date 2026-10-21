@@ -1,3 +1,5 @@
+import { outcomeText } from './StepOutcome';
+import { StatusBadge } from '../../components/StatusBadge';
 import { useMemo } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Alert, Button, Result, Skeleton, Tabs } from 'antd';
@@ -91,6 +93,14 @@ export function TaskWorkspace() {
       />
       {tab === 'overview' && <TaskOverview detail={task.data} onOpenStep={selectStep} />}
       {executionOpen && <section className="execution-section">
+        <div className="execution-ledger">
+          <header><h3>逐步骤执行结论</h3><span>每一步的结果与依据均保留，点击查看证据</span></header>
+          {steps.map((record, index) => <button type="button" key={record.name} onClick={() => selectStep(record.name)} className={'ledger-row' + (selected === record.name ? ' is-selected' : '')}>
+            <span className="ledger-index">{String(index + 1).padStart(2, '0')}</span>
+            <div><strong>{record.title || record.name}</strong><p>{outcomeText(record)}</p></div>
+            <div className="ledger-status"><StatusBadge kind="step" value={record.status} /><span>{record.result || '—'}</span></div>
+          </button>)}
+        </div>
         {executionOpen && (
           steps.length ? (
             <div className="task-layout">

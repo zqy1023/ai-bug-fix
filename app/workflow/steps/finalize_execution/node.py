@@ -62,7 +62,7 @@ def run(ctx: StepContext, data: FinalizeInput) -> FinalizeOutput:
         "completed_steps": [record.name for record in records if record.status in {"succeeded", "skipped"}],
     }
     path = ctx.store.write_artifact(ctx.run.run_id, FINAL_REPORT, report, data.task_id)
-    if data.ai_workspace_path:
+    if data.ai_workspace_path and data.report_destination:
         workspace = Path(data.ai_workspace_path).resolve()
         if workspace.is_dir():
             report_path = (workspace / data.report_destination).resolve()

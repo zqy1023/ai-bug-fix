@@ -152,7 +152,7 @@ def _references_legacy(new_root: Path | None, legacy_root: Path | None) -> bool:
 
 
 def _legacy_reason(carrier: str, chain: list[str], new_dir: str = "") -> str:
-    """旧框架转人工的原因文案，报告里直接可读。"""
+    """保留旧框架证据说明，供定位报告使用。"""
     entry = f"{new_dir}/main.py" if new_dir else f"gathers/{carrier}/main.py"
     missing_entry = f"缺少新框架入口 {entry}"
     if chain:
@@ -168,7 +168,7 @@ def _legacy_reason(carrier: str, chain: list[str], new_dir: str = "") -> str:
 
 
 def run(ctx: StepContext, data: EvidenceInput) -> EvidenceOutput:
-    """定位唯一 carrier 目录并返回有限候选文件。旧框架任务不进入修复。"""
+    """定位唯一 carrier 目录并返回有限候选文件，新旧框架均可进入修复。"""
     if not is_registered_service(data.service_name):
         raise StepFailed(f"service_name 未注册，禁止准备修复证据: {data.service_name}")
     if not data.workspace_path:

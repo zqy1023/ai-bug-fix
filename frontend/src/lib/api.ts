@@ -144,7 +144,7 @@ export const api = {
   retryRun: (runId: string) =>
     request<{ status: string; mode: 'resume' | 'restart'; message?: string }>('/runs/' + encode(runId) + '/retry', { method: 'POST' }),
   retryTask: (runId: string, taskId: string) =>
-    request<{ status: string; attempt: number; message?: string }>(
+    request<{ status: string; attempt: number; message?: string; run_id?: string; task_id?: string }>(
       '/runs/' + encode(runId) + '/tasks/' + encode(taskId) + '/retry',
       { method: 'POST' },
     ),

@@ -34,6 +34,10 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
     report_dir = str(evidence.get("carrier_dir") or "").replace("\\", "/").strip("/") or (
         f"{report_framework}/{carrier}"
     )
+    # 只有明确的分析报告任务需要把 final.json 复制到 AI 工作区供交付；
+    # 修复任务若也写入该路径，重试 check_changes 时会被误认为源码新增文件。
+    from app.workflow.routes import _analysis_only_task
+    report_destination = f"{report_dir}/final.json" if _analysis_only_task(state) else ""
     return {
         "task_id": str(state.get("task_id") or ""),
         "carrier": str(task.get("carrier") or ""),
@@ -42,7 +46,7 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         # 不能再一律记成 manual，否则有提交的任务会被显示成"转人工报告"。
         "terminal_status": str(state.get("terminal_status") or ""),
         "ai_workspace_path": str(state.get("ai_workspace_path") or ""),
-        "report_destination": f"{report_dir}/final.json",
+        "report_destination": report_destination,
         "retry_reason": str(state.get("retry_reason") or ""),
         "retry_target": str(state.get("retry_target") or ""),
         "blocked_reason": str(state.get("blocked_reason") or ""),

@@ -15,7 +15,7 @@ from config.settings import settings
 _TAIL_CHARS = settings.regression_tail_chars
 
 
-def _entry(raw: dict[str, Any]) -> dict[str, Any]:
+def _entry(raw: dict[str, Any], *, full: bool = False) -> dict[str, Any]:
     """把一条命令的结果脱敏并留存。
 
     顺序固定：取原始输出 → 记原始字符数 → 脱敏 → 截取脱敏后文本的尾部。先截断会
@@ -31,9 +31,9 @@ def _entry(raw: dict[str, Any]) -> dict[str, Any]:
         # 原始字符数：脱敏会改变长度，两者不相等，必须无歧义。
         "stdout_chars": len(stdout),
         "stderr_chars": len(stderr),
-        "stdout": masked_stdout[-_TAIL_CHARS:],
-        "stderr": masked_stderr[-_TAIL_CHARS:],
-        "truncated": len(masked_stdout) > _TAIL_CHARS or len(masked_stderr) > _TAIL_CHARS,
+        "stdout": masked_stdout if full else masked_stdout[-_TAIL_CHARS:],
+        "stderr": masked_stderr if full else masked_stderr[-_TAIL_CHARS:],
+        "truncated": not full and (len(masked_stdout) > _TAIL_CHARS or len(masked_stderr) > _TAIL_CHARS),
     }
 
 
@@ -81,7 +81,7 @@ def run(ctx: StepContext, data: RegressionInput) -> RegressionOutput:
     if results or workspace_changes:
         report: dict[str, Any] = {
             "reason": reason,
-            "commands": [_entry(item) for item in results],
+            "commands": [_entry(item, full=True) for item in results],
         }
         if workspace_changes:
             report["workspace_changes"] = workspace_changes

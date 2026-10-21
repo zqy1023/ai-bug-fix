@@ -1,3 +1,4 @@
+import { StepOutcome, VerificationEvidence } from './StepOutcome';
 import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Skeleton, Tabs } from 'antd';
@@ -78,10 +79,11 @@ export function StepDetail({
     || (step.result ? FAILED_RESULTS.has(String(step.result).toUpperCase()) : false);
 
   const items = [
-    { key: 'input', label: '输入', children: <JsonViewer value={step.input ?? {}} /> },
+    { key: 'conclusion', label: '结论与证据', children: <><StepOutcome step={step} /><VerificationEvidence runId={runId} taskId={taskId} step={step} /></> },
+    { key: 'input', label: '原始输入', children: <JsonViewer value={step.input ?? {}} /> },
     {
       key: 'output',
-      label: '输出',
+      label: '原始输出',
       children: step.status === 'running' || step.status === 'pending'
         ? <EmptyState title="输出尚未落盘" description="步骤仍在执行或尚未开始；完成后输出会写入步骤记录。" compact />
         : <JsonViewer value={step.output ?? {}} />,
@@ -130,7 +132,7 @@ export function StepDetail({
     },
   ];
 
-  const currentTab = tab ?? (stepFailed ? 'error' : 'output');
+  const currentTab = tab ?? 'conclusion';
 
   return (
     <section className="step-detail">
@@ -143,7 +145,7 @@ export function StepDetail({
             {step.result && FAILED_RESULTS.has(String(step.result).toUpperCase()) ? (
               <>
                 <StatusBadge kind="task" value={step.result} />
-                <span className="step-exec-note">执行成功</span>
+                <span className="step-exec-note">{step.status === 'failed' ? '执行异常' : '执行完成'}</span>
               </>
             ) : (
               <StatusBadge kind="step" value={step.status} />
@@ -159,13 +161,8 @@ export function StepDetail({
         </div>
         {step.summary && (
           <div className="step-summary-block">
-            <p className="step-summary">{compactText(step.summary, 220)}</p>
-            {step.summary.length > 220 && (
-              <details className="step-long-text">
-                <summary>查看完整步骤摘要（{step.summary.length} 字符）</summary>
-                <p>{step.summary}</p>
-              </details>
-            )}
+            <p className="step-summary">{step.summary}</p>
+
           </div>
         )}
       </header>
