@@ -17,6 +17,7 @@ from app.workflow.state import RunState, WorkflowState
 from app.workflow.definitions import TASK_CONDITIONAL_TRANSITIONS, TASK_NODE_NAMES, TASK_STATIC_TRANSITIONS
 from app.workflow.routes import (
     RUN_PREPARE,
+    SOURCE_SYNC,
     after_run_prepare,
     APPROVE,
     CHECK,
@@ -59,15 +60,17 @@ RUN_TASK = "run_task"
 TASK_DISPATCH = "task_dispatch"
 TASK_COLLECT = "task_collect"
 
-_RUN_NODES = (RUN_PREPARE, IDENTIFY)
+_RUN_NODES = (SOURCE_SYNC, RUN_PREPARE, IDENTIFY)
 
 
 
 def _transient_retry() -> RetryPolicy:
     """瞬时错误重试策略。"""
+    from app.infrastructure.git.source import SourceRepoError
+
     return RetryPolicy(
         max_attempts=settings.graph_retry_attempts,
-        retry_on=(TimeoutError, ConnectionError, OSError),
+        retry_on=(TimeoutError, ConnectionError, OSError, SourceRepoError),
     )
 
 
@@ -260,15 +263,16 @@ def build_graph(
 ) -> CompiledStateGraph:
     """编译 run 级主图。``task_graph`` 作为 ``run_task`` 节点嵌套进来。"""
     graph: StateGraph = StateGraph(RunState)
-    # 只有日志拉取是无副作用的外部读取，允许瞬时故障自动重试。
+    # 源仓库同步与日志发现/规范化允许有限的瞬时故障重试；任务图副作用节点不使用通用重试。
     retry = _transient_retry()
     for name in _RUN_NODES:
-        graph.add_node(name, nodes[name], retry_policy=retry if name == RUN_PREPARE else None)
+        graph.add_node(name, nodes[name], retry_policy=retry if name in {SOURCE_SYNC, RUN_PREPARE} else None)
     graph.add_node(TASK_DISPATCH, dispatch)
     graph.add_node(RUN_TASK, task_graph)
     graph.add_node(TASK_COLLECT, collect)
 
-    graph.add_edge(START, RUN_PREPARE)
+    graph.add_edge(START, SOURCE_SYNC)
+    graph.add_edge(SOURCE_SYNC, RUN_PREPARE)
     graph.add_conditional_edges(RUN_PREPARE, after_run_prepare, [IDENTIFY, END])
     graph.add_conditional_edges(IDENTIFY, after_identify, [TASK_DISPATCH, END])
     graph.add_conditional_edges(TASK_DISPATCH, after_dispatch, [RUN_TASK, END])
