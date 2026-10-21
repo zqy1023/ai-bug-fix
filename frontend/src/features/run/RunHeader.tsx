@@ -1,5 +1,5 @@
 import { App, Button, Tooltip } from 'antd';
-import { CaretRightOutlined, PauseOutlined, StopOutlined } from '@ant-design/icons';
+import { CaretRightOutlined, PauseOutlined, ReloadOutlined, StopOutlined } from '@ant-design/icons';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../../lib/api';
 import { queryKeys } from '../../lib/queryKeys';
@@ -29,13 +29,14 @@ export function RunHeader({ run }: { run: RunDetail }) {
   };
 
   const control = useMutation({
-    mutationFn: async (action: 'pause' | 'resume' | 'cancel') => {
+    mutationFn: async (action: 'pause' | 'resume' | 'cancel' | 'retry') => {
       if (action === 'pause') return api.pauseRun(run.run_id);
       if (action === 'resume') return api.resumeRun(run.run_id);
+      if (action === 'retry') return api.retryRun(run.run_id);
       return api.cancelRun(run.run_id);
     },
     onSuccess: async (result, action) => {
-      message.success(result.message ?? (action === 'pause' ? '已请求暂停' : action === 'resume' ? '已提交恢复' : '已请求停止'));
+      message.success(result.message ?? (action === 'pause' ? '已请求暂停' : action === 'resume' ? '已提交恢复' : action === 'retry' ? '已提交 Run 重试' : '已请求停止'));
       await invalidate();
     },
     onError: (error) => message.error(error instanceof ApiError ? error.message : '操作失败'),
@@ -44,7 +45,8 @@ export function RunHeader({ run }: { run: RunDetail }) {
   const status = run.status;
   const canPause = ['running', 'queued', 'pause_requested'].includes(status);
   const canResume = ['paused', 'failed'].includes(status) && Boolean(run.checkpoint?.resumable);
-  const canCancel = ['running', 'queued', 'paused', 'pause_requested'].includes(status);
+  const canRetry = status === 'failed' && !run.worker_active;
+  const canCancel = ['running', 'queued', 'paused', 'pause_requested', 'cancel_requested'].includes(status) || Boolean(run.worker_active);
 
   const confirmCancel = () => {
     modal.confirm({
@@ -80,6 +82,15 @@ export function RunHeader({ run }: { run: RunDetail }) {
         </div>
       </div>
       <div className="run-header-actions">
+        {canRetry && (
+          <Tooltip title={run.checkpoint?.resumable ? '从失败节点的 LangGraph checkpoint 恢复' : '重试失败的启动阶段'}>
+            <Button
+              icon={<ReloadOutlined />}
+              loading={control.isPending && control.variables === 'retry'}
+              onClick={() => control.mutate('retry')}
+            >重试本轮</Button>
+          </Tooltip>
+        )}
         <Tooltip title={canPause ? '在下一个节点边界暂停' : '当前状态不可暂停'}>
           <Button
             icon={<PauseOutlined />}
