@@ -81,6 +81,9 @@ export function RunHeader({ run }: { run: RunDetail }) {
           {(run.phase || run.run_lifecycle?.current_step) && (
             <span>当前阶段 {run.run_lifecycle?.current_step || run.phase}</span>
           )}
+          {run.worker_active && run.run_error?.message && (
+            <span className="run-phase">后台正在收尾；停止与刷新控制仍可用</span>
+          )}
           {(run.run_lifecycle?.attempt ?? 0) > 1 && (
             <span>第 {run.run_lifecycle?.attempt} 次尝试</span>
           )}
