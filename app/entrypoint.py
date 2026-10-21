@@ -108,14 +108,15 @@ def run_workflow(
         run_id, overrides=overrides, allow_prepared=prepared
     )
     try:
-        from app.infrastructure.git.source import sync_source_repo
         from app.workflow.wiring import build_graph, build_services
 
-        # URL 模式在执行入口克隆/拉取镜像，分支预检和交付都基于同一份最新远端状态。
-        source_repo = sync_source_repo(config)
+        # 源仓库同步放在 LangGraph 的首个节点中：原生 RetryPolicy 可重试，
+        # 同时 checkpoint 会记录失败节点，允许工作台从该节点恢复。
+        source_repo = config.source_repo
         graph = build_graph(
             store=store,
             services=build_services(config=config, source_repo=source_repo),
+            config=config,
         )
         final_state = graph.invoke(
             {
