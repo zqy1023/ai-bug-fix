@@ -121,7 +121,8 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
             carrier = str((report or {}).get("carrier") or _task_identity(slot, "carrier"))
             biztype = str((report or {}).get("biztype") or _task_identity(slot, "biztype"))
             task_lifecycle = lifecycle_store.read_task(run_id, task_id)
-            inferred_status = str((report or {}).get("result") or _task_status(task_steps, approval))
+            derived_step_status = _task_status(task_steps, approval)
+            inferred_status = derived_step_status
             lifecycle_status = str(task_lifecycle.get("status") or "").lower()
             task_status_labels = {
                 "pending": "PENDING", "queued": "PENDING", "running": "RUNNING",
@@ -145,10 +146,14 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
                     "legacy_report": True,
                 }
             approval_pending = _approval_pending(approval) or lifecycle_status == "waiting_approval"
-            task_status = task_status_labels.get(lifecycle_status) or str(report.get("result") or inferred_status).upper()
-            # Active lifecycle is newer than any previous attempt's stale failed/final report.
-            if lifecycle_status in {"running", "retrying", "queued"}:
-                task_status = task_status_labels[lifecycle_status]
+            active_derived_statuses = {"RUNNING", "PENDING", "WAITING_APPROVAL", "PAUSED"}
+            task_status = (
+                task_status_labels[lifecycle_status]
+                if lifecycle_status in task_status_labels
+                else derived_step_status
+                if derived_step_status in active_derived_statuses
+                else str(report.get("result") or derived_step_status).upper()
+            )
             tasks.append({
                 "task_id": task_id, "carrier": carrier, "biztype": biztype,
                 "status": task_status,
