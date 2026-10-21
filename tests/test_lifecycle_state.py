@@ -84,3 +84,24 @@ def test_pending_approval_is_not_misreported_as_failed():
     ]
 
     assert _task_status(steps, approval={"status": "waiting", "output": {"decision": "PENDING"}}) == "WAITING_APPROVAL"
+
+
+def test_automatic_retry_budget_is_separate_from_lifetime_attempt():
+    from app.workflow.routes import FINALIZE, RETRY, _retry_or_finalize
+
+    assert _retry_or_finalize({
+        "attempt": 9, "automatic_attempt": 1, "max_attempts": 3,
+    }) == RETRY
+    assert _retry_or_finalize({
+        "attempt": 9, "automatic_attempt": 3, "max_attempts": 3,
+    }) == FINALIZE
+
+
+def test_source_sync_cancel_routes_directly_to_end():
+    from langgraph.graph import END
+    from app.workflow.routes import after_source_sync
+
+    assert after_source_sync({
+        "last_result": "cancelled", "terminal_status": "CANCELLED",
+    }) == END
+    assert after_source_sync({"last_result": "passed"}) == "discover_and_normalize"
