@@ -37,6 +37,7 @@ from app.application.context import RunContext, StepContext, TaskContext
 from app.workflow.spec import StepSpec
 from app.domain.approval import APPROVAL_RETRY_TARGETS
 from app.domain.errors import StepFailed
+from app.workflow.routes import CLAIM, DELIVER, FINALIZE, PREPARE_CONTEXT, REGRESSION, VALIDATE
 from langgraph.errors import GraphInterrupt
 from langgraph.types import interrupt
 from pydantic import ValidationError
@@ -125,29 +126,25 @@ def run_stage(
             **_views(spec),
         )
     except Exception as error:
-        # Agent SDK/API/进程级异常不能直接冒泡出任务子图；按 Agent 执行失败记录，
-        # 由 after_* 路由进入有界 retry，耗尽后只结束当前 task。
-        if spec.name in {"locate_agent", "repair_agent", "review_agent"}:
-            return _save_fail(
-                spec,
-                store,
-                state,
-                record,
-                task_id,
-                artifacts,
-                started,
-                StepFailed(
-                    public_exception(error, prefix=f"{spec.name} 执行异常"),
-                    result="failed",
-                    code="AGENT_EXECUTION_ERROR",
-                    output={
-                        "retry_target": spec.name,
-                        "failure_reason": public_exception(error, prefix="Agent 执行失败"),
-                    },
-                ),
-                **_views(spec),
-            )
-        raise
+        # Step plugins must fail inside the task graph, not escape the nested subgraph
+        # and abort every carrier in the run. The router decides whether to retry or finalize.
+        reason = public_exception(error, prefix=f"步骤 {spec.name} 执行异常")
+        return _save_fail(
+            spec,
+            store,
+            state,
+            record,
+            task_id,
+            artifacts,
+            started,
+            StepFailed(
+                reason,
+                result="failed",
+                code=error_code_of("system_crash"),
+                output={"failure_reason": reason},
+            ),
+            **_views(spec),
+        )
     output_payload = dump_model(checked)
     status, business = map_outcome(
         kind="ok",
@@ -177,6 +174,21 @@ def run_stage(
             elapsed_ms=record.duration_ms,
         ),
     )
+
+
+def _retry_target_for_step(step_name: str) -> str:
+    """Map an atomic plugin failure to its owning graph phase for bounded task retry."""
+    if step_name in {"prepare_source_snapshot", "repair_branch_preflight", "prepare_workspace", "prepare_evidence"}:
+        return PREPARE_CONTEXT
+    if step_name in {"check_changes", "verify_issue"}:
+        return VALIDATE
+    if step_name == "run_regression":
+        return REGRESSION
+    if step_name == "prepare_delivery":
+        return DELIVER
+    if step_name == "claim_repair_slot":
+        return CLAIM
+    return ""
 
 
 def _failure_route_patch(result: StepResult) -> dict[str, Any]:
@@ -256,11 +268,16 @@ def bind(
                 patch["retry_target"] = target
                 patch["retry_reason"] = retry_reason
         else:
-            # Agent 调用异常时只回写白名单内的重试元数据，不把异常输出当成业务结果。
-            # 否则 after_retry 看不到 retry_target，定位失败会错误地回到 repair_agent。
+            # 只对明确可恢复的原子步骤设置任务子图的有界重试目标。
             patch = _failure_route_patch(result)
-            # 交付失败必须留下状态。终态之后会按审查通过再次进入交付，
-            # 不标记的话，一个 git 异常会在当前任务里来回打转。
+            if result.failure is not None and result.failure.recoverable:
+                target = _retry_target_for_step(spec.name)
+                if target:
+                    patch.update({
+                        "retry_target": target,
+                        "retry_reason": str(result.failure.reason or "步骤执行失败")[:2000],
+                    })
+            # 交付失败必须留下状态，但 after_delivery 会先进行有界重试。
             if spec.name == "prepare_delivery":
                 patch = {**patch, "delivery": {"delivery_status": "FAILED"}}
 
