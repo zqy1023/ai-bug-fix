@@ -31,7 +31,8 @@ export function RunGraph({ run }: { run: RunDetail }) {
     const taskStates = tasks.map((task) => String(task.result || '').toUpperCase());
     const terminal = run.terminal ?? TERMINAL_RUN.has(run.status);
     const tasksRunning = taskStates.some((state) => ['RUNNING', 'RETRYING', 'PENDING'].includes(state));
-    const tasksWaiting = tasks.some((task) => task.approval_pending);
+    const tasksWaiting = tasks.some((task) => task.approval_pending || String(task.result).toUpperCase() === 'WAITING_APPROVAL');
+    const tasksPaused = taskStates.some((state) => state === 'PAUSED');
     const tasksFailed = taskStates.some((state) => ['FAILED', 'FAIL', 'REJECTED'].includes(state));
 
     // checkpoint.next_nodes 是“下一步要执行的节点”，用它判断图是否真的推进到了
@@ -52,7 +53,7 @@ export function RunGraph({ run }: { run: RunDetail }) {
     ]);
     const identifyStatus = pick(steps, ['identify_carrier']);
 
-    const taskStatus: StepStatus = tasksWaiting ? 'waiting'
+    const taskStatus: StepStatus = tasksWaiting || tasksPaused ? 'waiting'
       : tasksRunning ? 'running'
         : tasks.length ? (tasksFailed ? 'failed' : 'succeeded')
           : terminal ? 'skipped'
