@@ -87,7 +87,8 @@ class LifecycleStore:
                 value["finished_at"] = now
             elif value.get("status") in _ACTIVE:
                 value["finished_at"] = None
-                value.setdefault("started_at", now)
+                if not value.get("started_at"):
+                    value["started_at"] = now
                 value["heartbeat_at"] = now
             temporary = path.with_name(path.name + f".{os.getpid()}.{threading.get_ident()}.tmp")
             temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
