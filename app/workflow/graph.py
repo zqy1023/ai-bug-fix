@@ -164,6 +164,7 @@ def build_task_graph(
                         }
                 patch: dict[str, Any] = {
                     "attempt": int(state.get("attempt") or 1) + 1,
+                    "automatic_attempt": int(state.get("automatic_attempt") or state.get("attempt") or 1) + 1,
                     "decision": "PENDING",
                     "approval_granted": False,
                     "review_decision": str(state.get("review_decision") or "") if target == DELIVER else "",
@@ -255,6 +256,9 @@ def dispatch(state: RunState) -> dict[str, Any]:
     if cursor >= len(tasks):
         return {"last_result": "passed"}
     task = dict(tasks[cursor])
+    # A manual task re-run reuses the original task input but increments its lifetime
+    # attempt. Automatic retry budget starts from one for this new execution cycle.
+    task_attempt = int(task.pop("_workflow_attempt", 1) or 1)
     return {
         "task_cursor": cursor,
         "task_id": str(task.get("task_id") or ""),
@@ -262,7 +266,8 @@ def dispatch(state: RunState) -> dict[str, Any]:
         "problem": dict(task.get("problem") or {}),
         "terminal_status": "",
         "task_summary": {},
-        "attempt": 1,
+        "attempt": task_attempt,
+        "automatic_attempt": 1,
         "retry_reason": "",
         "last_result": "passed",
     }
