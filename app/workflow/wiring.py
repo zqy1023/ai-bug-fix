@@ -21,8 +21,11 @@ from app.workflow.graph import build_graph as build_state_graph
 from app.workflow.graph import build_task_graph
 from app.workflow.definitions import PHASE_COMPOSITIONS
 from app.domain.errors import StepFailed
+from app.application.audit import StepError, StepRecord
+from app.domain.models import utc_now
+from app.infrastructure.git.source import sync_source_repo
 from app.workflow.runner import bind
-from app.workflow.routes import FINALIZE
+from app.workflow.routes import FINALIZE, SOURCE_SYNC
 from app.infrastructure.records.store import RecordStore
 from app.infrastructure.redaction import public_exception
 from app.application.services import WorkflowServices
@@ -330,6 +333,55 @@ def build_agent_node(
     return _agent_node(spec, builder(runtime), store)
 
 
+def _source_sync_node(
+    config: RuntimeConfig,
+    store: RecordStore,
+) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """同步源仓库作为真正的 LangGraph 节点，使 RetryPolicy 和 checkpoint 能接管失败。"""
+    def node(state: dict[str, Any]) -> dict[str, Any]:
+        run_id = str(state.get("run_id") or "")
+        if not run_id:
+            raise RuntimeError("sync_source_repo 缺少 run_id")
+        previous = store.load(run_id, SOURCE_SYNC)
+        attempt = (previous.attempt if previous else 0) + 1
+        record = StepRecord(
+            name=SOURCE_SYNC,
+            title="同步源仓库",
+            status="running",
+            attempt=attempt,
+            started_at=utc_now(),
+            input={
+                "source_repo_configured": config.source_repo is not None,
+                "remote_configured": bool(config.source_url),
+            },
+        )
+        store.save(run_id, record)
+        try:
+            source_repo = sync_source_repo(config)
+        except Exception as error:
+            record.status = "failed"
+            record.finished_at = utc_now()
+            record.duration_ms = 0
+            record.summary = public_exception(error, prefix="源仓库同步失败")
+            record.output = {"failure_reason": record.summary}
+            record.error = StepError(
+                code="STEP_EXECUTION_FAILED",
+                message=record.summary,
+                retryable=True,
+            )
+            store.save(run_id, record)
+            raise
+        record.status = "succeeded"
+        record.finished_at = utc_now()
+        record.output = {"source_repo_path": str(source_repo or "")}
+        record.summary = "源仓库同步完成"
+        store.save(run_id, record)
+        return {"source_repo_path": str(source_repo or ""), "last_result": "passed"}
+
+    node.__name__ = SOURCE_SYNC
+    return node
+
+
 def build_nodes(
     store: RecordStore,
     services: WorkflowServices,
@@ -349,6 +401,7 @@ def build_nodes(
     # artifact、单步调试入口和失败结果语义均保持不变。
     for phase_name, step_names in PHASE_COMPOSITIONS.items():
         nodes[phase_name] = _compose_phase(step_names, nodes)
+    nodes[SOURCE_SYNC] = _source_sync_node(load_config(), store)
     return nodes
 
 
@@ -717,18 +770,19 @@ def build_graph(
     services: WorkflowServices | None = None,
     runtimes: dict[str, Any] | None = None,
     checkpointer: Any = None,
+    config: RuntimeConfig | None = None,
 ) -> CompiledStateGraph:
     """编译主图。仓库未显式给出时按配置目录新建，不依赖全局单例。
 
     先编译任务子图，再把它作为节点嵌套进 run 级主图。
     """
-    resolved_store = store or RecordStore(load_config().runtime_dir)
+    resolved_config = config or load_config()
+    resolved_store = store or RecordStore(resolved_config.runtime_dir)
     if checkpointer is None:
-        runtime_dir = load_config().runtime_dir
-        saver = _checkpoint_saver(runtime_dir)
+        saver = _checkpoint_saver(resolved_config.runtime_dir)
     else:
         saver = checkpointer
-    resolved_services = services or build_services()
+    resolved_services = services or build_services(config=resolved_config)
     nodes = build_nodes(resolved_store, resolved_services, runtimes)
     task_graph = build_task_graph(
         nodes,
