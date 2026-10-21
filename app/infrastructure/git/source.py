@@ -16,6 +16,8 @@ import stat
 import subprocess
 import threading
 import uuid
+import time
+from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -28,6 +30,10 @@ from app.infrastructure.redaction import redact_output
 
 class SourceRepoError(RuntimeError):
     """源仓库克隆、拉取或本地镜像校验失败。"""
+
+
+class SourceRepoCancelled(SourceRepoError):
+    """Run 收到用户停止请求，已主动终止当前 Git 子进程。"""
 
 
 # 同一进程内的运行串行同步镜像；不同进程共享镜像属于部署错误，不在处理范围。
@@ -56,6 +62,8 @@ def _apply_sparse_checkout(
     cone: str,
     env: dict[str, str],
     timeout: int,
+    *,
+    cancel_requested: Callable[[], bool] | None = None,
 ) -> None:
     """把镜像工作树收敛到业务目录；老版本 Git 或不支持的路径只降级为完整检出。
 
@@ -91,26 +99,37 @@ def git_auth_env(username: str, password: str) -> dict[str, str]:
     return env
 
 
-def sync_source_repo(config: RuntimeConfig) -> Path | None:
-    """解析本轮源仓库路径；URL 模式先克隆或拉取受控镜像。"""
+def sync_source_repo(
+    config: RuntimeConfig,
+    *,
+    cancel_requested: Callable[[], bool] | None = None,
+) -> Path | None:
+    """解析本轮源仓库路径；URL 模式先克隆或拉取受控镜像，可响应 Run 取消信号。"""
     if not config.source_url:
         return config.source_repo
     if config.source_repo is None:
         raise SourceRepoError("远程源仓库镜像目录未配置")
     mirror = Path(config.source_repo)
     with _SYNC_LOCK:
-        _sync_mirror(config, mirror)
+        if cancel_requested and cancel_requested():
+            raise SourceRepoCancelled("Run 已请求停止，源仓库同步未启动")
+        _sync_mirror(config, mirror, cancel_requested=cancel_requested)
     return mirror
 
 
-def _sync_mirror(config: RuntimeConfig, mirror: Path) -> None:
+def _sync_mirror(
+    config: RuntimeConfig,
+    mirror: Path,
+    *,
+    cancel_requested: Callable[[], bool] | None = None,
+) -> None:
     """克隆缺失镜像，或拉取并使工作树对齐远端默认分支。"""
     env = dict(os.environ)
     env.update(git_auth_env(config.git_username, config.git_password))
     remote = config.git_remote
     timeout = config.git_fetch_timeout_seconds
     if not (mirror / ".git").is_dir():
-        _clone(config, mirror, env, remote, timeout)
+        _clone(config, mirror, env, remote, timeout, cancel_requested=cancel_requested)
         return
     try:
         repo = Repo(mirror)
@@ -120,19 +139,23 @@ def _sync_mirror(config: RuntimeConfig, mirror: Path) -> None:
         if _origin_url(repo, remote) != config.source_url:
             repo.close()
             _force_remove(mirror)
-            _clone(config, mirror, env, remote, timeout)
+            _clone(config, mirror, env, remote, timeout, cancel_requested=cancel_requested)
             return
-        _run_git(["fetch", "--prune", remote], mirror, env, timeout)
+        _run_git(["fetch", "--prune", remote], mirror, env, timeout, cancel_requested=cancel_requested)
         try:
-            _run_git(["remote", "set-head", remote, "--auto"], mirror, env, timeout)
+            _run_git(["remote", "set-head", remote, "--auto"], mirror, env, timeout, cancel_requested=cancel_requested)
+        except SourceRepoCancelled:
+            raise
         except SourceRepoError:
             # 部分服务端不暴露远端 HEAD；_default_branch 会退回 main/master。
             pass
-        branch = _default_branch(mirror, remote, env, timeout)
-        _run_git(["checkout", "-f", "-B", branch, f"{remote}/{branch}"], mirror, env, timeout)
+        branch = _default_branch(mirror, remote, env, timeout, cancel_requested=cancel_requested)
+        _run_git(["checkout", "-f", "-B", branch, f"{remote}/{branch}"], mirror, env, timeout, cancel_requested=cancel_requested)
         # 先清掉旧版本留下的整仓库残留，再把工作树收敛到业务目录。
-        _run_git(["clean", "-fdx"], mirror, env, timeout)
-        _apply_sparse_checkout(mirror, project_cone(config), env, timeout)
+        _run_git(["clean", "-fdx"], mirror, env, timeout, cancel_requested=cancel_requested)
+        _apply_sparse_checkout(
+            mirror, project_cone(config), env, timeout, cancel_requested=cancel_requested,
+        )
     except SourceRepoError:
         raise
     except Exception as error:
@@ -150,6 +173,8 @@ def _clone(
     env: dict[str, str],
     remote: str,
     timeout: int,
+    *,
+    cancel_requested: Callable[[], bool] | None = None,
 ) -> None:
     """克隆到临时目录后原子替换，避免中断留下半成品镜像。
 
@@ -166,8 +191,8 @@ def _clone(
         if cone:
             command.append("--sparse")
         command.extend([config.source_url, str(temporary)])
-        _run_git(command, None, env, timeout)
-        _apply_sparse_checkout(temporary, cone, env, timeout)
+        _run_git(command, None, env, timeout, cancel_requested=cancel_requested)
+        _apply_sparse_checkout(temporary, cone, env, timeout, cancel_requested=cancel_requested)
         temporary.replace(mirror)
     except SourceRepoError:
         _force_remove(temporary)
@@ -177,7 +202,14 @@ def _clone(
         raise SourceRepoError(f"源仓库克隆失败: {_display(config.source_url)}") from error
 
 
-def _default_branch(mirror: Path, remote: str, env: dict[str, str], timeout: int) -> str:
+def _default_branch(
+    mirror: Path,
+    remote: str,
+    env: dict[str, str],
+    timeout: int,
+    *,
+    cancel_requested: Callable[[], bool] | None = None,
+) -> str:
     """读取远端默认分支；符号引用缺失时退回 main/master。"""
     try:
         symbolic = _run_git(
@@ -185,7 +217,10 @@ def _default_branch(mirror: Path, remote: str, env: dict[str, str], timeout: int
             mirror,
             env,
             timeout,
+            cancel_requested=cancel_requested,
         ).strip()
+    except SourceRepoCancelled:
+        raise
     except SourceRepoError:
         symbolic = ""
     prefix = f"{remote}/"
@@ -196,6 +231,7 @@ def _default_branch(mirror: Path, remote: str, env: dict[str, str], timeout: int
         mirror,
         env,
         timeout,
+        cancel_requested=cancel_requested,
     ).splitlines()
     for name in ("main", "master"):
         if f"{prefix}{name}" in refs:
@@ -216,32 +252,59 @@ def _run_git(
     cwd: Path | None,
     env: dict[str, str],
     timeout: int,
+    *,
+    cancel_requested: Callable[[], bool] | None = None,
 ) -> str:
     """执行 Git 命令；失败信息先脱敏再抛出。"""
     command = ["git", *args]
+    process: subprocess.Popen[str] | None = None
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             command,
             cwd=str(cwd) if cwd else None,
             env=env,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout,
         )
+        started = time.monotonic()
+        while True:
+            if cancel_requested and cancel_requested():
+                process.terminate()
+                try:
+                    process.communicate(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate()
+                raise SourceRepoCancelled("Run 已请求停止，已终止正在执行的 Git 命令")
+            remaining = timeout - (time.monotonic() - started)
+            if remaining <= 0:
+                process.kill()
+                stdout, stderr = process.communicate()
+                raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr)
+            try:
+                stdout, stderr = process.communicate(timeout=min(0.5, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                continue
+    except SourceRepoCancelled:
+        raise
     except subprocess.TimeoutExpired as error:
         raise SourceRepoError(
             f"Git 命令超时: git {' '.join(_redact_args(args))}"
         ) from error
     except OSError as error:
         raise SourceRepoError(f"无法执行 Git 命令: {type(error).__name__}") from error
-    if completed.returncode != 0:
-        detail = redact_output((completed.stderr or completed.stdout or "").strip())
+    if process is None:
+        raise SourceRepoError("Git 子进程未能启动")
+    if process.returncode != 0:
+        detail = redact_output((stderr or stdout or "").strip())
         raise SourceRepoError(
             f"Git 命令失败（git {' '.join(_redact_args(args))}）: {detail[-1500:]}"
         )
-    return completed.stdout
+    return stdout
 
 
 def _redact_args(args: list[str]) -> list[str]:
@@ -283,4 +346,4 @@ def _force_remove(path: Path) -> None:
     shutil.rmtree(path, onerror=onerror)
 
 
-__all__ = ["SourceRepoError", "git_auth_env", "sync_source_repo"]
+__all__ = ["SourceRepoCancelled", "SourceRepoError", "git_auth_env", "sync_source_repo"]
