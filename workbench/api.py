@@ -176,12 +176,11 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
     run_lifecycle = lifecycle_store.read_run(run_id)
     lifecycle_status = str(run_lifecycle.get("status") or "").lower()
     run_lock = _RUN_LOCKS.get(run_id)
-    worker_active = bool(run_lock and run_lock.locked())
+    lock_active = bool(run_lock and run_lock.locked())
     heartbeat_at = _parse_time(run_lifecycle.get("heartbeat_at"))
     heartbeat_fresh = bool(heartbeat_at and (datetime.now(timezone.utc) - heartbeat_at).total_seconds() <= 30)
-    worker_active = worker_active or (
-        lifecycle_status in {"queued", "running", "retrying", "cancel_requested", "pause_requested"}
-        and heartbeat_fresh
+    worker_active = lock_active or (
+        bool(run_lifecycle.get("worker_active")) and heartbeat_fresh
     )
 
     if lifecycle_status in {"queued", "running", "retrying", "pause_requested", "cancel_requested"} and not worker_active:
@@ -212,10 +211,12 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
     }
     # A terminal lifecycle must not be shown as running just because the worker
     # still holds its lock while flushing failure artifacts and releasing resources.
-    if lifecycle_status in {"succeeded", "partial_failed", "failed", "cancelled", "manual"}:
-        status = lifecycle_to_run[lifecycle_status]
-    elif worker_active:
+    if worker_active:
+        # If the worker is still unwinding an exception, keep controls usable and the
+        # Run non-terminal until the worker has released its lease.
         status = "running"
+    elif lifecycle_status in {"succeeded", "partial_failed", "failed", "cancelled", "manual"}:
+        status = lifecycle_to_run[lifecycle_status]
     elif lifecycle_status in lifecycle_to_run:
         status = lifecycle_to_run[lifecycle_status]
     elif isinstance(run_failure, dict) and run_failure:
@@ -1113,7 +1114,7 @@ def _start_lifecycle_heartbeat(run_id: str) -> tuple[threading.Event, threading.
     def pulse() -> None:
         while not stop.wait(5):
             try:
-                lifecycle.update_run(run_id, heartbeat_at=datetime.now(timezone.utc).isoformat())
+                lifecycle.update_run(run_id, heartbeat_at=datetime.now(timezone.utc).isoformat(), worker_active=True)
             except Exception:
                 logger.exception("更新运行心跳失败 run_id=%s", run_id)
 
@@ -1287,7 +1288,7 @@ def _run_workflow_background_v1(
     try:
         store = _store()
         LifecycleStore(store.root).update_run(
-            run_id, status="running", phase="workflow_startup", current_step="", error={},
+            run_id, status="running", phase="workflow_startup", current_step="", error={}, worker_active=True,
         )
         heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(run_id)
         run_workflow(run_id, overrides=overrides, prepared=True)
@@ -1300,6 +1301,10 @@ def _run_workflow_background_v1(
             heartbeat_stop.set()
         if heartbeat_thread is not None:
             heartbeat_thread.join(timeout=1)
+        try:
+            LifecycleStore(_store().root).update_run(run_id, worker_active=False)
+        except Exception:
+            logger.exception("清理 Run 活动租约失败 run_id=%s", run_id)
         run_lock.release()
         with _RUN_LOCKS_GUARD:
             _STARTED_RUNS.discard(run_id)
@@ -1571,7 +1576,7 @@ def _resume_workflow_background(
 
         store = _store()
         LifecycleStore(store.root).update_run(
-            run_id, status="running", phase="workflow_resume", current_step="", error={},
+            run_id, status="running", phase="workflow_resume", current_step="", error={}, worker_active=True,
         )
         heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(run_id)
         runtime_config = load_config()
@@ -1635,6 +1640,10 @@ def _resume_workflow_background(
             heartbeat_stop.set()
         if heartbeat_thread is not None:
             heartbeat_thread.join(timeout=1)
+        try:
+            LifecycleStore(_store().root).update_run(run_id, worker_active=False)
+        except Exception:
+            logger.exception("清理恢复 Run 活动租约失败 run_id=%s", run_id)
         run_lock.release()
 
 
