@@ -723,6 +723,10 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
         if kind == "review":
             # 交付门禁读的是审查结论，不能只留在 review 子字典里。
             patch["review_decision"] = str(view.verdict or "")
+        if failed and kind == "repair":
+            patch["retry_target"] = "repair_agent"
+        elif failed and kind == "review":
+            patch["retry_target"] = "review_agent"
         if kind == "repair":
             repair_files = [str(item) for item in (final.get("changed_files") or [])]
             change_plan = dict(final.get("change_plan") or {})
