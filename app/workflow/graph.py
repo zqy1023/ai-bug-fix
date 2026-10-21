@@ -11,9 +11,12 @@ run 级字段与结果汇总。
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
+import uuid
 
 from app.workflow.state import RunState, WorkflowState
+from app.domain.keys import safe_name
 from app.workflow.definitions import TASK_CONDITIONAL_TRANSITIONS, TASK_NODE_NAMES, TASK_STATIC_TRANSITIONS
 from app.workflow.routes import (
     RUN_PREPARE,
@@ -117,9 +120,69 @@ def build_task_graph(
                 # 审查重试是复查同一份改动，重置工作区会删掉待审内容，必须跳过。
                 target = str(state.get("retry_target") or "")
                 manager = workspace_manager
-                # 这些重试阶段要继续审查/验证已修改的工作区，不能先恢复成基线。
-                preserve_workspace_targets = {PREPARE_CONTEXT, CLAIM, VALIDATE, REGRESSION, REVIEW, DELIVER}
+                # 验证/回归/审查/交付重试要继续使用当前改动；准备阶段重试则必须
+                # 归档旧基线和工作区，否则 prepare_source_snapshot / prepare_workspace 会撞目录。
+                preserve_workspace_targets = {CLAIM, VALIDATE, REGRESSION, REVIEW, DELIVER}
                 preserve_workspace = target in preserve_workspace_targets
+                if target == PREPARE_CONTEXT:
+                    if manager is None:
+                        return {
+                            "attempt": int(state.get("attempt") or 1),
+                            "last_result": "failed",
+                            "terminal_status": "failed",
+                            "retry_target": "__retry_reset_failed__",
+                            "retry_reason": "重试准备阶段前未配置工作区管理器，无法安全隔离旧目录",
+                        }
+                    archived: list[tuple[Path, Path]] = []
+                    try:
+                        run_id = str(state.get("run_id") or "")
+                        task_id = str(state.get("task_id") or "")
+                        if not run_id or not task_id:
+                            raise RuntimeError("缺少 run_id/task_id，无法定位旧的任务基线")
+                        root_value = getattr(getattr(manager, "_config", None), "root_dir", None)
+                        if root_value is None:
+                            root_value = getattr(manager, "_root", None)
+                        if root_value is None:
+                            raise RuntimeError("工作区根目录未配置")
+                        workspace_root = Path(root_value).resolve()
+                        task_root = (
+                            workspace_root.parent / "runs" / safe_name(run_id) / "tasks" / safe_name(task_id)
+                        ).resolve()
+                        baseline_value = str(state.get("baseline_dir") or task_root / "source_snapshot")
+                        baseline = Path(baseline_value).resolve()
+                        if not baseline.is_relative_to(task_root):
+                            raise RuntimeError("源码基线超出当前 Task 目录")
+                        workspace_value = str(state.get("ai_workspace_path") or "")
+                        workspace = (
+                            Path(workspace_value).resolve()
+                            if workspace_value
+                            else (workspace_root / "ai" / manager._safe_name(f"{run_id}-{task_id}")).resolve()
+                        )
+                        if not workspace.is_relative_to(workspace_root):
+                            raise RuntimeError("隔离工作区超出配置的 workspace_root")
+                        suffix = f".previous-attempt-{int(state.get('attempt') or 1) + 1}-{uuid.uuid4().hex[:8]}"
+                        for original in (baseline, workspace):
+                            if original.exists():
+                                archive = original.with_name(original.name + suffix)
+                                original.replace(archive)
+                                archived.append((original, archive))
+                        # Old directories have been archived, so this retry creates both from scratch.
+                        preserve_workspace = True
+                    except Exception as error:
+                        for original, archive in reversed(archived):
+                            try:
+                                if archive.exists() and not original.exists():
+                                    archive.replace(original)
+                            except OSError:
+                                pass
+                        return {
+                            "attempt": int(state.get("attempt") or 1),
+                            "last_result": "failed",
+                            "terminal_status": "failed",
+                            "retry_target": "__retry_reset_failed__",
+                            "retry_reason": public_exception(error, prefix="重试准备阶段前归档旧基线/工作区失败"),
+                        }
+
                 if not preserve_workspace and manager is None:
                     return {
                         "attempt": int(state.get("attempt") or 1),
