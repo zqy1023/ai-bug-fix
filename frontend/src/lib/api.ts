@@ -143,6 +143,11 @@ export const api = {
     request<{ status: string; message?: string }>('/runs/' + encode(runId) + '/resume', { method: 'POST' }),
   retryRun: (runId: string) =>
     request<{ status: string; mode: 'resume' | 'restart'; message?: string }>('/runs/' + encode(runId) + '/retry', { method: 'POST' }),
+  retryTask: (runId: string, taskId: string) =>
+    request<{ status: string; attempt: number; message?: string }>(
+      '/runs/' + encode(runId) + '/tasks/' + encode(taskId) + '/retry',
+      { method: 'POST' },
+    ),
   cancelRun: (runId: string) =>
     request<{ status: string; message: string }>('/runs/' + encode(runId) + '/cancel', { method: 'POST' }),
 };
