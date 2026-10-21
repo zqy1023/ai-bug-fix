@@ -91,6 +91,13 @@ export interface TaskSummary {
   steps_count?: number;
   duration_ms?: number | null;
   approval_pending?: boolean;
+  current_step?: string;
+  attempt?: number;
+  lifecycle?: {
+    status?: string; current_step?: string; attempt?: number; terminal_step?: string;
+    terminal_reason?: string; next_action?: string; last_error_summary?: string;
+    updated_at?: string;
+  };
   problem?: Record<string, unknown>;
   report?: WorkflowReport;
   steps?: StepRecord[];
@@ -114,6 +121,13 @@ export interface TaskDetailResponse {
 }
 
 export interface RunDetail extends RunSummary {
+  worker_active?: boolean;
+  phase?: string;
+  run_lifecycle?: {
+    status?: string; phase?: string; current_step?: string; attempt?: number;
+    heartbeat_at?: string; error_type?: string; error_message?: string;
+    terminal_reason?: string; next_action?: string; updated_at?: string;
+  };
   run_error?: {
     status?: string; error_type?: string; message?: string; failed_at?: string;
     terminal_step?: string; terminal_reason?: string; next_action?: string;
