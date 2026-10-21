@@ -26,6 +26,7 @@ from app.domain.errors import StepFailed
 from app.domain.keys import safe_name
 from app.domain.models import utc_now
 from app.application.audit import SCHEMA_VERSION, ArtifactRef, StepError, StepRecord
+from app.infrastructure.records.lifecycle import LifecycleStore
 from app.workflow.spec import RecordView
 from config.settings import settings
 
@@ -157,7 +158,81 @@ class RecordStore:
                 except OSError:
                     pass
             self._write_steps(run_id, payload)
+        try:
+            self._update_lifecycle(run_id, task_id, record)
+        except Exception:
+            # Audit history is authoritative; lifecycle projection failure must be visible
+            # in logs but must not overwrite a successfully persisted step record.
+            import logging
+            logging.getLogger(__name__).exception(
+                "更新运行/任务生命周期失败 run_id=%s task_id=%s step=%s",
+                run_id, task_id, record.name,
+            )
         return self.steps_path(run_id)
+
+    def _update_lifecycle(self, run_id: str, task_id: str, record: StepRecord) -> None:
+        lifecycle = LifecycleStore(self.root)
+        phase = record.name
+        error = record.error.model_dump(mode="json") if record.error else {}
+        if not task_id:
+            if record.status == "waiting":
+                lifecycle.update_run(
+                    run_id, status="paused", phase=phase, current_step=phase,
+                    attempt=record.attempt, error=error,
+                )
+            elif record.status == "failed":
+                lifecycle.update_run(
+                    run_id, status="retrying", phase=phase, current_step=phase,
+                    attempt=record.attempt, error=error,
+                )
+            else:
+                lifecycle.update_run(
+                    run_id, status="running", phase=phase, current_step=phase,
+                    attempt=record.attempt, error={},
+                )
+            return
+
+        common = {"current_step": phase, "attempt": record.attempt}
+        if record.status == "waiting":
+            status = "waiting_approval" if phase == "request_approval" else "paused"
+            lifecycle.update_task(
+                run_id, task_id, status=status, **common,
+                terminal_step="", terminal_reason="", next_action="",
+            )
+        elif phase == "finalize_execution":
+            output = record.output if isinstance(record.output, dict) else {}
+            delivery_status = str(output.get("delivery_status") or record.result or "").upper()
+            if delivery_status in {"SUCCESS", "SUCCEEDED", "COMPLETED", "DELIVERED"}:
+                status = "succeeded"
+            elif delivery_status in {"MANUAL", "INSUFFICIENT_EVIDENCE", "MANUAL_REVIEW_REQUIRED"}:
+                status = "manual"
+            elif delivery_status == "CANCELLED":
+                status = "cancelled"
+            elif record.status == "failed" or delivery_status in {"FAILED", "FAIL", "REJECTED"}:
+                status = "failed"
+            else:
+                status = "succeeded" if record.status in {"succeeded", "skipped"} else "failed"
+            lifecycle.update_task(
+                run_id, task_id, status=status, **common,
+                terminal_step=str(output.get("terminal_step") or phase),
+                terminal_reason=str(output.get("terminal_reason") or record.summary or ""),
+                next_action=str(output.get("next_action") or ""),
+                error=error,
+            )
+        elif record.status == "failed":
+            # The graph may still route this failure through retry_prepare; don't
+            # prematurely mark the whole task failed before that route completes.
+            lifecycle.update_task(
+                run_id, task_id, status="retrying", **common,
+                last_error=error, last_error_summary=record.summary or "",
+            )
+        else:
+            # A newly running/succeeded step proves that this task is active again,
+            # even if an earlier attempt left a failed step record.
+            lifecycle.update_task(
+                run_id, task_id, status="running", **common,
+                error={}, last_error=error if record.status == "failed" else {},
+            )
 
     def load(self, run_id: str, step_name: str, task_id: str = "") -> StepRecord | None:
         """读取步骤记录；不存在时返回空。旧格式在读取边界转换。"""
@@ -258,6 +333,11 @@ class RecordStore:
         path = directory / "run.json"
         with path.open("x", encoding="utf-8") as file_obj:
             json.dump(body, file_obj, ensure_ascii=False, indent=2)
+
+        LifecycleStore(self.root).update_run(
+            run_id, status="queued", phase="queued", current_step="",
+            started_at=None, finished_at=None, error={}, terminal_reason="",
+        )
 
     def load_run(self, run_id: str) -> dict[str, Any]:
         """读取执行元数据；缺失或损坏时拒绝使用当前配置冒充原始输入。"""
