@@ -95,7 +95,7 @@ def build_task_graph(
                 target = str(state.get("retry_target") or "")
                 manager = workspace_manager
                 # 这些重试阶段要继续审查/验证已修改的工作区，不能先恢复成基线。
-                preserve_workspace_targets = {VALIDATE, REGRESSION, REVIEW, DELIVER}
+                preserve_workspace_targets = {PREPARE_CONTEXT, CLAIM, VALIDATE, REGRESSION, REVIEW, DELIVER}
                 preserve_workspace = target in preserve_workspace_targets
                 if not preserve_workspace and manager is None:
                     return {
@@ -187,6 +187,17 @@ def build_task_graph(
                     patch.update({
                         "regression_passed": False,
                         "regression_result": {},
+                    })
+                if target == PREPARE_CONTEXT:
+                    # 重新准备必须丢弃上一轮可能不完整的基线、证据和工作区指针。
+                    patch.update({
+                        "baseline_manifest": {},
+                        "baseline_dir": "",
+                        "source_project_path": "",
+                        "ai_workspace_path": "",
+                        "evidence": {},
+                        "framework": "",
+                        "locate": {},
                     })
                 if target == LOCATE:
                     # 重试定位要清掉旧结论；重试修复必须保留 LOCATED 结论和
