@@ -60,12 +60,14 @@ def run_stage(
     # 重新显式调用节点（尤其单步调试、重试和验证链）时必须重新执行，
     # 否则工作区或上游证据变化后可能拿到过期的验证/回归结果。
     started = time.perf_counter()
+    previous_record = store.load(run_id, spec.name, task_id)
+    previous_attempt = previous_record.attempt if previous_record else 0
     record = StepRecord(
         name=spec.name,
         title=spec.title,
         status="running",
         started_at=utc_now(),
-        attempt=int(state.get("attempt") or 1),
+        attempt=max(int(state.get("attempt") or 1), int(previous_attempt or 0) + 1),
     )
     # 本次节点执行的产物收集范围；重试不会带上一次尝试的引用。
     artifacts: list[ArtifactRef] = []
