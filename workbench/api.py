@@ -205,7 +205,11 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
         "succeeded": "succeeded", "partial_failed": "partial_failed",
         "failed": "failed", "cancelled": "cancelled", "manual": "partial_failed",
     }
-    if worker_active:
+    # A terminal lifecycle must not be shown as running just because the worker
+    # still holds its lock while flushing failure artifacts and releasing resources.
+    if lifecycle_status in {"succeeded", "partial_failed", "failed", "cancelled", "manual"}:
+        status = lifecycle_to_run[lifecycle_status]
+    elif worker_active:
         status = "running"
     elif lifecycle_status in lifecycle_to_run:
         status = lifecycle_to_run[lifecycle_status]
