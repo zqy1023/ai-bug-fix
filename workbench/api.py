@@ -796,7 +796,10 @@ def _v1_run_summary(payload: dict[str, Any]) -> dict[str, Any]:
         logger.debug("读取执行控制状态失败 run_id=%s", run_id, exc_info=True)
     return {
         "run_id": run_id, "status": status,
-        "terminal": bool(payload.get("terminal")),
+        "terminal": bool(payload.get("terminal")) and not bool(payload.get("worker_active")),
+        "worker_active": bool(payload.get("worker_active")),
+        "phase": str(payload.get("phase") or ""),
+        "run_lifecycle": payload.get("run_lifecycle") if isinstance(payload.get("run_lifecycle"), dict) else {},
         "identified_tasks": int(payload.get("identified_tasks") or 0),
         "dispatched_tasks": int(payload.get("dispatched_tasks") or 0),
         "started_at": created, "finished_at": payload.get("finished_at"),
@@ -843,6 +846,9 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
             "terminal_step": str(report.get("terminal_step") or ""),
             "terminal_reason": str(report.get("terminal_reason") or ""),
             "next_action": str(report.get("next_action") or ""),
+            "lifecycle": task.get("lifecycle") if isinstance(task.get("lifecycle"), dict) else {},
+            "current_step": str((task.get("lifecycle") or {}).get("current_step") or ""),
+            "attempt": int((task.get("lifecycle") or {}).get("attempt") or 0),
             "steps_count": len(task_steps),
             "duration_ms": report.get("elapsed_ms"),
             "approval_pending": bool(task.get("approval_pending")),
@@ -874,14 +880,14 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
         )
     except Exception:
         logger.debug("无法读取执行 checkpoint run_id=%s", run_id, exc_info=True)
-    status = _v1_status(str(payload.get("status") or ""))
+    status = _v1_status(str(summary.get("status") or payload.get("status") or ""))
     connection = _control_db()
     try:
         row = connection.execute(
             "SELECT pause_requested,cancel_requested FROM run_control WHERE run_id=?", (run_id,)
         ).fetchone()
         if row and row["cancel_requested"]:
-            status = "cancelled" if not next_nodes else "cancel_requested"
+            status = "cancelled" if not next_nodes and not summary.get("worker_active") else "cancel_requested"
         elif row and row["pause_requested"]:
             has_waiting_step = any(step.get("status") == "waiting" for step in steps)
             has_waiting_step = has_waiting_step or any(
@@ -899,10 +905,10 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
             "size_bytes": None,
         })
     # 只有“报告已落盘且图无后续节点”才算终态；等待审批、过渡窗口都继续推流。
-    terminal = bool(isinstance(run_report, dict) and run_report) and (
-        not next_nodes or status in {"succeeded", "failed", "partial_failed", "cancelled"}
-    )
-    if payload.get("run_error") or status == "cancelled":
+    terminal = bool(summary.get("terminal")) and not bool(summary.get("worker_active"))
+    if payload.get("run_error") and not summary.get("worker_active"):
+        terminal = True
+    if status == "cancelled" and not summary.get("worker_active"):
         terminal = True
     return {
         **summary, "status": status, "terminal": terminal,
@@ -1383,6 +1389,9 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
             "task_id": task_id, "carrier": source.get("carrier", ""),
             "biztype": source.get("biztype", ""), "result": source.get("status", "PENDING"),
             "problem": source.get("problem") or {}, "approval_pending": bool(source.get("approval_pending")),
+            "lifecycle": source.get("lifecycle") if isinstance(source.get("lifecycle"), dict) else {},
+            "current_step": str((source.get("lifecycle") or {}).get("current_step") or ""),
+            "attempt": int((source.get("lifecycle") or {}).get("attempt") or 0),
             "steps": steps, "report": report,
         },
         "artifacts": artifacts,
@@ -1890,6 +1899,9 @@ def v1_run_board(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
             "terminal_reason": str(report.get("terminal_reason") or ""),
             "next_action": str(report.get("next_action") or ""),
             "approval_pending": bool(task.get("approval_pending")),
+            "lifecycle": task.get("lifecycle") if isinstance(task.get("lifecycle"), dict) else {},
+            "current_step": str((task.get("lifecycle") or {}).get("current_step") or ""),
+            "attempt": int((task.get("lifecycle") or {}).get("attempt") or 0),
             "steps_count": len(steps),
             "duration_ms": report.get("elapsed_ms"),
             "step_statuses": {
