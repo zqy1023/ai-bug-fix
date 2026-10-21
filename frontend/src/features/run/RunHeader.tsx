@@ -78,7 +78,13 @@ export function RunHeader({ run }: { run: RunDetail }) {
           {run.status === 'running' && (run.steps?.length ?? 0) === 0 && (
             <span className="run-phase">启动中：同步源码、拉取日志</span>
           )}
-          {run.checkpoint?.node && <span>当前节点 {run.checkpoint.node}</span>}
+          {(run.phase || run.run_lifecycle?.current_step) && (
+            <span>当前阶段 {run.run_lifecycle?.current_step || run.phase}</span>
+          )}
+          {(run.run_lifecycle?.attempt ?? 0) > 1 && (
+            <span>第 {run.run_lifecycle?.attempt} 次尝试</span>
+          )}
+          {run.checkpoint?.node && <span>下一节点 {run.checkpoint.node}</span>}
         </div>
       </div>
       <div className="run-header-actions">
