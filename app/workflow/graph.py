@@ -66,13 +66,30 @@ _RUN_NODES = (SOURCE_SYNC, RUN_PREPARE, IDENTIFY)
 
 
 
+class _RetryableNodeFailure(RuntimeError):
+    """A node returned a recoverable failure instead of raising an exception."""
+
+
+def _retry_failed_result(name: str, node: Callable[..., Any]) -> Callable[..., Any]:
+    """Make failed run-level result envelopes visible to LangGraph RetryPolicy."""
+    def wrapped(state: dict[str, Any]) -> dict[str, Any]:
+        result = node(state)
+        if isinstance(result, dict) and str(result.get("last_result") or "").lower() == "failed":
+            reason = str(result.get("retry_reason") or result.get("terminal_reason") or "节点返回失败结论")
+            raise _RetryableNodeFailure(f"{name}: {reason[:1200]}")
+        return result
+
+    wrapped.__name__ = name
+    return wrapped
+
+
 def _transient_retry() -> RetryPolicy:
     """瞬时错误重试策略。"""
     from app.infrastructure.git.source import SourceRepoError
 
     return RetryPolicy(
         max_attempts=settings.graph_retry_attempts,
-        retry_on=(TimeoutError, ConnectionError, OSError, SourceRepoError),
+        retry_on=(TimeoutError, ConnectionError, OSError, SourceRepoError, _RetryableNodeFailure),
     )
 
 
@@ -279,7 +296,12 @@ def build_graph(
     # 源仓库同步与日志发现/规范化允许有限的瞬时故障重试；任务图副作用节点不使用通用重试。
     retry = _transient_retry()
     for name in _RUN_NODES:
-        graph.add_node(name, nodes[name], retry_policy=retry if name in {SOURCE_SYNC, RUN_PREPARE} else None)
+        handler = _retry_failed_result(name, nodes[name]) if name in {RUN_PREPARE, IDENTIFY} else nodes[name]
+        graph.add_node(
+            name,
+            handler,
+            retry_policy=retry if name in {SOURCE_SYNC, RUN_PREPARE, IDENTIFY} else None,
+        )
     graph.add_node(TASK_DISPATCH, dispatch)
     graph.add_node(RUN_TASK, task_graph)
     graph.add_node(TASK_COLLECT, collect)
