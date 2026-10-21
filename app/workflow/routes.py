@@ -15,6 +15,7 @@ IDENTIFY = "identify_carrier"
 # 父图里的串行分发节点。任务子图本身是它的下游，不在这里按名引用。
 TASK_DISPATCH = "task_dispatch"
 RUN_PREPARE = "discover_and_normalize"
+SOURCE_SYNC = "sync_source_repo"
 PREPARE_CONTEXT = "prepare_context"
 VALIDATE = "validate_changes"
 CLAIM = "claim_repair_slot"
