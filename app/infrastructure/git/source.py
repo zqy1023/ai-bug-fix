@@ -115,10 +115,15 @@ def sync_source_repo(
     if config.source_repo is None:
         raise SourceRepoError("远程源仓库镜像目录未配置")
     mirror = Path(config.source_repo)
-    with _SYNC_LOCK:
+    while not _SYNC_LOCK.acquire(timeout=0.5):
+        if cancel_requested and cancel_requested():
+            raise SourceRepoCancelled("Run 已请求停止，正在等待源仓库同步锁")
+    try:
         if cancel_requested and cancel_requested():
             raise SourceRepoCancelled("Run 已请求停止，源仓库同步未启动")
         _sync_mirror(config, mirror, cancel_requested=cancel_requested)
+    finally:
+        _SYNC_LOCK.release()
     return mirror
 
 
