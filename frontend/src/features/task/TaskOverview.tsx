@@ -212,6 +212,7 @@ export function TaskOverview({
   const lifecycleStatus = getText(lifecycle, 'status').toLowerCase();
   const taskActive = ['queued', 'running', 'retrying'].includes(lifecycleStatus)
     || ['RUNNING', 'RETRYING', 'PENDING'].includes(result);
+  const taskPaused = lifecycleStatus === 'paused' || result === 'PAUSED';
   const activeStep = getText(lifecycle, 'current_step') || String(task.current_step || '');
   const taskAttempt = Number(task.attempt ?? lifecycle.attempt ?? 0) || 0;
   const runError = dict(detail.run_error);
@@ -283,7 +284,7 @@ export function TaskOverview({
   const deliveredCode = landed && !analysisOnly;
   const deliveredReport = landed && analysisOnly;
   const reportPaths = strings(deliveryInput.report_paths);
-  const terminalStep = taskActive
+  const terminalStep = taskActive || taskPaused
     ? activeStep
     : getText(lifecycle, 'terminal_step') || getText(report, 'terminal_step') || getText(finalStep?.output ?? {}, 'terminal_step') || '';
   const lastExecutedStep = [...steps]
@@ -294,11 +295,11 @@ export function TaskOverview({
       return leftTime - rightTime;
     })
     .slice(-1)[0];
-  const terminalReason = taskActive ? ''
+  const terminalReason = taskActive || taskPaused ? ''
     : (recoveryFailed
       ? getText(runError, 'terminal_reason', 'message')
       : '') || getText(lifecycle, 'terminal_reason') || getText(report, 'terminal_reason') || getText(finalStep?.output ?? {}, 'terminal_reason') || '';
-  const nextAction = taskActive ? ''
+  const nextAction = taskActive || taskPaused ? ''
     : (recoveryFailed
       ? getText(runError, 'next_action')
       : '') || getText(lifecycle, 'next_action') || getText(report, 'next_action') || getText(finalStep?.output ?? {}, 'next_action') || '';
@@ -319,7 +320,8 @@ export function TaskOverview({
   const regressionPassed = regression.passed === true;
   const qualitySteps = [verifyStep, regressionStep].filter(Boolean) as StepRecord[];
   const qualityFailed = qualitySteps.some((step) => toneForStep(step) === 'danger');
-  const resultFailed = !taskActive && (recoveryFailed || ['FAILED', 'FAIL'].includes(result) || qualityFailed || deliveryStep?.status === 'failed');
+  const resultFailed = !taskActive && !taskPaused
+    && (recoveryFailed || ['FAILED', 'FAIL'].includes(result) || qualityFailed || deliveryStep?.status === 'failed');
   const terminalReasonFromFailure = recoveryFailed
     ? terminalReason || '驳回请求已受理，但后台恢复执行失败。'
     : terminalReason || (
@@ -371,15 +373,19 @@ export function TaskOverview({
           <div className="outcome-title-row">
             <h2>{taskActive
               ? lifecycleStatus === 'retrying' || result === 'RETRYING' ? '任务重试中' : '任务执行中'
-              : recoveryFailed ? '驳回后的恢复失败' : resultText}</h2>
-            <StatusBadge kind="task" value={taskActive ? lifecycleStatus === 'retrying' || result === 'RETRYING' ? 'RETRYING' : 'RUNNING' : recoveryFailed ? 'FAILED' : finalApprovalPending ? 'WAITING_APPROVAL' : task.result} />
+              : taskPaused ? '单步执行已完成' : recoveryFailed ? '驳回后的恢复失败' : resultText}</h2>
+            <StatusBadge kind="task" value={taskActive
+              ? lifecycleStatus === 'retrying' || result === 'RETRYING' ? 'RETRYING' : 'RUNNING'
+              : taskPaused ? 'PAUSED' : recoveryFailed ? 'FAILED' : finalApprovalPending ? 'WAITING_APPROVAL' : task.result} />
           </div>
           <p className="outcome-description">
             {taskActive
               ? `当前节点：${terminalLabel(activeStep)}${taskAttempt > 0 ? ` · 第 ${taskAttempt} 次尝试` : ''}。较早尝试的错误不会覆盖当前执行状态。`
-              : recoveryFailed
-                ? '审批请求已受理，但后台没有完成恢复执行。请核对失败原因；待审批记录仍保留，可修复环境后重新提交决策。'
-                : description}
+              : taskPaused
+                ? `节点 ${terminalLabel(activeStep)} 的单步执行已结束；当前 Run 没有自动继续。请按依赖顺序选择下一节点执行，或通过 Run 控制重新恢复整轮。`
+                : recoveryFailed
+                  ? '审批请求已受理，但后台没有完成恢复执行。请核对失败原因；待审批记录仍保留，可修复环境后重新提交决策。'
+                  : description}
           </p>
           {terminalReasonFromFailure && (
             <div className={`outcome-reason ${resultFailed ? 'is-danger' : ''}`}>
@@ -420,7 +426,7 @@ export function TaskOverview({
             <small>{changedCount > 0 && changeEvidenceKnown ? `+${added} / −${removed} 行` : changeEvidenceKnown ? '基线差异核验已完成' : '未完成确定性基线比对'}</small>
           </div>
           <div className="outcome-fact-row">
-            <span>{taskActive ? '当前执行节点' : '自动修复停止点'}</span>
+            <span>{taskActive || taskPaused ? '当前节点' : '自动修复停止点'}</span>
             <strong>{terminalLabel(terminalStep)}</strong>
           </div>
           <div className="outcome-fact-row">
