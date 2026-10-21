@@ -16,6 +16,7 @@ from app.application.audit import StepError, StepRecord
 from app.application.services import WorkflowServices
 from app.domain.models import utc_now
 from app.infrastructure.records.store import RecordStore
+from app.infrastructure.records.lifecycle import LifecycleStore
 from app.infrastructure.runtime import close_sessions
 from app.workflow.spec import AgentSpec, PluginSpec, StepSpec
 
@@ -332,24 +333,53 @@ class StepRunner:
 
     def _execute(self, spec: PluginSpec, request: StepRunRequest) -> None:
         try:
-            code, _, _ = execute_once(
+            code, record, payload = execute_once(
                 spec,
                 run_id=request.run_id,
                 task_id=request.task_id,
                 confirm_write=request.confirm_write,
             )
+            if code == 0:
+                # Single-step execution does not advance the workflow graph. Leave the task
+                # paused for the operator's next step instead of showing it as still running.
+                LifecycleStore(self._store.root).update_task(
+                    request.run_id, request.task_id, status="paused",
+                    current_step=spec.name, attempt=int(record.attempt if record else 0),
+                    terminal_step="", terminal_reason="",
+                    next_action="单步执行已结束；可继续单步执行后续节点，或通过 Run 控制恢复整轮。",
+                    error={},
+                )
+            else:
+                reason = (
+                    record.error.message if record and record.error
+                    else record.summary if record and record.summary
+                    else str(payload.get("failure_reason") or f"{spec.name} 返回失败")
+                )
+                LifecycleStore(self._store.root).update_task(
+                    request.run_id, request.task_id, status="failed",
+                    current_step=spec.name, attempt=int(record.attempt if record else 0),
+                    terminal_step=spec.name, terminal_reason=reason,
+                    next_action="检查本步骤输入、错误和前置依赖后，可在此重新执行本步骤。",
+                    error={
+                        "code": record.error.code if record and record.error else "STEP_EXECUTION_FAILED",
+                        "message": reason,
+                    },
+                )
             logger.info(
                 "单步执行结束 run_id=%s task_id=%s step=%s exit=%s",
                 request.run_id, request.task_id, spec.name, code,
             )
         except StepRunnerError as exc:
             self._write_failure(spec, request, str(exc))
+            self._mark_single_step_failed(spec, request, str(exc))
             logger.warning(
                 "单步执行被拒绝 run_id=%s task_id=%s step=%s reason=%s",
                 request.run_id, request.task_id, spec.name, exc,
             )
         except Exception as exc:
-            self._write_failure(spec, request, f"{type(exc).__name__}: {exc}")
+            message = f"{type(exc).__name__}: {exc}"
+            self._write_failure(spec, request, message)
+            self._mark_single_step_failed(spec, request, message)
             logger.exception(
                 "单步执行失败 run_id=%s task_id=%s step=%s",
                 request.run_id, request.task_id, spec.name,
@@ -357,6 +387,15 @@ class StepRunner:
         finally:
             if self._on_finish is not None:
                 self._on_finish()
+
+    def _mark_single_step_failed(self, spec: PluginSpec, request: StepRunRequest, message: str) -> None:
+        LifecycleStore(self._store.root).update_task(
+            request.run_id, request.task_id, status="failed",
+            current_step=spec.name, terminal_step=spec.name,
+            terminal_reason=message[:1200],
+            next_action="检查本步骤输入、错误和前置依赖后，可在此重新执行本步骤。",
+            error={"code": "STEP_EXECUTION_FAILED", "message": message[:1200]},
+        )
 
     def _write_failure(self, spec: PluginSpec, request: StepRunRequest, message: str) -> None:
         existing = self._store.load(request.run_id, spec.name, request.task_id)
