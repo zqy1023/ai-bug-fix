@@ -54,9 +54,10 @@ export function TaskBoard({ tasks, onOpen }: { tasks: BoardTask[]; onOpen: (task
                 </div>
                 <div className="task-card-foot">
                   <span>{task.steps_count} 步 · {formatDuration(task.duration_ms)}</span>
-                  {task.terminal_step && (
-                    <code>{columnOf(task) === 'running' ? '当前 ' : '终态 '}{task.terminal_step}</code>
+                  {(task.current_step || task.terminal_step) && (
+                    <code>{['RUNNING', 'RETRYING', 'PENDING'].includes(String(task.result).toUpperCase()) ? '当前 ' : '终态 '}{task.current_step || task.terminal_step}</code>
                   )}
+                  {(task.attempt ?? 0) > 1 && <span>第 {task.attempt} 次尝试</span>}
                 </div>
               </button>
             ))}
