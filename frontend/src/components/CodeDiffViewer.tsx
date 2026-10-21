@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, type RefObject } from 'react';
 import { Empty, Tag } from 'antd';
-import { FileCodeOutlined } from '@ant-design/icons';
+import { CodeOutlined } from '@ant-design/icons';
 
 type Dict = Record<string, unknown>;
 type ChangeKind = 'same' | 'add' | 'remove';
@@ -365,7 +365,7 @@ export function CodeDiffViewer({
               onClick={() => select(file.path)}
               title={file.path}
             >
-              <span className="code-diff-file-name"><FileCodeOutlined />{file.path}</span>
+              <span className="code-diff-file-name"><CodeOutlined />{file.path}</span>
               <span className="code-diff-file-meta">
                 <span className="code-diff-added">+{added}</span>
                 <span className="code-diff-removed">−{removed}</span>
