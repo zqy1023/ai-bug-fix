@@ -2020,6 +2020,165 @@ def v1_run_board(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
     }
 
 
+@router.post("/api/v1/runs/{run_id}/tasks/{task_id}/retry", status_code=202)
+def v1_retry_task(
+    run_id: str, task_id: str, background: BackgroundTasks,
+    _: None = Depends(_authorize),
+) -> dict[str, Any]:
+    """Retry one terminal failed task in the same run without replaying already completed tasks."""
+    from app.infrastructure.config import load_config, workflow_recursion_limit
+    from app.infrastructure.filesystem.workspace import WorkspaceManager
+    from app.workflow.graph import TASK_DISPATCH
+    from app.workflow.wiring import build_graph, build_services
+
+    run_id, task_id = _safe_id(run_id), _safe_id(task_id)
+    store = _store()
+    detail = _v1_detail(run_id)
+    if detail["status"] not in {"failed", "partial_failed", "succeeded"} or detail.get("worker_active"):
+        raise HTTPException(status_code=409, detail="只有已停止的 Run 才能重试单个任务")
+    if (store.run_dir(run_id) / "reports" / "run_failure.json").is_file():
+        raise HTTPException(status_code=409, detail="该 Run 存在运行级异常，请先使用 Run 级重试；不能只重跑其中一个 Task")
+
+    task_detail = v1_get_task(run_id, task_id, None)
+    task_payload = task_detail.get("task") if isinstance(task_detail.get("task"), dict) else {}
+    task_result = str(task_payload.get("result") or "").upper()
+    if task_result not in {"FAILED", "FAIL"}:
+        raise HTTPException(status_code=409, detail=f"当前 Task 结论为 {task_result or 'UNKNOWN'}，只允许重试终态失败任务")
+    if task_payload.get("approval_pending"):
+        raise HTTPException(status_code=409, detail="该 Task 仍有待审批决策，不能启动整任务重试")
+    task_steps = list(task_payload.get("steps") or [])
+    if not any(step.get("name") == "finalize_execution" for step in task_steps):
+        raise HTTPException(status_code=409, detail="Task 尚未完成终态收尾，不能作为终态失败任务重试")
+    if any(step.get("name") == "prepare_delivery" for step in task_steps):
+        raise HTTPException(status_code=409, detail="该 Task 已进入 Git 交付阶段；为防止重复提交，请到失败节点详情重试 prepare_delivery")
+
+    with _RUN_LOCKS_GUARD:
+        lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
+    if not lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="该 Run 的后台线程仍持有执行锁，暂不能重试")
+
+    baseline_archive: Path | None = None
+    baseline_original: Path | None = None
+    try:
+        runtime_config = load_config()
+        graph = build_graph(
+            store=store,
+            services=build_services(config=runtime_config, source_repo=runtime_config.source_repo),
+            config=runtime_config,
+        )
+        cfg = {
+            "configurable": {"thread_id": run_id},
+            "recursion_limit": workflow_recursion_limit(
+                max_attempts=int(detail.get("config", {}).get("max_attempts") or settings.default_max_attempts),
+                task_count_hint=int(detail.get("config", {}).get("log_limit") or 50),
+            ),
+        }
+        snapshot = graph.get_state(cfg)
+        values = getattr(snapshot, "values", None)
+        next_nodes = [str(node) for node in (getattr(snapshot, "next", ()) or ())]
+        if not isinstance(values, dict) or next_nodes:
+            raise HTTPException(status_code=409, detail="当前 LangGraph checkpoint 尚未处于可安全重试的终态")
+        if any(getattr(task, "interrupts", ()) for task in (getattr(snapshot, "tasks", ()) or ())):
+            raise HTTPException(status_code=409, detail="当前 Run 存在中断等待，必须先完成暂停或审批决策")
+
+        original_tasks = list(values.get("tasks") or [])
+        task_index = next(
+            (index for index, item in enumerate(original_tasks)
+             if isinstance(item, dict) and str(item.get("task_id") or "") == task_id),
+            None,
+        )
+        if task_index is None:
+            raise HTTPException(status_code=409, detail="LangGraph checkpoint 中找不到该 Task 的原始输入")
+        original_task = dict(original_tasks[task_index])
+        next_attempt = max(
+            int((task_payload.get("lifecycle") or {}).get("attempt") or 0),
+            max((int(step.get("attempt") or 0) for step in task_steps), default=0),
+            0,
+        ) + 1
+
+        # A fresh source snapshot must be generated for a whole-task retry; retain the previous
+        # immutable baseline for audit and free the canonical path expected by prepare_source_snapshot.
+        snapshot_record = next(
+            (step for step in reversed(task_steps) if step.get("name") == "prepare_source_snapshot"),
+            None,
+        )
+        snapshot_output = snapshot_record.get("output") if isinstance(snapshot_record, dict) and isinstance(snapshot_record.get("output"), dict) else {}
+        baseline_value = str(snapshot_output.get("baseline_dir") or "")
+        if baseline_value:
+            baseline_original = Path(baseline_value).resolve()
+            task_root = store.task_dir(run_id, task_id).resolve()
+            if not baseline_original.is_relative_to(task_root):
+                raise HTTPException(status_code=409, detail="已保存的源码基线不在当前 Task 目录内，拒绝移动")
+            if baseline_original.exists():
+                baseline_archive = baseline_original.with_name(
+                    f"{baseline_original.name}.previous-attempt-{next_attempt}-{uuid.uuid4().hex[:8]}"
+                )
+                baseline_original.replace(baseline_archive)
+
+        appended_task = {**original_task, "_workflow_attempt": next_attempt}
+        next_tasks = [*original_tasks, appended_task]
+        patch = {
+            "tasks": next_tasks,
+            "task_cursor": len(original_tasks),
+            "task_id": task_id,
+            "task": original_task,
+            "problem": dict(original_task.get("problem") or {}),
+            "terminal_status": "",
+            "task_summary": {},
+            "attempt": next_attempt,
+            "automatic_attempt": 1,
+            "retry_reason": "",
+            "retry_target": "",
+            "last_result": "passed",
+        }
+        try:
+            graph.update_state(cfg, patch, as_node=TASK_DISPATCH)
+        except Exception:
+            if baseline_archive is not None and baseline_archive.exists() and baseline_original is not None:
+                baseline_archive.replace(baseline_original)
+            raise
+
+        task_report = store.task_dir(run_id, task_id) / "reports" / "final.json"
+        task_report.unlink(missing_ok=True)
+        (store.run_dir(run_id) / "reports" / "final.json").unlink(missing_ok=True)
+        LifecycleStore(store.root).update_run(
+            run_id, status="queued", phase="task_retry_queued", current_step="",
+            started_at=None, finished_at=None, error={},
+            error_type="", error_message="", terminal_reason="", next_action="",
+        )
+        LifecycleStore(store.root).update_task(
+            run_id, task_id, status="retrying", current_step="retry_prepare",
+            attempt=next_attempt, terminal_step="", terminal_reason="", next_action="",
+            error={}, last_error={}, last_error_summary="",
+        )
+        connection = _control_db()
+        try:
+            connection.execute(
+                "INSERT INTO run_control(run_id,pause_requested,cancel_requested,updated_at) VALUES(?,0,0,?) "
+                "ON CONFLICT(run_id) DO UPDATE SET pause_requested=0,cancel_requested=0,updated_at=excluded.updated_at",
+                (run_id, datetime.now(timezone.utc).isoformat()),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        _audit_control(
+            run_id, task_id, "task.retry_requested", "api",
+            f"attempt={next_attempt}; baseline_archived={bool(baseline_archive)}",
+        )
+    except Exception:
+        lock.release()
+        raise
+
+    background.add_task(_resume_workflow_background, run_id, lock)
+    return {
+        "run_id": run_id,
+        "task_id": task_id,
+        "status": "retry_requested",
+        "attempt": next_attempt,
+        "message": "已提交 Task 重试；本轮会追加一次任务执行，不会重复运行此前已完成的后续任务。",
+    }
+
+
 @router.get("/api/v1/runs/{run_id}/tasks/{task_id}/steps/{step_name}")
 def v1_get_step(
     run_id: str, task_id: str, step_name: str, _: None = Depends(_authorize),
