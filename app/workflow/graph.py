@@ -87,8 +87,11 @@ def _transient_retry() -> RetryPolicy:
     """瞬时错误重试策略。"""
     from app.infrastructure.git.source import SourceRepoError
 
+    # Settings.graph_retry_attempts means retries after the first attempt;
+    # LangGraph's max_attempts counts the first execution as well.
+    retry_count = max(0, int(settings.graph_retry_attempts))
     return RetryPolicy(
-        max_attempts=settings.graph_retry_attempts,
+        max_attempts=retry_count + 1,
         retry_on=(TimeoutError, ConnectionError, OSError, SourceRepoError, _RetryableNodeFailure),
     )
 
