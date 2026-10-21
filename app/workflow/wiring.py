@@ -386,6 +386,7 @@ def build_nodes(
     store: RecordStore,
     services: WorkflowServices,
     runtimes: dict[str, Any] | None = None,
+    config: RuntimeConfig | None = None,
 ) -> dict[str, Callable[..., Any]]:
     """按插件契约登记单步节点、编排组合和 agent 节点。"""
     load_all()
@@ -401,7 +402,7 @@ def build_nodes(
     # artifact、单步调试入口和失败结果语义均保持不变。
     for phase_name, step_names in PHASE_COMPOSITIONS.items():
         nodes[phase_name] = _compose_phase(step_names, nodes)
-    nodes[SOURCE_SYNC] = _source_sync_node(load_config(), store)
+    nodes[SOURCE_SYNC] = _source_sync_node(config or load_config(), store)
     return nodes
 
 
@@ -783,7 +784,7 @@ def build_graph(
     else:
         saver = checkpointer
     resolved_services = services or build_services(config=resolved_config)
-    nodes = build_nodes(resolved_store, resolved_services, runtimes)
+    nodes = build_nodes(resolved_store, resolved_services, runtimes, config=resolved_config)
     task_graph = build_task_graph(
         nodes,
         workspace_manager=getattr(resolved_services, "workspaces", None),
