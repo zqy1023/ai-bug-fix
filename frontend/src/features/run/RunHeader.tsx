@@ -44,9 +44,9 @@ export function RunHeader({ run }: { run: RunDetail }) {
 
   const status = run.status;
   const canPause = ['running', 'queued', 'pause_requested'].includes(status);
-  const canResume = ['paused', 'failed'].includes(status) && Boolean(run.checkpoint?.resumable);
+  const canResume = status === 'paused' && Boolean(run.checkpoint?.resumable);
   const canRetry = status === 'failed' && !run.worker_active;
-  const canCancel = ['running', 'queued', 'paused', 'pause_requested', 'cancel_requested'].includes(status);
+  const canCancel = ['running', 'queued', 'paused', 'pause_requested'].includes(status);
 
   const confirmCancel = () => {
     modal.confirm({
@@ -111,9 +111,9 @@ export function RunHeader({ run }: { run: RunDetail }) {
           danger
           icon={<StopOutlined />}
           disabled={!canCancel}
-          loading={control.isPending && control.variables === 'cancel'}
+          loading={control.isPending && (control.variables === 'cancel' || status === 'cancel_requested')}
           onClick={confirmCancel}
-        >停止</Button>
+        >{status === 'cancel_requested' ? '停止中…' : '停止'}</Button>
       </div>
       {(run.run_error?.message || run.run_report?.terminal_reason) && (
         <div className={'run-notice' + (run.run_error?.message ? ' is-error' : '')}>
