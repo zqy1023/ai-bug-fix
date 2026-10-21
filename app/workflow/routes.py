@@ -89,7 +89,8 @@ def _finalized_status(state: WorkflowState) -> str:
 
 
 def _retry_or_finalize(state: WorkflowState) -> str:
-    return FINALIZE if int(state.get("attempt") or 1) >= int(
+    attempt = int(state.get("automatic_attempt") or state.get("attempt") or 1)
+    return FINALIZE if attempt >= int(
         state.get("max_attempts") or settings.default_max_attempts
     ) else RETRY
 
