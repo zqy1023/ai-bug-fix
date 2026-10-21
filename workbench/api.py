@@ -1712,7 +1712,12 @@ def v1_cancel_run(
         connection.close()
     if paused_lock is not None:
         background.add_task(_resume_workflow_background, run_id, paused_lock)
-    _audit_control(run_id, "", "run.cancel_requested", "api")
+    try:
+        _audit_control(run_id, "", "run.cancel_requested", "api")
+    except Exception:
+        # The durable cancel flag is already committed; audit failure must not tell the
+        # operator that cancellation was rejected after the request was accepted.
+        logger.exception("写入停止请求审计失败 run_id=%s", run_id)
     return {"run_id": run_id, "status": "cancel_requested", "message": "已记录取消请求；正在执行的节点会在安全边界收尾"}
 
 
