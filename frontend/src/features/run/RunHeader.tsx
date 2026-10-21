@@ -46,7 +46,7 @@ export function RunHeader({ run }: { run: RunDetail }) {
   const canPause = ['running', 'queued', 'pause_requested'].includes(status);
   const canResume = ['paused', 'failed'].includes(status) && Boolean(run.checkpoint?.resumable);
   const canRetry = status === 'failed' && !run.worker_active;
-  const canCancel = ['running', 'queued', 'paused', 'pause_requested', 'cancel_requested'].includes(status) || Boolean(run.worker_active);
+  const canCancel = ['running', 'queued', 'paused', 'pause_requested', 'cancel_requested'].includes(status);
 
   const confirmCancel = () => {
     modal.confirm({
