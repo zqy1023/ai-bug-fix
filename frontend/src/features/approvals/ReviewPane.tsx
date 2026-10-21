@@ -29,6 +29,20 @@ function text(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function statusLabel(value: unknown): string {
+  switch (text(value).toLowerCase()) {
+    case 'added': return '新增';
+    case 'deleted': return '删除';
+    case 'renamed': return '重命名';
+    case 'modified': return '修改';
+    case 'declared': return '方案声明';
+    case 'unchanged':
+    case 'same': return '未变化';
+    case 'truncated': return '已截断';
+    default: return text(value) || '修改';
+  }
+}
+
 function stringField(source: Dict, ...keys: string[]): string {
   for (const key of keys) {
     const value = text(source[key]);
