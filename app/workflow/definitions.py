@@ -38,10 +38,10 @@ TASK_STATIC_TRANSITIONS: tuple[tuple[str, str], ...] = (
 )
 
 TASK_CONDITIONAL_TRANSITIONS = (
-    (PREPARE_CONTEXT, after_prepare_context, (LOCATE, FINALIZE)),
+    (PREPARE_CONTEXT, after_prepare_context, (LOCATE, RETRY, FINALIZE)),
     # 定位不确定或非 carrier 范围结论只产出报告，不进入审批。
     (LOCATE, after_locate, (CLAIM, RETRY, FINALIZE)),
-    (CLAIM, after_claim, (REPAIR, FINALIZE)),
+    (CLAIM, after_claim, (REPAIR, RETRY, FINALIZE)),
     (REPAIR, after_repair, (VALIDATE, RETRY, FINALIZE)),
     (VALIDATE, after_validate_changes, (REGRESSION, RETRY, FINALIZE)),
     # human 模式跳过 AI 审查直接交付分支，因此 REGRESSION 也可以直达 DELIVER。
@@ -49,9 +49,9 @@ TASK_CONDITIONAL_TRANSITIONS = (
     (REVIEW, after_review, (DELIVER, RETRY, FINALIZE)),
     # APPROVE 仅用于分支交付后的最终人工审批。
     (APPROVE, after_approval, (LOCATE, CLAIM, REPAIR, RETRY, FINALIZE)),
-    (DELIVER, after_delivery, (APPROVE, FINALIZE, END)),
+    (DELIVER, after_delivery, (APPROVE, RETRY, FINALIZE, END)),
     (FINALIZE, after_finalize, (DELIVER, END)),
-    (RETRY, after_retry, (LOCATE, REPAIR, VALIDATE, REGRESSION, REVIEW, DELIVER, FINALIZE)),
+    (RETRY, after_retry, (PREPARE_CONTEXT, CLAIM, LOCATE, REPAIR, VALIDATE, REGRESSION, REVIEW, DELIVER, FINALIZE)),
 )
 
 __all__ = [
