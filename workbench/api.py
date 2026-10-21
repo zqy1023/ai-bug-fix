@@ -2036,6 +2036,7 @@ def v1_retry_task(
 ) -> dict[str, Any]:
     """Retry one terminal failed task in the same run without replaying already completed tasks."""
     from app.infrastructure.config import load_config, workflow_recursion_limit
+    from app.infrastructure.filesystem.workspace import WorkspaceManager
     from app.workflow.graph import TASK_DISPATCH
     from app.workflow.wiring import build_graph, build_services
 
@@ -2067,6 +2068,9 @@ def v1_retry_task(
 
     baseline_archive: Path | None = None
     baseline_original: Path | None = None
+    workspace_archive: Path | None = None
+    workspace_original: Path | None = None
+    checkpoint_updated = False
     try:
         runtime_config = load_config()
         graph = build_graph(
@@ -2123,6 +2127,20 @@ def v1_retry_task(
                 )
                 baseline_original.replace(baseline_archive)
 
+        # prepare_workspace refuses to overwrite a task directory. Archive the old writable
+        # workspace as well, so the retry gets a clean destination and the failed attempt remains inspectable.
+        workspace_root = runtime_config.workspace_root.resolve()
+        workspace_original = (
+            workspace_root / "ai" / WorkspaceManager._safe_name(f"{run_id}-{task_id}")
+        ).resolve()
+        if not workspace_original.is_relative_to(workspace_root):
+            raise HTTPException(status_code=409, detail="Task 隔离工作区路径越界，拒绝重试")
+        if workspace_original.exists():
+            workspace_archive = workspace_original.with_name(
+                f"{workspace_original.name}.previous-attempt-{next_attempt}-{uuid.uuid4().hex[:8]}"
+            )
+            workspace_original.replace(workspace_archive)
+
         appended_task = {**original_task, "_workflow_attempt": next_attempt}
         next_tasks = [*original_tasks, appended_task]
         patch = {
@@ -2139,20 +2157,11 @@ def v1_retry_task(
             "retry_target": "",
             "last_result": "passed",
         }
-        try:
-            graph.update_state(cfg, patch, as_node=TASK_DISPATCH)
-        except Exception:
-            if baseline_archive is not None and baseline_archive.exists() and baseline_original is not None:
-                baseline_archive.replace(baseline_original)
-            raise
-
-        task_report = store.task_dir(run_id, task_id) / "reports" / "final.json"
-        task_report.unlink(missing_ok=True)
-        (store.run_dir(run_id) / "reports" / "final.json").unlink(missing_ok=True)
         LifecycleStore(store.root).update_run(
             run_id, status="queued", phase="task_retry_queued", current_step="",
             started_at=None, finished_at=None, error={},
             error_type="", error_message="", terminal_reason="", next_action="",
+            worker_active=True,
         )
         LifecycleStore(store.root).update_task(
             run_id, task_id, status="retrying", current_step="retry_prepare",
@@ -2169,11 +2178,51 @@ def v1_retry_task(
             connection.commit()
         finally:
             connection.close()
-        _audit_control(
-            run_id, task_id, "task.retry_requested", "api",
-            f"attempt={next_attempt}; baseline_archived={bool(baseline_archive)}",
-        )
+
+        # Checkpoint mutation is the commit point for the retry request. No fallible
+        # status/audit I/O follows it; artifacts are cleaned best-effort below.
+        graph.update_state(cfg, patch, as_node=TASK_DISPATCH)
+        checkpoint_updated = True
+        for report_path in (
+            store.task_dir(run_id, task_id) / "reports" / "final.json",
+            store.run_dir(run_id) / "reports" / "final.json",
+        ):
+            try:
+                report_path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("旧终态报告清理失败 run_id=%s task_id=%s path=%s", run_id, task_id, report_path, exc_info=True)
+        try:
+            _audit_control(
+                run_id, task_id, "task.retry_requested", "api",
+                f"attempt={next_attempt}; baseline_archived={bool(baseline_archive)}; workspace_archived={bool(workspace_archive)}",
+            )
+        except Exception:
+            logger.exception("Task 重试已提交，但审计写入失败 run_id=%s task_id=%s", run_id, task_id)
     except Exception:
+        if not checkpoint_updated:
+            if baseline_archive is not None and baseline_archive.exists() and baseline_original is not None:
+                try:
+                    baseline_archive.replace(baseline_original)
+                except OSError:
+                    logger.exception("Task 重试失败后恢复旧基线失败 run_id=%s task_id=%s", run_id, task_id)
+            if workspace_archive is not None and workspace_archive.exists() and workspace_original is not None:
+                try:
+                    workspace_archive.replace(workspace_original)
+                except OSError:
+                    logger.exception("Task 重试失败后恢复旧工作区失败 run_id=%s task_id=%s", run_id, task_id)
+            try:
+                LifecycleStore(store.root).update_run(
+                    run_id, status=str(detail.get("status") or "failed"),
+                    worker_active=False,
+                )
+                LifecycleStore(store.root).update_task(
+                    run_id, task_id, status="failed",
+                    terminal_step=str((task_payload.get("lifecycle") or {}).get("terminal_step") or "finalize_execution"),
+                    terminal_reason=str((task_payload.get("lifecycle") or {}).get("terminal_reason") or "Task 重试未能提交。"),
+                    next_action="检查运行记录和源码工作区后重试。",
+                )
+            except Exception:
+                logger.exception("Task 重试失败后恢复生命周期状态失败 run_id=%s task_id=%s", run_id, task_id)
         lock.release()
         raise
 
