@@ -23,11 +23,12 @@ from app.workflow.definitions import PHASE_COMPOSITIONS
 from app.domain.errors import StepFailed
 from app.application.audit import StepError, StepRecord
 from app.domain.models import utc_now
-from app.infrastructure.git.source import sync_source_repo
+from app.infrastructure.git.source import SourceRepoCancelled, sync_source_repo
 from app.workflow.runner import bind
 from app.workflow.routes import FINALIZE, SOURCE_SYNC
 from app.infrastructure.records.store import RecordStore
 from app.infrastructure.redaction import public_exception
+from app.infrastructure.run_control import cancellation_requested
 from app.application.services import WorkflowServices
 from app.workflow import registry
 from app.workflow.plugin_checks import verify_registry
@@ -356,8 +357,33 @@ def _source_sync_node(
             },
         )
         store.save(run_id, record)
+        if cancellation_requested(store.root, run_id):
+            record.status = "skipped"
+            record.result = "SKIPPED"
+            record.finished_at = utc_now()
+            record.output = {"control_cancelled": True}
+            record.summary = "Run 已收到停止请求，未开始同步源仓库"
+            store.save(run_id, record)
+            return {"last_result": "cancelled", "terminal_status": "CANCELLED"}
+
         try:
-            source_repo = sync_source_repo(config)
+            source_repo = sync_source_repo(
+                config,
+                cancel_requested=lambda: cancellation_requested(store.root, run_id),
+            )
+        except SourceRepoCancelled as error:
+            record.status = "skipped"
+            record.result = "SKIPPED"
+            record.finished_at = utc_now()
+            record.duration_ms = 0
+            record.output = {"control_cancelled": True}
+            record.summary = public_exception(error, prefix="源仓库同步已取消")
+            record.error = None
+            store.save(run_id, record)
+            return {
+                "last_result": "cancelled",
+                "terminal_status": "CANCELLED",
+            }
         except Exception as error:
             record.status = "failed"
             record.finished_at = utc_now()
