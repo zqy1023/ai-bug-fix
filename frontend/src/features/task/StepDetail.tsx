@@ -187,7 +187,7 @@ export function StepDetail({
         runId={runId}
         taskId={taskId}
         stepName={step.name}
-        stepStatus={step.status}
+        stepStatus={stepFailed ? 'failed' : step.status}
         runActive={runActive}
         approvalPending={approvalPending}
       />
