@@ -280,6 +280,9 @@ export interface BoardTask {
   terminal_step: string;
   terminal_reason: string;
   next_action: string;
+  current_step?: string;
+  attempt?: number;
+  lifecycle?: Record<string, unknown>;
   approval_pending: boolean;
   steps_count: number;
   duration_ms?: number | null;
