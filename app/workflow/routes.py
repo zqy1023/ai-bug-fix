@@ -42,10 +42,14 @@ def after_run_prepare(state: WorkflowState) -> str:
 
 
 def after_prepare_context(state: WorkflowState) -> str:
-    """证据准备成功后必须先做根因分析；旧框架限制后续修改，不跳过定位。"""
+    """准备阶段失败时在任务尝试上限内重跑整个准备阶段，不能直接杀死本轮后续任务。"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
         return FINALIZE
-    return LOCATE if _result(state) == "passed" else FINALIZE
+    if _result(state) == "passed":
+        return LOCATE
+    if _result(state) == "failed" and str(state.get("retry_target") or "") == PREPARE_CONTEXT:
+        return _retry_or_finalize(state)
+    return FINALIZE
 
 
 def after_validate_changes(state: WorkflowState) -> str:
@@ -100,22 +104,26 @@ def _locate_references_legacy(locate: dict) -> bool:
 
 
 def after_retry(state: WorkflowState) -> str:
-    """按失败/驳回的明确目标重跑阶段；未知目标安全回退到代码修复。"""
+    """按显式的失败目标重跑阶段；缺失或未知目标安全终止，不猜测回到修复阶段。"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED":
         return FINALIZE
     target = str(state.get("retry_target") or "")
     if target == "__retry_reset_failed__":
         return FINALIZE
-    if target in {LOCATE, REPAIR, VALIDATE, REGRESSION, REVIEW, DELIVER}:
+    if target in {PREPARE_CONTEXT, CLAIM, LOCATE, REPAIR, VALIDATE, REGRESSION, REVIEW, DELIVER}:
         return target
-    return REPAIR
+    return FINALIZE
 
 
 def after_claim(state: WorkflowState) -> str:
-    """定位通过且成功领取修复资格后，才进入修复 Agent。隔离区已在定位前创建。"""
+    """定位通过且成功领取修复资格后，才进入修复 Agent。"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
         return FINALIZE
-    return REPAIR if _result(state) == "passed" else FINALIZE
+    if _result(state) == "passed":
+        return REPAIR
+    if _result(state) == "failed" and str(state.get("retry_target") or "") == CLAIM:
+        return _retry_or_finalize(state)
+    return FINALIZE
 
 
 def after_locate(state: WorkflowState) -> str:
@@ -255,6 +263,8 @@ def after_delivery(state: WorkflowState) -> str:
     if _finalized_status(state) == "SKIPPED":
         return END
     if _result(state) != "passed" or str((state.get("delivery") or {}).get("delivery_status") or "").upper() == "FAILED":
+        if _result(state) == "failed" and str(state.get("retry_target") or "") == DELIVER:
+            return _retry_or_finalize(state)
         return FINALIZE
     if _analysis_only_task(state):
         return END
