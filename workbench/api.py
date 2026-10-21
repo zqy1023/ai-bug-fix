@@ -1253,19 +1253,20 @@ def _resume_workflow_background(
             return
     try:
         from app.infrastructure.config import load_config, workflow_recursion_limit
-        from app.infrastructure.git.source import sync_source_repo
         from app.workflow.wiring import build_graph, build_services
 
         store = _store()
         runtime_config = load_config()
-        # 恢复执行同样先同步源仓库；只读查询路径不会走到这里。
-        source_repo = sync_source_repo(runtime_config)
+        # 恢复时让 checkpoint 指向的 sync_source_repo 节点执行；
+        # 不能在 graph.invoke 之前再次同步，否则原生重试仍然无法接管。
+        source_repo = runtime_config.source_repo
         graph = build_graph(
             store=store,
             services=build_services(
                 config=runtime_config,
                 source_repo=source_repo,
             ),
+            config=runtime_config,
         )
         loader = getattr(store, "load_run", None)
         run_meta = loader(run_id) if callable(loader) else _read_json(store.run_dir(run_id) / "run.json", {})
