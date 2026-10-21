@@ -7,8 +7,11 @@ import { queryKeys } from '../../lib/queryKeys';
 import { AGENT_STEPS, WRITE_STEPS } from './stages';
 
 export function StepActionBar({
-  runId, taskId, stepName, runActive, approvalPending = false,
-}: { runId: string; taskId: string; stepName: string; runActive: boolean; approvalPending?: boolean }) {
+  runId, taskId, stepName, stepStatus, runActive, approvalPending = false,
+}: {
+  runId: string; taskId: string; stepName: string; stepStatus: string;
+  runActive: boolean; approvalPending?: boolean;
+}) {
   const { message } = App.useApp();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -48,13 +51,15 @@ export function StepActionBar({
   return (
     <div className="step-action-bar">
       <div className="step-action-copy">
-        <strong>单步执行</strong>
-        <span>基于本执行已落盘记录重建输入，前置步骤必须已成功；不触发整图重跑。</span>
+        <strong>{stepStatus === 'failed' ? '失败节点重试' : '单步执行'}</strong>
+        <span>基于本次 Run 的已落盘记录重建输入，前置步骤必须成功；只重跑当前节点，不会重跑整轮。</span>
         {runActive && <span className="action-warning">执行仍在活跃状态，后端会拒绝单步写入。</span>}
         {failure && <span className="action-failure">{failure}</span>}
       </div>
       <Button type="primary" icon={<PlayCircleOutlined />} disabled={runActive} onClick={() => setOpen(true)}>
-        {AGENT_STEPS.has(stepName) ? '重跑本 Agent' : '执行本步骤'}
+        {stepStatus === 'failed'
+          ? AGENT_STEPS.has(stepName) ? '重试本 Agent' : '重试本步骤'
+          : AGENT_STEPS.has(stepName) ? '重跑本 Agent' : '执行本步骤'}
       </Button>
 
       <Modal
