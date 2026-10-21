@@ -34,6 +34,13 @@ FINALIZE = "finalize_execution"
 RETRY = "retry_prepare"
 
 
+def after_source_sync(state: WorkflowState) -> str:
+    """源码同步收到用户取消时立即结束，不再进入日志发现与任务执行。"""
+    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
+        return END
+    return RUN_PREPARE
+
+
 def after_run_prepare(state: WorkflowState) -> str:
     """日志发现、规范化和去重组合阶段完成后才识别运输商。"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
