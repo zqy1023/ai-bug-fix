@@ -2036,7 +2036,6 @@ def v1_retry_task(
 ) -> dict[str, Any]:
     """Retry one terminal failed task in the same run without replaying already completed tasks."""
     from app.infrastructure.config import load_config, workflow_recursion_limit
-    from app.infrastructure.filesystem.workspace import WorkspaceManager
     from app.workflow.graph import TASK_DISPATCH
     from app.workflow.wiring import build_graph, build_services
 
