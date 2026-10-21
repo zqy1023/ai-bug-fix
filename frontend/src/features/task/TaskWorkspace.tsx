@@ -29,6 +29,11 @@ export function TaskWorkspace() {
   });
 
   const steps = task.data?.task.steps ?? [];
+  const taskLifecycleStatus = String(task.data?.task.lifecycle?.status || '').toLowerCase();
+  const taskStepActive = ['queued', 'running', 'retrying'].includes(taskLifecycleStatus)
+    || String(task.data?.task.result || '').toUpperCase() === 'RETRYING';
+  const workflowActive = ACTIVE.has(task.data?.run_status ?? '');
+  const executionActive = workflowActive || taskStepActive;
   const selected = searchParams.get('step') || (steps.length ? defaultStep(steps) : '');
   const step = useMemo(() => (selected ? stepRecord(steps, selected) : undefined), [steps, selected]);
 
@@ -36,7 +41,7 @@ export function TaskWorkspace() {
     queryKey: queryKeys.step(runId, taskId, selected),
     queryFn: () => api.step(runId, taskId, selected),
     enabled: Boolean(executionOpen && runId && taskId && selected && step),
-    refetchInterval: executionOpen && ACTIVE.has(task.data?.run_status ?? '') ? 5000 : false,
+    refetchInterval: executionOpen && executionActive ? 5000 : false,
   });
 
   const selectStep = (name: string) => {
@@ -65,7 +70,7 @@ export function TaskWorkspace() {
   }
   if (!task.data) return null;
 
-  const runActive = ACTIVE.has(task.data.run_status);
+  const runActive = executionActive;
   const approvalRecoveryFailed = task.data.task.approval_pending === true
     && task.data.run_status === 'failed'
     && String(task.data.run_error?.status || '').toUpperCase() === 'FAILED';
