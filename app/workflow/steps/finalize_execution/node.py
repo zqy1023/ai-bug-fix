@@ -106,7 +106,7 @@ def _terminal_details(
     blocked_reason: str = "",
 ) -> tuple[str, str, str]:
     """从持久化步骤事实生成终态原因；不依赖模型自称成功。"""
-    ordered = sorted(records, key=lambda item: str(item.finished_at or item.started_at or ""))
+    ordered = sorted(records, key=lambda item: str(getattr(item, "finished_at", "") or getattr(item, "started_at", "") or ""))
     latest = ordered[-1] if ordered else None
     status, outcome = str(terminal_status or "").upper(), str(result or "").upper()
 
@@ -114,6 +114,12 @@ def _terminal_details(
         return (latest.name if latest else "workflow",
                 "收到停止请求，任务已在安全节点边界终止。",
                 "确认停止原因；需要继续时重新发起执行。")
+
+    if status == "SKIPPED" or outcome == "SKIPPED":
+        skipped = next((item for item in reversed(ordered) if item.status == "skipped"), latest)
+        return (skipped.name if skipped else "workflow",
+                _record_reason(skipped) or "任务已跳过。",
+                "检查跳过原因及已有修复分支，确认是否需要重新执行。")
 
     # 即使旧状态残留 review=MANUAL，真实的最终人工审批通过也决定了终态。
     if outcome == "SUCCESS" and _final_source_approval_accepted(records):
@@ -148,7 +154,7 @@ def _terminal_details(
             "查看已提交的 final.json 分析报告；该任务未自动修改任何源码。",
         )
 
-    manual_names = ("locate_agent", "review_agent", "prepare_evidence", "repair_agent")
+    manual_names = ("locate_agent", "review_agent", "prepare_evidence", "repair_agent", "prepare_source_snapshot")
     if outcome == "MANUAL" or status == "MANUAL":
         for name in manual_names:
             record = next((item for item in reversed(ordered) if item.name == name), None)

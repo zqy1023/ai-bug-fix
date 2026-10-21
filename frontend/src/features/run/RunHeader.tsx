@@ -43,6 +43,7 @@ export function RunHeader({ run }: { run: RunDetail }) {
   });
 
   const status = run.status;
+  const progress = run.run_lifecycle?.progress;
   const canPause = ['running', 'queued', 'pause_requested'].includes(status);
   const canResume = status === 'paused' && Boolean(run.checkpoint?.resumable);
   const canRetry = status === 'failed' && !run.worker_active;
@@ -100,30 +101,38 @@ export function RunHeader({ run }: { run: RunDetail }) {
             >重试本轮</Button>
           </Tooltip>
         )}
-        <Tooltip title={canPause ? '在下一个节点边界暂停' : '当前状态不可暂停'}>
+        {canPause && <Tooltip title="在下一个节点边界暂停">
           <Button
             icon={<PauseOutlined />}
             disabled={!canPause}
             loading={control.isPending && control.variables === 'pause'}
             onClick={() => control.mutate('pause')}
           >暂停</Button>
-        </Tooltip>
-        <Tooltip title={canResume ? '从 checkpoint 恢复' : '没有可恢复的 checkpoint'}>
+        </Tooltip>}
+        {canResume && <Tooltip title="从暂停点继续执行">
           <Button
             icon={<CaretRightOutlined />}
             disabled={!canResume}
             loading={control.isPending && control.variables === 'resume'}
             onClick={() => control.mutate('resume')}
           >恢复</Button>
-        </Tooltip>
-        <Button
+        </Tooltip>}
+        {(canCancel || status === 'cancel_requested') && <Button
           danger
           icon={<StopOutlined />}
           disabled={!canCancel}
           loading={control.isPending && (control.variables === 'cancel' || status === 'cancel_requested')}
           onClick={confirmCancel}
-        >{status === 'cancel_requested' ? '停止中…' : '停止'}</Button>
+        >{status === 'cancel_requested' ? '停止中…' : '停止'}</Button>}
       </div>
+      {progress && progress.step === run.run_lifecycle?.current_step && (
+        <div className="run-notice" role="status">
+          <strong>{progress.message}</strong>
+          <span>已扫描 {(progress.counts.es_hits ?? 0).toLocaleString()} 条</span>
+          <span>可解析 {(progress.counts.parsed ?? 0).toLocaleString()} 条</span>
+          <span>独立问题 {(progress.counts.unique_count ?? 0).toLocaleString()} 个</span>
+        </div>
+      )}
       {(run.run_error?.message || run.run_report?.terminal_reason) && (
         <div className={'run-notice' + (run.run_error?.message ? ' is-error' : '')}>
           <strong>

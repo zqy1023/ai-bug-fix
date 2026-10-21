@@ -139,6 +139,7 @@ export function StepDetail({
           <span className="step-kicker">步骤 / {step.name}</span>
           <div>
             <h3>{step.title || step.name}</h3>
+            {step.result === 'UNVERIFIED' && <StatusBadge kind="task" value="UNVERIFIED" />}
             {step.result && FAILED_RESULTS.has(String(step.result).toUpperCase()) ? (
               <>
                 <StatusBadge kind="task" value={step.result} />

@@ -23,6 +23,7 @@ BUILTIN_STEPS = (
     "repair_branch_preflight",
     "request_approval",
     "run_regression",
+    "syntax_regression",
     "verify_issue",
 )
 BUILTIN_AGENTS = ("locate", "repair", "review")

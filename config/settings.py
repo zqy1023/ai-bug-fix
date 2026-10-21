@@ -29,8 +29,8 @@ class Settings:
     default_service_name: str = "gather.py.track"
     # default_log_limit：默认日志条数上限。
     default_log_limit: int = 0
-    # default_log_days：默认回溯天数。
-    default_log_days: int = 1
+    # default_log_hours：默认滚动回溯小时数。
+    default_log_hours: int = 24
     # default_index_days：索引回溯天数。
     default_index_days: int = 2
     # default_index_tz_offset：索引时区偏移。
@@ -80,10 +80,8 @@ class Settings:
     workbench_max_page_size: int = 100
     # workbench_max_attempts：接口允许的最大尝试次数。
     workbench_max_attempts: int = 5
-    # workbench_max_log_days：单次运行允许回溯的最大天数。
-    workbench_max_log_days: int = 30
-    # workbench_max_log_limit：单次运行允许读取的最大日志条数。
-    workbench_max_log_limit: int = 10000
+    # workbench_max_log_hours：单次运行允许回溯的最大小时数。
+    workbench_max_log_hours: int = 720
     # workbench_prompt_snapshot：是否把脱敏后的提示词快照写入任务审计目录。
     workbench_prompt_snapshot: bool = True
     # workbench_prompt_max_chars：提示词快照单段字符上限，超出部分截断并标记。

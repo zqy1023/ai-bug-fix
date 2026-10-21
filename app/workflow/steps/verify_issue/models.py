@@ -32,6 +32,8 @@ class VerifyOutput(FrozenModel):
 
     # passed：字段说明见该模型文档与工作流契约。
     passed: bool
+    # status：verified 表示完成业务验证；unverified 表示缺少业务证据，需人工确认。
+    status: str = "verified"
     # reason：字段说明见该模型文档与工作流契约。
     reason: str = ""
     # mode：实际执行的验证级别。

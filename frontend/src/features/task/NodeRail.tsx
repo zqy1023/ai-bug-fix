@@ -1,6 +1,6 @@
 import { Fragment, useMemo, useState } from 'react';
 import { DownOutlined, RightOutlined } from '@ant-design/icons';
-import type { StepRecord, StepStatus, TaskDetailResponse } from '../../lib/types';
+import type { StepRecord, StepStatus, TaskDetailResponse, WorkflowStage } from '../../lib/types';
 import { StatusBadge } from '../../components/StatusBadge';
 import {
   AGENT_STEPS, FAILED_RESULTS, TASK_STAGES, primaryStep, stageForStep, stageProgress, stageStatus, stepRecord,
@@ -17,7 +17,7 @@ type StageRow = {
   late: boolean;
 };
 
-const ACTIVE_TASK = new Set(['RUNNING', 'PENDING', 'WAITING_APPROVAL', 'QUEUED']);
+const ACTIVE_TASK = new Set(['RUNNING', 'RETRYING', 'PENDING', 'WAITING_APPROVAL', 'QUEUED', 'PAUSED']);
 // 分析类任务的真实顺序是 finalize_execution → prepare_delivery（提交报告分支）；
 // 源码修复任务才是交付 → 审批 → finalize。
 const ANALYSIS_DELIVERY_ORDER = [
@@ -57,15 +57,17 @@ function failureReason(records: StepRecord[]): string {
 }
 
 export function NodeRail({
-  steps, selected, onSelect, task, recoveryError,
+  steps, selected, onSelect, task, recoveryError, stages = TASK_STAGES,
 }: {
   steps: StepRecord[];
   selected: string;
   onSelect: (name: string) => void;
   task?: TaskDetailResponse['task'];
   recoveryError?: TaskDetailResponse['run_error'];
+  stages?: WorkflowStage[];
 }) {
-  const activeStage = stageForStep(selected)?.key;
+  const activeStage = stageForStep(selected, stages)?.key;
+  const [mobileCollapsed, setMobileCollapsed] = useState(true);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({ [activeStage ?? '']: true });
 
   const analysisDelivery = useMemo(() => {
@@ -88,9 +90,9 @@ export function NodeRail({
     const terminalStep = task?.report?.terminal_step || '';
     const taskResult = String(task?.result || '').toUpperCase();
     const taskActive = ACTIVE_TASK.has(taskResult);
-    const terminalIndex = TASK_STAGES.findIndex((stage) => stage.members.includes(terminalStep));
+    const terminalIndex = stages.findIndex((stage) => stage.members.includes(terminalStep));
 
-    const base = TASK_STAGES.map((stage, index) => {
+    const base = stages.map((stage, index) => {
       const records = stage.members
         .map((name) => stepRecord(steps, name))
         .filter(Boolean) as StepRecord[];
@@ -165,7 +167,7 @@ export function NodeRail({
       ...ordered.filter((row) => row.records.length > 0),
       ...ordered.filter((row) => row.records.length === 0),
     ];
-  }, [steps, task, analysisDelivery, recoveryError]);
+  }, [steps, task, analysisDelivery, recoveryError, stages]);
 
   const executedRows = rows.filter((row) => row.order > 0).sort((left, right) => left.order - right.order);
   const skippedCount = rows.filter((row) => row.records.length > 0 && row.status === 'skipped').length;
@@ -182,10 +184,11 @@ export function NodeRail({
   };
 
   return (
-    <nav className="node-rail" aria-label="任务步骤轨">
+    <nav className={`node-rail${mobileCollapsed ? ' is-mobile-collapsed' : ''}`} aria-label="任务步骤轨">
       <div className="node-rail-head">
         <span>任务节点</span>
         <span className="node-rail-count">{steps.length} 步</span>
+        <button type="button" className="node-mobile-toggle" aria-expanded={!mobileCollapsed} onClick={() => setMobileCollapsed((value) => !value)}>{mobileCollapsed ? '展开节点' : '收起节点'}</button>
       </div>
 
       {recoveryError && (
@@ -282,7 +285,7 @@ export function NodeRail({
                           onClick={() => onSelect(record.name)}
                         >
                           <span className={'node-member-dot status-' + record.status} />
-                          <span className="node-member-name">{record.name}</span>
+                          <span className="node-member-name" title={record.name}>{record.title || record.name}</span>
                           {AGENT_STEPS.has(record.name) && record.attempt ? (
                             <span className="node-attempt">a{record.attempt}</span>
                           ) : null}

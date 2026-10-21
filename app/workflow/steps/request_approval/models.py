@@ -39,6 +39,8 @@ class ApprovalInput(FrozenModel):
     delivery_pushed: bool = False
     # 未推送时本地修复分支同样需要在拒绝后清理。
     delivery_local_branch: bool = False
+    manual_confirmation_required: bool = False
+    manual_confirmation_reasons: list[str] = Field(default_factory=list)
 
 
 class ApprovalOutput(FrozenModel):
@@ -52,6 +54,7 @@ class ApprovalOutput(FrozenModel):
     reason: str = ""
     # retry_target：仅在驳回输出中回传给路由层的目标阶段。
     retry_target: str = ""
+    manual_confirmation_required: bool = False
 
 
 __all__ = ["APPROVAL_RETRY_TARGETS", "ApprovalInput", "ApprovalOutput", "RetryTarget"]

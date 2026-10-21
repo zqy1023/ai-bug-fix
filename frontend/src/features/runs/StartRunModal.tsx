@@ -7,8 +7,7 @@ import { queryKeys } from '../../lib/queryKeys';
 const { Text } = Typography;
 
 type FormValues = {
-  log_days: number;
-  log_limit: number;
+  log_hours: number;
   review_mode: 'agent' | 'human';
   max_attempts: number;
 };
@@ -20,7 +19,7 @@ export function StartRunModal({ open, onClose }: { open: boolean; onClose: () =>
   const queryClient = useQueryClient();
 
   const mutation = useMutation({
-    mutationFn: (values: FormValues) => api.startRun(values),
+    mutationFn: (values: FormValues) => api.startRun({ ...values, log_limit: 0 }),
     onSuccess: async (result) => {
       message.success('执行已开始，正在打开管道画布');
       onClose();
@@ -49,18 +48,11 @@ export function StartRunModal({ open, onClose }: { open: boolean; onClose: () =>
         form={form}
         layout="vertical"
         requiredMark={false}
-        initialValues={{ log_days: 1, log_limit: 0, review_mode: 'agent', max_attempts: 3 }}
+        initialValues={{ log_hours: 24, review_mode: 'agent', max_attempts: 3 }}
         onFinish={(values) => mutation.mutate(values)}
       >
-        <Form.Item label="日志回溯天数" name="log_days" rules={[{ required: true, message: '请输入回溯天数' }]}>
-          <InputNumber min={1} max={30} style={{ width: '100%' }} suffix="天" />
-        </Form.Item>
-        <Form.Item
-          label="日志条数上限"
-          name="log_limit"
-          extra="0 表示采用服务端默认上限；强校验仍由后端执行。"
-        >
-          <InputNumber min={0} max={10000} style={{ width: '100%' }} suffix="条" />
+        <Form.Item label="最近多少小时的日志" name="log_hours" extra="按最近 N 小时的滚动窗口全量读取，不限制日志条数。" rules={[{ required: true, message: '请输入回溯小时数' }]}>
+          <InputNumber min={1} max={720} precision={0} style={{ width: '100%' }} suffix="小时" />
         </Form.Item>
         <Form.Item label="审查模式" name="review_mode">
           <Radio.Group>

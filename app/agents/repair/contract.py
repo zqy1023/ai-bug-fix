@@ -96,7 +96,7 @@ def blocked_reason_of(payload: dict[str, Any], verdict: RepairVerdict) -> str:
     plan = plan_of(payload)
     if plan is not None:
         return plan.rationale or "根因超出目标 carrier 范围，已产出待授权方案"
-    return verdict.reason
+    return str(payload.get("summary") or verdict.reason)
 
 
 def slim_plan(payload: dict[str, Any]) -> dict[str, Any]:

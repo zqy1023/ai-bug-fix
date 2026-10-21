@@ -74,6 +74,8 @@ export function RunGraph({ run }: { run: RunDetail }) {
         key: 'prepare', title: '日志与规范化', detail: 'discover_and_normalize',
         members: ['discover_and_normalize', 'discover_logs', 'normalize_error', 'deduplicate_error'],
         status: prepareStatus === 'pending' && atPrepare ? 'running' : prepareStatus,
+        metric: run.run_lifecycle?.progress?.step === 'normalize_error'
+          ? `已扫描 ${(run.run_lifecycle.progress.counts.es_hits ?? 0).toLocaleString()} 条日志` : undefined,
       },
       {
         key: 'identify', title: '识别运输商', detail: 'identify_carrier',

@@ -281,3 +281,9 @@ docker compose logs -f api frontend
 - [模型与配置字段参考](docs/MODEL_AND_CONFIG_REFERENCE.md)：Agent 模型、预算与配置字段。
 - [运行产物与持久化说明](docs/RUNTIME_ARTIFACTS.md)：JSON、JSONL、SQLite 的审计、恢复与备份策略。
 - `docs/enterprise-workbench-upgrade.md`、`docs/reliability-hardening.md`：历史设计与可靠性改造记录。
+# 日志查询范围
+
+工作台按“最近 N 小时”的滚动时间窗口查询日志，默认最近 24 小时，
+使用 `log_hours` / `LOG_PULL_HOURS` 配置。新建执行默认 `log_limit=0`，表示窗口内全量拉取，
+没有 1,000 / 10,000 条的隐藏截断，也没有扫描总时长截断；单次 ES 请求仍保留网络超时。
+前端不再显示日志条数限制输入，读取阶段会展示已扫描、可解析和独立问题计数。

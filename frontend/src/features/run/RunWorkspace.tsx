@@ -77,13 +77,15 @@ export function RunWorkspace() {
       children: (
         <TaskBoard
           tasks={board.data?.tasks ?? []}
+          stages={board.data?.stages}
           onOpen={(task) => navigate(`/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(task.task_id)}`)}
         />
       ),
     },
+    { key: 'workflow', label: '工作流路径', children: runView ? <RunGraph run={runView} /> : null },
     { key: 'checkpoints', label: 'Checkpoint 时间线', children: <CheckpointTimeline runId={runId} /> },
     { key: 'audit', label: '控制审计', children: <ControlAuditPanel runId={runId} /> },
-  ], [board.data?.tasks, navigate, runId]);
+  ], [board.data?.tasks, board.data?.stages, navigate, runId, runView]);
 
   if (run.isLoading) {
     return <div className="page"><Skeleton active paragraph={{ rows: 8 }} /></div>;
@@ -108,7 +110,6 @@ export function RunWorkspace() {
   return (
     <div className="page run-workspace">
       <RunHeader run={runView} />
-      <RunGraph run={runView} />
       <div className={'live-line is-' + stream + (streamingClosed ? ' is-polling' : '')}>
         <span className="live-dot" />
         {streamingClosed ? '实时连接已关闭，正在轮询刷新' : STREAM_LABEL[stream]}

@@ -15,14 +15,14 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         "service_prefix": str(state["log_service_prefix"]),
         "excluded_messages": list(state.get("log_excluded_messages") or []),
         "excluded_biztypes": list(state.get("log_excluded_biztypes") or []),
-        "days": int(state["log_days"]),
+        "hours": int(state.get("log_hours") or int(state.get("log_days") or 1) * 24),
         "limit": int(state["log_limit"]),
     }
 
 
 SPEC = StepSpec(
     name="discover_logs",
-    title="拉取日志",
+    title="准备日志查询",
     runner=run,
     input_model=DiscoverInput,
     output_model=DiscoverOutput,

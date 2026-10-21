@@ -362,6 +362,7 @@ def build_graph(
     nodes: dict[str, Callable[..., Any]],
     task_graph: CompiledStateGraph,
     checkpointer: BaseCheckpointSaver | None = None,
+    task_collector: Callable[..., Any] | None = None,
 ) -> CompiledStateGraph:
     """编译 run 级主图。``task_graph`` 作为 ``run_task`` 节点嵌套进来。"""
     graph: StateGraph = StateGraph(RunState)
@@ -376,7 +377,7 @@ def build_graph(
         )
     graph.add_node(TASK_DISPATCH, dispatch)
     graph.add_node(RUN_TASK, task_graph)
-    graph.add_node(TASK_COLLECT, collect)
+    graph.add_node(TASK_COLLECT, task_collector or collect)
 
     graph.add_edge(START, SOURCE_SYNC)
     graph.add_conditional_edges(SOURCE_SYNC, after_source_sync, [RUN_PREPARE, END])

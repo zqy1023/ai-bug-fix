@@ -53,6 +53,8 @@ class NormalizeErrorOutput(FrozenModel):
     duplicate_count: int = Field(ge=0)
     # unique_count：字段说明见该模型文档与工作流契约。
     unique_count: int = Field(ge=0)
+    record_limit: int = 0
+    truncated: bool = False
 
 
 __all__ = ["NormalizeErrorInput", "NormalizeErrorOutput", "NormalizedLog"]

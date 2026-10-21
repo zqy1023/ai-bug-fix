@@ -206,7 +206,7 @@ def validate_changed_files(
         for item in file_changes(
             baseline_dir,
             root,
-            [claimed_by_norm.get(path, actual_by_norm[path]) for path in diff_candidates],
+            [claimed_by_norm[path] if path in claimed_by_norm else actual_by_norm[path] for path in diff_candidates],
             max_files=max(1, len(diff_candidates)),
         )
     }
@@ -230,7 +230,7 @@ def validate_changed_files(
             )
     all_keys = sorted(claimed_keys | actual_keys)
     for key in all_keys:
-        raw = claimed_by_norm.get(key, actual_by_norm[key])
+        raw = claimed_by_norm[key] if key in claimed_by_norm else actual_by_norm[key]
         entry = _inspect_file(root, carrier_paths, raw, baseline_manifest, diff)
         files.append(entry)
         failures.extend(

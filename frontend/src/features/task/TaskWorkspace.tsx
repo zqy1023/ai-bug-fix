@@ -1,7 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Button, Result, Skeleton } from 'antd';
-import { CodeOutlined, DownOutlined, RightOutlined } from '@ant-design/icons';
+import { Alert, Button, Result, Skeleton, Tabs } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { api, ApiError } from '../../lib/api';
 import { queryKeys } from '../../lib/queryKeys';
@@ -11,15 +10,15 @@ import { StepDetail } from './StepDetail';
 import { ContextInspector } from './ContextInspector';
 import { TaskOverview } from './TaskOverview';
 import { defaultStep, stepRecord } from './stages';
+import { TaskOperations } from './TaskOperations';
+import { ACTIVE_RUN, taskIsActive, taskHasFailed } from '../../lib/lifecycle';
 import { EmptyState } from '../../components/EmptyState';
 
-const ACTIVE = new Set(['queued', 'running', 'pause_requested', 'cancel_requested', 'waiting_approval']);
 
 export function TaskWorkspace() {
   const { runId = '', taskId = '' } = useParams();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [executionOpen, setExecutionOpen] = useState(Boolean(searchParams.get('step')));
 
   const task = useQuery({
     queryKey: queryKeys.task(runId, taskId),
@@ -29,11 +28,9 @@ export function TaskWorkspace() {
   });
 
   const steps = task.data?.task.steps ?? [];
-  const taskLifecycleStatus = String(task.data?.task.lifecycle?.status || '').toLowerCase();
-  const taskStepActive = ['queued', 'running', 'retrying'].includes(taskLifecycleStatus)
-    || String(task.data?.task.result || '').toUpperCase() === 'RETRYING';
-  const workflowActive = ACTIVE.has(task.data?.run_status ?? '');
-  const executionActive = workflowActive || taskStepActive;
+  const executionActive = Boolean(task.data && (task.data.worker_active || taskIsActive(task.data.task) || ACTIVE_RUN.has(task.data.run_status)));
+  const tab = searchParams.get('view') || (searchParams.get('step') || (task.data && taskHasFailed(task.data.task)) ? 'execution' : 'overview');
+  const executionOpen = tab === 'execution';
   const selected = searchParams.get('step') || (steps.length ? defaultStep(steps) : '');
   const step = useMemo(() => (selected ? stepRecord(steps, selected) : undefined), [steps, selected]);
 
@@ -48,8 +45,8 @@ export function TaskWorkspace() {
     const next = new URLSearchParams(searchParams);
     next.set('step', name);
     next.delete('trace');
+    next.set('view', 'execution');
     setSearchParams(next, { replace: true });
-    setExecutionOpen(true);
   };
 
   if (task.isLoading) {
@@ -82,26 +79,18 @@ export function TaskWorkspace() {
   return (
     <div className="page task-workspace">
       <TaskHeader detail={task.data} />
-      <TaskOverview detail={task.data} onOpenStep={selectStep} />
-
-      <section className="execution-section">
-        <header className="execution-section-heading">
-          <div className="execution-heading-icon"><CodeOutlined /></div>
-          <div className="execution-heading-copy">
-            <h3>执行记录与调试</h3>
-            <p>{approvalRecoveryFailed
-              ? '后台恢复失败；待审批记录仍保留。请先处理恢复异常，再回到交付审批重试决策。'
-              : '查看节点输入、输出、Agent 会话、错误日志和产物；默认收起。'}</p>
-          </div>
-          <Button
-            type={executionOpen ? 'default' : 'primary'}
-            onClick={() => setExecutionOpen((open) => !open)}
-            icon={executionOpen ? <DownOutlined /> : <RightOutlined />}
-          >
-            {executionOpen ? '收起详情' : '查看节点详情'}
-          </Button>
-        </header>
-
+      <TaskOperations detail={task.data} onInspect={() => selectStep(defaultStep(steps))} onRefresh={() => void task.refetch()} refreshing={task.isFetching} />
+      <Tabs
+        className="task-view-tabs"
+        activeKey={tab}
+        onChange={(view) => { const next = new URLSearchParams(searchParams); next.set('view', view); setSearchParams(next, { replace: true }); }}
+        items={[
+          { key: 'overview', label: '结果与交付' },
+          { key: 'execution', label: `执行记录 · ${steps.length}` },
+        ]}
+      />
+      {tab === 'overview' && <TaskOverview detail={task.data} onOpenStep={selectStep} />}
+      {executionOpen && <section className="execution-section">
         {executionOpen && (
           steps.length ? (
             <div className="task-layout">
@@ -111,8 +100,10 @@ export function TaskWorkspace() {
                 onSelect={selectStep}
                 task={task.data.task}
                 recoveryError={approvalRecoveryFailed ? task.data.run_error : undefined}
+                stages={task.data.stages}
               />
               <div className="task-main">
+                {detail.isError && <Alert type="error" showIcon message="步骤详情暂时无法加载" description={detail.error instanceof Error ? detail.error.message : '请刷新重试'} action={<Button size="small" onClick={() => void detail.refetch()}>重试加载</Button>} />}
                 {step ? (
                   <StepDetail
                     runId={runId}
@@ -144,7 +135,7 @@ export function TaskWorkspace() {
           <span>已记录 {steps.length} 个步骤{steps.length ? ` · ${executedCount} 个已开始或已结束` : ''}</span>
           {terminalStep && <span>业务停止点：{terminalStep}</span>}
         </footer>
-      </section>
+      </section>}
     </div>
   );
 }

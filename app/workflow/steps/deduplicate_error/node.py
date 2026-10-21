@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from app.application.context import StepContext
@@ -109,7 +109,10 @@ def consume(
     return "duplicate"
 
 
-def write_groups(records: Iterator[dict[str, Any]], ignore_errors: tuple[str, ...]) -> dict[str, Any]:
+def write_groups(
+    records: Iterator[dict[str, Any]], ignore_errors: tuple[str, ...],
+    progress: Callable[[dict[str, int]], None] | None = None,
+) -> dict[str, Any]:
     """消费规范化记录并返回代表问题。去重结果的落盘由 normalize_error 负责。"""
     grouped: dict[str, dict[str, Any]] = {}
     input_count = 0
@@ -119,6 +122,9 @@ def write_groups(records: Iterator[dict[str, Any]], ignore_errors: tuple[str, ..
         outcome = consume(grouped, _record(value, position), ignore_errors)
         if outcome == "ignored":
             ignored_count += 1
+        if progress and input_count % 100 == 0:
+            progress({"normalized_count": input_count, "ignored_count": ignored_count,
+                      "unique_count": len(grouped), "duplicate_count": input_count - ignored_count - len(grouped)})
     output_records = [
         DeduplicatedLog.model_validate(value).model_dump()
         for value in grouped.values()

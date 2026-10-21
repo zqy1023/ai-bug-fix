@@ -142,8 +142,32 @@ class RecordStore:
             if task_id:
                 tasks = payload.setdefault("tasks", [])
                 if not isinstance(tasks, list):
-                    tasks = []
-                    payload["tasks"] = tasks
+                    raise StepFailed(
+                        f"执行 {run_id} 的 steps.json.tasks 结构损坏，拒绝清空已有任务记录",
+                        code="STEP_RECORD_CORRUPTED",
+                    )
+                # steps.json 是审计投影，历史任务槽位只能增加，不能因旧进程
+                # 的快照写回而倒退。若当前写入前刚发生过覆盖，.bak 仍可能
+                # 保留更多槽位，先合并恢复，再写入本次步骤。
+                backup_path = self.steps_path(run_id).with_name("steps.json.bak")
+                if backup_path.is_file():
+                    try:
+                        backup = json.loads(backup_path.read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError):
+                        backup = {}
+                    backup_tasks = backup.get("tasks") if isinstance(backup, dict) else None
+                    if isinstance(backup_tasks, list):
+                        known = {
+                            str(item.get("task_id"))
+                            for item in tasks
+                            if isinstance(item, dict) and item.get("task_id")
+                        }
+                        for item in backup_tasks:
+                            if not isinstance(item, dict) or not item.get("task_id"):
+                                continue
+                            if str(item["task_id"]) not in known:
+                                tasks.append(item)
+                                known.add(str(item["task_id"]))
                 slot = next((item for item in tasks if isinstance(item, dict) and item.get("task_id") == task_id), None)
                 if slot is None:
                     slot = {"task_id": task_id}
@@ -193,6 +217,11 @@ class RecordStore:
                 )
             return
 
+        run_lifecycle = lifecycle.read_run(run_id)
+        if run_lifecycle.get("worker_active") and run_lifecycle.get("status") in {"running", "retrying"}:
+            lifecycle.update_run(
+                run_id, phase="run_task", current_step=phase, current_task_id=task_id,
+            )
         common = {"current_step": phase, "attempt": record.attempt}
         if record.status == "waiting":
             status = "waiting_approval" if phase == "request_approval" else "paused"
@@ -200,7 +229,7 @@ class RecordStore:
                 run_id, task_id, status=status, **common,
                 terminal_step="", terminal_reason="", next_action="",
             )
-        elif phase == "finalize_execution":
+        elif phase == "finalize_execution" and record.status != "running":
             output = record.output if isinstance(record.output, dict) else {}
             delivery_status = str(output.get("delivery_status") or record.result or "").upper()
             if delivery_status in {"SUCCESS", "SUCCEEDED", "COMPLETED", "DELIVERED"}:
@@ -209,6 +238,8 @@ class RecordStore:
                 status = "manual"
             elif delivery_status == "CANCELLED":
                 status = "cancelled"
+            elif delivery_status == "SKIPPED":
+                status = "skipped"
             elif record.status == "failed" or delivery_status in {"FAILED", "FAIL", "REJECTED"}:
                 status = "failed"
             else:
@@ -243,6 +274,20 @@ class RecordStore:
                 run_id, task_id, status="running", **common,
                 error={}, last_error=error if record.status == "failed" else {},
             )
+
+    def complete_task(self, run_id: str, task_id: str) -> None:
+        """在任务子图退出时依据最终报告收敛，避免交付将终态重新标为 running。"""
+        record = self.load(run_id, "finalize_execution", task_id)
+        if record is None:
+            raise StepFailed("任务子图退出但缺少终态步骤记录")
+        self._update_lifecycle(run_id, task_id, record)
+
+    def report_progress(self, run_id: str, step: str, message: str, counts: dict[str, int]) -> None:
+        """记录不含原始日志的处理进度，供轮询和事件流展示。"""
+        LifecycleStore(self.root).update_run(
+            run_id, progress={"step": step, "message": message, "counts": counts},
+            progress_at=utc_now(),
+        )
 
     def load(self, run_id: str, step_name: str, task_id: str = "") -> StepRecord | None:
         """读取步骤记录；不存在时返回空。旧格式在读取边界转换。"""

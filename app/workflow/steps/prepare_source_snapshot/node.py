@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+import time
 import uuid
 from pathlib import Path
 
@@ -22,6 +23,24 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _publish_snapshot(temporary: Path, baseline: Path) -> None:
+    """短暂目录占用可重试；绝不覆盖另一执行已发布的不可变基线。"""
+    for attempt in range(3):
+        if baseline.exists():
+            raise StepFailed("源码基线已由其他执行创建，拒绝覆盖；请检查重复执行")
+        try:
+            temporary.rename(baseline)
+            return
+        except PermissionError as error:
+            if attempt == 2:
+                code = getattr(error, "winerror", None) or getattr(error, "errno", None)
+                raise StepFailed(
+                    f"源码快照发布失败：目录被占用或缺少重命名权限（系统错误码 {code or 'unknown'}）；请检查目标目录占用后重试。",
+                    {"operation": "snapshot_publish", "exception_type": type(error).__name__, "os_error_code": code},
+                ) from error
+            time.sleep(0.1 * (attempt + 1))
 
 
 def run(ctx: StepContext, data: SourceSnapshotInput) -> SourceSnapshotOutput:
@@ -46,7 +65,8 @@ def run(ctx: StepContext, data: SourceSnapshotInput) -> SourceSnapshotOutput:
     has_legacy = legacy_root is not None
     if not has_new and not has_legacy:
         raise StepFailed(
-            f"源码快照找不到 carrier（源码中可能已删除或重命名）: {data.carrier}"
+            f"源码快照找不到 carrier（源码中可能已删除或重命名）: {data.carrier}",
+            result="manual",
         )
 
     # 同时快照新旧框架的同名 carrier（如果两者都存在），以便只读定位能够核对
@@ -97,7 +117,7 @@ def run(ctx: StepContext, data: SourceSnapshotInput) -> SourceSnapshotOutput:
                 manifest[workspace_relative] = _sha256(source)
         if not manifest:
             raise StepFailed(f"carrier 没有可快照的普通文件: {data.carrier}")
-        temporary.replace(baseline)
+        _publish_snapshot(temporary, baseline)
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
         raise

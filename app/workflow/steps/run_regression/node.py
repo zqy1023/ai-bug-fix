@@ -43,6 +43,18 @@ def run(ctx: StepContext, data: RegressionInput) -> RegressionOutput:
         raise StepFailed("隔离工作区未配置，无法执行准生产回归")
     if not ctx.services.source_repo:
         raise StepFailed("源仓库未配置，无法建立独立回归环境")
+    if not ctx.services.verify_commands:
+        if str(data.business_verification_status).lower() == "unverified":
+            return RegressionOutput(
+                passed=False,
+                status="unverified",
+                reason="没有固定回归命令，且当前问题缺少业务验证证据",
+            )
+        return RegressionOutput(
+            passed=True,
+            status="skipped",
+            reason="没有配置额外回归命令；问题级业务验证结果作为唯一运行时证据",
+        )
     result = RegressionRunner(
         ctx.services.workspaces,
         ctx.services.verify_commands,
@@ -78,7 +90,12 @@ def run(ctx: StepContext, data: RegressionInput) -> RegressionOutput:
             "artifacts/regression_report.json",
             report,
         )
-    output = RegressionOutput(passed=result.get("passed") is True, reason=reason, command_count=count)
+    output = RegressionOutput(
+        passed=result.get("passed") is True,
+        status="verified" if result.get("passed") is True else "failed",
+        reason=reason,
+        command_count=count,
+    )
     if not output.passed:
         raise StepFailed(output.reason or "准生产回归失败", output.model_dump())
     return output

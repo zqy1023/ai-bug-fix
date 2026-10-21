@@ -103,19 +103,24 @@ def state_from_records(store: RecordStore, run_id: str, task_id: str = "") -> di
     from app.infrastructure.config import load_config
 
     config = load_config()
+    run_meta = store.load_run(run_id)
     state: dict[str, Any] = {
         "run_id": run_id,
         "task_id": task_id,
         "attempt": 1,
         "schema_version": 2,
-        "source_repo_path": str(store.load_run(run_id).get("source_repo_path") or ""),
+        "source_repo_path": str(run_meta.get("source_repo_path") or ""),
+        "review_mode": str(run_meta.get("review_mode") or config.review_mode),
+        "max_attempts": int(run_meta.get("max_attempts") or config.max_attempts),
+        "allow_push": bool(run_meta.get("allow_push", config.git_push)),
+        "require_push": bool(run_meta.get("require_push", False)),
     }
     state.update({
         "log_service_name": config.log_service_name,
         "log_service_prefix": config.log_service_prefix,
         "log_excluded_messages": list(config.excluded_messages),
         "log_excluded_biztypes": list(config.excluded_biztypes),
-        "log_days": config.log_days,
+        "log_hours": int(run_meta.get("log_hours") or int(run_meta.get("log_days") or 0) * 24 or config.log_hours),
         "log_limit": config.limit,
     })
     for record in store.list_steps(run_id):
@@ -144,11 +149,16 @@ def state_from_records(store: RecordStore, run_id: str, task_id: str = "") -> di
         elif record.name == "locate_agent":
             state["locate"] = output
         elif record.name == "check_changes":
+            state["gate_result"] = dict(output)
             state["check_passed"] = bool(output.get("passed"))
             state["changed_files"] = list(output.get("changed_files") or state.get("changed_files") or [])
+        elif record.name == "syntax_regression":
+            state["syntax_passed"] = bool(output.get("passed"))
+            state["syntax_result"] = output
         elif record.name == "verify_issue":
             state["verify_passed"] = bool(output.get("passed"))
             state["verify_result"] = output
+            state["business_verification_status"] = str(output.get("status") or ("verified" if output.get("passed") else "unverified"))
         elif record.name == "run_regression":
             state["regression_passed"] = bool(output.get("passed"))
             state["regression_result"] = output
@@ -225,7 +235,7 @@ def execute_once(
     try:
         result = node(state)
     finally:
-        close_sessions()
+        close_sessions(run_id, task_id or None)
     record = store.load(run_id, spec.name, task_id if spec.task_level else "")
     payload = result if isinstance(result, dict) else {}
     return (0 if payload.get("last_result") == "passed" else 1), record, payload

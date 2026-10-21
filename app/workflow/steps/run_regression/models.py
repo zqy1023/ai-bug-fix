@@ -16,6 +16,7 @@ class RegressionInput(FrozenModel):
     ai_workspace_path: str
     # changed_files：字段说明见该模型文档与工作流契约。
     changed_files: list[str]
+    business_verification_status: str = "unknown"
 
 
 class RegressionOutput(FrozenModel):
@@ -29,6 +30,7 @@ class RegressionOutput(FrozenModel):
     mode: str = "regression"
     # command_count：字段说明见该模型文档与工作流契约。
     command_count: int = 0
+    status: str = "verified"
 
 
 __all__ = ["RegressionInput", "RegressionOutput"]

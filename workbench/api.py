@@ -27,6 +27,7 @@ from app.infrastructure.records.lifecycle import LifecycleStore
 from app.infrastructure.redaction import public_exception
 from app.domain.approval import APPROVAL_RETRY_TARGETS, RetryTarget
 from config.settings import settings
+from workbench.projections import run_error as project_run_error, run_timestamps, task_stages
 
 router = APIRouter()
 SERVICE_NAME = "ai-repair-workbench"
@@ -129,6 +130,7 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
                 "retrying": "RETRYING", "waiting_approval": "WAITING_APPROVAL",
                 "paused": "PAUSED", "succeeded": "SUCCESS", "partial_failed": "PARTIAL_FAILED",
                 "failed": "FAILED", "cancelled": "CANCELLED", "manual": "MANUAL",
+                "skipped": "SKIPPED",
             }
             fallback_report = _report_from_steps(
                 task_id=task_id, carrier=carrier, biztype=biztype,
@@ -183,6 +185,21 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
         bool(run_lifecycle.get("worker_active")) and heartbeat_fresh
     )
 
+    if not worker_active and (run_failure or run_report) and lifecycle_status in {"", "failed", "partial_failed", "succeeded", "cancelled"}:
+        if any(task["status"] in {"RUNNING", "RETRYING", "PENDING"} for task in tasks):
+            report = run_failure or run_report
+            _settle_task_lifecycles_after_run_failure(
+                run_id, store, phase=str(report.get("terminal_step") or "workflow_exit"),
+                reason=str(report.get("message") or report.get("terminal_reason") or "本轮工作流已退出，任务没有完成收尾。"),
+                next_action=str(report.get("next_action") or "检查任务失败节点后重试。"),
+            )
+            for task in tasks:
+                current = lifecycle_store.read_task(run_id, task["task_id"])
+                if current:
+                    task["lifecycle"] = current
+                    task["status"] = str(current.get("status") or task["status"]).upper()
+            results = [str(task["status"]).upper() for task in tasks]
+
     if lifecycle_status in {"queued", "running", "retrying", "pause_requested", "cancel_requested"} and not worker_active:
         # A crashed process must not leave an active badge forever.
         stale_reason = "后台工作线程心跳已超时，执行不再被视为活动状态。请检查失败节点后重试。"
@@ -201,6 +218,16 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
             "next_action": "检查失败节点；可从 Run 控制栏重试，或在任务详情单步重试。",
         }
         worker_active = False
+        _settle_task_lifecycles_after_run_failure(
+            run_id, store, phase="worker_timeout", reason=stale_reason,
+            next_action="检查后台异常后使用 Run 级重试恢复。",
+        )
+        for task in tasks:
+            current = lifecycle_store.read_task(run_id, task["task_id"])
+            task["lifecycle"] = current
+            if current.get("status") == "failed":
+                task["status"] = "FAILED"
+        results = [str(task["status"]).upper() for task in tasks]
 
     lifecycle_to_run = {
         "queued": "queued", "running": "running", "retrying": "running",
@@ -243,15 +270,8 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
         "run_lifecycle": run_lifecycle,
         "identified_tasks": identified_tasks,
         "dispatched_tasks": len(tasks),
-        "run_error": run_failure if isinstance(run_failure, dict) else (
-            {
-                "status": "FAILED", "error_type": run_lifecycle.get("error_type"),
-                "message": run_lifecycle.get("error_message") or run_lifecycle.get("terminal_reason"),
-                "terminal_step": run_lifecycle.get("phase"),
-                "terminal_reason": run_lifecycle.get("terminal_reason"),
-                "next_action": run_lifecycle.get("next_action"),
-            } if lifecycle_status == "failed" else {}
-        ),
+        "run_error": project_run_error(run_failure if isinstance(run_failure, dict) else {}, run_lifecycle),
+        **run_timestamps(run_lifecycle, run_report, run_failure, created_at=created, terminal=terminal),
         "created_at": created,
         "updated_at": updated,
         "steps": run_steps,
@@ -262,6 +282,7 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
             "tasks_failed": sum(1 for result in results if result in {"FAILED", "FAIL"}),
             "tasks_manual": sum(1 for result in results if result in {"MANUAL", "REJECTED"}),
             "tasks_waiting_approval": pending,
+            "tasks_inactive": sum(1 for result in results if result in {"CANCELLED", "SKIPPED", "COMPLETED"}),
             "steps_total": len(run_steps) + sum(len(task["steps"]) for task in tasks),
         },
     }
@@ -411,10 +432,15 @@ def _latest_approval_step(steps: list[dict[str, Any]]) -> dict[str, Any] | None:
 def _approval_pending(step: dict[str, Any] | None) -> bool:
     if not step:
         return False
-    if step.get("status") == "running":
+    # LangGraph interrupt 落盘为 status=waiting，output 为空；旧逻辑只看
+    # running 或 output.decision，导致真实等待审批的任务从审批中心消失。
+    if step.get("status") in {"running", "waiting"}:
         return True
     output = step.get("output")
-    return isinstance(output, dict) and output.get("decision") == "PENDING"
+    if isinstance(output, dict) and output.get("decision") == "PENDING":
+        return True
+    input_payload = step.get("input")
+    return isinstance(input_payload, dict) and input_payload.get("decision") == "PENDING"
 
 
 def _identified_task_total(steps: list[dict[str, Any]]) -> int:
@@ -696,10 +722,11 @@ from typing import Literal
 
 
 class V1StartRunRequest(BaseModel):
-    # log_days：本轮向 ES 回溯的天数。
-    log_days: int = Field(default=1, ge=1, le=settings.workbench_max_log_days)
-    # log_limit：本轮最多读取的日志数；0 表示采用服务端配置。
-    log_limit: int = Field(default=0, ge=0, le=settings.workbench_max_log_limit)
+    model_config = {"extra": "forbid"}
+    # log_hours：本轮滚动回溯的小时数。
+    log_hours: int = Field(default=24, ge=1, le=settings.workbench_max_log_hours)
+    # log_limit：本轮最多读取的日志数；0 表示全量拉取，不设置条数上限。
+    log_limit: int = Field(default=0, ge=0)
     # review_mode：agent 表示 AI 审查，human 表示强制人工审查。
     review_mode: Literal["agent", "human"] = settings.default_review_mode
     # max_attempts：单任务修复尝试总次数，包含首次执行。
@@ -778,7 +805,7 @@ def _v1_status(value: str) -> str:
 
 def _v1_run_summary(payload: dict[str, Any]) -> dict[str, Any]:
     summary = payload.get("summary") or {}
-    created = payload.get("created_at") or payload.get("updated_at")
+    created = payload.get("started_at") or payload.get("created_at") or payload.get("updated_at")
     run_id = str(payload["run_id"])
     status = _v1_status(str(payload.get("status") or ""))
     try:
@@ -801,7 +828,7 @@ def _v1_run_summary(payload: dict[str, Any]) -> dict[str, Any]:
         }:
             status = "cancel_requested"
         elif control and control["pause_requested"]:
-            status = "paused" if paused_step else "pause_requested"
+            status = "paused" if paused_step or (status == "paused" and not payload.get("worker_active")) else "pause_requested"
     except Exception:
         logger.debug("读取执行控制状态失败 run_id=%s", run_id, exc_info=True)
     return {
@@ -818,6 +845,7 @@ def _v1_run_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "failed_tasks": int(summary.get("tasks_failed") or 0),
         "manual_tasks": int(summary.get("tasks_manual") or 0),
         "waiting_tasks": int(summary.get("tasks_waiting_approval") or 0),
+        "inactive_tasks": int(summary.get("tasks_inactive") or 0),
         "operator": payload.get("operator") or "系统", "created_at": created, "updated_at": payload.get("updated_at") or created,
     }
 
@@ -906,7 +934,7 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
                 step.get("status") == "waiting"
                 for task in (payload.get("tasks") or []) for step in (task.get("steps") or [])
             )
-            status = "paused" if has_waiting_step else "pause_requested"
+            status = "paused" if has_waiting_step or (status == "paused" and not summary.get("worker_active")) else "pause_requested"
     finally:
         connection.close()
     run_report = _read_json(store.run_dir(run_id) / "reports" / "final.json", {})
@@ -925,7 +953,7 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
     return {
         **summary, "status": status, "terminal": terminal,
         "config": {
-            "log_days": run_meta.get("log_days", 1), "log_limit": run_meta.get("log_limit", 0),
+            "log_hours": run_meta.get("log_hours", int(run_meta.get("log_days") or 1) * 24), "log_limit": run_meta.get("log_limit", 0),
             "review_mode": run_meta.get("review_mode", settings.default_review_mode), "max_attempts": run_meta.get("max_attempts", settings.default_max_attempts),
         },
         "steps": steps, "tasks": tasks, "artifacts": artifacts,
@@ -1174,6 +1202,10 @@ def _complete_run_lifecycle(run_id: str, store: RecordStore) -> None:
         error_type="MISSING_TERMINAL_REPORT", error_message=reason,
         terminal_reason=reason, next_action="检查 Run 与 Task 生命周期记录后，从 Run 控制栏重试。",
     )
+    _settle_task_lifecycles_after_run_failure(
+        run_id, store, phase="workflow_exit", reason=reason,
+        next_action="检查失败节点后使用 Run 级重试恢复。",
+    )
 
 
 def _settle_task_lifecycles_after_run_failure(
@@ -1184,6 +1216,8 @@ def _settle_task_lifecycles_after_run_failure(
     reason: str,
     next_action: str,
 ) -> None:
+    from app.application.audit import StepError
+
     lifecycle = LifecycleStore(store.root)
     payload = _read_json(store.steps_path(run_id), {})
     slots = payload.get("tasks", []) if isinstance(payload, dict) else []
@@ -1195,10 +1229,24 @@ def _settle_task_lifecycles_after_run_failure(
         task_id = slot["task_id"]
         state = lifecycle.read_task(run_id, task_id)
         status = str(state.get("status") or "")
-        if phase == "approval_recovery" and status == "waiting_approval":
+        if phase in {"approval_recovery", "worker_timeout"} and status == "waiting_approval":
             continue
-        if status in {"succeeded", "partial_failed", "failed", "cancelled", "manual"}:
+        if status in {"succeeded", "partial_failed", "failed", "cancelled", "manual", "skipped"}:
             continue
+        records = store.list_steps(run_id, task_id)
+        finalizer = next((record for record in records if record.name == "finalize_execution"), None)
+        if finalizer and finalizer.status == "succeeded" and not any(record.status == "running" for record in records):
+            store.complete_task(run_id, task_id)
+            continue
+        for record in records:
+            if record.status == "running":
+                finished = datetime.now(timezone.utc)
+                started = _parse_time(record.started_at)
+                record.status = "failed"
+                record.finished_at = finished.isoformat()
+                record.duration_ms = max(0, (finished - started).total_seconds() * 1000) if started else 0
+                record.error = StepError(code="STEP_EXECUTION_FAILED", message=reason)
+                store.save(run_id, record, task_id)
         lifecycle.update_task(
             run_id, task_id, status="failed",
             terminal_step=str(state.get("current_step") or phase),
@@ -1241,17 +1289,20 @@ def _record_background_failure(
             "next_action": next_action,
             "failed_at": now,
         }
-        lifecycle = LifecycleStore(_store().root)
-        lifecycle.update_run(
-            run_id, status="failed", phase=phase, current_step=phase,
-            error_type=type(error).__name__, error_message=reason,
-            terminal_reason=reason, next_action=next_action,
-        )
-        _settle_task_lifecycles_after_run_failure(
-            run_id, _store(), phase=phase, reason=reason, next_action=next_action,
-        )
         temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(target)
+        try:
+            lifecycle = LifecycleStore(_store().root)
+            lifecycle.update_run(
+                run_id, status="failed", phase=phase, current_step=phase,
+                error_type=type(error).__name__, error_message=reason,
+                terminal_reason=reason, next_action=next_action,
+            )
+            _settle_task_lifecycles_after_run_failure(
+                run_id, _store(), phase=phase, reason=reason, next_action=next_action,
+            )
+        except Exception:
+            logger.exception("后台失败报告已保存，但生命周期收敛失败 run_id=%s", run_id)
         final_path = report_dir / "final.json"
         existing_report = _read_json(final_path, {})
         if not isinstance(existing_report, dict):
@@ -1301,6 +1352,8 @@ def _run_workflow_background_v1(
             heartbeat_stop.set()
         if heartbeat_thread is not None:
             heartbeat_thread.join(timeout=1)
+        from app.infrastructure.runtime import close_sessions
+        close_sessions(run_id)
         try:
             LifecycleStore(_store().root).update_run(run_id, worker_active=False)
         except Exception:
@@ -1396,11 +1449,14 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
             "size_bytes": None, "task_id": task_id,
         })
     run_meta = _read_json(store.run_dir(run_id) / "run.json", {})
-    run_error = _read_json(store.run_dir(run_id) / "reports" / "run_failure.json", {})
+    run_error = payload.get("run_error") or {}
     return {
         "run_id": run_id,
         "run_status": _v1_run_summary(payload)["status"],
+        "worker_active": bool(payload.get("worker_active")),
+        "run_terminal": bool(payload.get("terminal")),
         "run_error": run_error if isinstance(run_error, dict) else {},
+        "stages": task_stages(),
         "task": {
             "task_id": task_id, "carrier": source.get("carrier", ""),
             "biztype": source.get("biztype", ""), "result": source.get("status", "PENDING"),
@@ -1412,7 +1468,7 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
         },
         "artifacts": artifacts,
         "config": {
-            "log_days": run_meta.get("log_days", 1), "log_limit": run_meta.get("log_limit", 0),
+            "log_hours": run_meta.get("log_hours", int(run_meta.get("log_days") or 1) * 24), "log_limit": run_meta.get("log_limit", 0),
             "review_mode": run_meta.get("review_mode", settings.default_review_mode), "max_attempts": run_meta.get("max_attempts", settings.default_max_attempts),
         },
     }
@@ -1486,7 +1542,7 @@ def v1_retry_run(run_id: str, background: BackgroundTasks, _: None = Depends(_au
                 error_type="", error_message="", terminal_reason="", next_action="",
             )
             overrides = {
-                "log_days": int(run_meta.get("log_days") or 1),
+                "log_hours": int(run_meta.get("log_hours") or int(run_meta.get("log_days") or 1) * 24),
                 "log_limit": int(run_meta.get("log_limit") or 0),
                 "review_mode": str(run_meta.get("review_mode") or settings.default_review_mode),
                 "max_attempts": int(run_meta.get("max_attempts") or settings.default_max_attempts),
@@ -1531,7 +1587,9 @@ def v1_resume_run(run_id: str, background: BackgroundTasks, _: None = Depends(_a
     # 检查点和状态必须在取得执行锁后重新读取，避免并发控制请求在校验后改变状态。
     try:
         detail = _v1_detail(run_id)
-        if detail["status"] not in {"running", "queued", "paused", "failed"} or not detail["checkpoint"]["resumable"]:
+        # 本控制操作持有的锁也会被投影算作 worker_active，暂停标记此时可能
+        # 显示为 pause_requested；锁已保证没有另一个后台执行器，仍可恢复。
+        if detail["status"] not in {"running", "queued", "paused", "pause_requested", "failed"} or not detail["checkpoint"]["resumable"]:
             raise HTTPException(status_code=409, detail="执行当前没有可恢复的 checkpoint")
         connection = _control_db()
         try:
@@ -1577,6 +1635,7 @@ def _resume_workflow_background(
         store = _store()
         LifecycleStore(store.root).update_run(
             run_id, status="running", phase="workflow_resume", current_step="", error={}, worker_active=True,
+            terminal_reason="", error_type="", error_message="", next_action="",
         )
         heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(run_id)
         runtime_config = load_config()
@@ -1636,6 +1695,8 @@ def _resume_workflow_background(
         phase = "approval_recovery" if resume_payload is not None else "workflow_resume"
         _record_background_failure(run_id, exc, phase=phase)
     finally:
+        from app.infrastructure.runtime import close_sessions
+        close_sessions(run_id)
         if heartbeat_stop is not None:
             heartbeat_stop.set()
         if heartbeat_thread is not None:
@@ -2029,6 +2090,7 @@ def v1_run_board(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
     return {
         "run_id": str(payload.get("run_id") or run_id),
         "summary": _v1_run_summary(payload),
+        "stages": task_stages(),
         "tasks": tasks,
         "total": len(tasks),
     }

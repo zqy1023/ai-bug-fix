@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.workflow.spec import FrozenModel
-from pydantic import Field
+from pydantic import Field, model_validator
 
 
 class DiscoverInput(FrozenModel):
@@ -17,10 +17,20 @@ class DiscoverInput(FrozenModel):
     excluded_messages: list[str] = Field(default_factory=list)
     # excluded_biztypes：字段说明见该模型文档与工作流契约。
     excluded_biztypes: list[str] = Field(default_factory=list)
-    # days：字段说明见该模型文档与工作流契约。
-    days: int = Field(ge=1)
+    # hours：精确滚动回溯小时数。
+    hours: int = Field(ge=1)
     # limit：字段说明见该模型文档与工作流契约。
     limit: int = Field(ge=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def upgrade_saved_query(cls, value: object) -> object:
+        """旧步骤记录按 1 天 = 24 小时恢复；新写入只保留 hours。"""
+        if isinstance(value, dict) and "days" in value:
+            value = dict(value)
+            days = value.pop("days")
+            value.setdefault("hours", int(days) * 24)
+        return value
 
 
 class DiscoverOutput(FrozenModel):

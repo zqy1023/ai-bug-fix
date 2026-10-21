@@ -24,6 +24,8 @@ const RUN: Record<string, BadgeSpec> = {
 };
 
 const TASK: Record<string, BadgeSpec> = {
+  UNVERIFIED: { label: '业务未验证', tone: 'waiting', icon: <ExclamationCircleFilled /> },
+  SKIPPED: { label: '已跳过', tone: 'neutral', icon: <MinusCircleOutlined /> },
   RUNNING: { label: '运行中', tone: 'running', icon: <LoadingOutlined /> },
   RETRYING: { label: '重试中', tone: 'running', icon: <SyncOutlined spin /> },
   PAUSED: { label: '已暂停', tone: 'neutral', icon: <PauseCircleOutlined /> },

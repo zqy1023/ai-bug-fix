@@ -23,6 +23,8 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         "repair_branch": str(state.get("repair_branch") or ""),
         "delivery_pushed": bool(state.get("delivery_pushed")),
         "delivery_local_branch": bool(state.get("delivery_local_branch")),
+        "manual_confirmation_required": bool(state.get("manual_confirmation_required")),
+        "manual_confirmation_reasons": [str(item) for item in state.get("manual_confirmation_reasons") or []],
         "ai_workspace_path": str(state.get("ai_workspace_path") or ""),
         "changed_files": [str(item) for item in state.get("changed_files") or []],
         "baseline_manifest": dict(state.get("baseline_manifest") or {}),
@@ -34,6 +36,8 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
                     "change_plan": state.get("change_plan") or {},
                     "changed_files": sorted(str(item) for item in state.get("changed_files") or []),
                     "baseline_manifest": state.get("baseline_manifest") or {},
+                    "manual_confirmation_required": bool(state.get("manual_confirmation_required")),
+                    "manual_confirmation_reasons": list(state.get("manual_confirmation_reasons") or []),
                 },
                 ensure_ascii=False,
                 sort_keys=True,
@@ -49,6 +53,7 @@ def _patch(output: dict[str, Any]) -> dict[str, Any]:
         "decision": decision,
         "approval_granted": decision == "APPROVE",
         "approval_cleanup_failed": bool(output.get("approval_cleanup_failed")),
+        "manual_confirmation_required": bool(output.get("manual_confirmation_required")),
     }
 
 

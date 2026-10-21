@@ -16,6 +16,7 @@ from typing import Any
 from app.infrastructure.config import load_config, workflow_recursion_limit
 from app.infrastructure.records.store import RecordStore
 from app.infrastructure.runtime import close_sessions
+from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -38,12 +39,12 @@ def prepare_run(
     options = dict(overrides or {})
     config = replace(
         config,
-        log_days=int(options.get("log_days", config.log_days)),
-        limit=(config.limit if int(options.get("log_limit", 0)) == 0 else int(options["log_limit"])),
+        log_hours=int(options.get("log_hours", config.log_hours)),
+        limit=int(options.get("log_limit", config.limit)),
         review_mode=str(options.get("review_mode", config.review_mode)),
         max_attempts=int(options.get("max_attempts", config.max_attempts)),
     )
-    if not 1 <= config.log_days <= 30 or not 1 <= config.max_attempts <= 5 or config.limit < 0:
+    if not 1 <= config.log_hours <= settings.workbench_max_log_hours or not 1 <= config.max_attempts <= 5 or config.limit < 0:
         raise ValueError("执行参"
                          ""
                          "数超出允许范围")
@@ -61,7 +62,7 @@ def prepare_run(
         "log_service_prefix": config.log_service_prefix,
         "log_excluded_messages": list(config.excluded_messages),
         "log_excluded_biztypes": list(config.excluded_biztypes),
-        "log_days": config.log_days,
+        "log_hours": config.log_hours,
         "log_limit": config.limit,
         "review_mode": config.review_mode,
         "max_attempts": config.max_attempts,
@@ -127,7 +128,7 @@ def run_workflow(
                 "log_service_prefix": config.log_service_prefix,
                 "log_excluded_messages": list(config.excluded_messages),
                 "log_excluded_biztypes": list(config.excluded_biztypes),
-                "log_days": config.log_days,
+                "log_hours": config.log_hours,
                 "log_limit": config.limit,
                 "attempt": 1,
                 "max_attempts": config.max_attempts,
@@ -148,7 +149,7 @@ def run_workflow(
         _write_run_report(store, resolved, error=exc)
         raise
     finally:
-        close_sessions()
+        close_sessions(resolved)
     return {"run_id": resolved, "steps": [item.name for item in store.list_steps(resolved)]}
 
 
@@ -373,20 +374,21 @@ def _write_run_report(
             total = len(task_results)
             successes = counts.get("SUCCESS", 0) + counts.get("SUCCEEDED", 0)
             manuals = counts.get("MANUAL", 0) + counts.get("INSUFFICIENT_EVIDENCE", 0)
+            skipped = counts.get("SKIPPED", 0)
             failures = sum(count for key, count in counts.items()
                            if key in {"FAILED", "FAIL", "REJECTED", "INCOMPLETE", "CANCELLED"})
             if failures or manuals:
                 result = "PARTIAL_FAILED" if successes else ("MANUAL" if manuals and not failures else "FAILED")
-            elif successes == total:
+            elif successes + skipped == total:
                 result = "SUCCESS"
             else:
                 result = "INCOMPLETE"
-            blocker = next((task for task in task_results if task["result"].upper() not in {"SUCCESS", "SUCCEEDED"}), None)
+            blocker = next((task for task in task_results if task["result"].upper() not in {"SUCCESS", "SUCCEEDED", "SKIPPED"}), None)
             terminal_step = str(blocker.get("terminal_step") or "task_collect") if blocker else "task_collect"
-            reason = f"本轮共处理 {total} 个任务：成功 {successes} 个，需人工介入 {manuals} 个，失败或未完成 {failures} 个。"
+            reason = f"本轮共处理 {total} 个任务：成功 {successes} 个，跳过 {skipped} 个，需人工介入 {manuals} 个，失败或未完成 {failures} 个。"
             if blocker and blocker["terminal_reason"]:
                 reason += " 首个未成功任务：" + blocker["carrier"] + " / " + blocker["biztype"] + " — " + blocker["terminal_reason"]
-            next_action = str(blocker.get("next_action") or "检查各任务终态报告，按团队流程完成人工评审与合并。") if blocker else "所有任务均已完成交付准备；按团队流程完成人工评审与合并。"
+            next_action = str(blocker.get("next_action") or "检查各任务终态报告，按团队流程完成人工评审与合并。") if blocker else "本轮任务已处理；检查已生成或已有修复分支，按团队流程评审与合并。"
 
         report = {
             "report_version": 1, "report_kind": "run_final", "run_id": run_id,

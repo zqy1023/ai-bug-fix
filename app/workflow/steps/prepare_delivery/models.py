@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pydantic import Field
+
 from app.workflow.spec import FrozenModel
 
 
@@ -48,6 +50,8 @@ class DeliveryInput(FrozenModel):
     allow_push: bool = False
     # require_push：只有明确要求时才把缺少远程视为交付失败。
     require_push: bool = False
+    manual_confirmation_required: bool = False
+    manual_confirmation_reasons: list[str] = Field(default_factory=list)
 
 
 class DeliveryOutput(FrozenModel):
@@ -61,6 +65,7 @@ class DeliveryOutput(FrozenModel):
     pushed: bool = False
     # local_branch：未推送时提交已写回源仓库的本地修复分支。
     local_branch: bool = False
+    manual_confirmation_required: bool = False
 
 
 __all__ = ["DeliveryInput", "DeliveryOutput"]

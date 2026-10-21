@@ -3,16 +3,18 @@ import type { RunSummary } from '../../lib/types';
 import { formatDuration, formatTime, shortId } from '../../lib/format';
 import { StatusBadge } from '../../components/StatusBadge';
 import { RunProgressHeatmap } from '../../components/RunProgressHeatmap';
+import { ACTIVE_RUN } from '../../lib/lifecycle';
 
 export function RunCard({ run, onOpen }: { run: RunSummary; onOpen: () => void }) {
-  const running = Math.max(
+  const running = run.terminal || !ACTIVE_RUN.has(run.status) ? 0 : Math.max(
     0,
-    run.task_count - run.succeeded_tasks - run.failed_tasks - run.manual_tasks - run.waiting_tasks,
+    run.task_count - run.succeeded_tasks - run.failed_tasks - run.manual_tasks - run.waiting_tasks - (run.inactive_tasks ?? 0),
   );
   const startedAt = new Date(run.started_at).getTime();
   const finished = run.finished_at
     ? new Date(run.finished_at).getTime() - startedAt
-    : Math.max(0, Date.now() - startedAt);
+    : run.terminal || !ACTIVE_RUN.has(run.status)
+      ? undefined : Math.max(0, Date.now() - startedAt);
 
   return (
     <button type="button" className="run-card" onClick={onOpen}>
@@ -36,6 +38,7 @@ export function RunCard({ run, onOpen }: { run: RunSummary; onOpen: () => void }
         manual={run.manual_tasks}
         failed={run.failed_tasks}
         running={running}
+        inactive={run.inactive_tasks ?? 0}
         total={run.task_count}
       />
       <div className="run-card-foot">

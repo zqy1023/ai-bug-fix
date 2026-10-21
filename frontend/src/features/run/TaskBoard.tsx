@@ -1,71 +1,64 @@
-import type { BoardTask } from '../../lib/types';
+import { useMemo, useState, type FC } from 'react';
+import { Button, Input } from 'antd';
+import { ArrowRightOutlined, SearchOutlined } from '@ant-design/icons';
+import type { BoardTask, WorkflowStage } from '../../lib/types';
 import { formatDuration } from '../../lib/format';
 import { StatusBadge } from '../../components/StatusBadge';
 import { EmptyState } from '../../components/EmptyState';
 
-type Column = { key: string; title: string; hint: string; tasks: BoardTask[] };
+interface TaskBoardProps { tasks: BoardTask[]; stages?: WorkflowStage[]; onOpen: (task: BoardTask) => void }
+type Filter = 'all' | 'attention' | 'active' | 'ended';
+const ACTIVE = new Set(['RUNNING', 'RETRYING', 'PENDING', 'QUEUED']);
+const ATTENTION = new Set(['FAILED', 'FAIL', 'REJECTED', 'PARTIAL_FAILED', 'WAITING_APPROVAL', 'PAUSED']);
 
-function columnOf(task: BoardTask): string {
-  const result = String(task.result || '').toUpperCase();
-  if (task.approval_pending || result === 'WAITING_APPROVAL') return 'waiting';
-  if (result === 'PAUSED') return 'paused';
-  if (['FAILED', 'FAIL', 'REJECTED'].includes(result)) return 'failed';
-  if (['MANUAL', 'INSUFFICIENT_EVIDENCE'].includes(result)) return 'manual';
-  if (['SUCCESS', 'SUCCEEDED', 'DELIVERED'].includes(result)) return 'success';
-  return 'running';
+function state(task: BoardTask): string {
+  return task.approval_pending ? 'WAITING_APPROVAL' : String(task.result || 'PENDING').toUpperCase();
 }
 
-const COLUMN_META = [
-  { key: 'waiting', title: '待交付审批', hint: '唯一需要人工决策' },
-  { key: 'failed', title: '失败', hint: '需检查错误与产物' },
-  { key: 'running', title: '运行中 / 排队', hint: '自动链路推进中' },
-  { key: 'paused', title: '已暂停', hint: '单步已结束，等待继续操作' },
-  { key: 'manual', title: '分析报告', hint: '无需系统内操作' },
-  { key: 'success', title: '自动交付', hint: '分支已产出待合并' },
-];
+export const TaskBoard: FC<TaskBoardProps> = ({ tasks, stages = [], onOpen }) => {
+  const [filter, setFilter] = useState<Filter>('all');
+  const [search, setSearch] = useState('');
+  const counts = {
+    all: tasks.length,
+    attention: tasks.filter((task) => ATTENTION.has(state(task))).length,
+    active: tasks.filter((task) => ACTIVE.has(state(task))).length,
+    ended: tasks.filter((task) => !ACTIVE.has(state(task)) && !['WAITING_APPROVAL', 'PAUSED'].includes(state(task))).length,
+  };
+  const visible = useMemo(() => tasks.filter((task) => {
+    const status = state(task);
+    const matches = filter === 'all' || (filter === 'attention' ? ATTENTION.has(status)
+      : filter === 'active' ? ACTIVE.has(status) : !ACTIVE.has(status) && !['WAITING_APPROVAL', 'PAUSED'].includes(status));
+    return matches && [task.carrier, task.biztype, task.task_id, task.terminal_reason].join(' ').toLowerCase().includes(search.trim().toLowerCase());
+  }).sort((left, right) => Number(ATTENTION.has(state(right))) - Number(ATTENTION.has(state(left)))), [tasks, filter, search]);
 
-export function TaskBoard({ tasks, onOpen }: { tasks: BoardTask[]; onOpen: (task: BoardTask) => void }) {
-  if (!tasks.length) {
-    return <EmptyState title="本轮尚未产生任务" description="任务在 identify_carrier 之后进入任务板。" compact />;
-  }
-  const columns: Column[] = COLUMN_META.map((meta) => ({
-    ...meta,
-    tasks: tasks.filter((task) => columnOf(task) === meta.key),
-  }));
-
+  if (!tasks.length) return <EmptyState title="正在等待任务清单" description="完成日志发现和运输商识别后，任务将在此显示。" compact />;
+  const filters: Array<{ key: Filter; label: string }> = [
+    { key: 'all', label: '全部任务' }, { key: 'attention', label: '需要处理' },
+    { key: 'active', label: '正在执行' }, { key: 'ended', label: '已结束' },
+  ];
   return (
-    <div className="task-board">
-      {columns.map((column) => (
-        <section key={column.key} className={`board-column board-${column.key}`}>
-          <header className="board-column-head">
-            <span className="board-column-title">{column.title}</span>
-            <span className="board-column-count">{column.tasks.length}</span>
-          </header>
-          <p className="board-column-hint">{column.hint}</p>
-          <div className="board-column-body">
-            {column.tasks.length === 0 && <span className="board-empty">无任务</span>}
-            {column.tasks.map((task) => (
-              <button key={task.task_id} type="button" className="task-card" onClick={() => onOpen(task)}>
-                <div className="task-card-head">
-                  <strong title={task.carrier}>{task.carrier || '未识别运输商'}</strong>
-                  <StatusBadge kind="task" value={task.result} compact />
-                </div>
-                <div className="task-card-meta">
-                  <span title={task.biztype}>{task.biztype || '未知业务类型'}</span>
-                  {task.service_name && <span className="task-card-service">{task.service_name}</span>}
-                </div>
-                <div className="task-card-foot">
-                  <span>{task.steps_count} 步 · {formatDuration(task.duration_ms)}</span>
-                  {(task.current_step || task.terminal_step) && (
-                    <code>{['RUNNING', 'RETRYING', 'PENDING', 'PAUSED', 'WAITING_APPROVAL'].includes(String(task.result).toUpperCase()) ? '当前 ' : '终态 '}{task.current_step || task.terminal_step}</code>
-                  )}
-                  {(task.attempt ?? 0) > 1 && <span>第 {task.attempt} 次尝试</span>}
-                </div>
-              </button>
-            ))}
-          </div>
-        </section>
-      ))}
-    </div>
+    <section className="task-register" aria-label="任务列表">
+      <div className="task-register-toolbar">
+        <div className="task-register-filters" role="group" aria-label="任务状态筛选">
+          {filters.map(({ key, label }) => <button key={key} type="button" aria-pressed={filter === key} className={filter === key ? 'is-selected' : ''} onClick={() => setFilter(key)}>{label}<span>{counts[key]}</span></button>)}
+        </div>
+        <Input allowClear prefix={<SearchOutlined />} aria-label="搜索运输商或错误" placeholder="搜索运输商、业务类型或错误…" value={search} onChange={(event) => setSearch(event.target.value)} />
+      </div>
+      {visible.length ? <div className="task-register-scroll"><table className="task-register-table">
+        <thead><tr><th>运输商 / 业务</th><th>状态</th><th>当前阶段 / 停止点</th><th>执行摘要</th><th>操作</th></tr></thead>
+        <tbody>{visible.map((task) => {
+          const status = state(task);
+          const failed = ['FAILED', 'FAIL', 'REJECTED', 'PARTIAL_FAILED'].includes(status);
+          return <tr key={task.task_id} className={failed ? 'needs-attention' : ''}>
+            <td><button type="button" className="task-register-name" onClick={() => onOpen(task)}>{task.carrier || '未识别运输商'}</button><small>{task.biztype || '未知业务类型'}</small></td>
+            <td><StatusBadge kind="task" value={status} /></td>
+            <td><span title={task.current_step || task.terminal_step}>{stages.find((stage) => stage.members.includes(task.current_step || task.terminal_step))?.title || task.current_step || task.terminal_step || '等待分派'}</span><small>{task.steps_count} 个步骤 · {formatDuration(task.duration_ms)}{(task.attempt ?? 0) > 1 ? ` · 第 ${task.attempt} 次尝试` : ''}</small></td>
+            <td className="task-register-reason"><span title={task.terminal_reason}>{ACTIVE.has(status) ? '自动流程正在推进' : task.terminal_reason || task.next_action || '等待生成执行结论'}</span></td>
+            <td><Button type={failed || task.approval_pending ? 'primary' : 'text'} size="small" icon={<ArrowRightOutlined />} iconPosition="end" onClick={() => onOpen(task)}>{failed ? '排查失败' : task.approval_pending ? '查看审批' : '查看任务'}</Button></td>
+          </tr>;
+        })}</tbody>
+      </table></div> : <EmptyState title="没有匹配的任务" description="尝试修改筛选条件或搜索内容。" compact />}
+      <footer className="task-register-footer">显示 {visible.length} / {tasks.length} 个任务<span>需要处理的任务优先展示</span></footer>
+    </section>
   );
-}
+};

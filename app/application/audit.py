@@ -25,6 +25,7 @@ StepPhase = Literal["pending", "running", "succeeded", "failed", "waiting", "ski
 
 # 业务结论。按需增补，不预先铺满：没有消费者之前不添加取值。
 StepResultValue = Literal[
+    "UNVERIFIED",
     "LOCATED",
     "INSUFFICIENT_EVIDENCE",
     "MANUAL",
@@ -179,7 +180,7 @@ def map_outcome(
         return "waiting", None
     if kind == "ok":
         declared = _business_result(output)
-        if declared in {"MANUAL", "INSUFFICIENT_EVIDENCE"}:
+        if declared in {"MANUAL", "INSUFFICIENT_EVIDENCE", "UNVERIFIED"}:
             return "succeeded", declared
         if declared in {"REJECTED", "SKIPPED"}:
             return "succeeded", declared
@@ -207,6 +208,7 @@ def _business_result(output: dict[str, Any] | None) -> str | None:
     if not isinstance(output, dict):
         return None
     allowed = {
+        "UNVERIFIED",
         "LOCATED", "INSUFFICIENT_EVIDENCE", "MANUAL", "PASS", "FAIL",
         "REJECTED", "SKIPPED", "DELIVERED", "SUCCESS", "FAILED",
     }

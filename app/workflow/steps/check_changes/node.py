@@ -182,7 +182,10 @@ def _render_file_contents(
     workspace = Path(workspace_path).resolve()
     baseline = Path(baseline_path).resolve() if baseline_path else None
     try:
-        carrier_roots = WorkspaceManager.locate_carrier_roots(workspace, carrier)
+        carrier_roots = [
+            workspace / relative
+            for relative in WorkspaceManager.locate_carrier_roots(workspace, carrier)
+        ]
     except Exception:
         carrier_roots = []
 

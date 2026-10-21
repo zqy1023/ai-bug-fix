@@ -37,7 +37,9 @@ SPEC = AgentSpec(
             "baseline_dir",
             "diff_summary",
             "check_passed",
+            "syntax_passed",
             "verify_passed",
+            "business_verification_status",
             "regression_passed",
         )
     ),

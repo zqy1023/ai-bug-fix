@@ -13,7 +13,7 @@ export const TASK_STAGES: TaskStage[] = [
   { key: 'locate_agent', title: '定位问题', members: ['locate_agent'], group: false },
   { key: 'claim_repair_slot', title: '领取修复资格', members: ['claim_repair_slot'], group: false },
   { key: 'repair_agent', title: '修复 Agent', members: ['repair_agent'], group: false },
-  { key: 'validate_changes', title: '变更门禁', members: ['check_changes', 'verify_issue'], group: true },
+  { key: 'validate_changes', title: '变更与验证', members: ['check_changes', 'syntax_regression', 'verify_issue'], group: true },
   { key: 'run_regression', title: '回归验证', members: ['run_regression'], group: false },
   { key: 'review_agent', title: 'AI 审查', members: ['review_agent'], group: false },
   { key: 'prepare_delivery', title: '交付修复分支', members: ['prepare_delivery'], group: false },
@@ -77,8 +77,8 @@ export function defaultStep(steps: StepRecord[]): string {
   return steps[steps.length - 1]?.name ?? TASK_STAGES[0].members[0];
 }
 
-export function stageForStep(stepName: string): TaskStage | undefined {
-  return TASK_STAGES.find((stage) => stage.members.includes(stepName));
+export function stageForStep(stepName: string, stages: TaskStage[] = TASK_STAGES): TaskStage | undefined {
+  return stages.find((stage) => stage.members.includes(stepName));
 }
 
 export function primaryStep(stage: TaskStage, steps: StepRecord[]): string {

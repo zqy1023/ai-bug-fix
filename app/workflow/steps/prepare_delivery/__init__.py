@@ -96,6 +96,8 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         "report_paths": [f"{report_dir}/final.json"] if analysis_only else [],
         "allow_push": bool(state.get("allow_push", state.get("git_push", False))),
         "require_push": bool(state.get("require_push", False)),
+        "manual_confirmation_required": bool(state.get("manual_confirmation_required")),
+        "manual_confirmation_reasons": [str(item) for item in state.get("manual_confirmation_reasons") or []],
     }
 
 
@@ -106,6 +108,7 @@ def _patch(output: dict[str, Any]) -> dict[str, Any]:
         "delivery_pushed": bool(output.get("pushed")),
         "delivery_local_branch": bool(output.get("local_branch")),
         "delivery_commit": str(output.get("commit") or ""),
+        "manual_confirmation_required": bool(output.get("manual_confirmation_required")),
     }
 
 

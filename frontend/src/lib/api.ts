@@ -131,7 +131,7 @@ export const api = {
         }),
       },
     ),
-  startRun: (payload: { log_days: number; log_limit: number; review_mode: 'agent' | 'human'; max_attempts: number }) =>
+  startRun: (payload: { log_hours: number; log_limit: number; review_mode: 'agent' | 'human'; max_attempts: number }) =>
     request<{ run_id: string; status: string }>('/runs', {
       method: 'POST',
       headers: { 'Idempotency-Key': crypto.randomUUID() },

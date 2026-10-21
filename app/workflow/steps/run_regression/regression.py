@@ -92,7 +92,7 @@ class RegressionRunner:
                 "--porcelain", "--untracked-files=all", "--ignored=matching"
             )
             hashes_before = _changed_hashes(project, changed)
-            commands_to_run = _commands_for(self._commands, changed)
+            commands_to_run = _commands_for(self._commands, changed, project)
             if commands_to_run:
                 result = run_fixed_commands(project, commands_to_run, timeout_seconds=self._timeout_seconds)
             else:
@@ -182,13 +182,15 @@ def _changed_hashes(project: Path, changed_files: list[str]) -> dict[str, str]:
     return result
 
 
-def _commands_for(commands: Sequence[Sequence[str]], changed_files: list[str]) -> list[list[str]]:
+def _commands_for(
+    commands: Sequence[Sequence[str]], changed_files: list[str], project: Path | None = None,
+) -> list[list[str]]:
     """语法检查命令补上本轮改动文件。其它固定命令保持原样。
 
     本轮没有 .py 改动时，以 ``py_compile`` 结尾的命令整体跳过（返回空列表表示
     没有需要执行的命令）；不能把缺文件参数的原始命令塞回去，那必然执行失败。
     """
-    files = [item for item in changed_files if item.endswith(".py")]
+    files = [item for item in changed_files if item.endswith(".py") and (project is None or (project / item).is_file())]
     resolved: list[list[str]] = []
     for command in commands:
         items = list(command)

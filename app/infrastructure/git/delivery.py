@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 import logging
+import hashlib
+import json
 import os
 import re
 import shutil
@@ -204,6 +206,12 @@ class GitBranchDelivery:
         except Exception as error:
             raise DeliveryError(f"不是有效的本地 Git 仓库: {branch_root}") from error
         git_root = Path(repo.working_tree_dir or branch_root).resolve()
+        fingerprint = self._fingerprint(source_root, state)
+        receipt = state.get("delivery_receipt") or {}
+        if isinstance(receipt, dict) and receipt:
+            if receipt.get("fingerprint") != fingerprint or receipt.get("repair_branch") != str(branch):
+                raise DeliveryError("交付内容已改变，不能复用旧提交；请重新执行验证与审查")
+            return self._resume_delivery(repo, state, receipt)
 
         workspace: Path | None = None
         delivery_repo: Repo | None = None
@@ -284,6 +292,17 @@ class GitBranchDelivery:
                     branch_workspace_path=str(workspace),
                 ) from error
 
+            # 先把提交对象锚定到源仓库的专用引用，再持久化操作收据。
+            # 即使远端推送成功后断网或进程崩溃，下一次也只确认/重推同一提交。
+            anchor = "refs/ai-bug-fixer/" + hashlib.sha256(str(branch).encode()).hexdigest()
+            delivery_repo.git.push(str(git_root), f"HEAD:{anchor}")
+            prepared = {
+                "repair_branch": str(branch), "commit": commit.hexsha,
+                "fingerprint": fingerprint, "anchor": anchor,
+            }
+            persist = state.get("persist_delivery")
+            if callable(persist):
+                persist(prepared)
             pushed = False
             # allow_push 是本轮配置策略，require_push 是调用方门禁。
             # 两者分离后，本地交付可以没有 remote；明确要求推送时则必须同时允许推送。
@@ -306,7 +325,10 @@ class GitBranchDelivery:
                         delivery_repo, remote_url, str(branch), commit.hexsha
                     )
                     with _git_environment(delivery_repo, self._config.git_env):
-                        delivery_repo.git.push(remote_url, f"HEAD:refs/heads/{branch}")
+                        delivery_repo.git.push(
+                            remote_url, f"HEAD:refs/heads/{branch}",
+                            f"--force-with-lease=refs/heads/{branch}:",
+                        )
                     self._verify_remote_branch(
                         delivery_repo, remote_url, str(branch), commit.hexsha
                     )
@@ -363,6 +385,53 @@ class GitBranchDelivery:
             "report_paths": [str(git_root / path) for path in report_files],
             "merge_request_created": False,
             "auto_merged": False,
+        }
+
+    @staticmethod
+    def _fingerprint(source_root: Path, state: Mapping[str, Any]) -> str:
+        """绑定交付收据与实际源码/报告，禁止变更后直接复用旧提交。"""
+        paths = sorted({str(item) for item in [*(state.get("changed_files") or []), *(state.get("report_paths") or [])]})
+        hashes: dict[str, str] = {}
+        for relative in paths:
+            path = (source_root / relative).resolve()
+            if not path.is_relative_to(source_root):
+                raise DeliveryError("交付内容超出 AI 工作区")
+            hashes[relative] = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "MISSING"
+        return hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
+
+    def _resume_delivery(
+        self, repo: Repo, state: Mapping[str, Any], receipt: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """恢复已准备提交；只有远端引用等于预期提交才算成功。"""
+        branch = str(receipt["repair_branch"])
+        commit = str(receipt.get("commit") or "")
+        if not re.fullmatch(r"[0-9a-f]{40,64}", commit):
+            raise DeliveryError("交付收据缺少有效提交")
+        repo.git.cat_file("-e", f"{commit}^{{commit}}")
+        remotes = {remote.name for remote in repo.remotes}
+        remote_push = bool(state.get("allow_push", self._config.push)) and self._config.remote_name in remotes
+        if state.get("require_push") and not remote_push:
+            raise DeliveryError("本次交付要求推送，但运行策略或远程配置不允许")
+        if remote_push:
+            remote = repo.git.remote("get-url", self._config.remote_name).strip()
+            with _git_environment(repo, self._config.git_env):
+                output = repo.git.ls_remote(remote, f"refs/heads/{branch}")
+                refs = [line.split()[0] for line in output.splitlines() if line.split()[-1:] == [f"refs/heads/{branch}"]]
+                if refs and refs[0] != commit:
+                    raise DeliveryError("远端修复分支已指向其他提交，拒绝覆盖", status="GIT_BRANCH_EXISTS", commit=commit)
+                if not refs:
+                    repo.git.push(remote, f"{commit}:refs/heads/{branch}", f"--force-with-lease=refs/heads/{branch}:")
+            self._verify_remote_branch(repo, remote, branch, commit)
+        else:
+            existing = next((head.commit.hexsha for head in repo.heads if head.name == branch), None)
+            if existing and existing != commit:
+                raise DeliveryError("本地修复分支已指向其他提交，拒绝覆盖", status="GIT_BRANCH_EXISTS", commit=commit)
+            if existing is None:
+                repo.git.update_ref(f"refs/heads/{branch}", commit, "0" * len(commit))
+            self._verify_local_branch(Path(repo.working_tree_dir), branch, commit)
+        return {
+            "repair_branch": branch, "commit": commit, "pushed": remote_push,
+            "local_branch": not remote_push, "delivery_status": state.get("delivery_status"),
         }
 
     def _reject_existing_remote_branch(
@@ -720,6 +789,11 @@ class GitBranchDelivery:
         carrier = str(state.get("carrier") or "unknown")
         status = str(state.get("delivery_status") or "REPAIR")
         lines = [f"{settings.repair_branch_prefix}: {carrier} ({status})"]
+        if bool(state.get("manual_confirmation_required")):
+            lines += ["", "[MANUAL_CONFIRMATION_REQUIRED]"]
+            reasons = [str(item) for item in state.get("manual_confirmation_reasons") or []]
+            if reasons:
+                lines.append("  reasons: " + "; ".join(reasons[:5]))
 
         error = _one_line(state.get("error"))
         if error:

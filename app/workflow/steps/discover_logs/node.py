@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 from app.domain.errors import StepFailed
 from app.application.context import StepContext
 from app.workflow.steps.discover_logs.models import DiscoverInput, DiscoverOutput
 
 
-def iter_raw(ctx: StepContext, data: DiscoverInput, stats: dict[str, int]) -> Iterator[dict[str, str]]:
+def iter_raw(
+    ctx: StepContext, data: DiscoverInput, stats: dict[str, int], *,
+    progress: Callable[[dict[str, int]], None] | None = None,
+    cancel_requested: Callable[[], bool] | None = None,
+) -> Iterator[dict[str, str]]:
     """按查询条件逐条读取 ES。调用方消费完迭代器后，``stats`` 才完整。"""
     if ctx.services.log_source is None:
         raise StepFailed("生产 ES 日志源未配置")
@@ -18,9 +22,11 @@ def iter_raw(ctx: StepContext, data: DiscoverInput, stats: dict[str, int]) -> It
         service_prefix=data.service_prefix,
         excluded_messages=list(data.excluded_messages),
         excluded_biztypes=list(data.excluded_biztypes),
-        days=data.days,
+        hours=data.hours,
         limit=data.limit,
         stats=stats,
+        progress=progress,
+        cancel_requested=cancel_requested,
     )
     for record in raw:
         if not isinstance(record, dict):

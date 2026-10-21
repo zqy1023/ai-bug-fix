@@ -25,18 +25,27 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _patch(output: dict[str, Any]) -> dict[str, Any]:
-    return {"verify_passed": bool(output["passed"]), "verify_result": output}
+    unverified = str(output.get("status") or "").lower() == "unverified"
+    return {
+        "verify_passed": bool(output["passed"]),
+        "verify_result": output,
+        "business_verification_status": "unverified" if unverified else "verified",
+        "manual_confirmation_required": unverified,
+        "manual_confirmation_reasons": ["业务问题未验证"] if unverified else [],
+        # 未验证允许继续到业务回归和 AI 审查，但绝不当作业务通过。
+        "last_result": "passed" if unverified else ("passed" if output["passed"] else "failed"),
+    }
 
 
 SPEC = StepSpec(
     name="verify_issue",
-    title="独立验证",
+    title="业务问题验证",
     runner=run,
     input_model=VerifyInput,
     output_model=VerifyOutput,
     input_builder=_input,
     output_patch=_patch,
-    depends_on=(Dependency("check_changes", "task"),),
+    depends_on=(Dependency("syntax_regression", "task"),),
     next_step="run_regression",
 )
 

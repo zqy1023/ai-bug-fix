@@ -32,7 +32,7 @@ def test_after_retry_routes_each_allowed_rejection_target_to_the_named_phase():
     for target, phase in expected.items():
         assert after_retry({"retry_target": target, "attempt": 1, "max_attempts": 3}) == phase
 
-    assert after_retry({"retry_target": "untrusted-node", "attempt": 1, "max_attempts": 3}) == REPAIR
+    assert after_retry({"retry_target": "untrusted-node", "attempt": 1, "max_attempts": 3}) == FINALIZE
     assert after_retry({"retry_target": "repair_agent", "terminal_status": "CANCELLED"}) == FINALIZE
 
 
@@ -322,13 +322,15 @@ def test_invalid_rejection_target_is_blocked_by_runner_without_repair_fallback(m
 
 def test_background_failure_report_persists_redacted_actionable_reason(monkeypatch, tmp_path):
     import workbench.api as api_module
+    from app.infrastructure.records.store import RecordStore
 
-    run_dir = tmp_path / "run-id"
+    store = RecordStore(tmp_path)
+    run_dir = store.run_dir("run-id")
     run_dir.mkdir()
     monkeypatch.setattr(
         api_module,
         "_store",
-        lambda: SimpleNamespace(run_dir=lambda _run_id: run_dir),
+        lambda: store,
     )
 
     api_module._record_background_failure(
@@ -369,6 +371,7 @@ def test_task_detail_api_exposes_run_recovery_failure(monkeypatch, tmp_path):
     payload = {
         "run_id": run_id,
         "status": "failed",
+        "run_error": run_failure,
         "tasks": [{
             "task_id": task_id,
             "carrier": "Carrier",

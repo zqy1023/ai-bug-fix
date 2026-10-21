@@ -3,6 +3,7 @@ export type RunStatus =
   | 'queued' | 'running' | 'waiting_approval' | 'succeeded' | 'partial_failed'
   | 'failed' | 'paused' | 'pause_requested' | 'cancelled' | 'cancel_requested';
 export type BusinessResult =
+  | 'UNVERIFIED'
   | 'LOCATED' | 'INSUFFICIENT_EVIDENCE' | 'MANUAL' | 'PASS' | 'FAIL' | 'REJECTED'
   | 'SKIPPED' | 'DELIVERED' | 'SUCCESS' | 'FAILED' | null;
 
@@ -30,6 +31,7 @@ export interface RunSummary {
   failed_tasks: number;
   manual_tasks: number;
   waiting_tasks: number;
+  inactive_tasks?: number;
   operator?: string | null;
 }
 
@@ -106,6 +108,9 @@ export interface TaskSummary {
 export interface TaskDetailResponse {
   run_id: string;
   run_status: RunStatus;
+  worker_active?: boolean;
+  run_terminal?: boolean;
+  stages?: WorkflowStage[];
   run_error?: {
     status?: string;
     error_type?: string;
@@ -120,13 +125,22 @@ export interface TaskDetailResponse {
   artifacts: ArtifactRef[];
 }
 
+export interface WorkflowStage {
+  key: string;
+  title: string;
+  members: string[];
+  group: boolean;
+}
+
 export interface RunDetail extends RunSummary {
   worker_active?: boolean;
   phase?: string;
   run_lifecycle?: {
-    status?: string; phase?: string; current_step?: string; attempt?: number;
+    status?: string; phase?: string; current_step?: string; current_task_id?: string; attempt?: number;
     heartbeat_at?: string; error_type?: string; error_message?: string;
     terminal_reason?: string; next_action?: string; updated_at?: string;
+    progress?: { step: string; message: string; counts: Record<string, number> };
+    progress_at?: string;
   };
   run_error?: {
     status?: string; error_type?: string; message?: string; failed_at?: string;
@@ -292,6 +306,7 @@ export interface BoardTask {
 export interface RunBoard {
   run_id: string;
   summary: RunSummary;
+  stages?: WorkflowStage[];
   tasks: BoardTask[];
   total: number;
 }

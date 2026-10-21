@@ -74,7 +74,7 @@ class WorkflowState(TypedDict, total=False):
     framework: str
     # ai_workspace_path：隔离 AI 工作区路径。
     ai_workspace_path: str
-    baseline_manifest: Annotated[dict[str, str], _merge]
+    baseline_manifest: dict[str, str]
     # baseline_dir：只读基线目录。
     baseline_dir: str
     # changed_files：当前尝试的实际变更文件；每次重试必须从空集合重新计算。
@@ -90,8 +90,14 @@ class WorkflowState(TypedDict, total=False):
     evidence: dict[str, Any]
     # check_passed：变更安全门禁是否通过。
     check_passed: bool
+    syntax_passed: bool
     # verify_passed：问题修复验证是否通过。
     verify_passed: bool
+    # business_verification_status：verified / unverified。
+    business_verification_status: str
+    # manual_confirmation_required：未完成业务验证或 AI 无法独立关闭审查时置 true。
+    manual_confirmation_required: bool
+    manual_confirmation_reasons: list[str]
     # regression_passed：准生产回归是否通过。
     regression_passed: bool
     # decision：当前审批决定。
@@ -156,8 +162,8 @@ class RunState(TypedDict, total=False):
     log_excluded_messages: list[str]
     # log_excluded_biztypes：需要排除的业务类型。
     log_excluded_biztypes: list[str]
-    # log_days：日志回溯天数。
-    log_days: int
+    # log_hours：日志回溯小时数。
+    log_hours: int
     # log_limit：日志查询条数上限。
     log_limit: int
     # attempt：当前任务生命周期内的全局尝试序号。

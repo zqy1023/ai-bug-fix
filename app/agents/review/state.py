@@ -44,8 +44,10 @@ class ReviewState(TypedDict, total=False):
     regression_result: dict[str, Any]
     # check_passed：该模型字段用于承载对应契约中的结构化数据。
     check_passed: bool
+    syntax_passed: bool
     # verify_passed：该模型字段用于承载对应契约中的结构化数据。
     verify_passed: bool
+    business_verification_status: str
     # regression_passed：该模型字段用于承载对应契约中的结构化数据。
     regression_passed: bool
     # verdict：该模型字段用于承载对应契约中的结构化数据。

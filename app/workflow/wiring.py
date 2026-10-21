@@ -19,6 +19,7 @@ from app.infrastructure.es.logs import ESLogAdapter
 from app.infrastructure.config import RuntimeConfig, load_config
 from app.workflow.graph import build_graph as build_state_graph
 from app.workflow.graph import build_task_graph
+from app.workflow.graph import collect
 from app.workflow.definitions import PHASE_COMPOSITIONS
 from app.domain.errors import StepFailed
 from app.application.audit import StepError, StepRecord
@@ -43,6 +44,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 _CHECKPOINT_LOCK = threading.Lock()
 _CHECKPOINT_CONNECTIONS: dict[str, sqlite3.Connection] = {}
+_CHECKPOINT_SAVERS: dict[str, SqliteSaver] = {}
 
 
 def close_checkpoints() -> None:
@@ -50,6 +52,7 @@ def close_checkpoints() -> None:
     with _CHECKPOINT_LOCK:
         connections = list(_CHECKPOINT_CONNECTIONS.values())
         _CHECKPOINT_CONNECTIONS.clear()
+        _CHECKPOINT_SAVERS.clear()
     for connection in connections:
         try:
             connection.close()
@@ -74,8 +77,11 @@ def _checkpoint_saver(runtime_dir: Any) -> SqliteSaver:
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute(f"PRAGMA busy_timeout={settings.workflow_checkpoint_busy_timeout_ms}")
             _CHECKPOINT_CONNECTIONS[path] = connection
-        saver = SqliteSaver(connection)
-        saver.setup()
+        saver = _CHECKPOINT_SAVERS.get(path)
+        if saver is None:
+            saver = SqliteSaver(connection)
+            saver.setup()
+            _CHECKPOINT_SAVERS[path] = saver
         return saver
 
 def _agent_builder(kind: str) -> Callable[[Any | None], CompiledStateGraph]:
@@ -117,6 +123,7 @@ def build_services(
             scan_size=config.es_scan_size,
             scroll=config.es_scroll,
             excluded_messages=list(config.excluded_messages),
+            request_timeout=config.es_timeout_seconds,
         )
     services = WorkflowServices(
         source_repo=resolved_source,
@@ -633,7 +640,8 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
                 view = view.model_copy(update={"passed": is_passed, "verdict": verdict})
             # agent 跑完了就是执行成功，结论进 result：判定失败不等于节点执行异常。
             conclusion = (
-                ("FAIL" if view.result == "failed" else None)
+                ("MANUAL" if view.result == "failed" and view.change_plan.get("scope") == "manual"
+                 else "FAIL" if view.result == "failed" else None)
                 if kind == "repair"
                 else str(view.status)
                 if kind == "locate"
@@ -761,6 +769,9 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
             patch["changed_files"] = repair_files
             patch["change_plan"] = change_plan
             patch["blocked_reason"] = str(final.get("blocked_reason") or "")
+            if failed and str(change_plan.get("scope") or "") == "manual":
+                # 显式人工方案缺少自动继续条件，重复调用模型不会补齐证据。
+                patch.update(last_result="manual", terminal_status="manual", retry_target="")
             # 修复 Agent 的输出不能抹掉定位阶段已经确定的共享层升级信号。
             scope_escalation = bool(
                 final.get("scope_escalation_required")
@@ -819,7 +830,13 @@ def build_graph(
         nodes,
         workspace_manager=getattr(resolved_services, "workspaces", None),
     )
-    return build_state_graph(nodes, task_graph, checkpointer=saver)
+    def collect_task(state: dict[str, Any]) -> dict[str, Any]:
+        # 收尾报告可能先于分析分支交付生成；只有子图退出才真正收敛任务生命周期。
+        patch = collect(state)
+        resolved_store.complete_task(str(state["run_id"]), str(state["task_id"]))
+        return patch
+
+    return build_state_graph(nodes, task_graph, checkpointer=saver, task_collector=collect_task)
 
 
 __all__ = [

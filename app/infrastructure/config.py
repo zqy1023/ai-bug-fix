@@ -62,8 +62,8 @@ class RuntimeConfig:
     log_service_prefix: str
     # excluded_biztypes：排除的业务类型。
     excluded_biztypes: list[str]
-    # log_days：日志回溯天数。
-    log_days: int
+    # log_hours：日志回溯小时数。
+    log_hours: int
     # log_tz_offset：日志时区偏移。
     log_tz_offset: int
     # es_timeout_seconds：ES 请求超时秒数。
@@ -183,7 +183,7 @@ def load_config() -> RuntimeConfig:
             os.getenv("LOG_PULL_EXCLUDED_BIZTYPES", ""),
             settings.excluded_biztypes,
         ),
-        log_days=max(1, int(os.getenv("LOG_PULL_DAYS", str(settings.default_log_days)))),
+        log_hours=max(1, int(os.getenv("LOG_PULL_HOURS") or str(int(os.getenv("LOG_PULL_DAYS", "1")) * 24))),
         log_tz_offset=int(os.getenv("LOG_PULL_TZ_OFFSET", str(settings.default_log_tz_offset))),
         es_timeout_seconds=max(
             1,
@@ -330,7 +330,8 @@ def create_es_client(config: RuntimeConfig) -> Any:
     """按配置创建 ES 客户端；调用发生在任务执行时而非模块导入时。"""
     from elasticsearch7 import Elasticsearch
 
-    return Elasticsearch(config.log_es, timeout=config.es_timeout_seconds)
+    # 节点层已经有有界重试，禁止传输层再次把一次超时放大为多轮等待。
+    return Elasticsearch(config.log_es, timeout=config.es_timeout_seconds, max_retries=0, retry_on_timeout=False)
 
 
 def workflow_recursion_limit(*, max_attempts: int, task_count_hint: int = 1) -> int:

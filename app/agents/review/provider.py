@@ -54,11 +54,11 @@ class ClaudeSessionProvider(ReviewProvider):
     def run(self, request: AgentRequest) -> dict[str, Any]:
         """在常驻只读会话中提交提示词；同一任务跨回修轮次复用。"""
         ToolPolicy.validate(request)
-        from app.infrastructure.runtime import drop_session, shared_session
+        from app.infrastructure.runtime import drop_session, session_scope
 
         # key 不含 prompt_hash：每轮提示词必然不同，带它进来会让缓存永不命中。
         session_key = f"{request.workspace}\x00{request.run_id}\x00{request.task_id}"
-        session = shared_session(
+        with session_scope(
             request.agent_role,
             # 一个 workspace 可能承载多个 carrier/task；按 task 隔离即可在回修轮次复用
             # 已加载的只读上下文，同时避免跨任务污染。
@@ -73,14 +73,16 @@ class ClaudeSessionProvider(ReviewProvider):
                 max_tool_calls=self.config.max_tool_calls,
                 timeout_seconds=self.config.timeout_seconds,
             ),
-        )
-        result = invoke_with_audit(request, lambda: session.invoke(
-            request.prompt,
-            request.workspace,
-            allowed_roots=request.allowed_read_roots,
-        ))
-        if result.get("reason") == "AGENT_TIMEOUT":
-            drop_session(request.agent_role, session_key)
+            run_id=request.run_id,
+            task_id=request.task_id,
+        ) as session:
+            result = invoke_with_audit(request, lambda: session.invoke(
+                request.prompt,
+                request.workspace,
+                allowed_roots=request.allowed_read_roots,
+            ))
+            if result.get("reason") == "AGENT_TIMEOUT":
+                drop_session(request.agent_role, session_key)
         return result
 
     def close(self) -> None:

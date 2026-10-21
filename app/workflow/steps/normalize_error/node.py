@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from app.application.context import StepContext
 from app.domain.errors import StepFailed
+from app.infrastructure.run_control import cancellation_requested
 from app.workflow.steps.deduplicate_error.node import _ignore_rules, write_groups
 from app.workflow.steps.discover_logs.models import DiscoverInput
 from app.workflow.steps.discover_logs.node import iter_raw
@@ -34,11 +36,15 @@ def iter_normalized(
     data: NormalizeErrorInput,
     query: DiscoverInput,
     stats: dict[str, int],
+    progress: Callable[[dict[str, int]], None] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """按发现步骤记录的查询条件逐条拉取并规范化，不把全量记录收进列表。"""
     if data.run_id != ctx.run.run_id:
         raise StepFailed("NormalizeErrorInput.run_id 与执行上下文不一致")
-    for index, record in enumerate(iter_raw(ctx, query, stats)):
+    for index, record in enumerate(iter_raw(
+        ctx, query, stats, progress=progress,
+        cancel_requested=lambda: cancellation_requested(ctx.store.root, ctx.run.run_id),
+    )):
         yield _normalize(record, index)
 
 
@@ -91,7 +97,19 @@ def run(ctx: StepContext, data: NormalizeErrorInput) -> NormalizeErrorOutput:
     """逐条规范化后直接去重。代表问题落 run 级产物，计数落在步骤记录里。"""
     funnel: dict[str, int] = {}
     query = _query(ctx)
-    groups = write_groups(iter_normalized(ctx, data, query, funnel), _ignore_rules(ctx))
+    last_report = 0.0
+    observed: dict[str, int] = {}
+
+    def report(counts: dict[str, int]) -> None:
+        nonlocal last_report
+        observed.update(counts)
+        now = time.monotonic()
+        if now - last_report < 1:
+            return
+        last_report = now
+        ctx.store.report_progress(ctx.run.run_id, "normalize_error", "正在读取并规范化 ES 日志", dict(observed))
+
+    groups = write_groups(iter_normalized(ctx, data, query, funnel, report), _ignore_rules(ctx), report)
     counts = {
         "record_count": groups["input_count"],
         "ignored_count": groups["ignored_count"],
@@ -104,10 +122,19 @@ def run(ctx: StepContext, data: NormalizeErrorInput) -> NormalizeErrorOutput:
         "artifacts/normalized_records.json",
         {"records": groups["records"], **counts},
     )
+    observed.update(funnel)
+    observed.update({"normalized_count": groups["input_count"], "unique_count": counts["unique_count"]})
+    ctx.store.report_progress(
+        ctx.run.run_id, "normalize_error",
+        "已达到扫描上限，当前结果为部分日志" if funnel.get("limit_reached") else "日志读取与规范化已完成",
+        observed,
+    )
     return NormalizeErrorOutput(
         run_id=data.run_id,
         es_hits=funnel.get("es_hits", 0),
         unparseable=funnel.get("unparseable", 0),
+        record_limit=funnel.get("record_limit", query.limit),
+        truncated=bool(funnel.get("limit_reached")),
         **counts,
     )
 

@@ -4,9 +4,10 @@ type Segment = { key: string; count: number; tone: Tone; label: string };
 
 /** 任务进度热力条：一段色带扫出整轮成败，是总览页的核心视觉。 */
 export function RunProgressHeatmap({
-  succeeded, waiting, manual, failed, total, running,
+  succeeded, waiting, manual, failed, total, running, inactive = 0,
 }: {
   succeeded: number; waiting: number; manual: number; failed: number; running: number; total: number;
+  inactive?: number;
 }) {
   const segments: Segment[] = [
     { key: 'succeeded', count: succeeded, tone: 'success', label: '自动交付' },
@@ -14,6 +15,7 @@ export function RunProgressHeatmap({
     { key: 'running', count: running, tone: 'running', label: '运行中' },
     { key: 'manual', count: manual, tone: 'manual', label: '转人工报告' },
     { key: 'failed', count: failed, tone: 'danger', label: '失败' },
+    { key: 'inactive', count: inactive, tone: 'neutral', label: '停止或跳过' },
   ];
   const shown = segments.filter((item) => item.count > 0);
   if (!total) {

@@ -16,7 +16,7 @@ from typing import Any
 from app.domain.keys import safe_name
 
 _ACTIVE = {"queued", "running", "retrying", "pause_requested", "cancel_requested"}
-_TERMINAL = {"succeeded", "partial_failed", "failed", "cancelled", "manual"}
+_TERMINAL = {"succeeded", "partial_failed", "failed", "cancelled", "manual", "skipped"}
 _PATH_LOCKS: dict[str, threading.RLock] = {}
 _PATH_LOCKS_GUARD = threading.Lock()
 

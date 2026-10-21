@@ -34,15 +34,26 @@ def run(ctx: StepContext, data: VerifyInput) -> VerifyOutput:
             "normalized_log": dict(data.normalized_log),
         }
     )
-    if not isinstance(verified, dict) or verified.get("passed") is not True:
+    if not isinstance(verified, dict):
         reason = (
             redact_output(" ".join(str(verified.get("reason") or "独立验证失败").split()))[:2000]
             if isinstance(verified, dict)
             else "独立验证返回无效"
         )
+        raise StepFailed(reason, {"passed": False, "reason": reason, "mode": "unavailable"})
+    if verified.get("status") == "unverified":
+        return VerifyOutput(
+            passed=False,
+            status="unverified",
+            reason=str(verified.get("reason") or "业务问题未验证"),
+            mode=str(verified.get("mode") or "unverified"),
+        )
+    if verified.get("passed") is not True:
+        reason = redact_output(" ".join(str(verified.get("reason") or "独立验证失败").split()))[:2000]
         raise StepFailed(reason, {"passed": False, "reason": reason, "mode": str(verified.get("mode") or "unavailable")})
     return VerifyOutput(
         passed=True,
+        status=str(verified.get("status") or "verified"),
         reason=str(verified.get("reason") or ""),
         mode=str(verified.get("mode") or "custom"),
     )

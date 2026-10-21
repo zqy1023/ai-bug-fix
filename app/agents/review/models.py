@@ -38,8 +38,10 @@ class ReviewInput(FrozenModel):
     regression_result: dict[str, Any] = Field(default_factory=dict)
     # check_passed：字段说明见该模型文档与工作流契约。
     check_passed: bool = False
+    syntax_passed: bool = False
     # verify_passed：字段说明见该模型文档与工作流契约。
     verify_passed: bool = False
+    business_verification_status: str = "unknown"
     # regression_passed：字段说明见该模型文档与工作流契约。
     regression_passed: bool = False
 

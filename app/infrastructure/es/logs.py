@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+import logging
+import time
+from collections.abc import Callable, Iterator
+from datetime import datetime, timedelta, timezone
+from math import ceil
 from typing import Any
 
 from config.settings import settings
+from app.domain.errors import StepFailed
 
 
 class ESLogAdapter:
@@ -23,6 +28,7 @@ class ESLogAdapter:
         scan_size: int = settings.es_scan_size,
         scroll: str = settings.es_scroll,
         excluded_messages: list[str] | None = None,
+        request_timeout: int = settings.es_timeout_seconds,
     ) -> None:
         """注入 ES 客户端、扫描器、索引提供器与业务时区。"""
         self._client = client
@@ -32,6 +38,7 @@ class ESLogAdapter:
         self._index_prefix = index_prefix
         self._scan_size = max(1, int(scan_size))
         self._scroll = scroll
+        self._request_timeout = max(1, int(request_timeout))
         self._excluded_messages = list(
             settings.default_excluded_messages if excluded_messages is None else excluded_messages
         )
@@ -43,9 +50,11 @@ class ESLogAdapter:
         service_prefix: str,
         excluded_messages: list[str],
         excluded_biztypes: list[str],
-        days: int,
+        hours: int,
         limit: int,
         stats: dict[str, int] | None = None,
+        progress: Callable[[dict[str, int]], None] | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> Iterator[dict[str, str]]:
         """逐条拉取异常并解析为记录，不写文件，也不把全量命中收进内存。
 
@@ -53,16 +62,37 @@ class ESLogAdapter:
         缺少可解析的 ``req:`` 结构）、``parsed``（进入后续步骤的记录数）。错误过滤与去重
         由独立的 ``deduplicate_error`` 步骤完成。
         """
-        funnel = {"es_hits": 0, "unparseable": 0, "parsed": 0}
-        # 索引名按 UTC 日期切，而拉取窗口按业务时区：本地一整天一定横跨两个
-        # UTC 日期索引（0 点后的日志在"昨天"的索引里），所以多取一个索引。
-        indices = self._index_provider(self._index_prefix, days + 1)
-        gte = "now/d" if days == 1 else f"now-{days - 1}d/d"
-        # ES 的 now/d 默认按 UTC 切零点；必须显式给业务时区，否则会漏掉本地 0 点后的日志
-        sign = "+" if self._tz_offset >= 0 else "-"
-        minutes = abs(self._tz_offset) * 60
-        tz_str = f"{sign}{minutes // 60:02d}:{minutes % 60:02d}"
+        if hours < 1 or limit < 0:
+            raise ValueError("日志小时数必须大于零，条数上限不能为负数")
+        funnel = {"es_hits": 0, "unparseable": 0, "parsed": 0,
+                  "record_limit": limit, "limit_reached": 0}
+        started = time.monotonic()
+        last_progress = started
+        last_control = started - 1
+
+        def check_control() -> None:
+            nonlocal last_control
+            now = time.monotonic()
+            should_check = now - last_control >= 0.5
+            if should_check:
+                last_control = now
+            if should_check and cancel_requested and cancel_requested():
+                raise StepFailed("日志扫描收到停止请求", result="manual", output={"control_cancelled": True})
+
+        def publish() -> None:
+            if stats is not None:
+                stats.update(funnel)
+            if progress:
+                progress(dict(funnel))
+
+        check_control()
+        publish()
+        # 按精确小时窗口查询，跨日只扩展索引覆盖，不把查询窗口取整到零点。
+        indices = self._index_provider(self._index_prefix, ceil(hours / 24) + 1)
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(hours=hours)
         query = {
+            "_source": ["service_name", "biztype", "message"],
             "query": {
                 "bool": {
                     "filter": [
@@ -70,7 +100,7 @@ class ESLogAdapter:
                         {"match_phrase": {"service_name": service_name}},
                         {
                             "range": {
-                                "@timestamp": {"gte": gte, "lt": "now+1d/d", "time_zone": tz_str}
+                                "@timestamp": {"gte": start.isoformat(), "lt": end.isoformat()}
                             }
                         },
                     ],
@@ -90,19 +120,37 @@ class ESLogAdapter:
             size=self._scan_size,
             scroll=self._scroll,
             raise_on_error=True,
+            request_timeout=self._request_timeout,
+            scroll_kwargs={"request_timeout": self._request_timeout},
         )
-        for hit in hits:
-            funnel["es_hits"] += 1
-            row = self.parse_hit(hit)
-            if row is None:
-                funnel["unparseable"] += 1
-                continue
-            funnel["parsed"] += 1
-            yield row
-            if limit and funnel["parsed"] >= limit:
-                break
-        if stats is not None:
-            stats.update(funnel)
+        try:
+            for hit in hits:
+                check_control()
+                funnel["es_hits"] += 1
+                row = self.parse_hit(hit)
+                if row is None:
+                    funnel["unparseable"] += 1
+                else:
+                    funnel["parsed"] += 1
+                    yield row
+                now = time.monotonic()
+                if now - last_progress >= 1:
+                    publish()
+                    last_progress = now
+                if limit and funnel["parsed"] >= limit:
+                    funnel["limit_reached"] = 1
+                    break
+            check_control()
+        finally:
+            try:
+                close = getattr(hits, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        logging.getLogger(__name__).warning("清理 ES scroll 失败", exc_info=True)
+            finally:
+                publish()
 
     @classmethod
     def parse_hit(cls, hit: dict[str, Any]) -> dict[str, str] | None:

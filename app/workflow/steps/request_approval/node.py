@@ -23,6 +23,8 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
             "kind": "change_approval",
             "task_id": data.task_id,
             "approval_fingerprint": data.approval_fingerprint,
+            "manual_confirmation_required": data.manual_confirmation_required,
+            "manual_confirmation_reasons": list(data.manual_confirmation_reasons),
             "changed_files": list(data.changed_files),
             "actions": ["APPROVE", "REJECT"],
             "retry_targets": sorted(APPROVAL_RETRY_TARGETS),
@@ -77,6 +79,13 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
                     result="manual",
                 ) from error
         rejection_summary = decision_reason or "人工打回（未填写补充说明）"
+        store = getattr(ctx, "store", None)
+        if store is not None:
+            receipt = store.task_dir(ctx.run.run_id, data.task_id) / "delivery" / "operation.json"
+            if receipt.is_file():
+                # 已确认删除旧分支后开始新的审批修订；旧收据留档但不能复用旧提交。
+                import uuid
+                receipt.replace(receipt.with_name(f"operation.rejected-{uuid.uuid4().hex}.json"))
         raise StepFailed(
             f"人工打回：{rejection_summary}",
             {
@@ -128,7 +137,10 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
             {"decision": "REJECT", "passed": False, "reason": reason},
             result="rejected",
         )
-    return ApprovalOutput(decision="APPROVE", passed=True, reason="人工审批通过", retry_target="")
+    return ApprovalOutput(
+        decision="APPROVE", passed=True, reason="人工审批通过", retry_target="",
+        manual_confirmation_required=data.manual_confirmation_required,
+    )
 
 
 __all__ = ["run"]

@@ -128,9 +128,12 @@ def _evidence_block(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         return "通过" if value else "未通过"
 
     lines: list[str] = [
-        f"- 确定性门禁：{flag(state.get('check_passed'))}；"
-        f"独立语法验证：{flag(state.get('verify_passed'))}；"
-        f"回归：{flag(state.get('regression_passed'))}"
+        (
+            f"- 确定性门禁：{flag(state.get('check_passed'))}；"
+            f"语法回归：{flag(state.get('syntax_passed'))}；"
+            f"业务验证状态：{state.get('business_verification_status') or 'unknown'}；"
+            f"回归：{flag(state.get('regression_passed'))}"
+        )
     ]
 
     changes: list[dict[str, Any]] = []
@@ -277,7 +280,9 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
             "deterministic_context": deterministic_context,
             "changed_files": changed_files,
             "check_passed": bool(state.get("check_passed")),
+            "syntax_passed": bool(state.get("syntax_passed")),
             "verify_passed": bool(state.get("verify_passed")),
+            "business_verification_status": str(state.get("business_verification_status") or "unknown"),
             "regression_passed": bool(state.get("regression_passed")),
         },
         read_roots=roots,

@@ -182,7 +182,7 @@ def _retry_target_for_step(step_name: str) -> str:
     """Map an atomic plugin failure to its owning graph phase for bounded task retry."""
     if step_name in {"prepare_source_snapshot", "repair_branch_preflight", "prepare_workspace", "prepare_evidence"}:
         return PREPARE_CONTEXT
-    if step_name in {"check_changes", "verify_issue"}:
+    if step_name in {"check_changes", "syntax_regression", "verify_issue"}:
         return VALIDATE
     if step_name == "run_regression":
         return REGRESSION
@@ -242,9 +242,10 @@ def bind(
         # 审批拒绝是业务决定而非节点崩溃；保留 REJECT 决定供路由进入有上限的回修循环。
         if result.failure is None:
             patch = spec.patch(result.output)
+            route_status = str(patch.get("last_result") or result.status)
             # A business FAIL is an ordinary node return, so LangGraph RetryPolicy cannot
             # see it. Convert only explicitly retryable phases into bounded graph retries.
-            target = _retry_target_for_step(spec.name) if result.status == "failed" else ""
+            target = _retry_target_for_step(spec.name) if route_status == "failed" else ""
             patch["retry_target"] = target
             if target:
                 patch["retry_reason"] = summary_of(result.output) or f"{spec.name} 返回失败结论"
@@ -289,7 +290,7 @@ def bind(
 
         return {
             **patch,
-            "last_result": "cancelled" if cancelled else result.status,
+            "last_result": "cancelled" if cancelled else patch.get("last_result", result.status),
             "terminal_status": "CANCELLED" if cancelled else state.get("terminal_status", ""),
             "next_step": action,
             "step_result": result.model_dump(mode="json"),
@@ -320,7 +321,7 @@ def _save_fail(
     )
     record.status = status
     record.result = business
-    record.summary = summary_of(output)
+    record.summary = summary_of(output) or public_exception(error, prefix=f"步骤 {spec.name}")
     record.artifacts = list(artifacts)
     record.output = output
     if status == "failed":

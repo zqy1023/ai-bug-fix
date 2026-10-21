@@ -3,15 +3,16 @@ import { App, Button, Drawer, Empty, Skeleton, Tag } from 'antd';
 import {
   ArrowRightOutlined, BranchesOutlined, CheckCircleOutlined, ClockCircleOutlined,
   CodeOutlined, CopyOutlined, DiffOutlined, FileSearchOutlined, FileTextOutlined,
-  GitlabOutlined, ReloadOutlined, SafetyCertificateOutlined, StopOutlined, WarningOutlined,
+  GitlabOutlined, SafetyCertificateOutlined, StopOutlined, WarningOutlined,
 } from '@ant-design/icons';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import type { StepRecord, TaskDetailResponse } from '../../lib/types';
 import { api } from '../../lib/api';
 import { queryKeys } from '../../lib/queryKeys';
 import { formatDuration } from '../../lib/format';
 import { StatusBadge } from '../../components/StatusBadge';
 import { CodeDiffViewer } from '../../components/CodeDiffViewer';
+import { taskIsActive } from '../../lib/lifecycle';
 
 type Dict = Record<string, unknown>;
 type Tone = 'success' | 'danger' | 'running' | 'waiting' | 'manual' | 'neutral' | 'pending' | 'skipped';
@@ -29,6 +30,7 @@ const STEP_LABELS: Record<string, string> = {
   claim_repair_slot: '领取修复资格',
   repair_agent: '代码修复',
   check_changes: '变更门禁',
+  syntax_regression: '语法回归',
   verify_issue: '问题验证',
   run_regression: '回归验证',
   review_agent: 'AI 审查',
@@ -202,7 +204,6 @@ export function TaskOverview({
   onOpenStep: (stepName: string) => void;
 }) {
   const { message } = App.useApp();
-  const queryClient = useQueryClient();
   const task = detail.task;
   const steps = task.steps ?? [];
   const problem = dict(task.problem);
@@ -211,8 +212,7 @@ export function TaskOverview({
   const result = String(task.result || getText(report, 'result', 'status') || '').toUpperCase();
   const lifecycle = dict(task.lifecycle);
   const lifecycleStatus = getText(lifecycle, 'status').toLowerCase();
-  const taskActive = ['queued', 'running', 'retrying'].includes(lifecycleStatus)
-    || ['RUNNING', 'RETRYING', 'PENDING'].includes(result);
+  const taskActive = taskIsActive(task);
   const taskPaused = lifecycleStatus === 'paused' || result === 'PAUSED';
   const activeStep = getText(lifecycle, 'current_step') || String(task.current_step || '');
   const taskAttempt = Number(task.attempt ?? lifecycle.attempt ?? 0) || 0;
@@ -319,7 +319,7 @@ export function TaskOverview({
   const syntaxOnlyVerification = verifyMode === 'syntax_only';
   const verifyPassed = verify.passed === true && !syntaxOnlyVerification;
   const regressionPassed = regression.passed === true;
-  const qualitySteps = [verifyStep, regressionStep].filter(Boolean) as StepRecord[];
+  const qualitySteps = [stepOf(steps, 'syntax_regression'), verifyStep, regressionStep].filter(Boolean) as StepRecord[];
   const qualityFailed = qualitySteps.some((step) => toneForStep(step) === 'danger');
   const resultFailed = !taskActive && !taskPaused
     && (recoveryFailed || ['FAILED', 'FAIL'].includes(result) || qualityFailed || deliveryStep?.status === 'failed');
@@ -345,31 +345,6 @@ export function TaskOverview({
   const resultText = resultHeadline(result, analysisOnly, deliveredCode, landed, changedCount, changeEvidenceKnown, finalApprovalPending, resultFailed);
   const description = resultDescription(analysisOnly, landed, deliveredCode, changedCount, changeEvidenceKnown, finalApprovalPending, result, resultFailed);
   const diffPayload = diffQuery.data?.content;
-  const runTerminal = ['failed', 'partial_failed', 'succeeded'].includes(detail.run_status);
-  const canRetryWholeTask = ['FAILED', 'FAIL'].includes(result)
-    && Boolean(finalStep)
-    && !deliveryStep
-    && !taskActive
-    && !taskPaused
-    && !task.approval_pending
-    && runTerminal
-    && !getText(runError, 'status');
-  const retryTaskMutation = useMutation({
-    mutationFn: () => api.retryTask(detail.run_id, task.task_id),
-    onSuccess: async (response) => {
-      message.success(response.message || `已提交 Task 重试（第 ${response.attempt} 次尝试）`);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.run(detail.run_id) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.board(detail.run_id) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.task(detail.run_id, task.task_id) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.dashboard }),
-      ]);
-    },
-    onError: (error) => {
-      message.error(error instanceof Error ? error.message : 'Task 重试提交失败');
-    },
-  });
-
   const copyCommit = async () => {
     if (!commit) return;
     try {
@@ -402,16 +377,7 @@ export function TaskOverview({
             <StatusBadge kind="task" value={taskActive
               ? lifecycleStatus === 'retrying' || result === 'RETRYING' ? 'RETRYING' : 'RUNNING'
               : taskPaused ? 'PAUSED' : recoveryFailed ? 'FAILED' : finalApprovalPending ? 'WAITING_APPROVAL' : task.result} />
-            {canRetryWholeTask && (
-              <Button
-                type="primary"
-                icon={<ReloadOutlined />}
-                loading={retryTaskMutation.isPending}
-                onClick={() => retryTaskMutation.mutate()}
-              >
-                从任务起点重试
-              </Button>
-            )}
+
           </div>
           <p className="outcome-description">
             {taskActive
@@ -493,7 +459,7 @@ export function TaskOverview({
         <div className="overview-stage-grid">
           <StageItem title="根因定位" steps={[locateStep]} hint={locateStep ? toneText(toneForStep(locateStep)) : '未开始'} />
           <StageItem title="代码修改" steps={[repairStep, checkStep]} hint={analysisOnly ? '未随报告分支交付源码' : changedCount ? (changeEvidenceKnown ? `${changedCount} 个实际变更文件` : `${changedCount} 个文件声明待核验`) : changeEvidenceKnown ? '基线比对未发现差异' : repairStep ? toneText(toneForStep(repairStep)) : '未开始'} />
-          <StageItem title="验证与回归" steps={[verifyStep, regressionStep]} hint={qualitySteps.length ? qualityFailed ? '验证未通过' : '验证节点已执行' : '未执行'} />
+          <StageItem title="验证与回归" steps={qualitySteps} hint={qualitySteps.length ? qualityFailed ? '验证未通过' : verifyStep?.result === 'UNVERIFIED' ? '业务未验证，需人工确认' : '验证节点已执行' : '未执行'} />
           <StageItem title="AI 审查" steps={[reviewStep]} hint={reviewVerdict ? ({
             PASS: '审查通过，进入分支交付',
             FAIL: '审查未通过，触发回修',

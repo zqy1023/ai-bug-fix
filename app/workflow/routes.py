@@ -62,8 +62,8 @@ def after_prepare_context(state: WorkflowState) -> str:
 def after_validate_changes(state: WorkflowState) -> str:
     """变更门禁和问题验证均通过后才执行回归。
 
-    ``syntax_only`` 只表示日志里没有可重放的 response，重放被跳过。
-    语法检查已经通过，不能因此跳过回归、审查和交付。
+    语法回归和业务回归已拆分；业务 ``unverified`` 允许继续 AI 审查，
+    但交付必须携带人工确认标识。
     """
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
         return FINALIZE
@@ -163,6 +163,8 @@ def after_locate(state: WorkflowState) -> str:
 def after_repair(state: WorkflowState) -> str:
     """修复后路由：共享层或范围升级只留分析报告，局部修复才进入验证链。"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
+        return FINALIZE
+    if str(state.get("terminal_status") or "").upper() == "MANUAL":
         return FINALIZE
     # 共享层范围升级即使带有 change_plan，也不能进入自动修改或审批。
     if state.get("scope_escalation_required"):

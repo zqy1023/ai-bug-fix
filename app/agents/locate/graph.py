@@ -29,11 +29,14 @@ def _evidence_target(
     candidate = Path(value)
     if candidate.is_absolute() or ".." in candidate.parts:
         raise ValueError(f"源码证据路径不是安全相对路径: {value}")
-    primary = (root / candidate).resolve(strict=False)
-    if primary.exists() or shared_root is None:
-        return primary
-    alternate = (shared_root / candidate).resolve(strict=False)
-    return alternate if alternate.exists() else primary
+    for base in (root, shared_root):
+        if base is None:
+            continue
+        # 和预检使用相同的存在性、符号链接和目录边界约束。
+        if (base / candidate).exists() or (base / candidate).is_symlink():
+            relative = _relative_file(base, value)
+            return (base / relative).resolve()
+    raise ValueError(f"源码证据文件不存在: {value}")
 
 
 def _relative_file(root: Path, value: Any, *, must_exist: bool = True) -> str:
@@ -230,7 +233,7 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
         #（前提是它们位于明确允许的只读根目录），绝不能借此扩大写入范围。
         if output is None:
             try:
-                fallback = dict(payload) if isinstance(payload, dict) else {}
+                fallback = _manual_payload(payload)
                 fallback["status"] = "MANUAL"
                 fallback["recommended_scope"] = "manual"
                 fallback["passed"] = False
@@ -269,6 +272,32 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
         "_usage": usage,
         "_audit": audit_metadata(request, usage),
     }
+
+
+def _manual_payload(payload: Any) -> dict[str, Any]:
+    """逐字段保留合法诊断，原始严格契约失败仍由调用方记录并转人工。"""
+    from pydantic import TypeAdapter, ValidationError
+
+    recovered: dict[str, Any] = {"category": "unknown"}
+    if not isinstance(payload, dict):
+        return recovered
+    for name, field in LocateOutput.model_fields.items():
+        if name not in payload:
+            continue
+        try:
+            recovered[name] = TypeAdapter(field.annotation).validate_python(payload[name])
+        except (ValidationError, TypeError, ValueError):
+            if name == "source_evidence" and isinstance(payload[name], list):
+                from app.agents.locate.models import SourceEvidence
+
+                items = []
+                for item in payload[name]:
+                    try:
+                        items.append(SourceEvidence.model_validate(item))
+                    except (ValidationError, TypeError, ValueError):
+                        continue
+                recovered[name] = items
+    return recovered
 
 
 def _safe_carrier_candidates(
@@ -314,14 +343,10 @@ def _validate_output_paths(
 ) -> None:
     allowed = tuple(Path(item).resolve() for item in read_roots)
     for value in output.candidate_files:
-        relative = _relative_file(root, value)
-        target = (root / relative).resolve()
+        target = _evidence_target(root, value, shared_root)
         if target.is_relative_to(carrier_root):
             continue
-        # 共享层候选不能直接写入 carrier，但也不能因模型漏写 project scope 而丢掉审批路径。
-        # 只有路径位于显式允许的只读根目录时才接受，并强制升级为 project 变更范围，
-        # 让 repair_agent 生成 change_plan，再经过审批和验证门禁。
-        # 这是范围安全约束，不是根据异常文本推断根因。
+        # 共享候选只允许作为证据，升级范围后由主图转人工分析，不能扩大写权限。
         if not any(target == base or target.is_relative_to(base) for base in allowed):
             raise ValueError(f"共享层候选文件超出只读证据范围: {value}")
         output.recommended_scope = "project"

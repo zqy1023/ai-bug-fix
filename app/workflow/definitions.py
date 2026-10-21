@@ -18,7 +18,7 @@ from langgraph.graph import END, START
 PHASE_COMPOSITIONS = {
     RUN_PREPARE: ("discover_logs", "normalize_error", "deduplicate_error"),
     PREPARE_CONTEXT: ("prepare_source_snapshot", "repair_branch_preflight", "prepare_workspace", "prepare_evidence"),
-    VALIDATE: ("check_changes", "verify_issue"),
+    VALIDATE: ("check_changes", "syntax_regression", "verify_issue"),
 }
 
 RUN_PHASES = (RUN_PREPARE,)
@@ -30,7 +30,7 @@ TASK_PHASES = {
 # 10 个业务主节点；retry_prepare 是仅供有界回修使用的内部控制节点。
 TASK_NODE_NAMES = (
     PREPARE_CONTEXT, LOCATE, CLAIM, REPAIR, VALIDATE,
-    REGRESSION, REVIEW, APPROVE, DELIVER, FINALIZE, RETRY,
+    REGRESSION, REVIEW, DELIVER, APPROVE, FINALIZE, RETRY,
 )
 
 TASK_STATIC_TRANSITIONS: tuple[tuple[str, str], ...] = (

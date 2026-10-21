@@ -39,10 +39,22 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
     if ctx.services.delivery is None:
         raise StepFailed("交付服务未装配")
 
+    receipt_path = "delivery/operation.json"
+    receipt: dict[str, object] = {}
+    store = getattr(ctx, "store", None)
+    if store is not None and (store.task_dir(ctx.run.run_id, data.task_id) / receipt_path).is_file():
+        receipt = store.read_artifact(ctx.run.run_id, receipt_path, data.task_id)
+
+    def persist_delivery(value: dict[str, object]) -> None:
+        if store is not None:
+            store.write_artifact(ctx.run.run_id, receipt_path, value, data.task_id)
+
     try:
         result = ctx.services.delivery.deliver(
             {
                 "task_id": data.task_id,
+                "delivery_receipt": receipt,
+                "persist_delivery": persist_delivery,
                 "carrier": data.carrier,
                 "repair_branch": data.repair_branch,
                 "source_repo_path": data.source_repo_path,
@@ -57,6 +69,8 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
                 "repair_analysis": data.repair_analysis,
                 "repair_summary": data.repair_summary,
                 "review_summary": data.review_summary,
+                "manual_confirmation_required": data.manual_confirmation_required,
+                "manual_confirmation_reasons": list(data.manual_confirmation_reasons),
             }
         )
     except StepFailed:
@@ -83,6 +97,8 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
             {
                 "reason": reason,
                 "exception_type": type(error).__name__,
+                "commit": str(getattr(error, "commit", "") or ""),
+                "delivery_error": str(getattr(error, "status", "") or ""),
                 "diagnostic_frames": diagnostic_frames,
             },
             code="DELIVERY_EXECUTION_ERROR",
@@ -93,6 +109,7 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
         commit=str(result.get("commit") or ""),
         pushed=bool(result.get("pushed")),
         local_branch=bool(result.get("local_branch")),
+        manual_confirmation_required=data.manual_confirmation_required,
     )
 
 
