@@ -73,7 +73,12 @@ def _apply_sparse_checkout(
     if not cone:
         return
     try:
-        _run_git(["sparse-checkout", "set", "--no-cone", f"/{cone}/"], mirror, env, timeout)
+        _run_git(
+            ["sparse-checkout", "set", "--no-cone", f"/{cone}/"],
+            mirror, env, timeout, cancel_requested=cancel_requested,
+        )
+    except SourceRepoCancelled:
+        raise
     except SourceRepoError as error:
         # 稀疏检出只省磁盘。这里失败不该让整轮同步失败，但必须留下可查原因。
         _logger.warning("镜像稀疏检出失败，保留完整工作树: %s (%s)", _display(mirror), error)
