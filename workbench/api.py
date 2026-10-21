@@ -2057,9 +2057,13 @@ def v1_run_step(
 
     run_id, task_id, step_name = _safe_id(run_id), _safe_id(task_id), _safe_id(step_name)
     store = _store()
+    # Capture the persisted lifecycle before taking the write lock. If status is derived
+    # after this endpoint acquires the lock, _v1_detail correctly sees a locked worker and
+    # would incorrectly reject this very single-step request as RUN_ACTIVE.
+    status_before_lock = str(_v1_detail(run_id).get("status") or "")
 
-    def _status(value: str) -> str:
-        return str(_v1_detail(value).get("status") or "")
+    def _status(_value: str) -> str:
+        return status_before_lock
 
     actor = "bearer-token" if authorization else "local-user"
     with _RUN_LOCKS_GUARD:
