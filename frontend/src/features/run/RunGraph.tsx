@@ -37,11 +37,16 @@ export function RunGraph({ run }: { run: RunDetail }) {
     // checkpoint.next_nodes 是“下一步要执行的节点”，用它判断图是否真的推进到了
     // 任务派发或汇总阶段；不能因为有 steps/tasks 就把汇总节点显示成运行中。
     const nextNodes = run.checkpoint?.next_nodes ?? [];
+    const atSourceSync = nextNodes.includes('sync_source_repo');
     const atPrepare = nextNodes.includes('discover_and_normalize');
     const atIdentify = nextNodes.includes('identify_carrier');
     const atTask = nextNodes.some((name) => name === 'task_dispatch' || name === 'run_task');
     const atCollect = nextNodes.includes('task_collect');
 
+    const sourceSyncRecord = steps.find((step) => step.name === 'sync_source_repo');
+    const sourceSyncStatus: StepStatus = sourceSyncRecord
+      ? sourceSyncRecord.status
+      : terminal || steps.length > 0 ? 'skipped' : atSourceSync ? 'running' : 'pending';
     const prepareStatus = pick(steps, [
       'discover_and_normalize', 'discover_logs', 'normalize_error', 'deduplicate_error',
     ]);
@@ -59,6 +64,11 @@ export function RunGraph({ run }: { run: RunDetail }) {
       : atCollect ? 'running' : 'pending';
 
     return [
+      {
+        key: 'source_sync', title: '同步源仓库', detail: 'sync_source_repo',
+        members: ['sync_source_repo'],
+        status: sourceSyncStatus === 'pending' && atSourceSync ? 'running' : sourceSyncStatus,
+      },
       {
         key: 'prepare', title: '日志与规范化', detail: 'discover_and_normalize',
         members: ['discover_and_normalize', 'discover_logs', 'normalize_error', 'deduplicate_error'],
@@ -88,11 +98,12 @@ export function RunGraph({ run }: { run: RunDetail }) {
 
   const nextNodes = run.checkpoint?.next_nodes ?? [];
   const currentNode = nextNodes[0] ?? '';
-  const activeKey = nextNodes.includes('discover_and_normalize') ? 'prepare'
-    : nextNodes.includes('identify_carrier') ? 'identify'
-      : nextNodes.includes('task_collect') ? 'collect'
-        : nextNodes.some((name) => name === 'task_dispatch' || name === 'run_task') ? 'run_task'
-          : '';
+  const activeKey = nextNodes.includes('sync_source_repo') ? 'source_sync'
+    : nextNodes.includes('discover_and_normalize') ? 'prepare'
+      : nextNodes.includes('identify_carrier') ? 'identify'
+        : nextNodes.includes('task_collect') ? 'collect'
+          : nextNodes.some((name) => name === 'task_dispatch' || name === 'run_task') ? 'run_task'
+            : '';
 
   return (
     <section className="run-graph" aria-label="执行拓扑">
