@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from app.infrastructure.config import load_config
 from app.infrastructure.records.store import RecordStore
+from app.infrastructure.records.lifecycle import LifecycleStore
 from app.infrastructure.redaction import public_exception
 from app.domain.approval import APPROVAL_RETRY_TARGETS, RetryTarget
 from config.settings import settings
@@ -100,6 +101,7 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
         for item in store.list_steps(run_id)
     ]
     task_slots = steps_payload.get("tasks", [])
+    lifecycle_store = LifecycleStore(store.root)
     tasks: list[dict[str, Any]] = []
     if isinstance(task_slots, list):
         for slot in task_slots:
@@ -118,7 +120,15 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
             approval = _latest_approval_step(task_steps)
             carrier = str((report or {}).get("carrier") or _task_identity(slot, "carrier"))
             biztype = str((report or {}).get("biztype") or _task_identity(slot, "biztype"))
+            task_lifecycle = lifecycle_store.read_task(run_id, task_id)
             inferred_status = str((report or {}).get("result") or _task_status(task_steps, approval))
+            lifecycle_status = str(task_lifecycle.get("status") or "").lower()
+            task_status_labels = {
+                "pending": "PENDING", "queued": "PENDING", "running": "RUNNING",
+                "retrying": "RETRYING", "waiting_approval": "WAITING_APPROVAL",
+                "paused": "PAUSED", "succeeded": "SUCCESS", "partial_failed": "PARTIAL_FAILED",
+                "failed": "FAILED", "cancelled": "CANCELLED", "manual": "MANUAL",
+            }
             fallback_report = _report_from_steps(
                 task_id=task_id, carrier=carrier, biztype=biztype,
                 steps=task_steps, status=inferred_status,
@@ -134,11 +144,17 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
                     "next_action": report.get("next_action") or fallback_report.get("next_action"),
                     "legacy_report": True,
                 }
+            approval_pending = _approval_pending(approval) or lifecycle_status == "waiting_approval"
+            task_status = task_status_labels.get(lifecycle_status) or str(report.get("result") or inferred_status).upper()
+            # Active lifecycle is newer than any previous attempt's stale failed/final report.
+            if lifecycle_status in {"running", "retrying", "queued"}:
+                task_status = task_status_labels[lifecycle_status]
             tasks.append({
                 "task_id": task_id, "carrier": carrier, "biztype": biztype,
-                "status": str(report.get("result") or inferred_status),
+                "status": task_status,
                 "problem": _task_problem(slot), "steps": task_steps,
-                "report": report, "approval_pending": _approval_pending(approval),
+                "report": report, "approval_pending": approval_pending,
+                "lifecycle": task_lifecycle,
             })
     pending = sum(1 for task in tasks if task["approval_pending"])
     results = [str(task["status"]).upper() for task in tasks]
@@ -152,7 +168,48 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
         step.get("name") == "finalize_execution" and step.get("status") == "succeeded"
         for step in run_steps
     )
-    if isinstance(run_failure, dict) and run_failure:
+    run_lifecycle = lifecycle_store.read_run(run_id)
+    lifecycle_status = str(run_lifecycle.get("status") or "").lower()
+    run_lock = _RUN_LOCKS.get(run_id)
+    worker_active = bool(run_lock and run_lock.locked())
+    heartbeat_at = _parse_time(run_lifecycle.get("heartbeat_at"))
+    heartbeat_fresh = bool(heartbeat_at and (datetime.now(timezone.utc) - heartbeat_at).total_seconds() <= 30)
+    worker_active = worker_active or (
+        lifecycle_status in {"queued", "running", "retrying", "cancel_requested", "pause_requested"}
+        and heartbeat_fresh
+    )
+
+    if lifecycle_status in {"queued", "running", "retrying", "pause_requested", "cancel_requested"} and not worker_active:
+        # A crashed process must not leave an active badge forever.
+        stale_reason = "后台工作线程心跳已超时，执行不再被视为活动状态。请检查失败节点后重试。"
+        lifecycle_store.update_run(
+            run_id, status="failed", phase=str(run_lifecycle.get("phase") or "worker"),
+            error_type="WORKER_HEARTBEAT_TIMEOUT", error_message=stale_reason,
+            terminal_reason=stale_reason,
+            next_action="检查失败节点；可从 Run 控制栏重试，或在任务详情单步重试。",
+        )
+        run_lifecycle = lifecycle_store.read_run(run_id)
+        lifecycle_status = "failed"
+        run_failure = run_failure or {
+            "status": "FAILED", "error_type": "WORKER_HEARTBEAT_TIMEOUT",
+            "message": stale_reason, "terminal_step": str(run_lifecycle.get("phase") or "worker"),
+            "terminal_reason": stale_reason,
+            "next_action": "检查失败节点；可从 Run 控制栏重试，或在任务详情单步重试。",
+        }
+        worker_active = False
+
+    lifecycle_to_run = {
+        "queued": "queued", "running": "running", "retrying": "running",
+        "pause_requested": "pause_requested", "paused": "paused",
+        "waiting_approval": "waiting_approval", "cancel_requested": "cancel_requested",
+        "succeeded": "succeeded", "partial_failed": "partial_failed",
+        "failed": "failed", "cancelled": "cancelled", "manual": "partial_failed",
+    }
+    if worker_active:
+        status = "running"
+    elif lifecycle_status in lifecycle_to_run:
+        status = lifecycle_to_run[lifecycle_status]
+    elif isinstance(run_failure, dict) and run_failure:
         status = "failed"
     elif pending:
         status = "waiting_approval"
@@ -163,14 +220,28 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
             startup_state=str((run_meta or {}).get("startup_state") or ""),
             finalized=finalized,
         )
+    terminal_statuses = {"succeeded", "partial_failed", "failed", "cancelled"}
+    terminal = (lifecycle_status in terminal_statuses) if lifecycle_status else (bool(run_failure) or bool(run_report) or finalized)
+    if worker_active or status in {"queued", "running", "pause_requested", "cancel_requested", "waiting_approval", "paused"}:
+        terminal = False
     return {
         "run_id": run_id,
         "status": status,
-        # 终态只认落盘报告或终局步骤：identify 成功但任务尚未派发的窗口不能被当成已完成。
-        "terminal": bool(run_failure) or bool(run_report) or finalized,
+        "terminal": terminal,
+        "worker_active": worker_active,
+        "phase": str(run_lifecycle.get("phase") or run_lifecycle.get("current_step") or ""),
+        "run_lifecycle": run_lifecycle,
         "identified_tasks": identified_tasks,
         "dispatched_tasks": len(tasks),
-        "run_error": run_failure if isinstance(run_failure, dict) else {},
+        "run_error": run_failure if isinstance(run_failure, dict) else (
+            {
+                "status": "FAILED", "error_type": run_lifecycle.get("error_type"),
+                "message": run_lifecycle.get("error_message") or run_lifecycle.get("terminal_reason"),
+                "terminal_step": run_lifecycle.get("phase"),
+                "terminal_reason": run_lifecycle.get("terminal_reason"),
+                "next_action": run_lifecycle.get("next_action"),
+            } if lifecycle_status == "failed" else {}
+        ),
         "created_at": created,
         "updated_at": updated,
         "steps": run_steps,
@@ -290,15 +361,32 @@ def _report_from_steps(
 
 
 def _task_status(steps: list[dict[str, Any]], approval: dict[str, Any] | None) -> str:
+    """活动状态优先于旧失败记录；只有终态收尾或停滞后才报告任务失败。"""
     if _approval_pending(approval):
         return "WAITING_APPROVAL"
+    if any(s.get("status") == "running" for s in steps):
+        return "RUNNING"
+    finalizer = next((
+        step for step in reversed(steps)
+        if step.get("name") == "finalize_execution"
+        and step.get("status") in {"succeeded", "skipped", "failed"}
+    ), None)
+    if finalizer:
+        output = finalizer.get("output") if isinstance(finalizer.get("output"), dict) else {}
+        result = str(output.get("delivery_status") or finalizer.get("result") or "").upper()
+        if result in {"SUCCESS", "SUCCEEDED", "COMPLETED", "DELIVERED"}:
+            return "COMPLETED"
+        if result in {"MANUAL", "INSUFFICIENT_EVIDENCE", "MANUAL_REVIEW_REQUIRED"}:
+            return "MANUAL"
+        if result == "CANCELLED":
+            return "CANCELLED"
+        if result in {"FAILED", "FAIL", "REJECTED"} or finalizer.get("status") == "failed":
+            return "FAILED"
+        return "COMPLETED" if finalizer.get("status") in {"succeeded", "skipped"} else "FAILED"
+    if any(s.get("status") == "waiting" for s in steps):
+        return "PAUSED"
     if any(s.get("status") == "failed" for s in steps):
         return "FAILED"
-    if any(
-        s.get("name") == "finalize_execution" and s.get("status") in {"succeeded", "skipped"}
-        for s in steps
-    ):
-        return "COMPLETED"
     return "RUNNING" if steps else "PENDING"
 
 
