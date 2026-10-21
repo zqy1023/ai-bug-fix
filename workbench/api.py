@@ -1087,6 +1087,108 @@ def v1_start_run(
     return {"run_id": run_id, "status": "accepted", "idempotent_replay": False}
 
 
+def _start_lifecycle_heartbeat(run_id: str) -> tuple[threading.Event, threading.Thread]:
+    """Keep an explicit lease while a worker owns the run lock, including long Agent calls."""
+    store = _store()
+    lifecycle = LifecycleStore(store.root)
+    stop = threading.Event()
+
+    def pulse() -> None:
+        while not stop.wait(5):
+            try:
+                lifecycle.update_run(run_id, heartbeat_at=datetime.now(timezone.utc).isoformat())
+            except Exception:
+                logger.exception("更新运行心跳失败 run_id=%s", run_id)
+
+    thread = threading.Thread(target=pulse, name=f"run-heartbeat-{run_id}", daemon=True)
+    thread.start()
+    return stop, thread
+
+
+def _complete_run_lifecycle(run_id: str, store: RecordStore) -> None:
+    """Settle the run only after graph.invoke has returned; waiting interrupts are not failures."""
+    lifecycle = LifecycleStore(store.root)
+    report = _read_json(store.run_dir(run_id) / "reports" / "final.json", {})
+    if isinstance(report, dict) and report:
+        result = str(report.get("result") or report.get("status") or "").upper()
+        if result in {"SUCCESS", "SUCCEEDED", "COMPLETED", "DELIVERED"}:
+            status = "succeeded"
+        elif result in {"CANCELLED", "CANCELED"}:
+            status = "cancelled"
+        elif result in {"MANUAL", "MANUAL_REVIEW_REQUIRED", "INSUFFICIENT_EVIDENCE"}:
+            status = "partial_failed"
+        elif result in {"PARTIAL_FAILED", "PARTIAL_FAILURE"}:
+            status = "partial_failed"
+        else:
+            status = "failed" if result in {"FAILED", "FAIL", "ERROR", "REJECTED"} else "succeeded"
+        lifecycle.update_run(
+            run_id, status=status,
+            phase=str(report.get("terminal_step") or "workflow"),
+            current_step=str(report.get("terminal_step") or ""),
+            terminal_reason=str(report.get("terminal_reason") or ""),
+            next_action=str(report.get("next_action") or ""),
+            error_type="WORKFLOW_FAILED" if status == "failed" else "",
+            error_message=str(report.get("terminal_reason") or "") if status == "failed" else "",
+        )
+        return
+
+    run_steps = store.list_steps(run_id)
+    if any(step.status == "waiting" for step in run_steps):
+        lifecycle.update_run(run_id, status="paused", phase="paused", current_step="")
+        return
+    payload = _read_json(store.steps_path(run_id), {})
+    slots = payload.get("tasks", []) if isinstance(payload, dict) else []
+    task_states = []
+    if isinstance(slots, list):
+        for slot in slots:
+            if isinstance(slot, dict) and isinstance(slot.get("task_id"), str):
+                task_states.append(lifecycle.read_task(run_id, slot["task_id"]))
+    if any(item.get("status") == "waiting_approval" for item in task_states):
+        lifecycle.update_run(run_id, status="waiting_approval", phase="request_approval", current_step="request_approval")
+        return
+    if any(item.get("status") == "paused" for item in task_states):
+        lifecycle.update_run(run_id, status="paused", phase="paused", current_step="")
+        return
+
+    reason = "工作流已退出，但未生成终态报告或可恢复的等待状态。"
+    lifecycle.update_run(
+        run_id, status="failed", phase="workflow_exit", current_step="",
+        error_type="MISSING_TERMINAL_REPORT", error_message=reason,
+        terminal_reason=reason, next_action="检查 Run 与 Task 生命周期记录后，从 Run 控制栏重试。",
+    )
+
+
+def _settle_task_lifecycles_after_run_failure(
+    run_id: str,
+    store: RecordStore,
+    *,
+    phase: str,
+    reason: str,
+    next_action: str,
+) -> None:
+    lifecycle = LifecycleStore(store.root)
+    payload = _read_json(store.steps_path(run_id), {})
+    slots = payload.get("tasks", []) if isinstance(payload, dict) else []
+    if not isinstance(slots, list):
+        return
+    for slot in slots:
+        if not isinstance(slot, dict) or not isinstance(slot.get("task_id"), str):
+            continue
+        task_id = slot["task_id"]
+        state = lifecycle.read_task(run_id, task_id)
+        status = str(state.get("status") or "")
+        if phase == "approval_recovery" and status == "waiting_approval":
+            continue
+        if status in {"succeeded", "partial_failed", "failed", "cancelled", "manual"}:
+            continue
+        lifecycle.update_task(
+            run_id, task_id, status="failed",
+            terminal_step=str(state.get("current_step") or phase),
+            terminal_reason=reason, next_action=next_action,
+            error={"code": "RUN_WORKER_FAILED", "message": reason},
+        )
+
+
 def _record_background_failure(
     run_id: str,
     error: Exception,
@@ -1121,6 +1223,15 @@ def _record_background_failure(
             "next_action": next_action,
             "failed_at": now,
         }
+        lifecycle = LifecycleStore(_store().root)
+        lifecycle.update_run(
+            run_id, status="failed", phase=phase, current_step=phase,
+            error_type=type(error).__name__, error_message=reason,
+            terminal_reason=reason, next_action=next_action,
+        )
+        _settle_task_lifecycles_after_run_failure(
+            run_id, _store(), phase=phase, reason=reason, next_action=next_action,
+        )
         temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(target)
         final_path = report_dir / "final.json"
@@ -1154,12 +1265,24 @@ def _run_workflow_background_v1(
         if not run_lock.acquire(blocking=False):
             logger.warning("跳过重复启动的工作流 run_id=%s", run_id)
             return
+    heartbeat_stop: threading.Event | None = None
+    heartbeat_thread: threading.Thread | None = None
     try:
+        store = _store()
+        LifecycleStore(store.root).update_run(
+            run_id, status="running", phase="workflow_startup", current_step="", error={},
+        )
+        heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(run_id)
         run_workflow(run_id, overrides=overrides, prepared=True)
+        _complete_run_lifecycle(run_id, store)
     except Exception as exc:
         logger.exception("工作流后台执行失败 run_id=%s", run_id)
         _record_background_failure(run_id, exc)
     finally:
+        if heartbeat_stop is not None:
+            heartbeat_stop.set()
+        if heartbeat_thread is not None:
+            heartbeat_thread.join(timeout=1)
         run_lock.release()
         with _RUN_LOCKS_GUARD:
             _STARTED_RUNS.discard(run_id)
