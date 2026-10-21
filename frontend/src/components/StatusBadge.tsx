@@ -25,6 +25,10 @@ const RUN: Record<string, BadgeSpec> = {
 
 const TASK: Record<string, BadgeSpec> = {
   RUNNING: { label: '运行中', tone: 'running', icon: <LoadingOutlined /> },
+  RETRYING: { label: '重试中', tone: 'running', icon: <SyncOutlined spin /> },
+  PAUSED: { label: '已暂停', tone: 'neutral', icon: <PauseCircleOutlined /> },
+  CANCELLED: { label: '已停止', tone: 'neutral', icon: <MinusCircleOutlined /> },
+  PARTIAL_FAILED: { label: '部分失败', tone: 'danger', icon: <ExclamationCircleFilled /> },
   PENDING: { label: '等待中', tone: 'neutral', icon: <ClockCircleOutlined /> },
   WAITING_APPROVAL: { label: '待交付审批', tone: 'waiting', icon: <SafetyCertificateOutlined /> },
   SUCCESS: { label: '待手动合并', tone: 'success', icon: <CheckCircleFilled /> },
