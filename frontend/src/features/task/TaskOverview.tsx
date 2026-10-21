@@ -345,7 +345,7 @@ export function TaskOverview({
   const resultText = resultHeadline(result, analysisOnly, deliveredCode, landed, changedCount, changeEvidenceKnown, finalApprovalPending, resultFailed);
   const description = resultDescription(analysisOnly, landed, deliveredCode, changedCount, changeEvidenceKnown, finalApprovalPending, result, resultFailed);
   const diffPayload = diffQuery.data?.content;
-  const runTerminal = ['failed', 'partial_failed', 'succeeded', 'cancelled'].includes(detail.run_status);
+  const runTerminal = ['failed', 'partial_failed', 'succeeded'].includes(detail.run_status);
   const canRetryWholeTask = ['FAILED', 'FAIL'].includes(result)
     && Boolean(finalStep)
     && !deliveryStep
