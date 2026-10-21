@@ -183,7 +183,14 @@ export function StepDetail({
         className="step-tabs"
       />
 
-      <StepActionBar runId={runId} taskId={taskId} stepName={step.name} runActive={runActive} approvalPending={approvalPending} />
+      <StepActionBar
+        runId={runId}
+        taskId={taskId}
+        stepName={step.name}
+        stepStatus={step.status}
+        runActive={runActive}
+        approvalPending={approvalPending}
+      />
     </section>
   );
 }
