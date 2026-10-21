@@ -47,8 +47,6 @@ export function TaskWorkspace() {
     setExecutionOpen(true);
   };
 
-  const openExecution = () => setExecutionOpen(true);
-
   if (task.isLoading) {
     return <div className="page"><Skeleton active paragraph={{ rows: 8 }} /></div>;
   }
