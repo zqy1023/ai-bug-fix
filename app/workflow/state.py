@@ -51,9 +51,11 @@ class WorkflowState(TypedDict, total=False):
     problem: dict[str, Any]
     # source_repo_path：源 Git 仓库路径。
     source_repo_path: str
-    # attempt：当前修复尝试序号。
+    # attempt：当前任务生命周期内的全局尝试序号，用于模型调用和步骤审计。
     attempt: int
-    # max_attempts：单任务最大尝试次数。
+    # automatic_attempt：当前任务执行周期内的有界自动重试序号。
+    automatic_attempt: int
+    # max_attempts：单个任务执行周期允许的总尝试次数，包含首次执行。
     max_attempts: int
     # review_mode：审查模式。
     review_mode: str
@@ -158,9 +160,11 @@ class RunState(TypedDict, total=False):
     log_days: int
     # log_limit：日志查询条数上限。
     log_limit: int
-    # attempt：当前修复尝试序号。
+    # attempt：当前任务生命周期内的全局尝试序号。
     attempt: int
-    # max_attempts：单任务最大尝试次数。
+    # automatic_attempt：当前任务执行周期内的有界自动重试序号。
+    automatic_attempt: int
+    # max_attempts：单个任务执行周期允许的总尝试次数。
     max_attempts: int
     # review_mode：审查模式。
     review_mode: str
