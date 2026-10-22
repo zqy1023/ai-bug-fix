@@ -58,19 +58,23 @@ _TOOL_INPUT_KEYS = (
 )
 
 
-def _tokens(usage: Any) -> dict[str, int]:
+def _tokens(usage: Any) -> dict[str, int | None]:
     """从 SDK 结果里取 token。没有用量时记 0，不把调用统计冒充 token。"""
     if not isinstance(usage, dict):
-        return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-    input_tokens = int(usage.get("input_tokens") or 0)
-    output_tokens = int(usage.get("output_tokens") or 0)
+        return {"input_tokens": None, "output_tokens": None, "total_tokens": None}
+    input_tokens = usage.get("input_tokens")
+    output_tokens = usage.get("output_tokens")
+    input_tokens = input_tokens if isinstance(input_tokens, int) else None
+    output_tokens = output_tokens if isinstance(output_tokens, int) else None
     total = usage.get("total_tokens")
     if not isinstance(total, int):
-        total = input_tokens + output_tokens
+        total = input_tokens + output_tokens if input_tokens is not None and output_tokens is not None else None
     return {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
-        "total_tokens": int(total),
+        "total_tokens": total,
+        "cache_read_input_tokens": usage.get("cache_read_input_tokens"),
+        "cache_creation_input_tokens": usage.get("cache_creation_input_tokens"),
     }
 
 
@@ -408,7 +412,6 @@ def _debug_hook_event(event: dict[str, Any]) -> None:
 
     if _flag("AI_REPAIR_PROGRESS", settings.agent_progress):
         event_type = event.get("event", "unknown")
-        thinking = False
         if event_type == "PreToolUse":
             detail = (
                 f"tool={event.get('tool_name')} decision={event.get('decision')} "
@@ -496,6 +499,7 @@ async def _run(
     max_tool_calls: int = settings.claude_default_max_tool_calls,
     allowed_roots: Sequence[str | Path] | None = None,
     allowed_write_roots: Sequence[str | Path] | None = None,
+    output_schema: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """在限定工具和工作区范围内运行一次 Claude 查询。"""
     ClaudeAgentOptions, ResultMessage, query = _sdk()
@@ -576,6 +580,7 @@ async def _run(
         }
 
     options = ClaudeAgentOptions(
+        **({"output_format": {"type": "json_schema", "schema": output_schema}} if output_schema else {}),
         cwd=str(Path(workspace).resolve()),
         tools=file_tools,
         allowed_tools=file_tools,
@@ -636,7 +641,8 @@ async def _run(
         error = RuntimeError(f"Claude 智能体执行失败: {error_msg}{hint}")
         setattr(error, "agent_events", events)
         raise error
-    text = result.result or ""
+    structured = getattr(result, "structured_output", None)
+    text = json.dumps(structured, ensure_ascii=False) if isinstance(structured, dict) else result.result or ""
     usage = getattr(result, "usage", None)
     tokens = _tokens(usage)
     return {
@@ -663,6 +669,7 @@ def run_agent_once(
     timeout_seconds: int = settings.claude_default_timeout_seconds,
     allowed_roots: Sequence[str | Path] | None = None,
     allowed_write_roots: Sequence[str | Path] | None = None,
+    output_schema: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """以一次性查询方式运行智能体，按配置限定工具和读写权限。"""
     return asyncio.run(
@@ -676,6 +683,7 @@ def run_agent_once(
             max_tool_calls=max_tool_calls,
             allowed_roots=allowed_roots,
             allowed_write_roots=allowed_write_roots,
+            output_schema=output_schema,
         ), timeout=max(1, int(timeout_seconds)))
     )
 
@@ -703,6 +711,7 @@ class ClaudeSession:
         self._workspace = Path(workspace).resolve()
         self._env = dict(env)
         self._init_prompt = init_prompt
+        self._output_schema = kwargs.get("output_schema")
         self._tools = resolve_tools(writable, tools)
         self._max_turns = max(1, int(max_turns))
         self._max_tool_calls = max(1, int(max_tool_calls))
@@ -814,6 +823,7 @@ class ClaudeSession:
             }
 
         options = ClaudeAgentOptions(
+            **({"output_format": {"type": "json_schema", "schema": self._output_schema}} if getattr(self, "_output_schema", None) else {}),
             cwd=str(self._workspace),
             tools=tools,
             allowed_tools=tools,
@@ -870,14 +880,17 @@ class ClaudeSession:
                             result = message
                 if result is None or result.is_error:
                     raise RuntimeError(f"Agent 返回错误: {getattr(result, 'subtype', 'empty')}")
+                structured = getattr(result, "structured_output", None)
+                text = json.dumps(structured, ensure_ascii=False) if isinstance(structured, dict) else result.result or ""
                 result_queue.put({
                     "passed": True,
-                    "result": result.result or "",
+                    "result": text,
                     "messages": events,
                     "usage": {
                         "tool_calls": tool_count,
                         "prompt_chars": len(prompt),
-                        "result_chars": len(result.result or ""),
+                        "result_chars": len(text),
+                        **_tokens(getattr(result, "usage", None)),
                     },
                 })
             except Exception as error:

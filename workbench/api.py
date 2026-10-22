@@ -19,7 +19,7 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.infrastructure.config import load_config
 from app.infrastructure.records.store import RecordStore
@@ -679,6 +679,8 @@ def decide_approval(
         raise HTTPException(status_code=422, detail="变更审批 decision 只能是 APPROVE 或 REJECT")
     if decision == "REJECT" and not request.retry_target:
         raise HTTPException(status_code=422, detail="驳回必须明确指定回退节点")
+    if decision == "REJECT" and request.retry_target not in APPROVAL_RETRY_TARGETS:
+        raise HTTPException(status_code=422, detail="无效的驳回回退节点")
     run_id, task_id = _safe_id(run_id), _safe_id(task_id)
     store = _store()
     run = _run_payload(store, run_id)
@@ -695,24 +697,19 @@ def decide_approval(
         lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
     if not lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="该 run 正在执行恢复操作")
-    fingerprint = str(approval_input.get("approval_fingerprint") or "")
-    resume_payload = {"decision": decision, "approval_fingerprint": fingerprint}
-    if decision == "REJECT":
-        retry_target = str(request.retry_target)
-        if retry_target not in APPROVAL_RETRY_TARGETS:
-            raise HTTPException(status_code=422, detail="无效的驳回回退节点")
-        resume_payload.update({
-            "reason": str(request.reason or "").strip()[:1000],
-            "retry_target": retry_target,
-        })
-    # 审批 API 只负责校验决定并排入恢复任务。恢复过程可能继续执行多个 carrier，
-    # 不应占用 HTTP 请求；同一个 run 的锁交给后台恢复器持有，直至整张父图完成。
-    background.add_task(
-        _resume_workflow_background,
-        run_id,
-        lock,
-        resume_payload,
-    )
+    try:
+        fingerprint = str(approval_input.get("approval_fingerprint") or "")
+        resume_payload = {"decision": decision, "approval_fingerprint": fingerprint, "task_id": task_id}
+        if decision == "REJECT":
+            resume_payload.update({
+                "reason": str(request.reason or "").strip()[:1000],
+                "retry_target": str(request.retry_target),
+            })
+        # Transfer lock ownership only after the background task is enqueued.
+        background.add_task(_resume_workflow_background, run_id, lock, resume_payload)
+    except BaseException:
+        lock.release()
+        raise
     return {"run_id": run_id, "task_id": task_id, "decision": decision, "status": "resume_requested"}
 
 # Versioned control-plane contract consumed by frontend/src/lib/api.ts.
@@ -722,11 +719,11 @@ from typing import Literal
 
 
 class V1StartRunRequest(BaseModel):
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "forbid", "validate_default": True}
     # log_hours：本轮滚动回溯的小时数。
-    log_hours: int = Field(default=24, ge=1, le=settings.workbench_max_log_hours)
+    log_hours: int = Field(default=settings.default_log_hours, ge=1, le=settings.workbench_max_log_hours)
     # log_limit：本轮最多读取的日志数；0 表示全量拉取，不设置条数上限。
-    log_limit: int = Field(default=0, ge=0)
+    log_limit: int = Field(default=settings.default_log_limit, ge=0)
     # review_mode：agent 表示 AI 审查，human 表示强制人工审查。
     review_mode: Literal["agent", "human"] = settings.default_review_mode
     # max_attempts：单任务修复尝试总次数，包含首次执行。
@@ -735,6 +732,26 @@ class V1StartRunRequest(BaseModel):
         ge=1,
         le=settings.workbench_max_attempts,
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def apply_runtime_defaults(cls, value: Any) -> Any:
+        """只补齐未传入的字段，使 API 与 CLI 遵循同一环境配置。"""
+        if isinstance(value, dict):
+            return {**_config().run_parameters(), **value}
+        return value
+
+
+@router.get("/api/v1/run-config")
+def v1_run_config(_: None = Depends(_authorize)) -> dict[str, Any]:
+    """提供新建运行的有效默认值与上限，不返回连接地址、凭据或内部路径。"""
+    return {
+        "defaults": V1StartRunRequest().model_dump(mode="json"),
+        "limits": {
+            "max_log_hours": settings.workbench_max_log_hours,
+            "max_attempts": settings.workbench_max_attempts,
+        },
+    }
 
 
 class V1ApprovalDecision(BaseModel):
@@ -953,8 +970,7 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
     return {
         **summary, "status": status, "terminal": terminal,
         "config": {
-            "log_hours": run_meta.get("log_hours", int(run_meta.get("log_days") or 1) * 24), "log_limit": run_meta.get("log_limit", 0),
-            "review_mode": run_meta.get("review_mode", settings.default_review_mode), "max_attempts": run_meta.get("max_attempts", settings.default_max_attempts),
+            **_config().run_parameters(run_meta),
         },
         "steps": steps, "tasks": tasks, "artifacts": artifacts,
         "run_report": run_report if isinstance(run_report, dict) else {},
@@ -1282,10 +1298,25 @@ def _record_background_failure(
             if phase == "workflow_resume"
             else "检查启动配置、工作流装配和服务端异常；修复原因后重新执行。"
         )
+        terminal_step = phase
+        if phase in {"workflow_startup", "workflow_resume"}:
+            failed = [record for record in _store().list_steps(run_id) if record.status == "failed"]
+            if failed:
+                record = failed[-1]
+                terminal_step = record.name
+                reason = str(record.output.get("failure_reason") or record.summary or reason)
+                attempts = int(record.output.get("automatic_attempt") or record.attempt or 1)
+                retry_count = int(record.output.get("retry_count", max(0, attempts - 1)))
+                exhausted = bool(record.output.get("retry_exhausted"))
+                reason += f"；已执行 {attempts} 次（自动重试 {retry_count} 次）"
+                if exhausted:
+                    reason += "，重试次数已耗尽"
+                if record.name == "sync_source_repo":
+                    next_action = "检查远程 Git 仓库的网络连通性、TLS/证书、代理和访问凭据；排除原因后从源仓库同步节点恢复。"
         payload = {
             "status": "FAILED", "error_type": type(error).__name__,
             "message": reason,
-            "terminal_step": phase, "terminal_reason": reason,
+            "terminal_step": terminal_step, "terminal_reason": reason,
             "next_action": next_action,
             "failed_at": now,
         }
@@ -1294,7 +1325,7 @@ def _record_background_failure(
         try:
             lifecycle = LifecycleStore(_store().root)
             lifecycle.update_run(
-                run_id, status="failed", phase=phase, current_step=phase,
+                run_id, status="failed", phase=terminal_step, current_step=terminal_step,
                 error_type=type(error).__name__, error_message=reason,
                 terminal_reason=reason, next_action=next_action,
             )
@@ -1468,8 +1499,7 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
         },
         "artifacts": artifacts,
         "config": {
-            "log_hours": run_meta.get("log_hours", int(run_meta.get("log_days") or 1) * 24), "log_limit": run_meta.get("log_limit", 0),
-            "review_mode": run_meta.get("review_mode", settings.default_review_mode), "max_attempts": run_meta.get("max_attempts", settings.default_max_attempts),
+            **_config().run_parameters(run_meta),
         },
     }
 
@@ -1541,12 +1571,7 @@ def v1_retry_run(run_id: str, background: BackgroundTasks, _: None = Depends(_au
                 started_at=None, finished_at=None, error={},
                 error_type="", error_message="", terminal_reason="", next_action="",
             )
-            overrides = {
-                "log_hours": int(run_meta.get("log_hours") or int(run_meta.get("log_days") or 1) * 24),
-                "log_limit": int(run_meta.get("log_limit") or 0),
-                "review_mode": str(run_meta.get("review_mode") or settings.default_review_mode),
-                "max_attempts": int(run_meta.get("max_attempts") or settings.default_max_attempts),
-            }
+            overrides = _config().run_parameters(run_meta)
             worker = _run_workflow_background_v1
 
         connection = _control_db()
@@ -1666,13 +1691,23 @@ def _resume_workflow_background(
         has_interrupt = any(getattr(task, "interrupts", ()) for task in (getattr(snapshot, "tasks", ()) or ()))
         if resume_payload is not None:
             from langgraph.types import Command
+            from app.workflow.wiring import resume_task_approval
+
+            task_id = str(resume_payload.get("task_id") or "")
+            detached = bool(task_id) and resume_task_approval(
+                store, run_id, task_id, resume_payload, runtime_config,
+                build_services(config=runtime_config, source_repo=source_repo),
+            )
             # 嵌套任务子图的 interrupt 在部分 LangGraph 版本中不一定完整暴露在父快照的
             # task.interrupts 上。审批接口已校验当前任务处于待决状态且持有 run 锁，因此
             # 必须直接把决定交给 checkpoint；绝不能因快照未显示 interrupt 而重新 invoke(None)。
-            final_state = graph.invoke(Command(resume=resume_payload), config=config)
+            if detached:
+                final_state = graph.invoke(None, config=config) if snapshot.next else dict(snapshot.values)
+            else:
+                final_state = graph.invoke(Command(resume=resume_payload), config=config)
         elif has_interrupt:
             from langgraph.types import Command
-            final_state = graph.invoke(Command(resume=None), config=config)
+            final_state = graph.invoke(Command(resume={"control": "resume"}), config=config)
         else:
             final_state = graph.invoke(None, config=config)
         # 本次恢复已成功推进 checkpoint；清理之前后台异常写入的失败标记，避免 UI 继续把已恢复运行判为 FAILED。
@@ -1683,7 +1718,7 @@ def _resume_workflow_background(
         stale_payload = _read_json(stale_run_report, {})
         if (
             isinstance(stale_payload, dict)
-            and stale_payload.get("terminal_step") in {"workflow_startup", "approval_recovery", "workflow_resume"}
+            and stale_payload.get("terminal_step") in {"workflow_startup", "approval_recovery", "workflow_resume", "sync_source_repo"}
             and stale_payload.get("result") == "FAILED"
         ):
             stale_run_report.unlink(missing_ok=True)
@@ -2011,6 +2046,7 @@ def v1_control_audit(run_id: str, _: None = Depends(_authorize)) -> dict[str, An
 class V1StepRunRequest(BaseModel):
     # confirm_write：写步骤必须显式确认，避免误触外部写入。
     confirm_write: bool = False
+    continue_after: bool = True
 
 
 def _load_model_calls(run_id: str, task_id: str | None = None) -> list[dict[str, Any]]:
@@ -2221,6 +2257,13 @@ def v1_retry_task(
             0,
         ) + 1
 
+        from app.application.step_runner import state_from_records
+        from app.workflow.retry_context import capture_retry_context
+        previous_state = state_from_records(store, run_id, task_id)
+        previous_state["retry_reason"] = str((task_payload.get("lifecycle") or {}).get("terminal_reason") or "人工请求重试失败任务")
+        previous_state["attempt"] = next_attempt - 1
+        original_task["_retry_context"] = capture_retry_context(previous_state, store)
+
         # A fresh source snapshot must be generated for a whole-task retry; retain the previous
         # immutable baseline for audit and free the canonical path expected by prepare_source_snapshot.
         snapshot_record = next(
@@ -2401,6 +2444,8 @@ def v1_run_step(
     # after this endpoint acquires the lock, _v1_detail correctly sees a locked worker and
     # would incorrectly reject this very single-step request as RUN_ACTIVE.
     status_before_lock = str(_v1_detail(run_id).get("status") or "")
+    if request.continue_after and (store.run_dir(run_id) / "reports/run_failure.json").is_file():
+        raise HTTPException(status_code=409, detail="批次存在运行级异常，请先使用 Run 重试恢复，不能绕过批次异常继续任务")
 
     def _status(_value: str) -> str:
         return status_before_lock
@@ -2412,12 +2457,52 @@ def v1_run_step(
         message = "该执行正在被启动或重跑占用，请稍后重试"
         _audit_control(run_id, task_id, f"step.run.rejected:{step_name}", actor, message)
         raise HTTPException(status_code=409, detail={"code": "RUN_LOCKED", "message": message})
-    runner = StepRunner(store, run_status=_status, on_finish=run_lock.release)
+    def _continue(selected: StepRunRequest, payload: dict[str, Any]) -> None:
+        from app.workflow.wiring import continue_task_after_step, build_graph, build_services
+        from app.infrastructure.config import load_config, workflow_recursion_limit
+        from app.entrypoint import _write_run_report_if_terminal
+        runtime = load_config()
+        services = build_services(config=runtime, source_repo=runtime.source_repo)
+        lifecycle = LifecycleStore(store.root)
+        lifecycle.update_run(run_id, status="running", worker_active=True, error={})
+        stop, heartbeat = _start_lifecycle_heartbeat(run_id)
+        try:
+            previous_report = store.run_dir(run_id) / "reports/final.json"
+            if previous_report.is_file():
+                archive = previous_report.parent / "history" / ("before-step-" + uuid.uuid4().hex + ".json")
+                archive.parent.mkdir(parents=True, exist_ok=True)
+                previous_report.replace(archive)
+            continue_task_after_step(store, run_id, task_id, selected.step_name, payload, runtime, services)
+            parent = build_graph(store=store, services=services, config=runtime)
+            cfg = {"configurable": {"thread_id": run_id}, "recursion_limit": workflow_recursion_limit(
+                max_attempts=runtime.max_attempts, task_count_hint=100)}
+            snapshot = parent.get_state(cfg)
+            final_state = dict(snapshot.values or {})
+            if snapshot.next and final_state.get("task_id") == task_id:
+                final_state = parent.invoke(None, config=cfg)
+            _write_run_report_if_terminal(store, run_id, parent, final_state=final_state)
+            _complete_run_lifecycle(run_id, store)
+        except Exception as error:
+            _record_background_failure(run_id, error, phase="workflow_resume")
+            raise
+        finally:
+            stop.set()
+            heartbeat.join(timeout=1)
+            lifecycle.update_run(run_id, worker_active=False)
+
+    runner = StepRunner(store, run_status=_status, on_finish=run_lock.release, on_continue=_continue)
     try:
-        result = runner.run(StepRunRequest(
-            run_id=run_id, task_id=task_id, step_name=step_name,
-            confirm_write=request.confirm_write,
-        ))
+        selected = StepRunRequest(run_id=run_id, task_id=task_id, step_name=step_name,
+                                  confirm_write=request.confirm_write, continue_after=request.continue_after)
+        runner.validate(selected)
+        if request.continue_after:
+            connection = _control_db()
+            try:
+                connection.execute("UPDATE run_control SET pause_requested=0 WHERE run_id=? AND cancel_requested=0", (run_id,))
+                connection.commit()
+            finally:
+                connection.close()
+        result = runner.run(selected)
     except StepRunnerError as exc:
         run_lock.release()
         _audit_control(run_id, task_id, f"step.run.rejected:{step_name}", actor, str(exc))

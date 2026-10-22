@@ -10,6 +10,7 @@ type NodeSpec = {
   members: string[];
   status: StepStatus;
   metric?: string;
+  waitingForApproval?: boolean;
 };
 
 const TERMINAL_RUN = new Set(['succeeded', 'partial_failed', 'failed', 'cancelled']);
@@ -53,8 +54,8 @@ export function RunGraph({ run }: { run: RunDetail }) {
     ]);
     const identifyStatus = pick(steps, ['identify_carrier']);
 
-    const taskStatus: StepStatus = tasksWaiting || tasksPaused ? 'waiting'
-      : tasksRunning ? 'running'
+    const taskStatus: StepStatus = tasksRunning ? 'running'
+      : tasksWaiting || tasksPaused ? 'waiting'
         : tasks.length ? (tasksFailed ? 'failed' : 'succeeded')
           : terminal ? 'skipped'
             : atTask ? 'running'
@@ -87,6 +88,7 @@ export function RunGraph({ run }: { run: RunDetail }) {
         key: 'run_task', title: '任务子图执行', detail: 'task_dispatch → run_task',
         members: [],
         status: taskStatus,
+        waitingForApproval: tasksWaiting && !tasksRunning && !tasksPaused,
         metric: tasks.length
           ? `${tasks.filter((task) => task.approval_pending).length} 待审批 / ${tasks.length}`
           : undefined,
@@ -127,7 +129,8 @@ export function RunGraph({ run }: { run: RunDetail }) {
             <div className="graph-node-head">
               <span className="graph-node-index">{index + 1}</span>
               <strong>{node.title}</strong>
-              <StatusBadge kind="step" value={node.status} compact />
+              <StatusBadge kind="step" value={node.status}
+                stepName={node.waitingForApproval ? 'request_approval' : node.key} compact />
             </div>
             <code className="graph-node-detail">{node.detail}</code>
             {node.metric && <span className="graph-node-metric">{node.metric}</span>}

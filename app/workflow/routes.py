@@ -102,15 +102,6 @@ def _retry_or_finalize(state: WorkflowState) -> str:
     ) else RETRY
 
 
-def _locate_references_legacy(locate: dict) -> bool:
-    """定位 Agent 若把根因证据指向 spiders，则强制走分析报告分支。"""
-    paths = [str(item) for item in locate.get("candidate_files") or []]
-    for item in locate.get("source_evidence") or []:
-        if isinstance(item, dict):
-            paths.append(str(item.get("path") or ""))
-    return any(path.replace("\\", "/").startswith("spiders/") for path in paths)
-
-
 def after_retry(state: WorkflowState) -> str:
     """按显式的失败目标重跑阶段；缺失或未知目标安全终止，不猜测回到修复阶段。"""
     if str(state.get("terminal_status") or "").upper() == "CANCELLED":
@@ -245,7 +236,6 @@ def _analysis_only_task(state: WorkflowState) -> bool:
     locate_status = str(locate.get("status") or "").upper()
     if locate_status not in {"LOCATED", "MANUAL", "INSUFFICIENT_EVIDENCE"}:
         return False
-    evidence = state.get("evidence") or {}
     if (
         state.get("scope_escalation_required")
         or str(((state.get("repair") or {}).get("change_plan") or {}).get("scope") or "") == "manual"

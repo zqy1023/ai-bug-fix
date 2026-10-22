@@ -65,7 +65,7 @@ def audit_metadata(
         "allowed_read_roots": list(request.allowed_read_roots),
         "allowed_write_roots": list(request.allowed_write_roots),
         "tool_call_count": int(tool_call_count),
-        "total_tokens": int(usage.get("total_tokens") or 0),
+        "total_tokens": usage.get("total_tokens"),
     }
 
 

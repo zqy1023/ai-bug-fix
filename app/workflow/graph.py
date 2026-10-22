@@ -16,6 +16,7 @@ from typing import Any
 import uuid
 
 from app.workflow.state import RunState, WorkflowState
+from app.domain.errors import StepFailed
 from app.domain.keys import safe_name
 from app.workflow.definitions import TASK_CONDITIONAL_TRANSITIONS, TASK_NODE_NAMES, TASK_STATIC_TRANSITIONS
 from app.workflow.routes import (
@@ -104,11 +105,13 @@ def build_task_graph(
     nodes: dict[str, Callable[..., Any]],
     *,
     workspace_manager: Any | None = None,
+    checkpointer: BaseCheckpointSaver | None = None,
+    retry_context_builder: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    entry_node: str | None = None,
 ) -> CompiledStateGraph:
     """编译任务子图。
 
-    不挂 checkpointer：它作为节点嵌套进父图，持久化由父图的 checkpointer 统一接管。
-    单独挂一份会让人工审批的 interrupt 落到两个不同的检查点上。
+    独立任务执行器显式传入 checkpointer；旧式嵌套和单元测试可继承父图持久化。
     """
     graph: StateGraph = StateGraph(WorkflowState)
     # 任务图含文件写入、审批和 Git 交付等副作用节点，不做通用自动重试。
@@ -119,6 +122,18 @@ def build_task_graph(
                 # Agent/审批重试前恢复不可变基线，避免在上一次失败的半成品上继续修改。
                 # 审查重试是复查同一份改动，重置工作区会删掉待审内容，必须跳过。
                 target = str(state.get("retry_target") or "")
+                from app.workflow.retry_context import capture_retry_context
+                try:
+                    retry_context = (retry_context_builder or capture_retry_context)(state)
+                    if retry_context.get("capture_errors"):
+                        raise StepFailed("重试证据采集不完整：" + "; ".join(retry_context["capture_errors"]))
+                except Exception as error:
+                    reason = public_exception(error, prefix="保存上一轮重试证据失败，保留当前工作区")
+                    return {
+                        "last_result": "failed", "terminal_status": "FAILED",
+                        "retry_target": "__retry_reset_failed__", "retry_reason": reason,
+                        "blocked_reason": reason,
+                    }
                 manager = workspace_manager
                 # 验证/回归/审查/交付重试要继续使用当前改动；准备阶段重试则必须
                 # 归档旧基线和工作区，否则 prepare_source_snapshot / prepare_workspace 会撞目录。
@@ -227,6 +242,7 @@ def build_task_graph(
                             "retry_reason": public_exception(error, prefix="重试前恢复隔离工作区失败"),
                         }
                 patch: dict[str, Any] = {
+                    "retry_context": retry_context,
                     "attempt": int(state.get("attempt") or 1) + 1,
                     "automatic_attempt": int(state.get("automatic_attempt") or state.get("attempt") or 1) + 1,
                     "decision": "PENDING",
@@ -253,6 +269,8 @@ def build_task_graph(
                         "change_plan": {},
                         "scope_escalation_required": False,
                         "check_passed": False,
+                        "syntax_passed": False,
+                        "syntax_result": {},
                         "verify_passed": False,
                         "regression_passed": False,
                         "gate_result": {},
@@ -263,6 +281,8 @@ def build_task_graph(
                     # 重跑变更门禁和问题验证，保留源码，但清空这一阶段及下游的旧结论。
                     patch.update({
                         "check_passed": False,
+                        "syntax_passed": False,
+                        "syntax_result": {},
                         "verify_passed": False,
                         "regression_passed": False,
                         "gate_result": {},
@@ -297,11 +317,11 @@ def build_task_graph(
 
     # 任务流程唯一由 definitions.py 声明；这里仅负责将定义编译成 LangGraph。
     for source, target in TASK_STATIC_TRANSITIONS:
-        graph.add_edge(source, target)
+        graph.add_edge(source, entry_node if source == START and entry_node else target)
     for source, router, targets in TASK_CONDITIONAL_TRANSITIONS:
         graph.add_conditional_edges(source, router, list(targets))
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
 def kept_repair_slot(state: dict[str, Any]) -> bool:
@@ -363,6 +383,7 @@ def build_graph(
     task_graph: CompiledStateGraph,
     checkpointer: BaseCheckpointSaver | None = None,
     task_collector: Callable[..., Any] | None = None,
+    task_runner: Callable[..., Any] | None = None,
 ) -> CompiledStateGraph:
     """编译 run 级主图。``task_graph`` 作为 ``run_task`` 节点嵌套进来。"""
     graph: StateGraph = StateGraph(RunState)
@@ -376,7 +397,7 @@ def build_graph(
             retry_policy=retry if name in {SOURCE_SYNC, RUN_PREPARE, IDENTIFY} else None,
         )
     graph.add_node(TASK_DISPATCH, dispatch)
-    graph.add_node(RUN_TASK, task_graph)
+    graph.add_node(RUN_TASK, task_runner or task_graph)
     graph.add_node(TASK_COLLECT, task_collector or collect)
 
     graph.add_edge(START, SOURCE_SYNC)

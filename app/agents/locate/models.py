@@ -18,6 +18,7 @@ class LocateInput(FrozenModel):
     task_id: str
     # attempt：字段说明见该模型文档与工作流契约。
     attempt: int = Field(ge=1)
+    retry_context: dict[str, Any] = Field(default_factory=dict)
     # carrier：字段说明见该模型文档与工作流契约。
     carrier: str
     # biztype：字段说明见该模型文档与工作流契约。
@@ -102,12 +103,11 @@ class LocateOutput(FrozenModel):
                 missing.append("源码证据")
             if not self.candidate_files:
                 missing.append("候选文件")
-            if self.recommended_scope == "manual":
-                missing.append("可自动处理的范围")
             if missing:
                 # 契约不满足时安全降级，而不是抛弃整个模型输出。
                 # facts、源码证据、候选文件和根因仍保留给人工排查。
-                reason = "LOCATED 缺少必需信息：" + "、".join(missing)
+                omitted = {"root_cause", "source_evidence", "candidate_files"} - self.model_fields_set
+                reason = ("定位 Agent 输出格式不完整：缺少" if omitted else "定位结果不足以支持自动修改：缺少") + "、".join(missing)
                 self.status = "MANUAL"
                 self.recommended_scope = "manual"
                 self.passed = False

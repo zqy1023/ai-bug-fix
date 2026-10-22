@@ -148,7 +148,7 @@ export function StepDetail({
                 <span className="step-exec-note">{step.status === 'failed' ? '执行异常' : '执行完成'}</span>
               </>
             ) : (
-              <StatusBadge kind="step" value={step.status} />
+              <StatusBadge kind="step" value={step.status} stepName={step.name} />
             )}
             {step.attempt ? <span className="step-attempt">attempt {step.attempt}</span> : null}
             <span className="step-duration">

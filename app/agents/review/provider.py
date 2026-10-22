@@ -53,6 +53,7 @@ class ClaudeSessionProvider(ReviewProvider):
 
     def run(self, request: AgentRequest) -> dict[str, Any]:
         """在常驻只读会话中提交提示词；同一任务跨回修轮次复用。"""
+        from app.agents.output_schema import output_schema
         ToolPolicy.validate(request)
         from app.infrastructure.runtime import drop_session, session_scope
 
@@ -67,6 +68,7 @@ class ClaudeSessionProvider(ReviewProvider):
                 request.workspace,
                 self.env,
                 request.system_prompt,
+                output_schema=output_schema("review"),
                 tools=self.tools,
                 writable=False,
                 max_turns=self.config.max_turns,
@@ -96,6 +98,7 @@ class ClaudeQueryProvider(ReviewProvider):
 
     def run(self, request: AgentRequest) -> dict[str, Any]:
         """以一次性查询方式调用只读智能体。"""
+        from app.agents.output_schema import output_schema
         try:
             ToolPolicy.validate(request)
             return invoke_with_audit(request, lambda: run_agent_once(
@@ -108,6 +111,7 @@ class ClaudeQueryProvider(ReviewProvider):
                 max_tool_calls=self.config.max_tool_calls,
                 timeout_seconds=self.config.timeout_seconds,
                 allowed_roots=request.allowed_read_roots,
+                output_schema=output_schema("review"),
             ))
         except TimeoutError:
             return {"passed": False, "reason": "AGENT_TIMEOUT"}

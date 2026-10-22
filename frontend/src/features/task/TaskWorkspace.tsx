@@ -98,7 +98,7 @@ export function TaskWorkspace() {
           {steps.map((record, index) => <button type="button" key={record.name} onClick={() => selectStep(record.name)} className={'ledger-row' + (selected === record.name ? ' is-selected' : '')}>
             <span className="ledger-index">{String(index + 1).padStart(2, '0')}</span>
             <div><strong>{record.title || record.name}</strong><p>{outcomeText(record)}</p></div>
-            <div className="ledger-status"><StatusBadge kind="step" value={record.status} /><span>{record.result || '—'}</span></div>
+            <div className="ledger-status"><StatusBadge kind="step" value={record.status} stepName={record.name} /><span>{record.result || '—'}</span></div>
           </button>)}
         </div>
         {executionOpen && (

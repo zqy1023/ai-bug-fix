@@ -15,13 +15,16 @@
 - [本地启动](#本地启动)
 - [真实数据单步调试](#真实数据单步调试)
 - [Docker 部署](#docker-部署)
+- [开发验证](#开发验证)
 - [延伸文档](#延伸文档)
+- [日志查询范围](#日志查询范围)
 
 ## 主流程
 
 ```text
 run 级（一次执行跑一遍）:
-discover_and_normalize（discover_logs -> normalize_error -> deduplicate_error）
+sync_source_repo（同步源仓库）
+  -> discover_and_normalize（discover_logs -> normalize_error -> deduplicate_error）
   -> identify_carrier
   -> task_dispatch（串行游标，每次只放行一个任务）
   -> 任务级子图（每个任务按 tasks 顺序串行执行）:
@@ -30,27 +33,28 @@ discover_and_normalize（discover_logs -> normalize_error -> deduplicate_error�
      -> locate_agent
      -> claim_repair_slot
      -> repair_agent
-     -> validate_changes（check_changes -> verify_issue）
+     -> validate_changes（check_changes -> syntax_regression -> verify_issue）
      -> run_regression
      -> review_agent
-     -> request_approval
      -> prepare_delivery
+     -> request_approval
      -> finalize_execution
   -> task_collect（记下结论，推进游标）-> 回到 task_dispatch
 ```
 
 任务之间严格串行：前一个任务走到 `finalize_execution` 并记完汇总后，游标才推进到下一个。任务子图持有自己的状态（`WorkflowState`），父图只保留 run 级字段与结果汇总（`RunState`），所以 `changed_files`、`repair`、`locate` 这类任务局部通道不会跨任务累积。
 
-旧框架判断只看 `gathers/<Carrier>/main.py`：存在则按新框架处理；不存在且 `spiders/<Carrier>/` 存在则在证据预检后转人工，不调用 Locate 或 Repair。缺少两类实现时步骤明确失败。
+框架预检优先识别 `gathers/<Carrier>/main.py`，缺少新框架入口但存在 `spiders/<Carrier>/` 时保留旧框架证据标签；定位 Agent 继续只读分析，后续按根因范围和定位结论路由。旧框架或依赖旧实现的标签本身不会在预检阶段直接终止任务。缺少两类实现时步骤明确失败。
 
 ## 代码结构
 
 ```text
 app/
-├── domain/                  models.py, errors.py, policies.py, decisions.py
+├── domain/                  models/, errors.py, policies.py, decisions.py
 ├── application/             context.py, contracts.py, services.py, audit.py
 ├── workflow/
 │   ├── graph.py             LangGraph run 级主图 + 任务子图
+│   ├── definitions.py       业务阶段组合与任务子图转移定义
 │   ├── routes.py            门禁路由
 │   ├── state.py             RunState（父图）与 WorkflowState（任务子图）
 │   ├── registry.py          步骤与 Agent 注册
@@ -58,11 +62,11 @@ app/
 │   └── steps/<step>/        SPEC（__init__.py）、models、node、__main__
 ├── agents/                  common.py, policy.py, locate/, repair/, review/
 ├── infrastructure/          es/, git/, filesystem/, claude/, commands/, records/
-├── prompts/                 common.md, locate.md, repair.md, review.md, loader.py, renderer.py
+├── prompts/                 templates/{common,locate,repair,review}.md, loader.py, renderer.py
 └── entrypoint.py            整图入口
 ```
 
-每个 `workflow/steps/<step>/` 只包含该步骤的契约、执行器和 CLI。运行图直接连接这些插件，不使用隐藏的组合步骤。单步 CLI 只接受真实 `run_id`，任务级步骤还需 `task_id`；输入只从已通过的前置记录和运行 artifact 重建，不存在 fixture、stub 或伪造调试 ID。
+每个 `workflow/steps/<step>/` 只包含该步骤的契约、执行器和 CLI。运行图按 `definitions.py` 显式组合业务阶段，阶段内部调用独立插件并分别写入记录。单步 CLI 只接受真实 `run_id`，任务级步骤还需 `task_id`；输入只从已通过的前置记录和运行 artifact 重建，不存在 fixture、stub 或伪造调试 ID。
 
 ## 工作步骤
 
@@ -72,20 +76,21 @@ app/
 
 | 主节点 | 内部执行 / 职责 | 通过后的下一阶段 |
 |---|---|---|
+| `sync_source_repo` | 同步远程源仓库，保存同步记录与 checkpoint | `discover_and_normalize` |
 | `discover_and_normalize` | `discover_logs → normalize_error → deduplicate_error` | `identify_carrier` |
 | `identify_carrier` | 按日志原始身份字段创建去重任务清单 | 串行任务分发 |
 | `prepare_context` | `prepare_source_snapshot → repair_branch_preflight → prepare_workspace → prepare_evidence` | `locate_agent` |
 | `locate_agent` | 只读定位；仅证据支持的 `LOCATED` 可继续 | `claim_repair_slot` |
 | `claim_repair_slot` | 原子领取本轮修复资格 | `repair_agent` |
 | `repair_agent` | 仅修改授权范围内的目标 carrier | `validate_changes` |
-| `validate_changes` | `check_changes → verify_issue`，任一步失败即停止 | `run_regression` |
+| `validate_changes` | `check_changes → syntax_regression → verify_issue`，任一步失败即停止 | `run_regression` |
 | `run_regression` | 在本地准生产 Git 环境执行回归，不提交 | `review_agent`（agent 模式）或直接交付分支（human 模式，跳过 AI 审查） |
 | `review_agent` | 只读审查真实 Diff、门禁、验证和回归报告 | 交付、回修或人工处理 |
-| `request_approval` | 交付方案人工决策；拒绝进入有上限的回修循环 | 收尾 |
-| `prepare_delivery` | 创建修复分支并按配置提交/推送 | `finalize_execution` |
+| `prepare_delivery` | 创建修复分支并按配置提交/推送；明确转分析报告的任务交付报告分支 | 源码交付后进入 `request_approval`；分析报告交付后结束 |
+| `request_approval` | 已交付源码分支的人工决策；拒绝进入有上限的回修循环 | `finalize_execution` 或回修 |
 | `finalize_execution` | 生成终态报告并收尾 | 结束 |
 
-任务子图保留 10 个业务主节点；`retry_prepare` 是内部控制节点，不计入节点数。run 级主图只保留日志准备阶段和 `identify_carrier` 两个节点。10 个任务主节点保留了 Agent、安全隔离、资格占用、回归、审批、交付等必须独立审计的边界。
+任务子图保留 10 个业务主节点；`retry_prepare` 是内部控制节点，不计入节点数。run 级主图包含源码同步、日志准备、运输商识别，以及串行任务分发、执行和汇总节点。10 个任务主节点保留了 Agent、安全隔离、资格占用、回归、审批、交付等必须独立审计的边界。
 
 ### 原子步骤
 
@@ -101,6 +106,7 @@ app/
 | `claim_repair_slot` | task | 定位通过后原子领取本轮资格 |
 | `prepare_workspace` | task | 共享本轮 Git 干净树，只复制目标 carrier 的新旧框架目录 |
 | `check_changes` | task | 校验路径、范围、AST、敏感信息并保存完整 Diff |
+| `syntax_regression` | task | 独立编译变更的 Python 文件，使用临时 pycache，不代替业务验证 |
 | `verify_issue` | task | 验证原始问题是否修复 |
 | `run_regression` | task | 执行配置的准生产回归 |
 | `request_approval` | task | 保存人工决策 |
@@ -108,6 +114,10 @@ app/
 | `finalize_execution` | task | 汇总该任务的步骤记录、状态和产物 |
 
 Locate、Repair、Review Agent 仍分别是独立 Agent 子图，不与确定性步骤合并。
+
+请求重放在两个独立文件副本中运行修复前、修复后的代码，并按单号核对全部返回结果。有录制响应时使用同一响应比较；没有录制响应时允许实时请求，但两次上游响应未固定，业务结论标为 `unverified`，需要人工确认。
+
+两侧均出现明确的代理连接或认证失败证据时，报告标记 `environment / unverified`，说明本地代理受限。普通 `WebError`、`TimeoutError` 不直接归为环境问题；在录制响应模式下，基线成功而修复后失败会阻止验证通过。重放源目录不可用时停止重放并标为未验证，不回写 AI 工作区。
 
 单步入口：`python -m app.workflow.steps.<step> --run-id <real-run-id> [--task-id <task-id>]`。只读取真实记录和 artifact；不存在样例输入或替代数据路径。
 
@@ -173,7 +183,7 @@ Agent 子图的 `State` 使用 TypedDict：**新增字段必须显式声明**，
 
 ## 前端
 
-`frontend/` 包含基于 React、TypeScript、Vite、Ant Design、TanStack Query、React Flow 和 ECharts 的工作台 UI。运行态、审批项、步骤、模型调用、审计记录与产物内容均通过受控后端 API 获取。
+`frontend/` 包含基于 React、TypeScript、Vite、Ant Design、TanStack Query、项目内拓扑和热力图组件 的工作台 UI。运行态、审批项、步骤、模型调用、审计记录与产物内容均通过受控后端 API 获取。
 
 信息架构：
 
@@ -200,6 +210,8 @@ API 约定：所有控制面请求通过 `src/lib/api.ts` 发出，路径以 `/a
 后端（仓库根目录）：
 
 ```powershell
+Copy-Item .env.example .env
+# 编辑 .env，填写日志源、源仓库、模型网关等配置
 python -m pip install -r requirements.txt
 python server.py
 ```
@@ -208,22 +220,21 @@ python server.py
 
 ```powershell
 cd frontend
-npm install
-cp .env.example .env.local
+npm ci
+Copy-Item .env.example .env.local
 npm run dev
 ```
 
-访问 Vite 输出的地址，默认 `http://127.0.0.1:5173`。开发代理默认指向 `http://127.0.0.1:8000`，可通过 `WORKBENCH_API_ORIGIN` 覆盖。`VITE_WORKBENCH_DEMO_MODE` 仅供本地演示，真实部署必须保持关闭。API 文档：`http://127.0.0.1:8000/docs`。
+访问 Vite 输出的地址，默认 `http://127.0.0.1:5173`。开发代理默认指向 `http://127.0.0.1:8000`，可通过 `WORKBENCH_API_ORIGIN` 覆盖。Vite 会加载 `frontend/.env.local` 中的代理配置，已有进程环境变量优先。API 文档：`http://127.0.0.1:8000/docs`。
 
 生产构建：
 
 ```powershell
 cd frontend
-npm run typecheck
 npm run build
 ```
 
-前端验证工作流会在推送和 PR 时执行类型检查与生产构建。远程构建不能替代真实后端环境下的端到端验证；部署前仍需验证审批状态切换、刷新与断线恢复、产物授权和运行控制。
+`npm run build` 包含 TypeScript 类型检查；只检查类型可运行 `npm run typecheck`。仓库当前没有 CI 工作流，部署前仍需验证审批状态切换、刷新与断线恢复、产物授权和运行控制。
 
 ## 真实数据单步调试
 
@@ -274,16 +285,46 @@ docker compose logs -f api frontend
 
 前端默认监听 `http://localhost:8080`。API 不直接映射宿主机端口；远程部署必须在 HTTPS 反向代理后访问。容器需要 Git 远程访问权限，必须确认 Git 身份、分支策略和凭据可用。默认不自动推送，禁止自动合并。不要将 `.env`、密钥或运行数据打入镜像。
 
+## 开发验证
+
+开发依赖包含运行依赖和 pytest、Ruff、Mypy；生产镜像只安装 `requirements.txt`。
+
+```powershell
+python -m pip install -r requirements-dev.txt
+python -m pytest -q
+cd frontend
+npm ci
+npm run build
+```
+
+现有浏览器冒烟脚本为 `tests/frontend_smoke.cjs`，使用拦截的 API 数据，不会发起真实修复。
+脚本需在 Node.js 可解析 `playwright` 的环境下运行，也可用 `PLAYWRIGHT_MODULE` 指定模块路径。
+先构建前端，再从仓库根目录以静态模式执行：
+
+```powershell
+$env:WORKBENCH_STATIC_UI = "1"
+node tests/frontend_smoke.cjs
+Remove-Item Env:WORKBENCH_STATIC_UI
+```
+
 ## 延伸文档
 
-- [工作台运行手册](docs/WORKBENCH_OPERATIONS.md)：部署、权限、验收门槛。
-- [工作流逻辑审计](docs/WORKFLOW_AUDIT.md)：分支、终态与隔离不变量。
-- [模型与配置字段参考](docs/MODEL_AND_CONFIG_REFERENCE.md)：Agent 模型、预算与配置字段。
-- [运行产物与持久化说明](docs/RUNTIME_ARTIFACTS.md)：JSON、JSONL、SQLite 的审计、恢复与备份策略。
-- `docs/enterprise-workbench-upgrade.md`、`docs/reliability-hardening.md`：历史设计与可靠性改造记录。
-# 日志查询范围
+以下为历史审计与修复记录；当前架构以实际入口、`app/workflow/definitions.py`、插件契约及本 README 为准。
 
-工作台按“最近 N 小时”的滚动时间窗口查询日志，默认最近 24 小时，
-使用 `log_hours` / `LOG_PULL_HOURS` 配置。新建执行默认 `log_limit=0`，表示窗口内全量拉取，
-没有 1,000 / 10,000 条的隐藏截断，也没有扫描总时长截断；单次 ES 请求仍保留网络超时。
+- [工作流生命周期修复](docs/workflow-lifecycle-fixes.md)
+- [运行审计记录](docs/latest-run-audit-2026-10-21.md)
+- [运行修复记录](docs/latest-run-repair-2026-10-21.md)
+- [人工报告审计](docs/manual-report-audit-2026-10-21.md)
+
+## 日志查询范围
+
+工作台按“最近 N 小时”的滚动时间窗口查询日志，默认值由 `config/settings.py` 的
+`default_log_hours` 统一定义，`LOG_PULL_HOURS` 或新建执行的 `log_hours` 可覆盖。
+新建执行弹窗从 `/api/v1/run-config` 获取有效默认值与上限，API、CLI 和前端统一遵循
+“显式运行参数 → 环境配置（进程变量优先于 `.env`）→ settings 默认值”。
+审查模式、最大尝试次数、日志条数上限也遵循同一规则；重试和单步恢复优先保留原运行参数，包含 `log_limit=0`。
+按日 ES 索引覆盖范围由查询小时数自动计算（`ceil(hours / 24) + 1`），索引日期使用日志时区；不再单独配置索引天数或索引时区。
+旧部署的 `LOG_PULL_DAYS` 仅作为未设置小时数时的兼容回退，新配置统一使用小时数。
+新建执行默认 `log_limit=0`，表示窗口内全量拉取，没有 1,000 / 10,000 条的隐藏截断，
+也没有扫描总时长截断；单次 ES 请求仍保留网络超时。
 前端不再显示日志条数限制输入，读取阶段会展示已扫描、可解析和独立问题计数。

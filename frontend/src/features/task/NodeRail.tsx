@@ -248,7 +248,7 @@ export function NodeRail({
                       {business ? (
                         <StatusBadge kind="task" value={business} compact />
                       ) : (
-                        <StatusBadge kind="step" value={display} compact />
+                        <StatusBadge kind="step" value={display} stepName={stage.key} compact />
                       )}
                     </span>
                     <span className="node-meta">

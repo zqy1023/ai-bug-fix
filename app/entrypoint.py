@@ -23,6 +23,11 @@ logger = logging.getLogger(__name__)
 
 def _uncaught_reason(error: BaseException) -> str:
     """未进入步骤记录的异常只留类型，不把命令原文或密钥写进报告。"""
+    from app.infrastructure.git.source import SourceRepoError
+    from app.infrastructure.redaction import public_exception
+
+    if isinstance(error, SourceRepoError):
+        return public_exception(error, prefix="源仓库同步失败")
     name = type(error).__name__ or "Exception"
     return f"工作流未捕获异常（错误类型：{name}）。完整堆栈只在服务端日志。"
 
@@ -37,17 +42,16 @@ def prepare_run(
     """同步创建可查询的 Run 元数据；供 API 接受请求前与后台执行共用。"""
     config = load_config()
     options = dict(overrides or {})
+    parameters = config.run_parameters(options)
     config = replace(
         config,
-        log_hours=int(options.get("log_hours", config.log_hours)),
-        limit=int(options.get("log_limit", config.limit)),
-        review_mode=str(options.get("review_mode", config.review_mode)),
-        max_attempts=int(options.get("max_attempts", config.max_attempts)),
+        log_hours=parameters["log_hours"],
+        limit=parameters["log_limit"],
+        review_mode=parameters["review_mode"],
+        max_attempts=parameters["max_attempts"],
     )
-    if not 1 <= config.log_hours <= settings.workbench_max_log_hours or not 1 <= config.max_attempts <= 5 or config.limit < 0:
-        raise ValueError("执行参"
-                         ""
-                         "数超出允许范围")
+    if not 1 <= config.log_hours <= settings.workbench_max_log_hours or not 1 <= config.max_attempts <= settings.workbench_max_attempts or config.limit < 0:
+        raise ValueError("执行参数超出允许范围")
     if config.review_mode not in ("agent", "human"):
         raise ValueError("review_mode 只能是 agent 或 human")
     if config.source_repo is None:
@@ -161,6 +165,12 @@ def _write_run_report_if_terminal(
     final_state: dict[str, Any] | None = None,
 ) -> None:
     """只有图确实进入终态时才写 Run final.json；暂停和等待审批不是终态。"""
+    # Independent task interrupts no longer appear in the parent snapshot.
+    payload = _read_json(store.steps_path(run_id))
+    for slot in payload.get("tasks", []):
+        approval = slot.get("request_approval", {})
+        if approval.get("status") == "waiting":
+            return
     try:
         snapshot = graph.get_state({"configurable": {"thread_id": run_id}})
         interrupted = any(

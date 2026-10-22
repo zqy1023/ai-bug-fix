@@ -112,16 +112,19 @@ def consume(
 def write_groups(
     records: Iterator[dict[str, Any]], ignore_errors: tuple[str, ...],
     progress: Callable[[dict[str, int]], None] | None = None,
+    state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """消费规范化记录并返回代表问题。去重结果的落盘由 normalize_error 负责。"""
-    grouped: dict[str, dict[str, Any]] = {}
-    input_count = 0
-    ignored_count = 0
+    checkpoint = state if state is not None else {}
+    grouped: dict[str, dict[str, Any]] = checkpoint.setdefault("groups", {})
+    input_count = int(checkpoint.get("input_count") or 0)
+    ignored_count = int(checkpoint.get("ignored_count") or 0)
     for position, value in enumerate(records):
         input_count += 1
         outcome = consume(grouped, _record(value, position), ignore_errors)
         if outcome == "ignored":
             ignored_count += 1
+        checkpoint.update(input_count=input_count, ignored_count=ignored_count)
         if progress and input_count % 100 == 0:
             progress({"normalized_count": input_count, "ignored_count": ignored_count,
                       "unique_count": len(grouped), "duplicate_count": input_count - ignored_count - len(grouped)})

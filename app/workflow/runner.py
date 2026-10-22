@@ -37,7 +37,7 @@ from app.application.context import RunContext, StepContext, TaskContext
 from app.workflow.spec import StepSpec
 from app.domain.approval import APPROVAL_RETRY_TARGETS
 from app.domain.errors import StepFailed
-from app.workflow.routes import CLAIM, DELIVER, FINALIZE, PREPARE_CONTEXT, REGRESSION, VALIDATE
+from app.workflow.routes import CLAIM, DELIVER, PREPARE_CONTEXT, REGRESSION, VALIDATE
 from langgraph.errors import GraphInterrupt
 from langgraph.types import interrupt
 from pydantic import ValidationError
@@ -73,7 +73,7 @@ def run_stage(
     artifacts: list[ArtifactRef] = []
     try:
         # 暂停包括 FINALIZE 在内的节点边界；取消则必须放行 FINALIZE 生成终态报告。
-        if pause_requested(store.root, run_id):
+        if pause_requested(store.root, run_id) and not state.get("_single_step"):
             interrupt({"control": "pause", "run_id": run_id, "step": spec.name})
         if spec.name != "finalize_execution" and cancellation_requested(store.root, run_id):
             raise StepFailed(

@@ -39,7 +39,7 @@ def _call(
     调用统计与审计属于元数据，不混进业务结果：业务结果要按契约当模型输出用，
     元数据只走状态通道。运输商目录由系统定位，不交给模型搜索。
     """
-    from app.agents.policy import rules_text, shared_read_paths
+    from app.agents.policy import rules_text
     from app.infrastructure.filesystem.workspace import WorkspaceError, WorkspaceManager
 
     workspace = str(state["ai_workspace_path"])
@@ -76,8 +76,9 @@ def _call(
     if not shared_root.is_dir():
         shared_root = None
     # 写入范围绑定到已经验证的新框架 carrier 目录；框架和公共库只读。
-    from app.agents.policy import carrier_read_paths, carrier_write_paths
+    from app.agents.policy import carrier_read_paths, carrier_write_paths, retry_read_paths
     readable = [str(path) for path in carrier_read_paths(Path(workspace), carrier_root, shared_root, carrier)]
+    readable.extend(str(path) for path in retry_read_paths(Path(workspace), str(state["run_id"]), task))
     read_roots = tuple(dict.fromkeys(readable))
     baseline_manifest = dict(state.get("baseline_manifest") or {})
     baseline_dir = str(state.get("baseline_dir") or "")

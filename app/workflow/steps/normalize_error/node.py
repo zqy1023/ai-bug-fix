@@ -6,10 +6,12 @@ import json
 import time
 from collections.abc import Callable, Iterator
 from typing import Any
+from langgraph.errors import GraphInterrupt
+from langgraph.types import interrupt
 
 from app.application.context import StepContext
 from app.domain.errors import StepFailed
-from app.infrastructure.run_control import cancellation_requested
+from app.infrastructure.run_control import cancellation_requested, pause_requested
 from app.workflow.steps.deduplicate_error.node import _ignore_rules, write_groups
 from app.workflow.steps.discover_logs.models import DiscoverInput
 from app.workflow.steps.discover_logs.node import iter_raw
@@ -37,14 +39,23 @@ def iter_normalized(
     query: DiscoverInput,
     stats: dict[str, int],
     progress: Callable[[dict[str, int]], None] | None = None,
+    scan_state: dict[str, Any] | None = None,
+    start_index: int = 0,
 ) -> Iterator[dict[str, Any]]:
     """按发现步骤记录的查询条件逐条拉取并规范化，不把全量记录收进列表。"""
     if data.run_id != ctx.run.run_id:
         raise StepFailed("NormalizeErrorInput.run_id 与执行上下文不一致")
+    def control() -> bool:
+        if cancellation_requested(ctx.store.root, ctx.run.run_id):
+            return True
+        if pause_requested(ctx.store.root, ctx.run.run_id):
+            interrupt({"control": "pause", "run_id": ctx.run.run_id, "step": "normalize_error"})
+        return False
+
     for index, record in enumerate(iter_raw(
         ctx, query, stats, progress=progress,
-        cancel_requested=lambda: cancellation_requested(ctx.store.root, ctx.run.run_id),
-    )):
+        cancel_requested=control, scan_state=scan_state,
+    ), start=start_index):
         yield _normalize(record, index)
 
 
@@ -97,6 +108,13 @@ def run(ctx: StepContext, data: NormalizeErrorInput) -> NormalizeErrorOutput:
     """逐条规范化后直接去重。代表问题落 run 级产物，计数落在步骤记录里。"""
     funnel: dict[str, int] = {}
     query = _query(ctx)
+    checkpoint_path = "artifacts/log_scan_checkpoint.json"
+    path = ctx.store.run_dir(ctx.run.run_id) / checkpoint_path
+    saved = ctx.store.read_artifact(ctx.run.run_id, checkpoint_path) if path.is_file() else {}
+    if saved and saved.get("query") != query.model_dump():
+        raise StepFailed("暂停前后的 ES 查询参数不一致，拒绝混合两次扫描结果")
+    scan_state = saved.get("scan") or {}
+    group_state = saved.get("grouping") or {}
     last_report = 0.0
     observed: dict[str, int] = {}
 
@@ -109,7 +127,18 @@ def run(ctx: StepContext, data: NormalizeErrorInput) -> NormalizeErrorOutput:
         last_report = now
         ctx.store.report_progress(ctx.run.run_id, "normalize_error", "正在读取并规范化 ES 日志", dict(observed))
 
-    groups = write_groups(iter_normalized(ctx, data, query, funnel, report), _ignore_rules(ctx), report)
+    try:
+        groups = write_groups(
+            iter_normalized(ctx, data, query, funnel, report, scan_state,
+                            start_index=int(group_state.get("input_count") or 0)),
+            _ignore_rules(ctx), report, state=group_state,
+        )
+    except GraphInterrupt:
+        ctx.store.write_artifact(ctx.run.run_id, checkpoint_path, {
+            "query": query.model_dump(), "scan": scan_state, "grouping": group_state,
+        })
+        ctx.store.report_progress(ctx.run.run_id, "normalize_error", "日志扫描已暂停，已保存本轮扫描进度", dict(observed))
+        raise
     counts = {
         "record_count": groups["input_count"],
         "ignored_count": groups["ignored_count"],
@@ -122,6 +151,7 @@ def run(ctx: StepContext, data: NormalizeErrorInput) -> NormalizeErrorOutput:
         "artifacts/normalized_records.json",
         {"records": groups["records"], **counts},
     )
+    path.unlink(missing_ok=True)
     observed.update(funnel)
     observed.update({"normalized_count": groups["input_count"], "unique_count": counts["unique_count"]})
     ctx.store.report_progress(

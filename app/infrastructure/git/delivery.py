@@ -24,6 +24,7 @@ from typing import Any, Protocol
 
 from app.infrastructure.filesystem.workspace import WorkspaceError, WorkspaceManager
 from app.infrastructure.redaction import mask_secrets, redact_output
+from app.infrastructure.git.task_summary import render_task_summary
 from app.domain.errors import DeliveryError
 from git import Repo
 from config.settings import settings
@@ -46,6 +47,30 @@ _LONG_NUMBER = re.compile(r"\d{8,}")
 _MAX_COMMENT_CHARS = settings.max_commit_comment_chars
 _MAX_AUDIT_BYTES = settings.git_audit_max_bytes
 _logger = logging.getLogger(__name__)
+
+
+def _is_delivery_attachment(relative: str) -> bool:
+    """Exclude verification scripts and audit bundles from business commits."""
+    path = Path(relative.replace("\\", "/"))
+    return (
+        any(part.casefold() in {"tests", "repair_records", "__pycache__"} for part in path.parts)
+        or path.name.startswith("test_")
+        or path.name.endswith("_test.py")
+        or path.name in {"verify_repair.py", "conftest.py", "final.json", "task_summary.md"}
+    )
+
+
+def _redact_report(value: Any) -> Any:
+    """Redact values before serialization so JSON syntax remains intact."""
+    if isinstance(value, dict):
+        return {
+            key: "***" if re.search(r"(?i)(?:^|[_-])(?:token|password|secret|authorization|cookie|api[_-]?key)(?:$|[_-])", str(key))
+            else _redact_report(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_report(item) for item in value]
+    return redact_output(value) if isinstance(value, str) else value
 
 
 def _force_remove(path: Path) -> None:
@@ -186,6 +211,13 @@ class GitBranchDelivery:
 
     def deliver(self, state: Mapping[str, Any]) -> dict[str, Any]:
         """把 AI 工作区修改复制到独立修复分支工作区并提交推送。"""
+        state = dict(state)
+        state["changed_files"] = [
+            str(path) for path in state.get("changed_files") or []
+            if not _is_delivery_attachment(str(path))
+        ]
+        if not state.get("analysis_only") and not state["changed_files"]:
+            raise DeliveryError("没有可交付的业务修复文件；测试脚本和审计附件不提交")
         ai_workspace = state.get("ai_workspace_path")
         branch = state.get("repair_branch")
         source_repo = state.get("source_repo_path") or self._config.source_repo
@@ -258,11 +290,18 @@ class GitBranchDelivery:
                 delivery_project,
                 state.get("report_paths", []),
                 carrier=str(state.get("carrier") or ""),
+                repair_branch=str(branch),
             )
-            audit_files = self._copy_audit_records(source_root, delivery_project, state)
-            from app.infrastructure.git.repair_bundle import write_repair_bundle
-            audit_files.extend(write_repair_bundle(delivery_project, state))
-            paths_to_add = sorted({*changed_files, *report_files, *audit_files})
+            repair_report = state.get("repair_report")
+            if isinstance(repair_report, dict) and repair_report and changed_files:
+                relative = Path(*Path(changed_files[0]).parts[:2]) / "task_summary.md"
+                target = (delivery_project / relative).resolve()
+                if not target.is_relative_to(delivery_project.resolve()):
+                    raise DeliveryError("修复文档路径越出交付工作区")
+                report = {**repair_report, "changed_files": changed_files, "repair_branch": str(branch)}
+                target.write_text(render_task_summary(_redact_report(report)), encoding="utf-8")
+                report_files.append(relative.as_posix())
+            paths_to_add = sorted({*changed_files, *report_files})
             if not paths_to_add:
                 raise DeliveryError("没有可提交的修复文件或报告")
 
@@ -296,7 +335,11 @@ class GitBranchDelivery:
 
             # 先把提交对象锚定到源仓库的专用引用，再持久化操作收据。
             # 即使远端推送成功后断网或进程崩溃，下一次也只确认/重推同一提交。
-            anchor = "refs/ai-bug-fixer/" + hashlib.sha256(str(branch).encode()).hexdigest()
+            identity = json.dumps(
+                [str(state.get("run_id") or ""), str(state.get("task_id") or ""), str(branch)],
+                ensure_ascii=True,
+            )
+            anchor = "refs/ai-bug-fixer/" + hashlib.sha256(identity.encode()).hexdigest()
             delivery_repo.git.push(str(git_root), f"HEAD:{anchor}")
             prepared = {
                 "repair_branch": str(branch), "commit": commit.hexsha,
@@ -393,7 +436,11 @@ class GitBranchDelivery:
     def _fingerprint(source_root: Path, state: Mapping[str, Any]) -> str:
         """绑定交付收据与实际源码/报告，禁止变更后直接复用旧提交。"""
         paths = sorted({str(item) for item in [*(state.get("changed_files") or []), *(state.get("report_paths") or [])]})
-        hashes: dict[str, str] = {}
+        hashes: dict[str, str] = {"delivery_format": "business-and-task-summary-md-v1"}
+        if state.get("repair_report"):
+            hashes["repair_report"] = hashlib.sha256(
+                json.dumps(state["repair_report"], sort_keys=True, ensure_ascii=True).encode()
+            ).hexdigest()
         for relative in paths:
             path = (source_root / relative).resolve()
             if not path.is_relative_to(source_root):
@@ -682,8 +729,9 @@ class GitBranchDelivery:
         raw_paths: Any,
         *,
         carrier: str,
+        repair_branch: str = "",
     ) -> list[str]:
-        """仅复制目标 carrier 目录中的 final.json 或 Markdown 审计报告。"""
+        """Convert internal final.json to Markdown; never commit the raw report."""
         if not isinstance(raw_paths, list):
             return []
         copied: list[str] = []
@@ -720,7 +768,14 @@ class GitBranchDelivery:
                 continue
             destination = destination_root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
-            if source != destination:
+            if valid_final_json:
+                relative = relative.with_name("task_summary.md")
+                destination = destination_root / relative
+                report = json.loads(source.read_text(encoding="utf-8"))
+                if repair_branch:
+                    report["repair_branch"] = repair_branch
+                destination.write_text(render_task_summary(_redact_report(report)), encoding="utf-8")
+            elif source != destination:
                 shutil.copyfile(source, destination)
                 os.utime(destination, None)
             copied.append(relative.as_posix())

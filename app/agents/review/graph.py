@@ -272,6 +272,8 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
     )
     from app.agents.policy import carrier_write_paths
     roots = tuple(str(path) for path in dict.fromkeys([carrier_root.resolve(), *carrier_write_paths(Path(workspace), carrier)]))
+    from app.agents.policy import retry_read_paths
+    roots = (*roots, *(str(path) for path in retry_read_paths(Path(workspace), str(state["run_id"]), str(state["task_id"]))))
     request_context = prompt_context(
         "review",
         state,

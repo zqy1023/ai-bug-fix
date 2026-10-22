@@ -48,14 +48,17 @@ const STEP: Record<string, BadgeSpec> = {
   pending: { label: '待执行', tone: 'neutral', icon: <ClockCircleOutlined /> },
   not_run: { label: '未执行', tone: 'neutral', icon: <MinusCircleOutlined /> },
   running: { label: '运行中', tone: 'running', icon: <LoadingOutlined /> },
-  waiting: { label: '等待审批', tone: 'waiting', icon: <SafetyCertificateOutlined /> },
+  waiting: { label: '已暂停', tone: 'neutral', icon: <PauseCircleOutlined /> },
+  waiting_approval: { label: '等待审批', tone: 'waiting', icon: <SafetyCertificateOutlined /> },
   succeeded: { label: '成功', tone: 'success', icon: <CheckCircleFilled /> },
   failed: { label: '失败', tone: 'danger', icon: <CloseCircleFilled /> },
   skipped: { label: '跳过', tone: 'neutral', icon: <MinusCircleOutlined /> },
 };
 
-function lookup(kind: BadgeKind, value?: string | null): BadgeSpec {
-  const key = String(value ?? '').trim();
+function lookup(kind: BadgeKind, value?: string | null, stepName?: string): BadgeSpec {
+  const raw = String(value ?? '').trim();
+  const key = kind === 'step' && raw === 'waiting' && stepName === 'request_approval'
+    ? 'waiting_approval' : raw;
   const source = kind === 'run' ? RUN : kind === 'task' ? TASK : STEP;
   return source[key] ?? source[key.toUpperCase()] ?? { label: key || '未开始', tone: 'pending', icon: <ClockCircleOutlined /> };
 }
@@ -65,9 +68,9 @@ export function toneOf(kind: BadgeKind, value?: string | null): Tone {
 }
 
 export function StatusBadge({
-  kind, value, compact = false,
-}: { kind: BadgeKind; value?: string | null; compact?: boolean }) {
-  const spec = lookup(kind, value);
+  kind, value, stepName, compact = false,
+}: { kind: BadgeKind; value?: string | null; stepName?: string; compact?: boolean }) {
+  const spec = lookup(kind, value, stepName);
   return (
     <span className={`status-badge tone-${spec.tone}${compact ? ' is-compact' : ''}`} title={spec.label}>
       <span className="status-badge-icon">{spec.icon}</span>

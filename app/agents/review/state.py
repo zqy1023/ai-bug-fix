@@ -28,6 +28,7 @@ class ReviewState(TypedDict, total=False):
     ai_workspace_path: str
     # attempt：该模型字段用于承载对应契约中的结构化数据。
     attempt: int
+    retry_context: dict[str, Any]
     # repair：该模型字段用于承载对应契约中的结构化数据。
     repair: dict[str, Any]
     # 修复 agent 实际声明的相对路径（工作区相对路径，不是步骤说明）。

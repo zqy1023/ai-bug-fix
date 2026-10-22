@@ -7,5 +7,4 @@ langgraph-checkpoint-sqlite>=2,<4
 fastapi>=0.115,<1
 uvicorn[standard]>=0.30,<1
 httpx>=0.27,<1
-pytest>=8,<9
 yq_common @ http://n.17track.net:8081/repository/pypi-hosted/packages/yq-common/0.0.77/yq_common-0.0.77-py3-none-any.whl

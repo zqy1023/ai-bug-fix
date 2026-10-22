@@ -17,16 +17,18 @@ export function StepActionBar({
   const [open, setOpen] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [failure, setFailure] = useState('');
-  const risky = WRITE_STEPS.has(stepName);
+  const [continueAfter, setContinueAfter] = useState(true);
+  const risky = WRITE_STEPS.has(stepName) || continueAfter;
   const blockedByStep = stepName === 'request_approval' || stepName === 'retry_prepare';
 
   const mutation = useMutation({
-    mutationFn: () => api.runStep(runId, taskId, stepName, risky ? confirmed : false),
+    mutationFn: () => api.runStep(runId, taskId, stepName, risky ? confirmed : false, continueAfter),
     onSuccess: async () => {
-      message.success(`${stepName} 已开始执行，步骤状态将实时更新`);
+      message.success(`${stepName} 已开始执行${continueAfter ? '，完成后将继续后续流程' : ''}`);
       setOpen(false);
       setConfirmed(false);
       await queryClient.invalidateQueries({ queryKey: queryKeys.task(runId, taskId) });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.run(runId) });
       await queryClient.invalidateQueries({ queryKey: queryKeys.step(runId, taskId, stepName) });
       await queryClient.invalidateQueries({ queryKey: queryKeys.board(runId) });
       await queryClient.invalidateQueries({ queryKey: queryKeys.modelCalls(runId, taskId) });
@@ -51,8 +53,8 @@ export function StepActionBar({
   return (
     <div className="step-action-bar">
       <div className="step-action-copy">
-        <strong>{stepStatus === 'failed' ? '失败节点重试' : '单步执行'}</strong>
-        <span>基于本次 Run 的已落盘记录重建输入，前置步骤必须成功；只重跑当前节点，不会重跑整轮。</span>
+        <strong>{continueAfter ? '从此节点继续执行' : stepStatus === 'failed' ? '失败节点重试' : '仅执行当前节点'}</strong>
+        <span>重跑所选节点，默认接续后续流程；不会从头重跑已完成节点，人工审批仍需单独处理。</span>
         {runActive && <span className="action-warning">执行仍在活跃状态，后端会拒绝单步写入。</span>}
         {failure && <span className="action-failure">{failure}</span>}
       </div>
@@ -72,6 +74,7 @@ export function StepActionBar({
         onOk={() => mutation.mutate()}
       >
         <p>将基于已落盘记录重建输入并执行该步骤。执行结果会覆盖当前步骤记录并写入控制审计。</p>
+        <Checkbox checked={continueAfter} onChange={(event) => setContinueAfter(event.target.checked)}>完成后继续后续流程（直到审批、暂停或任务结束）</Checkbox>
         {risky && (
           <div className="confirm-block">
             <Checkbox checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)}>

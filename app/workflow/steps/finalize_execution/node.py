@@ -23,8 +23,8 @@ _SELF = "finalize_execution"
 _FAILED_RESULTS = frozenset({"FAIL", "FAILED", "MANUAL", "REJECTED", "INSUFFICIENT_EVIDENCE"})
 
 
-def run(ctx: StepContext, data: FinalizeInput) -> FinalizeOutput:
-    """写入可直接用于处置的终态报告；原始步骤记录仍以 steps.json 为准。"""
+def build_report(ctx: StepContext, data: FinalizeInput) -> dict[str, Any]:
+    """Build the report from recorded evidence without finalizing the task."""
     records = [record for record in ctx.store.list_steps(ctx.run.run_id, data.task_id) if record.name != _SELF]
     terminal_status = "CANCELLED" if cancellation_requested(ctx.store.root, ctx.run.run_id) else data.terminal_status
     result = _delivery_status(records, terminal_status)
@@ -37,8 +37,8 @@ def run(ctx: StepContext, data: FinalizeInput) -> FinalizeOutput:
         blocked_reason=data.blocked_reason,
     )
     finished_at = datetime.now(timezone.utc).isoformat()
-    locate = _output(records, "locate_agent")
-    repair = _output(records, "repair_agent")
+    locate = full_output(ctx.store, ctx.run.run_id, data.task_id, records, "locate_agent")
+    repair = full_output(ctx.store, ctx.run.run_id, data.task_id, records, "repair_agent")
     report = {
         "report_version": 2, "report_kind": "task_final",
         "task_id": data.task_id, "carrier": data.carrier, "biztype": data.biztype,
@@ -60,7 +60,21 @@ def run(ctx: StepContext, data: FinalizeInput) -> FinalizeOutput:
         "validation": {record.name: record.output for record in records if record.name in {"verify_issue", "syntax_regression", "run_regression"}},
         "change_summary": str(repair.get("summary") or repair.get("analysis") or ""),
         "completed_steps": [record.name for record in records if record.status in {"succeeded", "skipped"}],
+        "delivery": _output(records, "prepare_delivery"),
+        "repair_branch": str(_output(records, "prepare_delivery").get("repair_branch")
+                             or _output(records, "repair_branch_preflight").get("repair_branch") or ""),
     }
+    return report
+
+
+def run(ctx: StepContext, data: FinalizeInput) -> FinalizeOutput:
+    """写入可直接用于处置的终态报告；原始步骤记录仍以 steps.json 为准。"""
+    report = build_report(ctx, data)
+    result = report["result"]
+    terminal_step, terminal_reason, next_action = (
+        report["terminal_step"], report["terminal_reason"], report["next_action"]
+    )
+    finished_at = report["finished_at"]
     path = ctx.store.write_artifact(ctx.run.run_id, FINAL_REPORT, report, data.task_id)
     if data.ai_workspace_path and data.report_destination:
         workspace = Path(data.ai_workspace_path).resolve()
@@ -152,6 +166,26 @@ def _terminal_details(
 
     manual_names = ("locate_agent", "review_agent", "prepare_evidence", "repair_agent", "prepare_source_snapshot")
     if outcome == "MANUAL" or status == "MANUAL":
+        # Modification scope is a decisive refusal even when the diagnostic also
+        # lists uncertainty. Do not ask for more evidence to resolve a permission boundary.
+        for record in reversed(ordered):
+            if record.name not in {"locate_agent", "repair_agent"}:
+                continue
+            output = record.output if isinstance(record.output, dict) else {}
+            plan = output.get("change_plan") or {}
+            if not (output.get("category") == "shared" or output.get("recommended_scope") == "project"
+                    or (isinstance(plan, dict) and plan.get("scope") == "project")):
+                continue
+            targets = list(output.get("proposed_edit_files") or [])
+            if not targets and isinstance(plan, dict):
+                targets = [item.get("path") for item in plan.get("edits", []) if isinstance(item, dict) and item.get("path")]
+            detail = f"（{'、'.join(str(path) for path in targets[:8])}）" if targets else ""
+            return (
+                record.name,
+                f"修复范围超出本任务权限：需要修改当前运输商目录之外的文件{detail}。"
+                "本任务只能修改当前运输商，不能自动修改共享层或其他运输商目录，已转人工处理。",
+                "为涉及的共享层或对应运输商单独发起修复任务；当前任务不继续自动修改范围外文件。",
+            )
         for name in manual_names:
             record = next((item for item in reversed(ordered) if item.name == name), None)
             if record is None:
@@ -164,6 +198,8 @@ def _terminal_details(
                 if not reason and isinstance(gaps, list) and gaps:
                     reason = "证据缺口：" + "；".join(str(item) for item in gaps[:8])
                 reason = reason or f"{record.title or name} 要求人工处理，但没有写出具体原因。"
+                if "输出格式不完整" in reason or "输出契约" in reason:
+                    return (name, reason, "修正定位 Agent 输出格式或重新执行定位节点并继续流程；不要将格式错误当作业务证据不足。")
                 return (name, reason,
                         "补充缺失证据并由人工确认处理范围；证据充分前不要自动修改代码。")
         # 没有步骤明确给出人工结论时，用最后一步已经落盘的原因。
@@ -228,6 +264,43 @@ def _output(records: list[StepRecord], name: str) -> dict[str, Any]:
     return record.output if record is not None and isinstance(record.output, dict) else {}
 
 
+def full_output(store: Any, run_id: str, task_id: str, records: list[StepRecord], name: str) -> dict[str, Any]:
+    """Read full validated output, retaining normalized conclusions for old records."""
+    output = dict(_output(records, name))
+    path = f"agents/{name}.validated.json"
+    if (store.task_dir(run_id, task_id) / path).is_file():
+        return store.read_artifact(run_id, path, task_id)
+    raw_path = f"agents/{name}.json"
+    if (store.task_dir(run_id, task_id) / raw_path).is_file():
+        try:
+            raw = store.read_artifact(run_id, raw_path, task_id).get("result", "")
+            payload = json.loads(raw.strip().removeprefix("```json").removesuffix("```").strip())
+            for key, value in output.items():
+                if "已截断" in str(value) and key in payload:
+                    output[key] = payload[key]
+        except (ValueError, TypeError, AttributeError):
+            pass
+    return output
+
+
+def refresh_completed_report(store: Any, run_id: str, task_id: str) -> None:
+    """Finalize local reporting only after delivery/task execution really ends."""
+    from types import SimpleNamespace
+    path = store.task_dir(run_id, task_id) / FINAL_REPORT
+    if not path.is_file():
+        return
+    previous = store.read_artifact(run_id, FINAL_REPORT, task_id)
+    context = SimpleNamespace(store=store, run=SimpleNamespace(run_id=run_id))
+    report = build_report(context, FinalizeInput(
+        task_id=task_id, carrier=str(previous.get("carrier") or ""), biztype=str(previous.get("biztype") or ""),
+        terminal_status=str(previous.get("result") or ""), report_destination="",
+    ))
+    records = store.list_steps(run_id, task_id)
+    report["elapsed_ms"] = round(sum(record.duration_ms for record in records), 2)
+    report["completed_steps"] = [record.name for record in records if record.status in {"succeeded", "skipped"}]
+    store.write_artifact(run_id, FINAL_REPORT, report, task_id)
+
+
 
 def _problem(ctx: StepContext, task_id: str) -> str:
     tasks = ctx.store.load(ctx.run.run_id, "identify_carrier")
@@ -241,7 +314,7 @@ def _problem(ctx: StepContext, task_id: str) -> str:
     return str(problem.get("error") or "")
 
 
-def _tokens(ctx: StepContext, task_id: str) -> int:
+def _tokens(ctx: StepContext, task_id: str) -> int | None:
     path = ctx.store.task_dir(ctx.run.run_id, task_id) / "metrics" / "agent.jsonl"
     if not path.is_file():
         return 0
@@ -250,7 +323,7 @@ def _tokens(ctx: StepContext, task_id: str) -> int:
         handle = path.open("r", encoding="utf-8", errors="replace")
     except OSError:
         logger.warning("读取 token 指标失败 path=%s", path, exc_info=True)
-        return 0
+        return None
     with handle:
         for line in handle:
             if not line.strip():
@@ -260,10 +333,12 @@ def _tokens(ctx: StepContext, task_id: str) -> int:
             except json.JSONDecodeError:
                 continue
             if isinstance(item, dict):
+                if item.get("total_tokens") is None:
+                    return None
                 try:
-                    total += max(0, int(item.get("total_tokens") or 0))
+                    total += max(0, int(item["total_tokens"]))
                 except (TypeError, ValueError):
-                    continue
+                    return None
     return total
 
 
@@ -285,6 +360,9 @@ def _delivery_status(records: list[StepRecord], terminal_status: str) -> str:
     if (
         str(terminal_status or "").upper() == "MANUAL"
         or bool(results & {"MANUAL", "INSUFFICIENT_EVIDENCE"})
+        or any(record.name == "locate_agent" and record.output.get("status") == "LOCATED"
+               and (record.output.get("category") != "carrier" or record.output.get("recommended_scope") != "carrier")
+               for record in records)
     ):
         return "MANUAL"
     if "SKIPPED" in results:
@@ -337,14 +415,6 @@ def _final_source_approval_accepted(records: list[StepRecord]) -> bool:
     if str(approval_output.get("decision") or "").upper() != "APPROVE":
         return False
     return _delivery_recorded(records)
-
-
-def _legacy_only(records: list[StepRecord]) -> bool:
-    return any(
-        record.name == "prepare_evidence"
-        and bool(record.output.get("legacy_only") or record.output.get("legacy_dependency"))
-        for record in records
-    )
 
 
 __all__ = ["FINAL_REPORT", "run"]

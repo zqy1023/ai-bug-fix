@@ -6,8 +6,10 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 
 const staticMode = process.env.WORKBENCH_STATIC_UI === '1';
 const base = staticMode ? 'https://workbench.test' : process.env.WORKBENCH_UI_BASE || 'http://127.0.0.1:5189';
-const output = path.resolve('runtime/reviews/2026-10-21/ui');
+const output = path.resolve(process.env.WORKBENCH_UI_OUTPUT || 'runtime/reviews/frontend-smoke');
 fs.mkdirSync(output, { recursive: true });
+let configUnavailable = true;
+const runConfig = { defaults: { log_hours: 19, log_limit: 0, review_mode: 'human', max_attempts: 4 }, limits: { max_log_hours: 96, max_attempts: 6 } };
 const phases = [
   { key: 'prepare_context', title: '准备上下文', members: ['prepare_source_snapshot', 'repair_branch_preflight', 'prepare_workspace', 'prepare_evidence'], group: true },
   { key: 'locate_agent', title: '根因定位', members: ['locate_agent'], group: false },
@@ -72,6 +74,10 @@ function taskDetail(id) {
     const endpoint = url.pathname.replace('/api/v1', '');
     let body;
     if (endpoint === '/health') body = { status: 'ok', service: 'workbench-test', version: '1', runtime_dir_configured: true, source_repo_configured: true };
+    else if (endpoint === '/run-config') {
+      if (configUnavailable) return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: '测试：配置暂时不可用' }) });
+      body = runConfig;
+    }
     else if (endpoint === '/dashboard/summary') body = { active_runs: 0, waiting_approvals: 0, succeeded_24h: 1, failed_24h: 1, success_rate_7d: 0.5, recent_runs: [summary], daily_trend: [] };
     else if (endpoint === '/runs' && route.request().method() === 'POST') { createdRun = route.request().postDataJSON(); body = { run_id: 'demo', status: 'accepted' }; }
     else if (endpoint === '/runs') body = { items: [summary], total: 1, page: 1, page_size: 12 };
@@ -94,11 +100,28 @@ function taskDetail(id) {
     await page.goto(`${base}/runs`);
     await page.getByRole('button', { name: /发起执行/ }).click();
     const dialog = page.getByRole('dialog');
+    await dialog.getByText('运行配置加载失败', { exact: true }).waitFor();
+    assert.equal(await dialog.getByRole('button', { name: '发起执行', exact: true }).isDisabled(), true);
+    configUnavailable = false;
+    await dialog.getByRole('button', { name: /重\s*试/ }).click();
+    await dialog.getByRole('spinbutton', { name: /最近多少小时/ }).waitFor();
+    assert.equal(await dialog.getByRole('spinbutton', { name: /最近多少小时/ }).inputValue(), '19');
+    assert.equal(await dialog.getByRole('spinbutton', { name: /最近多少小时/ }).getAttribute('aria-valuemax'), '96');
+    assert.equal(await dialog.getByRole('spinbutton', { name: /最大修复尝试次数/ }).inputValue(), '4');
+    assert.equal(await dialog.getByRole('spinbutton', { name: /最大修复尝试次数/ }).getAttribute('aria-valuemax'), '6');
+    await dialog.getByRole('spinbutton', { name: /最近多少小时/ }).fill('5');
+    await dialog.getByRole('button', { name: /取\s*消/ }).click();
+    await dialog.waitFor({ state: 'hidden' });
+    runConfig.defaults.log_hours = 7;
+    await page.getByRole('button', { name: /发起执行/ }).click();
+    await page.waitForFunction(() => document.querySelector('input#log_hours')?.value === '7');
     await dialog.getByRole('spinbutton', { name: /最近多少小时/ }).fill('6');
     assert.equal(await dialog.getByText('日志条数上限', { exact: true }).count(), 0);
     await dialog.getByRole('button', { name: '发起执行', exact: true }).click();
     await page.waitForURL('**/runs/demo');
     assert.equal(createdRun.log_hours, 6);
+    assert.equal(createdRun.review_mode, 'human');
+    assert.equal(createdRun.max_attempts, 4);
     assert.equal(createdRun.log_limit, 0);
     assert.equal('log_days' in createdRun, false);
     await page.getByRole('table').waitFor();
@@ -150,7 +173,7 @@ function taskDetail(id) {
     await page.goto(`${base}/runs/demo/tasks/bad?step=syntax_regression&view=execution`);
     await page.getByText('步骤详情暂时无法加载', { exact: true }).waitFor();
     assert.deepEqual(errors, []);
-    console.log('UI smoke passed: hourly full-scan submission, search, filters, failure focus, retry, manual terminal, approval, responsive layout, API error.');
+    console.log('UI smoke passed: server defaults/limits, config failure/retry, refreshed modal defaults, hourly full-scan submission, search, filters, failure focus, retry, manual terminal, approval, responsive layout, API error.');
   } catch (error) {
     await page.screenshot({ path: path.join(output, 'smoke-failure.png'), fullPage: true });
     console.error(await page.evaluate(() => [...document.querySelectorAll('body *')].filter((element) => element.getBoundingClientRect().right > window.innerWidth + 1).slice(0, 20).map((element) => ({ tag: element.tagName, class: element.className, right: element.getBoundingClientRect().right }))));

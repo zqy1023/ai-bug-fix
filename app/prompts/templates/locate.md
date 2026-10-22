@@ -10,6 +10,10 @@
 - 输出必须精简且可验证：最多 5 条关键事实、5 条源码证据、3 个候选文件。
 - 达到工具/回合预算仍不能证明根因时，返回 `INSUFFICIENT_EVIDENCE` 或 `MANUAL`，列出缺失证据；不得用更多探索拖延结论。
 - 不输出内部隐藏思考链；只输出可复核的证据、判断、置信限制和下一步。
+- 路径以 allowed_read_roots 为准；搜索当前 carrier 时直接使用其中的 carrier 目录，不要以整个工作区或共享项目根目录作为搜索 path。
+- 新入口通过 LegacySpiderProvider/LegacySpiderGather 转发时，先查看确定性证据中同 carrier 的 spiders 候选，不要把 wrapper 当作真正解析实现。
+- 已捕获的响应明确是 WAF/访问拦截页，且当前 carrier 的错误归类分支未识别它时，可定位为本 carrier 的 ServiceError 映射缺陷；不要求证明如何绕过拦截。
+- LOCATED 表示定位结论，recommended_scope 表示处理范围。明确属于代理配置、共享层或其他 carrier 的问题，必须说明处理边界，不能把范围限制归为证据不足。
 
 ## 1. 角色与目标
 

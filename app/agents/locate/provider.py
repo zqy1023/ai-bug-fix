@@ -133,6 +133,7 @@ class ClaudeQueryLocateProvider:
         if request.allowed_write_roots or request.write_root is not None:
             raise ValueError("Locate provider 拒绝任何写入权限")
         prompt = f"{request.system_prompt}\n\n---\n\n{request.prompt}"
+        from app.agents.output_schema import output_schema
 
         def invoke() -> dict[str, Any]:
             attempts = 3
@@ -143,6 +144,7 @@ class ClaudeQueryLocateProvider:
                         prompt, request.workspace, self.env, writable=False, tools=self.config.tools,
                         max_turns=self.config.max_turns, max_tool_calls=self.config.max_tool_calls,
                         timeout_seconds=self.config.timeout_seconds, allowed_roots=request.allowed_read_roots,
+                        output_schema=output_schema("locate"),
                     )
                 except Exception as error:
                     last_error = error

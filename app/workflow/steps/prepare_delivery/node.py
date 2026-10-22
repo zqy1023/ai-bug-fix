@@ -50,23 +50,36 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
             store.write_artifact(ctx.run.run_id, receipt_path, value, data.task_id)
 
     try:
-        repair_bundle = {}
-        if store is not None:
-            records = {record.name: record.output for record in store.list_steps(ctx.run.run_id, data.task_id)}
-            repair_bundle = {
-                "locate": records.get("locate_agent", {}), "repair": records.get("repair_agent", {}),
-                "review": records.get("review_agent", {}),
-                "validation": {key: records.get(key, {}) for key in ("check_changes", "syntax_regression", "verify_issue", "run_regression")},
-            }
-            gate = store.load(ctx.run.run_id, "check_changes", data.task_id)
-            if gate:
-                for ref in gate.artifacts:
-                    if ref.name == "diff":
-                        repair_bundle["diff"] = str(store.read_ref(ctx.run.run_id, ref, data.task_id).get("diff") or "")
+        repair_report = {}
+        if store is not None and not data.analysis_only:
+            from app.workflow.steps.finalize_execution.models import FinalizeInput
+            from app.workflow.steps.finalize_execution.node import build_report
+
+            report_path = "delivery/final.json"
+            if receipt and (store.task_dir(ctx.run.run_id, data.task_id) / report_path).is_file():
+                repair_report = store.read_artifact(ctx.run.run_id, report_path, data.task_id)
+            else:
+                repair_report = build_report(ctx, FinalizeInput(
+                    task_id=data.task_id, carrier=data.carrier,
+                    biztype=str(getattr(getattr(ctx, "task", None), "biztype", "")),
+                    terminal_status="", report_destination="",
+                ))
+                repair_report.update(
+                    report_kind="repair_report", result="WAITING_APPROVAL", status="WAITING_APPROVAL",
+                    terminal_status="", terminal_step="request_approval", finished_at=None,
+                    terminal_reason="候选修复已准备，交付后等待人工审批；验证情况见 validation。",
+                    next_action="审阅修复代码和验证记录后完成人工审批。",
+                    review_decision=data.review_decision, review_summary=data.review_summary,
+                    manual_confirmation_required=data.manual_confirmation_required,
+                    manual_confirmation_reasons=list(data.manual_confirmation_reasons),
+                    repair_branch=data.repair_branch,
+                )
+                store.write_artifact(ctx.run.run_id, report_path, repair_report, data.task_id)
         result = ctx.services.delivery.deliver(
             {
+                "run_id": ctx.run.run_id,
                 "task_id": data.task_id,
-                "repair_bundle": repair_bundle,
+                "repair_report": repair_report,
                 "delivery_receipt": receipt,
                 "persist_delivery": persist_delivery,
                 "carrier": data.carrier,

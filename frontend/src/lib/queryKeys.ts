@@ -1,6 +1,7 @@
 /** 层级化 key：SSE 只失效当前 run 下的数据，不触发全站重取。 */
 export const queryKeys = {
   health: ['workbench-health'] as const,
+  runConfig: ['run-config'] as const,
   dashboard: ['dashboard'] as const,
   approvals: ['approvals'] as const,
   runs: (query: { page: number; status?: string; keyword?: string; from?: string; to?: string }) =>

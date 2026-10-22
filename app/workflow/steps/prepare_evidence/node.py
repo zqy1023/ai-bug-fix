@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 from app.infrastructure.filesystem.workspace import WorkspaceManager
-from app.infrastructure.config import load_config
 from app.domain.errors import StepFailed
 from app.application.context import StepContext
 from app.workflow.steps.prepare_evidence.models import EvidenceInput, EvidenceOutput
@@ -138,7 +137,8 @@ def _references_legacy(new_root: Path | None, legacy_root: Path | None) -> bool:
         return False
     if not new_root.is_dir() or not legacy_root.is_dir():
         return False
-    markers = ("from spiders", "import spiders", "spiders.", "spiders/")
+    markers = ("from spiders", "import spiders", "spiders.", "spiders/",
+               "legacyspiderprovider", "legacyspidergather", "legacy_spider_provider")
     for source in sorted(new_root.rglob("*.py")):
         if not source.is_file() or source.is_symlink():
             continue
@@ -199,11 +199,28 @@ def run(ctx: StepContext, data: EvidenceInput) -> EvidenceOutput:
         data.framework == "gathers"
         and _references_legacy(new_root, legacy_dir)
     )
+    # New-framework wrappers can delegate through LegacySpiderProvider without
+    # importing spiders/ directly; expose the real legacy carrier as read evidence.
+    if data.framework == "gathers" and legacy_dir is not None and new_root is not None:
+        legacy_dependency = legacy_dependency or any(
+            "legacyspiderprovider" in source.read_text(encoding="utf-8", errors="ignore").lower()
+            or "legacy_spider_provider" in source.read_text(encoding="utf-8", errors="ignore").lower()
+            for source in new_root.rglob("*.py") if source.is_file()
+        )
     all_files = [
         path.relative_to(root).as_posix()
         for path in sorted(carrier_root.rglob("*.py"))
         if path.is_file() and not path.is_symlink()
     ]
+    if legacy_dependency and legacy_dir is not None:
+        all_files.extend(path.relative_to(root).as_posix() for path in sorted(legacy_dir.rglob("*.py"))
+                         if path.is_file() and not path.is_symlink())
+    if legacy_dependency and legacy_dir is not None:
+        all_files.extend(
+            path.relative_to(root).as_posix()
+            for path in sorted(legacy_dir.rglob("*.py"))
+            if path.is_file() and not path.is_symlink()
+        )
     if not all_files:
         raise StepFailed(f"carrier 目录没有 Python 实现: {data.carrier}")
     if len(all_files) > settings.evidence_max_scan_files:

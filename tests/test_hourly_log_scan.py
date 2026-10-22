@@ -14,6 +14,29 @@ from app.domain.errors import StepFailed
 from app.infrastructure.es.logs import ESLogAdapter
 
 
+@pytest.mark.parametrize(
+    "hours, days, expected",
+    [(None, None, 19), ("", "2", 48), ("6", "invalid", 6), ("  ", "", 19)],
+)
+def test_log_window_config_priority(
+    hours: str | None,
+    days: str | None,
+    expected: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """小时覆盖天数；未配置时使用集中默认值，不暗藏固定窗口。"""
+    from app.infrastructure import config
+
+    monkeypatch.setattr(config, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(config, "settings", replace(config.settings, default_log_hours=19))
+    for name, value in (("LOG_PULL_HOURS", hours), ("LOG_PULL_DAYS", days)):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    assert config.load_config().log_hours == expected
+
+
 def adapter_for(count: int, captured: dict[str, Any]) -> ESLogAdapter:
     """生成可观测、可关闭的模拟扫描器。"""
     def scanner(**kwargs: Any) -> Any:
@@ -101,15 +124,18 @@ def test_cancellation_also_checks_unparseable_logs(monkeypatch: pytest.MonkeyPat
 def test_run_creation_records_hours_and_zero_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import app.entrypoint as entrypoint
     from app.infrastructure.config import load_config
+    import workbench.api as api
     from workbench.api import V1StartRunRequest
 
     config = replace(load_config(), runtime_dir=tmp_path, source_repo=tmp_path, limit=77)
     monkeypatch.setattr(entrypoint, "load_config", lambda: config)
+    monkeypatch.setattr(api, "_config", lambda: config)
     _, resolved, store = entrypoint.prepare_run("hours-test", overrides={"log_hours": 6, "log_limit": 0}, queued=True)
     assert resolved.log_hours == 6 and resolved.limit == 0
     assert store.load_run("hours-test")["log_hours"] == 6
     assert "log_days" not in store.load_run("hours-test")
-    assert V1StartRunRequest(log_hours=6).log_limit == 0
+    assert V1StartRunRequest(log_hours=6).log_limit == 77
+    assert V1StartRunRequest(log_hours=6, log_limit=0).log_limit == 0
     assert V1StartRunRequest(log_hours=24, log_limit=439_738).log_limit == 439_738
     with pytest.raises(ValidationError):
         V1StartRunRequest(log_days=1)

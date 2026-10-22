@@ -65,6 +65,8 @@ class WorkflowState(TypedDict, total=False):
     require_push: bool
     # retry_reason：上一轮失败或驳回原因。
     retry_reason: str
+    retry_context: dict[str, Any]
+    continuation: dict[str, Any]
     # retry_target：Agent 执行异常后重试的 Agent 名称；普通验证失败默认回到 repair_agent。
     retry_target: str
 
@@ -91,6 +93,7 @@ class WorkflowState(TypedDict, total=False):
     # check_passed：变更安全门禁是否通过。
     check_passed: bool
     syntax_passed: bool
+    syntax_result: dict[str, Any]
     # verify_passed：问题修复验证是否通过。
     verify_passed: bool
     # business_verification_status：verified / unverified。

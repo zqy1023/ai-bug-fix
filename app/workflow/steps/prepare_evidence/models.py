@@ -31,8 +31,8 @@ class EvidenceOutput(FrozenModel):
     """候选文件、异常分类与旧框架门禁，不包含文件全文。
 
     ``legacy_only`` 是确定性判定结果：目标 carrier 只有旧框架 ``spiders/``
-    实现、没有新框架入口 ``gathers/<carrier>/main.py``。这种任务允许 Locate
-    只读分析，分析后转人工，不进入 AI 修复。
+    实现、没有新框架入口 ``gathers/<carrier>/main.py``。新旧框架均允许修复当前
+    carrier；此字段只说明实际入口，不代表必须转人工。
     """
 
     # carrier_dir：字段说明见该模型文档与工作流契约。
@@ -53,7 +53,7 @@ class EvidenceOutput(FrozenModel):
     extracted: dict[str, str] = Field(default_factory=dict)
     # legacy_only：字段说明见该模型文档与工作流契约。
     legacy_only: bool = False
-    # 新框架 carrier 是否显式引用旧 spiders 实现；命中后只分析、不自动修改。
+    # 新入口是否转发旧 spiders 实现；用于补齐同 carrier 的真实候选代码。
     legacy_dependency: bool = False
     # legacy_reason：字段说明见该模型文档与工作流契约。
     legacy_reason: str = ""

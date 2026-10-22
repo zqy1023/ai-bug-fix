@@ -37,7 +37,7 @@ export function CheckpointTimeline({ runId }: { runId: string }) {
           <div className="checkpoint-copy">
             <div className="checkpoint-title">
               <strong>{item.node ?? '图起点'}</strong>
-              {item.has_interrupt && <span className="checkpoint-flag">中断等待审批</span>}
+              {item.has_interrupt && <span className="checkpoint-flag">执行已挂起</span>}
             </div>
             <span className="checkpoint-meta">
               {formatTime(item.created_at)} · checkpoint {shortId(item.checkpoint_id, 12)}

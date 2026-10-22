@@ -55,6 +55,7 @@ class ESLogAdapter:
         stats: dict[str, int] | None = None,
         progress: Callable[[dict[str, int]], None] | None = None,
         cancel_requested: Callable[[], bool] | None = None,
+        scan_state: dict[str, Any] | None = None,
     ) -> Iterator[dict[str, str]]:
         """逐条拉取异常并解析为记录，不写文件，也不把全量命中收进内存。
 
@@ -66,6 +67,10 @@ class ESLogAdapter:
             raise ValueError("日志小时数必须大于零，条数上限不能为负数")
         funnel = {"es_hits": 0, "unparseable": 0, "parsed": 0,
                   "record_limit": limit, "limit_reached": 0}
+        checkpoint = scan_state if scan_state is not None else {}
+        funnel.update(checkpoint.get("stats") or {})
+        checkpoint["stats"] = funnel
+        seen = checkpoint.setdefault("seen_ids", {}) if scan_state is not None else None
         started = time.monotonic()
         last_progress = started
         last_control = started - 1
@@ -87,10 +92,14 @@ class ESLogAdapter:
 
         check_control()
         publish()
+        if limit and funnel["parsed"] >= limit:
+            return
         # 按精确小时窗口查询，跨日只扩展索引覆盖，不把查询窗口取整到零点。
         indices = self._index_provider(self._index_prefix, ceil(hours / 24) + 1)
         end = datetime.now(timezone.utc)
         start = end - timedelta(hours=hours)
+        checkpoint.setdefault("start", start.isoformat())
+        checkpoint.setdefault("end", end.isoformat())
         query = {
             "_source": ["service_name", "biztype", "message"],
             "query": {
@@ -100,7 +109,7 @@ class ESLogAdapter:
                         {"match_phrase": {"service_name": service_name}},
                         {
                             "range": {
-                                "@timestamp": {"gte": start.isoformat(), "lt": end.isoformat()}
+                                "@timestamp": {"gte": checkpoint["start"], "lt": checkpoint["end"]}
                             }
                         },
                     ],
@@ -126,6 +135,11 @@ class ESLogAdapter:
         try:
             for hit in hits:
                 check_control()
+                if seen is not None and hit.get("_id") is not None:
+                    identity = f"{hit.get('_index', '')}/{hit['_id']}"
+                    if identity in seen:
+                        continue
+                    seen[identity] = True
                 funnel["es_hits"] += 1
                 row = self.parse_hit(hit)
                 if row is None:

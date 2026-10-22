@@ -16,6 +16,7 @@ class LocateState(TypedDict, total=False):
     task_id: str
     # attempt：该模型字段用于承载对应契约中的结构化数据。
     attempt: int
+    retry_context: dict[str, Any]
     # carrier：该模型字段用于承载对应契约中的结构化数据。
     carrier: str
     # biztype：该模型字段用于承载对应契约中的结构化数据。

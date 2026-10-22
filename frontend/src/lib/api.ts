@@ -1,7 +1,7 @@
 import type {
   AgentCallDetail, ApprovalItem, ApprovalRetryTarget, CheckpointHistoryResponse, CheckpointProjection, ControlAuditItem,
   DashboardSummary, ModelCall, PageResult, RunBoard, RunDetail, RunQuery, RunSummary, StepDetailResponse,
-  TaskDetailResponse,
+  RunConfig, RunParameters, TaskDetailResponse,
 } from './types';
 
 const API_BASE = '/api/v1';
@@ -70,6 +70,7 @@ export const api = {
     }>;
   },
   dashboard: () => request<DashboardSummary>('/dashboard/summary'),
+  runConfig: () => request<RunConfig>('/run-config'),
   runs: (query: RunQuery) => {
     const params = new URLSearchParams();
     Object.entries(query).forEach(([key, value]) => {
@@ -87,10 +88,10 @@ export const api = {
     request<TaskDetailResponse>('/runs/' + encode(runId) + '/tasks/' + encode(taskId)),
   step: (runId: string, taskId: string, stepName: string) =>
     request<StepDetailResponse>('/runs/' + encode(runId) + '/tasks/' + encode(taskId) + '/steps/' + encode(stepName)),
-  runStep: (runId: string, taskId: string, stepName: string, confirmWrite: boolean) =>
+  runStep: (runId: string, taskId: string, stepName: string, confirmWrite: boolean, continueAfter = true) =>
     request<{ run_id: string; task_id: string; step: string; status: string; accepted: boolean; started_at: string }>(
       '/runs/' + encode(runId) + '/tasks/' + encode(taskId) + '/steps/' + encode(stepName) + '/run',
-      { method: 'POST', body: JSON.stringify({ confirm_write: confirmWrite }) },
+      { method: 'POST', body: JSON.stringify({ confirm_write: confirmWrite, continue_after: continueAfter }) },
     ),
   artifactContent: (runId: string, path: string, taskId?: string) => {
     const params = new URLSearchParams({ path });
@@ -131,7 +132,7 @@ export const api = {
         }),
       },
     ),
-  startRun: (payload: { log_hours: number; log_limit: number; review_mode: 'agent' | 'human'; max_attempts: number }) =>
+  startRun: (payload: Partial<RunParameters>) =>
     request<{ run_id: string; status: string }>('/runs', {
       method: 'POST',
       headers: { 'Idempotency-Key': crypto.randomUUID() },

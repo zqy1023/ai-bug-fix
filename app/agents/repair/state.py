@@ -32,6 +32,7 @@ class RepairState(TypedDict, total=False):
     attempt: int
     # retry_reason：该模型字段用于承载对应契约中的结构化数据。
     retry_reason: str
+    retry_context: dict[str, Any]
     # evidence：该模型字段用于承载对应契约中的结构化数据。
     evidence: dict[str, Any]
     # locate：该模型字段用于承载对应契约中的结构化数据。

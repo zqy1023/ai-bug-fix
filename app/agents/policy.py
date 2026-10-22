@@ -4,12 +4,35 @@ from __future__ import annotations
 
 from pathlib import Path
 import ast
+import hashlib
+import json
 
 from app.application.contracts import AgentRequest
 from app.infrastructure.filesystem.workspace import WorkspaceManager
 
 _SHARED_READ_DIRECTORIES = ("framework", "gathers_base", "gather_providers", "common")
 _MAX_RULES_CHARS = 12000
+
+
+def retry_evidence_dir(root: Path, run_id: str, task_id: str) -> Path:
+    """Return the system evidence directory owned by exactly one Run/Task."""
+    identity = hashlib.sha256(f"{run_id}\x00{task_id}".encode()).hexdigest()
+    return root / ".evidence" / "retry" / identity
+
+
+def retry_read_paths(root: Path, run_id: str, task_id: str) -> list[Path]:
+    """Authorize an existing, non-symlink evidence directory for its owner only."""
+    directory = retry_evidence_dir(root, run_id, task_id)
+    if not run_id or not task_id or not directory.is_dir() or directory.is_symlink():
+        return []
+    resolved = directory.resolve()
+    if not resolved.is_relative_to(root.resolve()):
+        return []
+    try:
+        owner = json.loads((directory / "owner.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [resolved] if owner == {"run_id": run_id, "task_id": task_id} else []
 
 
 def carrier_write_paths(root: Path, carrier: str) -> list[Path]:
@@ -20,7 +43,13 @@ def carrier_write_paths(root: Path, carrier: str) -> list[Path]:
 
 def carrier_read_paths(root: Path, primary: Path, shared: Path | None, carrier: str) -> list[Path]:
     """按显式 import 展开有限只读依赖；只扩展调查范围。"""
+    # A gathers wrapper may dispatch through LegacySpiderProvider without an
+    # explicit import in the carrier file; the same carrier's spiders tree is
+    # therefore read-only evidence, never a write target.
     paths = [primary.resolve(), *carrier_write_paths(root, carrier), *shared_read_paths(shared)]
+    legacy_root = WorkspaceManager.find_carrier_dir(root, "spiders", carrier)
+    if legacy_root is not None:
+        paths.append(legacy_root.resolve())
     pending = [file for base in carrier_write_paths(root, carrier) for file in base.rglob("*.py")]
     seen: set[Path] = set()
     while pending and len(seen) < 64:
@@ -124,25 +153,13 @@ class ToolPolicy:
             raise ToolPolicyError(f"Agent 授权目标不存在: {expected_carrier}")
 
         shared_root = _shared_root_of(context)
-        rules = tuple(
-            (workspace / relative).resolve()
-            for relative in WorkspaceManager.readable_rule_paths(workspace)
-        )
-        if request.agent_role == "locate":
+        if request.agent_role in {"locate", "repair"}:
             expected_reads: tuple[Path, ...] = tuple(carrier_read_paths(workspace, expected_carrier, shared_root, carrier))
-            # 新框架（gathers）任务允许只读核对旧实现目录，与 locate._read_roots
-            # 的装配保持一致：旧目录存在且与目标 carrier 不同时才计入白名单。
-            legacy_path = None
-            if (
-                framework == "gathers"
-                and legacy_path is not None
-                and legacy_path.resolve() != expected_carrier
-            ):
-                expected_reads += (legacy_path.resolve(),)
-        elif request.agent_role == "repair":
-            expected_reads = tuple(carrier_read_paths(workspace, expected_carrier, shared_root, carrier))
         else:
             expected_reads = tuple(dict.fromkeys([expected_carrier, *carrier_write_paths(workspace, carrier)]))
+        expected_reads = (*expected_reads, *retry_read_paths(
+            workspace, str(request.run_id), str(request.task_id),
+        ))
         expected_reads = tuple(dict.fromkeys(expected_reads))
 
         actual_reads = tuple(Path(value).resolve() for value in request.allowed_read_roots)

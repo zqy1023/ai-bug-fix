@@ -30,9 +30,6 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         review_decision = "HUMAN"
     evidence = dict(state.get("evidence") or {})
     locate_payload = dict(state.get("locate") or {})
-    locate_status = str(locate_payload.get("status") or "").upper()
-    locate_scope = str(locate_payload.get("recommended_scope") or "")
-    locate_category = str(locate_payload.get("category") or "")
     legacy_reference = any(
         str(item.get("path") or "").replace("\\", "/").startswith("spiders/")
         for item in locate_payload.get("source_evidence") or []

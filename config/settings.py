@@ -30,11 +30,7 @@ class Settings:
     # default_log_limit：默认日志条数上限。
     default_log_limit: int = 0
     # default_log_hours：默认滚动回溯小时数。
-    default_log_hours: int = 24
-    # default_index_days：索引回溯天数。
-    default_index_days: int = 2
-    # default_index_tz_offset：索引时区偏移。
-    default_index_tz_offset: int = 0
+    default_log_hours: int = 12
     # default_log_tz_offset：日志时区偏移。
     default_log_tz_offset: int = 8
     # default_max_attempts：单任务最大尝试次数。
@@ -141,7 +137,7 @@ class Settings:
     # es_index_prefix：ES 日志索引名前缀。
     es_index_prefix: str = "logstash-gather-"
     # es_scan_size：ES 扫描批次大小。
-    es_scan_size: int = 100
+    es_scan_size: int = 1000
     # es_scroll：ES 扫描上下文保留时长。
     es_scroll: str = "2m"
     # es_index_date_format：ES 索引名日期格式。
@@ -152,6 +148,10 @@ class Settings:
     command_timeout_seconds: int = 600
     # replay_timeout_seconds：response 重放超时秒数。
     replay_timeout_seconds: int = 30
+    # replay_python：跑业务代码的重放解释器路径。必须是装了业务依赖（与线上环境
+    # 一致）的解释器，否则重放会在 import 阶段失败。留空表示用当前解释器。
+    # 部署时用 AI_REPAIR_REPLAY_PYTHON 覆盖。
+    replay_python: str = ""
     # replay_output_chars：重放成功输出保留字符数。
     replay_output_chars: int = 500
     # regression_tail_chars：回归命令输出保留的尾部字符数。

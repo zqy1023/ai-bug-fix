@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import re
 
+from git.exc import GitCommandError
+
 from app.domain.errors import DeliveryError, StepFailed
 
 # 命中敏感键名后把取值掩码成 ***，键名保留：说得出"哪个字段泄露了"才有排查价值。
@@ -41,6 +43,11 @@ def mask_secrets(text: str) -> str:
 def redact_output(text: str) -> str:
     """运行记录用的脱敏：报告专属规则 + 共用规则。"""
     masked = text
+    masked = re.sub(
+        r"(?i)(\b(?:trackingIds?|tracking[_-]?(?:number|no)|waybill(?:[_-]?(?:number|no))?|number)\b[\"']?\s*[:=]\s*[\"']?)[^\s\"'&,;}<)]+",
+        r"\1***", masked,
+    )
+    masked = re.sub(r"((?:运单号|单号|包裹号)\s*[:：=]?\s*)[A-Za-z0-9]{8,}", r"\1***", masked)
     for pattern in _REPORT_ONLY:
         masked = pattern.sub("***", masked)
     return mask_secrets(masked)
@@ -54,6 +61,13 @@ def public_exception(error: BaseException, *, prefix: str) -> str:
     步骤记录。pydantic ``ValidationError`` 只保留字段名和错误类型，不保留输入值。
     """
     error_type = type(error).__name__ or "Exception"
+    if isinstance(error, GitCommandError):
+        # Git commands may embed credentials in URLs; expose only scrubbed stderr.
+        detail = str(error.stderr or "").strip()
+        detail = re.sub(r"https?://[^\s/'\"]+", "https://***", detail)
+        detail = re.sub(r"(?i)(?:token|password|secret|api[_-]?key)\s*[:=]\s*[^\s]+", "***", detail)
+        detail = redact_output(" ".join(detail.split()))[:_MAX_PUBLIC_MESSAGE_CHARS]
+        return f"{prefix}（错误类型：{error_type}，exit={error.status}）：{detail}"
     detail = _validation_detail(error)
     if detail:
         return f"{prefix}（错误类型：{error_type}：{detail}）"
@@ -71,17 +85,29 @@ def public_exception(error: BaseException, *, prefix: str) -> str:
             )
     message = _business_message(error)
     if message:
+        cause = error.__cause__
+        if isinstance(cause, GitCommandError):
+            message += "；" + public_exception(cause, prefix="Git")
         return f"{prefix}：{message}（错误类型：{error_type}）"
     return f"{prefix}（错误类型：{error_type}）"
 
 
 def _business_message(error: BaseException) -> str:
     """脱敏并限长业务异常消息；非业务异常不暴露正文。"""
-    if not isinstance(error, (StepFailed, DeliveryError)):
+    # Import lazily: the source adapter itself imports the redaction helpers.
+    from app.infrastructure.git.source import SourceRepoError
+
+    if not isinstance(error, (StepFailed, DeliveryError, SourceRepoError)):
         return ""
     text = _UNSAFE_DETAIL.sub("", str(error))
+    text = re.sub(r"(https?://)[^\s/'\"]+@", r"\1***@", text)
+    text = re.sub(r"(?i)((?:access[_-]?token|token|password|secret|api[_-]?key)=)[^&\s\"']+", r"\1***", text)
     text = redact_output(" ".join(text.split())).strip()
-    return text[:_MAX_PUBLIC_MESSAGE_CHARS]
+    if len(text) > _MAX_PUBLIC_MESSAGE_CHARS:
+        # Git clone progress/path prefixes can be long; the actual fatal reason
+        # is usually at the end of stderr and must survive truncation.
+        return text[:180] + " … " + text[-(_MAX_PUBLIC_MESSAGE_CHARS - 185):]
+    return text
 
 
 def _validation_detail(error: BaseException) -> str:

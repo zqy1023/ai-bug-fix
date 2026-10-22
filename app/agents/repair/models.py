@@ -23,6 +23,7 @@ class RepairInput(FrozenModel):
     attempt: int = 1
     # retry_reason：字段说明见该模型文档与工作流契约。
     retry_reason: str = ""
+    retry_context: dict[str, Any] = Field(default_factory=dict)
     # evidence：字段说明见该模型文档与工作流契约。
     evidence: EvidenceOutput = Field(default_factory=EvidenceOutput)
     # locate：字段说明见该模型文档与工作流契约。

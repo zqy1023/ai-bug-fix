@@ -31,6 +31,7 @@ def run(ctx: StepContext, data: VerifyInput) -> VerifyOutput:
             "changed_files": list(data.changed_files),
             "source_project_path": data.source_project_path,
             "clean_source_path": clean_source_path,
+            "baseline_dir": data.baseline_dir,
             "normalized_log": dict(data.normalized_log),
         }
     )

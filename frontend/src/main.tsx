@@ -5,7 +5,6 @@ import { ConfigProvider, App as AntApp } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import '@ant-design/v5-patch-for-react-19';
 import 'antd/dist/reset.css';
-import '@xyflow/react/dist/style.css';
 import './styles.css';
 import { AppRouter } from './app/router';
 import { workbenchTheme } from './app/theme';

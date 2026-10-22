@@ -11,7 +11,7 @@ from app.agents.locate.config import LocateConfig
 from app.agents.locate.models import LocateInput, LocateOutput
 from app.agents.locate.provider import create_provider
 from app.agents.locate.state import LocateState
-from app.agents.policy import rules_text, shared_read_paths
+from app.agents.policy import rules_text
 from app.infrastructure.filesystem.workspace import WorkspaceManager
 from app.infrastructure.redaction import redact_output
 from app.prompts import PromptRenderer
@@ -165,6 +165,8 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
         legacy_root.relative_to(root).as_posix() if legacy_root is not None else ""
     )
     roots = _read_roots(root, carrier_dir, rules, legacy_carrier_dir, shared_root)
+    from app.agents.policy import retry_read_paths
+    roots = (*roots, *(str(path) for path in retry_read_paths(root, incoming.run_id, incoming.task_id)))
     project_rules = rules_text(root, *([shared_root] if shared_root else []))
     prepared_evidence = {
         key: evidence.get(key)

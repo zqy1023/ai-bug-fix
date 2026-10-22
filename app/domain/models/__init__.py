@@ -4,7 +4,8 @@
 旧的未接入领域模型不再从这里导出，避免出现第二套状态机。
 """
 
-# 保留原有的 utc_now 函数（向后兼容）
+from __future__ import annotations
+
 from datetime import datetime, timezone
 
 

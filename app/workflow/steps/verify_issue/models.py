@@ -24,6 +24,8 @@ class VerifyInput(FrozenModel):
     source_project_path: str = ""
     # source_repo_path：未脱敏的干净 Git 检出，重放需要完整依赖与二进制资产。
     source_repo_path: str = ""
+    # baseline_dir：修复前的 carrier 源码快照，作为差分重放的基线。
+    baseline_dir: str = ""
     normalized_log: dict[str, Any] = {}  # 用于 response 重放验证
 
 

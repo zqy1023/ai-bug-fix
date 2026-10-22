@@ -7,6 +7,18 @@ export type BusinessResult =
   | 'LOCATED' | 'INSUFFICIENT_EVIDENCE' | 'MANUAL' | 'PASS' | 'FAIL' | 'REJECTED'
   | 'SKIPPED' | 'DELIVERED' | 'SUCCESS' | 'FAILED' | null;
 
+export interface RunParameters {
+  log_hours: number;
+  log_limit: number;
+  review_mode: 'agent' | 'human';
+  max_attempts: number;
+}
+
+export interface RunConfig {
+  defaults: RunParameters;
+  limits: { max_log_hours: number; max_attempts: number };
+}
+
 export interface DashboardSummary {
   active_runs: number;
   waiting_approvals: number;

@@ -5,13 +5,32 @@ from __future__ import annotations
 import json
 import os
 import shlex
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from dotenv import load_dotenv
 from config.settings import settings
+
+
+class RunParameters(TypedDict):
+    """新建执行、持久化恢复和工作台共用的运行参数。"""
+
+    log_hours: int
+    log_limit: int
+    review_mode: str
+    max_attempts: int
+
+
+def log_hours_from_values(values: Mapping[str, Any], *, default: int) -> int:
+    """优先读取小时数，兼容旧记录的天数，缺失时使用调用方的有效默认值。"""
+    if values.get("log_hours") is not None:
+        return int(values["log_hours"])
+    if values.get("log_days") is not None:
+        return int(values["log_days"]) * 24
+    return default
 
 
 @dataclass(frozen=True)
@@ -80,6 +99,8 @@ class RuntimeConfig:
     command_timeout_seconds: int
     # replay_timeout_seconds：response 重放超时秒数。
     replay_timeout_seconds: int
+    # replay_python：跑业务代码的重放解释器路径。
+    replay_python: str
     # workbench_sqlite_timeout_seconds：控制库连接等待秒数。
     workbench_sqlite_timeout_seconds: int
     # workbench_sqlite_busy_timeout_ms：控制库忙等待毫秒数。
@@ -130,6 +151,16 @@ class RuntimeConfig:
         """返回生产 agent 配置与 provider 共用的环境变量。"""
         return {**os.environ, **self.claude.as_env()}
 
+    def run_parameters(self, values: Mapping[str, Any] | None = None) -> RunParameters:
+        """已保存或显式传入的值优先；缺失字段从当前运行配置补齐，保留零条数上限。"""
+        values = values or {}
+        return {
+            "log_hours": log_hours_from_values(values, default=self.log_hours),
+            "log_limit": int(values["log_limit"]) if values.get("log_limit") is not None else self.limit,
+            "review_mode": str(values["review_mode"]) if values.get("review_mode") is not None else self.review_mode,
+            "max_attempts": int(values["max_attempts"]) if values.get("max_attempts") is not None else self.max_attempts,
+        }
+
 
 def load_config() -> RuntimeConfig:
     """从项目根目录 `.env` 加载运行配置。"""
@@ -170,6 +201,13 @@ def load_config() -> RuntimeConfig:
     review_mode = os.getenv("AI_REPAIR_REVIEW_MODE", settings.default_review_mode).strip().lower()
     if review_mode not in ("agent", "human"):
         raise ValueError("AI_REPAIR_REVIEW_MODE 只能是 agent 或 human")
+    # 小时配置优先；旧的天数变量仅在显式设置时用于兼容已有部署。
+    raw_log_hours = os.getenv("LOG_PULL_HOURS", "").strip()
+    raw_log_days = os.getenv("LOG_PULL_DAYS", "").strip()
+    log_hours = log_hours_from_values(
+        {"log_hours": raw_log_hours or None, "log_days": raw_log_days or None},
+        default=settings.default_log_hours,
+    )
     return RuntimeConfig(
         log_es=os.getenv("LOG_ES", ""),
         runtime_dir=runtime_dir,
@@ -183,7 +221,7 @@ def load_config() -> RuntimeConfig:
             os.getenv("LOG_PULL_EXCLUDED_BIZTYPES", ""),
             settings.excluded_biztypes,
         ),
-        log_hours=max(1, int(os.getenv("LOG_PULL_HOURS") or str(int(os.getenv("LOG_PULL_DAYS", "1")) * 24))),
+        log_hours=max(1, log_hours),
         log_tz_offset=int(os.getenv("LOG_PULL_TZ_OFFSET", str(settings.default_log_tz_offset))),
         es_timeout_seconds=max(
             1,
@@ -212,6 +250,7 @@ def load_config() -> RuntimeConfig:
                 )
             ),
         ),
+        replay_python=os.getenv("AI_REPAIR_REPLAY_PYTHON", settings.replay_python).strip(),
         workbench_sqlite_timeout_seconds=max(
             1,
             int(
@@ -310,14 +349,7 @@ def _text_list(raw: str, fallback: tuple[str, ...]) -> list[str]:
     return [str(item) for item in parsed if str(item).strip()]
 
 
-def index_days(
-    # prefix：配置项用途见所属配置类及部署文档。
-    prefix: str,
-    # days：配置项用途见所属配置类及部署文档。
-    days: int = settings.default_index_days,
-    # tz_offset：配置项用途见所属配置类及部署文档。
-    tz_offset: int = settings.default_index_tz_offset,
-) -> list[str]:
+def index_days(prefix: str, days: int, tz_offset: int) -> list[str]:
     """返回最近的 ES 日志索引名；日期按业务时区取，避免 UTC 与本地日切错位。"""
     today = datetime.now(timezone(timedelta(hours=tz_offset)))
     return [

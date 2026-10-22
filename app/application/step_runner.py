@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -18,7 +19,7 @@ from app.domain.models import utc_now
 from app.infrastructure.records.store import RecordStore
 from app.infrastructure.records.lifecycle import LifecycleStore
 from app.infrastructure.runtime import close_sessions
-from app.workflow.spec import AgentSpec, PluginSpec, StepSpec
+from app.workflow.spec import AgentSpec, PluginSpec
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ class StepRunRequest:
     task_id: str
     step_name: str
     confirm_write: bool = False
+    continue_after: bool = False
 
 
 def default_store() -> RecordStore:
@@ -110,8 +112,6 @@ def state_from_records(store: RecordStore, run_id: str, task_id: str = "") -> di
         "attempt": 1,
         "schema_version": 2,
         "source_repo_path": str(run_meta.get("source_repo_path") or ""),
-        "review_mode": str(run_meta.get("review_mode") or config.review_mode),
-        "max_attempts": int(run_meta.get("max_attempts") or config.max_attempts),
         "allow_push": bool(run_meta.get("allow_push", config.git_push)),
         "require_push": bool(run_meta.get("require_push", False)),
     }
@@ -120,8 +120,7 @@ def state_from_records(store: RecordStore, run_id: str, task_id: str = "") -> di
         "log_service_prefix": config.log_service_prefix,
         "log_excluded_messages": list(config.excluded_messages),
         "log_excluded_biztypes": list(config.excluded_biztypes),
-        "log_hours": int(run_meta.get("log_hours") or int(run_meta.get("log_days") or 0) * 24 or config.log_hours),
-        "log_limit": config.limit,
+        **config.run_parameters(run_meta),
     })
     for record in store.list_steps(run_id):
         if record.name == "identify_carrier":
@@ -129,8 +128,10 @@ def state_from_records(store: RecordStore, run_id: str, task_id: str = "") -> di
     if not task_id:
         return state
 
-    for record in store.list_steps(run_id, task_id):
-        output = record.output
+    records = store.list_steps(run_id, task_id)
+    from app.workflow.steps.finalize_execution.node import full_output
+    for record in records:
+        output = full_output(store, run_id, task_id, records, record.name) if record.name.endswith("_agent") else record.output
         if record.name == "prepare_workspace" and record.status == "succeeded":
             state["ai_workspace_path"] = str(output.get("ai_workspace_path") or "")
         elif record.name == "prepare_evidence" and record.status == "succeeded":
@@ -164,6 +165,12 @@ def state_from_records(store: RecordStore, run_id: str, task_id: str = "") -> di
             state["regression_result"] = output
         elif record.name == "review_agent":
             state["review"] = output
+            state["review_decision"] = str(output.get("verdict") or "")
+        elif record.name == "prepare_delivery" and record.status == "succeeded":
+            from app.workflow.steps.prepare_delivery import _patch
+            state.update(_patch(output))
+        elif record.name == "claim_repair_slot":
+            state["repair_slot_claimed"] = bool(output.get("claimed"))
 
     task = next((item for item in state.get("tasks", []) if item.get("task_id") == task_id), None)
     if task is None:
@@ -173,6 +180,9 @@ def state_from_records(store: RecordStore, run_id: str, task_id: str = "") -> di
     if not isinstance(problem, dict):
         raise StepRunnerError(f"任务 {task_id} 缺少原始 problem")
     state["problem"] = dict(problem)
+    retry_path = store.task_dir(run_id, task_id) / "retry" / "latest.json"
+    if retry_path.is_file():
+        state["retry_context"] = store.read_artifact(run_id, "retry/latest.json", task_id)
     return state
 
 
@@ -191,6 +201,33 @@ def _require_write_confirmation(spec: PluginSpec, confirmed: bool) -> None:
         )
 
 
+def _archive_step_retry(store: RecordStore, run_id: str, task_id: str, spec: PluginSpec) -> None:
+    """Preserve a failed step and its filesystem evidence before replacing it."""
+    if not task_id:
+        return
+    previous = store.load(run_id, spec.name, task_id)
+    if previous is None or not (
+        previous.status == "failed" or str(previous.result or "").upper() in {"FAIL", "FAILED", "REJECTED"}
+    ):
+        return
+    from app.workflow.retry_context import capture_retry_context
+    from app.infrastructure.redaction import public_exception
+
+    try:
+        path = f"retry/steps/{spec.name}-{previous.attempt}-{uuid.uuid4().hex[:12]}.json"
+        store.write_artifact(run_id, path, previous.model_dump(mode="json"), task_id)
+        state = state_from_records(store, run_id, task_id)
+        state["attempt"] = max(int(state.get("attempt") or 1), previous.attempt)
+        state["retry_reason"] = previous.error.message if previous.error else previous.summary
+        context = capture_retry_context(state, store, reuse_existing=False)
+        if context.get("capture_errors"):
+            raise StepRunnerError("上一轮文件证据未能完整保存，保留原步骤和工作区：" + "; ".join(context["capture_errors"]))
+    except StepRunnerError:
+        raise
+    except Exception as error:
+        raise StepRunnerError(public_exception(error, prefix="保存单步重试证据失败，未覆盖原步骤")) from error
+
+
 def execute_once(
     spec: PluginSpec,
     *,
@@ -198,6 +235,7 @@ def execute_once(
     task_id: str = "",
     confirm_write: bool = False,
     services: WorkflowServices | None = None,
+    continuation: bool = False,
 ) -> tuple[int, StepRecord | None, dict[str, Any]]:
     """同步执行一个步骤或 Agent，返回 ``(退出码, 步骤记录, 节点结果)``。"""
     _require_identity(spec, run_id, task_id)
@@ -209,7 +247,13 @@ def execute_once(
             f"{spec.name} 缺少已通过的前置步骤: {', '.join(missing)}",
             code="STEP_DEPENDENCY_MISSING",
         )
+    _archive_step_retry(store, run_id, task_id, spec)
     state = state_from_records(store, run_id, task_id)
+    state["_single_step"] = True
+    if continuation:
+        state["attempt"] = max([int(state.get("attempt") or 1), *[
+            record.attempt for record in store.list_steps(run_id, task_id) if record.name.endswith("_agent")
+        ]]) + 1
 
     if isinstance(spec, AgentSpec):
         from app.workflow.wiring import build_agent_node
@@ -250,11 +294,13 @@ class StepRunner:
         *,
         run_status: Callable[[str], str] | None = None,
         on_finish: Callable[[], None] | None = None,
+        on_continue: Callable[[StepRunRequest, dict[str, Any]], None] | None = None,
     ) -> None:
         self._store = store
         self._run_status = run_status or (lambda run_id: "")
         # 由调用方注入运行锁释放动作，保证后台线程结束后不会泄漏锁。
         self._on_finish = on_finish
+        self._on_continue = on_continue
 
     def validate(self, request: StepRunRequest) -> PluginSpec:
         """校验单步执行是否被允许；不通过时抛 :class:`StepRunnerError`。"""
@@ -326,11 +372,13 @@ class StepRunner:
             "step": spec.name,
             "status": "running",
             "accepted": True,
+            "continue_after": request.continue_after,
             "started_at": running.started_at,
         }
 
     def _mark_running(self, spec: PluginSpec, request: StepRunRequest) -> StepRecord:
         existing = self._store.load(request.run_id, spec.name, request.task_id)
+        _archive_step_retry(self._store, request.run_id, request.task_id, spec)
         record = StepRecord(
             name=spec.name,
             title=spec.title,
@@ -342,13 +390,19 @@ class StepRunner:
         return record
 
     def _execute(self, spec: PluginSpec, request: StepRunRequest) -> None:
+        continuing = False
         try:
             code, record, payload = execute_once(
                 spec,
                 run_id=request.run_id,
                 task_id=request.task_id,
                 confirm_write=request.confirm_write,
+                continuation=request.continue_after,
             )
+            if request.continue_after and self._on_continue is not None and record is not None and record.status != "failed":
+                continuing = True
+                self._on_continue(request, payload)
+                return
             if code == 0:
                 # Single-step execution does not advance the workflow graph. Leave the task
                 # paused for the operator's next step instead of showing it as still running.
@@ -380,6 +434,9 @@ class StepRunner:
                 request.run_id, request.task_id, spec.name, code,
             )
         except StepRunnerError as exc:
+            if continuing:
+                self._continuation_failed(request, str(exc))
+                return
             self._write_failure(spec, request, str(exc))
             self._mark_single_step_failed(spec, request, str(exc))
             logger.warning(
@@ -387,7 +444,11 @@ class StepRunner:
                 request.run_id, request.task_id, spec.name, exc,
             )
         except Exception as exc:
-            message = f"{type(exc).__name__}: {exc}"
+            from app.infrastructure.redaction import public_exception
+            message = public_exception(exc, prefix="节点执行异常")
+            if continuing:
+                self._continuation_failed(request, message)
+                return
             self._write_failure(spec, request, message)
             self._mark_single_step_failed(spec, request, message)
             logger.exception(
@@ -397,6 +458,15 @@ class StepRunner:
         finally:
             if self._on_finish is not None:
                 self._on_finish()
+
+    def _continuation_failed(self, request: StepRunRequest, message: str) -> None:
+        """Keep the successful selected step intact when downstream execution fails."""
+        LifecycleStore(self._store.root).update_task(
+            request.run_id, request.task_id, status="failed", current_step="workflow_continuation",
+            terminal_step="workflow_continuation", terminal_reason=message,
+            next_action="所选节点已完成，请检查后续失败节点并恢复流程。",
+            error={"code": "STEP_EXECUTION_FAILED", "message": message},
+        )
 
     def _mark_single_step_failed(self, spec: PluginSpec, request: StepRunRequest, message: str) -> None:
         LifecycleStore(self._store.root).update_task(

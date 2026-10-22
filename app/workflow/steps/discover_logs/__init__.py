@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.infrastructure.config import log_hours_from_values
 from app.workflow.spec import StepSpec
 from app.workflow.steps.discover_logs.models import DiscoverInput, DiscoverOutput
 from app.workflow.steps.discover_logs.node import run
+from config.settings import settings
 
 def _input(state: dict[str, Any]) -> dict[str, Any]:
     """记录并传递本轮实际查询条件。"""
@@ -15,7 +17,7 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         "service_prefix": str(state["log_service_prefix"]),
         "excluded_messages": list(state.get("log_excluded_messages") or []),
         "excluded_biztypes": list(state.get("log_excluded_biztypes") or []),
-        "hours": int(state.get("log_hours") or int(state.get("log_days") or 1) * 24),
+        "hours": log_hours_from_values(state, default=settings.default_log_hours),
         "limit": int(state["log_limit"]),
     }
 

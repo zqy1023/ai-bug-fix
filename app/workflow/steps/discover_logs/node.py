@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from typing import Any
 
 from app.domain.errors import StepFailed
 from app.application.context import StepContext
@@ -13,6 +14,7 @@ def iter_raw(
     ctx: StepContext, data: DiscoverInput, stats: dict[str, int], *,
     progress: Callable[[dict[str, int]], None] | None = None,
     cancel_requested: Callable[[], bool] | None = None,
+    scan_state: dict[str, Any] | None = None,
 ) -> Iterator[dict[str, str]]:
     """按查询条件逐条读取 ES。调用方消费完迭代器后，``stats`` 才完整。"""
     if ctx.services.log_source is None:
@@ -27,6 +29,7 @@ def iter_raw(
         stats=stats,
         progress=progress,
         cancel_requested=cancel_requested,
+        **({"scan_state": scan_state} if scan_state is not None else {}),
     )
     for record in raw:
         if not isinstance(record, dict):

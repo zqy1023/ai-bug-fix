@@ -22,6 +22,7 @@ class ReviewInput(FrozenModel):
     ai_workspace_path: str = ""
     # attempt：字段说明见该模型文档与工作流契约。
     attempt: int = 1
+    retry_context: dict[str, Any] = Field(default_factory=dict)
     # repair：字段说明见该模型文档与工作流契约。
     repair: RepairView = Field(default_factory=RepairView)
     # changed_files：字段说明见该模型文档与工作流契约。

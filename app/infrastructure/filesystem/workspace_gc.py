@@ -71,8 +71,8 @@ def prune_workspaces(
     workspace_root: str | Path,
     runs_root: str | Path,
     *,
-    retention_days: int = 7,
-    delivery_ttl_hours: int = 24,
+    retention_days: int,
+    delivery_ttl_hours: int,
 ) -> dict[str, int]:
     """回收过期工作区，返回各组删除数量。
 

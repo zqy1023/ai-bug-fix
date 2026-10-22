@@ -1,9 +1,9 @@
 FROM node:22-alpine AS build
 WORKDIR /frontend
-COPY package.json ./
-RUN npm install --no-audit --no-fund
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
 COPY . .
-RUN npm run typecheck && npm run build
+RUN npm run build
 
 FROM nginx:1.28-alpine
 COPY nginx.conf /etc/nginx/conf.d/default.conf

@@ -20,16 +20,17 @@ from app.infrastructure.config import RuntimeConfig, load_config
 from app.workflow.graph import build_graph as build_state_graph
 from app.workflow.graph import build_task_graph
 from app.workflow.graph import collect
+from app.workflow.retry_context import capture_retry_context
 from app.workflow.definitions import PHASE_COMPOSITIONS
 from app.domain.errors import StepFailed
 from app.application.audit import StepError, StepRecord
 from app.domain.models import utc_now
-from app.infrastructure.git.source import SourceRepoCancelled, sync_source_repo
+from app.infrastructure.git.source import SourceRepoCancelled, SourceRepoPaused, sync_source_repo
 from app.workflow.runner import bind
 from app.workflow.routes import FINALIZE, SOURCE_SYNC
 from app.infrastructure.records.store import RecordStore
 from app.infrastructure.redaction import public_exception
-from app.infrastructure.run_control import cancellation_requested
+from app.infrastructure.run_control import cancellation_requested, pause_requested
 from app.application.services import WorkflowServices
 from app.workflow import registry
 from app.workflow.plugin_checks import verify_registry
@@ -149,6 +150,7 @@ def build_services(
             "independent_verify": partial(
                 _independent_verify,
                 timeout_seconds=config.replay_timeout_seconds,
+                replay_python=config.replay_python,
             )
         },
     )
@@ -159,10 +161,10 @@ def _independent_verify(
     payload: dict[str, Any],
     *,
     timeout_seconds: int = settings.replay_timeout_seconds,
+    replay_python: str = settings.replay_python,
 ) -> dict[str, Any]:
     """两阶段验证：1) Python 语法检查 2) Response 重放验证（可选）。"""
     import json
-    import os
     import py_compile
     import shutil
     from pathlib import Path
@@ -216,83 +218,142 @@ def _independent_verify(
         response_data = json.dumps(response_data, ensure_ascii=False) if response_data else ""
     if not isinstance(track_config_data, str):
         track_config_data = json.dumps(track_config_data, ensure_ascii=False) if track_config_data else ""
-    if not (carrier and req_data and response_data):
-        return {"passed": True, "mode": "syntax_only", "reason": f"语法检查通过: {len(files)} 个文件；未执行问题重放"}
-
+    original_error = str(normalized_log.get("error") or normalized_log.get("raw_error") or "")
+    from app.workflow.steps.verify_issue.replay_model import request_numbers
     from app.workflow.steps.verify_issue.replay_runner import run_replay
+    from app.workflow.steps.verify_issue.semantic_compare import ReplayOutcome, compare
+
+    # 有 carrier 和合法 req 就能重放：response 只是加速手段，不是前置条件。
+    # 没有录制的 response 时两侧分别请求上游，结果仅供人工确认。
+    if not (carrier and req_data and request_numbers(req_data)):
+        return {"passed": True, "mode": "syntax_only", "reason": f"语法检查通过: {len(files)} 个文件；未执行问题重放"}
 
     # 共享树是给模型阅读的脱敏快照：_sanitize_shared_tree 只保留 .py/.json 等
     # 白名单后缀，会删除 py_rules_new.zip 这类运行资产。重放必须在未脱敏的
     # 干净 Git 业务目录上建立基线，不能复用共享树。
-    clean_root = Path(str(payload.get("clean_source_path") or "")).resolve()
-    if not (clean_root.is_dir() and ((clean_root / "gathers").is_dir() or (clean_root / "spiders").is_dir())):
-        clean_root = None
-    shared_root = Path(str(payload.get("source_project_path") or "")).resolve()
-    if not shared_root.is_dir():
-        shared_root = None
-    baseline_root = clean_root or shared_root
+    baseline_root = None
+    for key in ("clean_source_path", "source_project_path"):
+        configured = str(payload.get(key) or "").strip()
+        if not configured:
+            continue
+        candidate = Path(configured).resolve()
+        if candidate.is_dir() and any((candidate / name).is_dir() for name in ("gathers", "spiders")):
+            baseline_root = candidate
+            break
+    if baseline_root is None:
+        return {
+            "passed": False, "status": "unverified", "mode": "response_replay",
+            "reason": "重放源目录不可用，无法建立独立镜像，业务修复未验证",
+        }
     # 重放需要 server_dev、framework 和公共库；任务工作区只有目标 carrier。
-    # 在基线同盘临时目录建立镜像（优先硬链接），再用 AI 工作区的 carrier 覆盖，
-    # 既保证导入完整，也不写回源仓库。
-    mirror_parent = baseline_root.parent if baseline_root is not None else workspace
-    with temporary_directory("ai-replay-workspace-", parent=mirror_parent) as directory:
+    # 两侧使用独立文件副本，避免业务运行写文件污染源仓库或另一侧重放。
+    with temporary_directory("ai-replay-workspace-", parent=baseline_root.parent) as directory:
         replay_root = Path(directory) / "repo"
-        if baseline_root is not None:
-            try:
-                shutil.copytree(
-                    baseline_root, replay_root,
-                    copy_function=os.link,
-                    ignore=shutil.ignore_patterns(".git"),
-                )
-            except OSError:
-                remove_tree(replay_root)
-                shutil.copytree(
-                    baseline_root, replay_root,
-                    ignore=shutil.ignore_patterns(".git"),
-                )
-            for framework in ("gathers", "spiders"):
-                source_carrier = WorkspaceManager.find_carrier_dir(workspace, framework, carrier)
-                replay_carrier = WorkspaceManager.find_carrier_dir(replay_root, framework, carrier)
-                if source_carrier is None:
-                    continue
-                destination = replay_carrier or replay_root / framework / source_carrier.name
-                if destination.exists() and not remove_tree(destination):
-                    return {"passed": False, "mode": "response_replay", "reason": "重放工作区 carrier 清理失败"}
-                shutil.copytree(source_carrier, destination, copy_function=shutil.copy2)
-        else:
-            replay_root = workspace
+        shutil.copytree(baseline_root, replay_root, ignore=shutil.ignore_patterns(".git"))
         gathers_root = replay_root / "gathers"
 
-        replay_result = run_replay(
+        # 基线重放：装入修复前的 carrier 源码快照，用未修复的代码跑同一输入。
+        if not _install_baseline_carrier(replay_root, str(payload.get("baseline_dir") or ""), carrier):
+            return {"passed": False, "mode": "response_replay", "reason": "重放工作区基线 carrier 清理失败"}
+        fixed_root = Path(directory) / "fixed"
+        shutil.copytree(replay_root, fixed_root)
+        baseline_result = run_replay(
             carrier=carrier,
             req_json=json.dumps(req_data, ensure_ascii=False),
             response_json=response_data,
             track_config_json=track_config_data,
             gathers_root=gathers_root,
             timeout_seconds=timeout_seconds,
+            python_executable=replay_python,
         )
 
-    if not replay_result.success:
-        return {
-            "passed": False,
-            "mode": "response_replay",
-            "reason": f"Response 重放验证失败: {replay_result.error}",
-            "replay_exception_type": replay_result.exception_type,
-            "replay_error": replay_result.error,
-            "replay_traceback": replay_result.traceback,
-            "replay_output": replay_result.output,
-            "replay_command": getattr(replay_result, "command", []),
-            "replay_returncode": getattr(replay_result, "returncode", None),
-        }
+        # 修复后重放：把 AI 工作区的 carrier 覆盖进重放工作区，跑同一输入。
+        for framework in ("gathers", "spiders"):
+            source_carrier = WorkspaceManager.find_carrier_dir(workspace, framework, carrier)
+            replay_carrier = WorkspaceManager.find_carrier_dir(fixed_root, framework, carrier)
+            if source_carrier is None:
+                continue
+            destination = replay_carrier or fixed_root / framework / source_carrier.name
+            if destination.exists() and not remove_tree(destination):
+                return {"passed": False, "mode": "response_replay", "reason": "重放工作区 carrier 清理失败"}
+            shutil.copytree(source_carrier, destination, copy_function=shutil.copy2)
+        fixed_result = run_replay(
+            carrier=carrier,
+            req_json=json.dumps(req_data, ensure_ascii=False),
+            response_json=response_data,
+            track_config_json=track_config_data,
+            gathers_root=fixed_root / "gathers",
+            timeout_seconds=timeout_seconds,
+            python_executable=replay_python,
+        )
 
-    return {
-        "passed": True,
+    baseline_outcome = (
+        ReplayOutcome.from_result(baseline_result.result)
+        if baseline_result.success
+        else ReplayOutcome.from_failure(baseline_result.error, baseline_result.exception_type)
+    )
+    fixed_outcome = (
+        ReplayOutcome.from_result(fixed_result.result)
+        if fixed_result.success
+        else ReplayOutcome.from_failure(fixed_result.error, fixed_result.exception_type)
+    )
+    comparison = compare(
+        baseline=baseline_outcome, fixed=fixed_outcome, original_error=original_error,
+        live=not bool(response_data), expected_numbers=request_numbers(req_data),
+        captured_response=json.dumps(response_data, ensure_ascii=False) if response_data else "",
+    )
+    # 重放输出是完整结果 dump，只留头部；结构化证据在 replay_comparison 里。
+    output_chars = settings.replay_output_chars
+    report: dict[str, Any] = {
+        "passed": comparison.passed,
+        "status": "verified" if comparison.passed else ("failed" if comparison.verified else "unverified"),
         "mode": "response_replay",
-        "reason": f"语法检查 + Response 重放验证通过: {len(files)} 个文件",
-        "replay_output": replay_result.output,
-        "replay_command": getattr(replay_result, "command", []),
-            "replay_returncode": getattr(replay_result, "returncode", None),
+        "reason": f"{comparison.reason}（语法检查 {len(files)} 个文件）",
+        "replay_verdict": comparison.verdict,
+        "replay_input_mode": "live" if not response_data else "recorded",
+        "replay_comparison": comparison.details,
+        "replay_baseline_output": baseline_result.output[:output_chars],
+        "replay_output": fixed_result.output[:output_chars],
+        "replay_command": getattr(fixed_result, "command", []),
+        "replay_returncode": getattr(fixed_result, "returncode", None),
+        "replay_error": fixed_result.error,
+        "replay_exception_type": fixed_result.exception_type,
+        "replay_traceback": fixed_result.traceback,
     }
+    return report
+
+
+
+
+def _install_baseline_carrier(replay_root: Path, baseline_dir: str, carrier: str) -> bool:
+    """把修复前的 carrier 源码基线装进重放工作区。
+
+    基线快照来自本轮 Git 干净树，是本次修改之前的真实代码；没有快照时保留
+    重放工作区现状（源仓库检出），此时基线可能包含未提交改动。
+    """
+    from app.infrastructure.filesystem.safe_cleanup import remove_tree
+
+    import shutil
+
+    if not baseline_dir.strip():
+        return True
+    root = Path(baseline_dir).resolve()
+    if not root.is_dir():
+        return True
+    for framework in ("gathers", "spiders"):
+        source = WorkspaceManager.find_carrier_dir(root, framework, carrier)
+        if source is None:
+            continue
+        target = WorkspaceManager.find_carrier_dir(replay_root, framework, carrier)
+        if target is None:
+            target = replay_root / framework / source.name
+        if source == target.resolve() or source.is_relative_to(target.resolve()) or target.resolve().is_relative_to(source):
+            return False
+        if target.exists() and not remove_tree(target):
+            return False
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, target, copy_function=shutil.copy2)
+    return True
 
 
 _MAX_DIFF_SUMMARY_CHARS = settings.max_diff_summary_chars
@@ -344,12 +405,16 @@ def _source_sync_node(
     store: RecordStore,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """同步源仓库作为真正的 LangGraph 节点，使 RetryPolicy 和 checkpoint 能接管失败。"""
+    attempts: dict[str, int] = {}
     def node(state: dict[str, Any]) -> dict[str, Any]:
         run_id = str(state.get("run_id") or "")
         if not run_id:
             raise RuntimeError("sync_source_repo 缺少 run_id")
         previous = store.load(run_id, SOURCE_SYNC)
         attempt = (previous.attempt if previous else 0) + 1
+        attempts[run_id] = attempts.get(run_id, 0) + 1
+        automatic_attempt = attempts[run_id]
+        max_attempts = max(0, int(settings.graph_retry_attempts)) + 1
         record = StepRecord(
             name=SOURCE_SYNC,
             title="同步源仓库",
@@ -371,11 +436,29 @@ def _source_sync_node(
             store.save(run_id, record)
             return {"last_result": "cancelled", "terminal_status": "CANCELLED"}
 
+        def control_requested() -> bool:
+            if cancellation_requested(store.root, run_id):
+                return True
+            if pause_requested(store.root, run_id):
+                raise SourceRepoPaused("Run 已请求暂停，源仓库同步可从检查点重新开始")
+            return False
+
         try:
+            control_requested()
             source_repo = sync_source_repo(
                 config,
-                cancel_requested=lambda: cancellation_requested(store.root, run_id),
+                cancel_requested=control_requested,
             )
+        except SourceRepoPaused as error:
+            from langgraph.types import interrupt
+
+            record.status = "waiting"
+            record.finished_at = utc_now()
+            record.summary = public_exception(error, prefix="源仓库同步已暂停")
+            record.error = None
+            store.save(run_id, record)
+            interrupt({"control": "pause", "run_id": run_id, "step": SOURCE_SYNC})
+            return node(state)
         except SourceRepoCancelled as error:
             record.status = "skipped"
             record.result = "SKIPPED"
@@ -394,7 +477,14 @@ def _source_sync_node(
             record.finished_at = utc_now()
             record.duration_ms = 0
             record.summary = public_exception(error, prefix="源仓库同步失败")
-            record.output = {"failure_reason": record.summary}
+            record.output = {
+                "failure_reason": record.summary,
+                "exception_type": type(error).__name__,
+                "automatic_attempt": automatic_attempt,
+                "max_attempts": max_attempts,
+                "retry_count": automatic_attempt - 1,
+                "retry_exhausted": automatic_attempt >= max_attempts,
+            }
             record.error = StepError(
                 code="STEP_EXECUTION_FAILED",
                 message=record.summary,
@@ -432,7 +522,7 @@ def build_nodes(
     # 图上按业务阶段调度；阶段内部仍逐个调用原始插件节点，因此原有步骤记录、
     # artifact、单步调试入口和失败结果语义均保持不变。
     for phase_name, step_names in PHASE_COMPOSITIONS.items():
-        nodes[phase_name] = _compose_phase(step_names, nodes)
+        nodes[phase_name] = _compose_phase(step_names, nodes, store=store)
     nodes[SOURCE_SYNC] = _source_sync_node(config or load_config(), store)
     return nodes
 
@@ -440,6 +530,7 @@ def build_nodes(
 def _compose_phase(
     step_names: tuple[str, ...],
     nodes: dict[str, Callable[..., Any]],
+    store: RecordStore | None = None,
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """顺序执行一个组合阶段；失败、跳过、人工介入或取消后立即停止后续子步骤。"""
     missing = [name for name in step_names if name not in nodes]
@@ -449,8 +540,18 @@ def _compose_phase(
     def node(state: dict[str, Any]) -> dict[str, Any]:
         current = dict(state)
         combined_patch: dict[str, Any] = {}
-        for name in step_names:
-            patch = nodes[name](current)
+        continuation = dict(state.get("continuation") or {})
+        after = str(continuation.get("after_step") or "")
+        selected = step_names[step_names.index(after) + 1:] if after in step_names else step_names
+        if after in step_names and str(state.get("last_result") or "passed") != "passed":
+            return {"continuation": {}}
+        for name in selected:
+            saved = store.load(str(state["run_id"]), name, str(state.get("task_id") or "")) if store and after in step_names else None
+            if saved and saved.status == "succeeded" and saved.started_at >= str(continuation.get("started_at") or "~"):
+                spec = registry.resolve(name)
+                patch = {**spec.patch(saved.output), "last_result": "passed"}
+            else:
+                patch = nodes[name](current)
             if not isinstance(patch, dict):
                 raise PluginError(f"组合阶段子步骤必须返回 dict: {name}")
             current.update(patch)
@@ -460,6 +561,8 @@ def _compose_phase(
                 break
             if str(current.get("terminal_status") or "").upper() == "CANCELLED":
                 break
+        if after in step_names:
+            combined_patch["continuation"] = {}
         return combined_patch
 
     node.__name__ = "_".join(step_names)
@@ -491,7 +594,7 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
     def node(state: dict[str, Any]) -> dict[str, Any]:
         run_id = str(state.get("run_id") or "")
         task_id = str(state.get("task_id") or "")
-        if pause_requested(store.root, run_id):
+        if pause_requested(store.root, run_id) and not state.get("_single_step"):
             waiting = StepRecord(
                 name=spec.name, title=spec.title, status="waiting",
                 started_at=utc_now(), attempt=int(state.get("attempt") or 1),
@@ -508,8 +611,12 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
         task = dict(state.get("task") or {})
         started = time.perf_counter()
         try:
+            if state.get("retry_context"):
+                from app.workflow.retry_context import stage_retry_evidence
+                state = {**state, "retry_context": stage_retry_evidence(store, state)}
             if kind == "locate":
                 incoming = input_model(
+                    retry_context=dict(state.get("retry_context") or {}),
                     run_id=str(state.get("run_id") or ""),
                     task_id=str(state.get("task_id") or ""),
                     attempt=int(state.get("attempt") or 1),
@@ -531,6 +638,7 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
                 if not str(evidence.get("carrier_dir") or "") or not list(evidence.get("candidates") or []):
                     raise StepFailed(f"{spec.name} 缺少已准备的源码证据：没有 carrier 目录或候选文件")
                 incoming = input_model(
+                    retry_context=dict(state.get("retry_context") or {}),
                     task_id=str(state.get("task_id") or ""),
                     ai_workspace_path=str(state.get("ai_workspace_path") or ""),
                     attempt=int(state.get("attempt") or 1),
@@ -551,6 +659,7 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
                 repair = state.get("repair")
                 repair_payload = repair if isinstance(repair, dict) else {}
                 incoming = input_model(
+                    retry_context=dict(state.get("retry_context") or {}),
                     task_id=str(state.get("task_id") or ""),
                     attempt=int(state.get("attempt") or 1),
                     ai_workspace_path=str(state.get("ai_workspace_path") or ""),
@@ -637,6 +746,11 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
                 verdict = "MANUAL" if raw_verdict == "MANUAL" else ("PASS" if is_passed else "FAIL")
                 view = view.model_copy(update={"passed": is_passed, "verdict": verdict})
             # agent 跑完了就是执行成功，结论进 result：判定失败不等于节点执行异常。
+            refs.append(ArtifactRef(
+                name="validated_output", path=store.write_artifact(
+                    run_id, f"agents/{spec.name}.validated.json", dump_model(view), task_id,
+                ), task_id=task_id,
+            ))
             conclusion = (
                 ("MANUAL" if view.result == "failed" and view.change_plan.get("scope") == "manual"
                  else "FAIL" if view.result == "failed" else None)
@@ -770,8 +884,6 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
             patch["scope_escalation_required"] = scope_escalation
             if scope_escalation and not change_plan:
                 # 不允许共享层改动在没有可审方案时被重试/收尾悄悄吞掉。
-                source_evidence = locate.get("source_evidence")
-                candidate_files = locate.get("candidate_files")
                 patch.update({
                     "last_result": "manual",
                     "terminal_status": "manual",
@@ -805,7 +917,7 @@ def build_graph(
 ) -> CompiledStateGraph:
     """编译主图。仓库未显式给出时按配置目录新建，不依赖全局单例。
 
-    先编译任务子图，再把它作为节点嵌套进 run 级主图。
+    任务图使用独立检查点，父图只等待当前任务执行至完成或交付审批。
     """
     resolved_config = config or load_config()
     resolved_store = store or RecordStore(resolved_config.runtime_dir)
@@ -815,17 +927,168 @@ def build_graph(
         saver = checkpointer
     resolved_services = services or build_services(config=resolved_config)
     nodes = build_nodes(resolved_store, resolved_services, runtimes, config=resolved_config)
-    task_graph = build_task_graph(
+    detached_graph = build_task_graph(
         nodes,
         workspace_manager=getattr(resolved_services, "workspaces", None),
+        checkpointer=saver,
+        retry_context_builder=lambda state: capture_retry_context(state, resolved_store),
     )
+    from app.workflow.task_execution import invoke_task, task_config, task_result
+
+    def run_task(state: dict[str, Any]) -> dict[str, Any]:
+        state = dict(state)
+        task = dict(state.get("task") or {})
+        previous_context = task.pop("_retry_context", None)
+        state["task"] = task
+        if previous_context:
+            state["retry_context"] = previous_context
+        config = task_config(str(state["run_id"]), str(state["task_id"]))
+        cycle = int(state.get("attempt") or 1)
+        if cycle > 1:
+            config["configurable"]["thread_id"] += f":attempt:{cycle}"
+        pointer = resolved_store.task_dir(str(state["run_id"]), str(state["task_id"])) / "workflow/checkpoint.json"
+        if pointer.is_file():
+            saved = resolved_store.read_artifact(str(state["run_id"]), "workflow/checkpoint.json", str(state["task_id"]))
+            if saved.get("metadata", {}).get("continuation") and saved.get("metadata", {}).get("task_cycle") == cycle:
+                config = saved
+        resolved_store.write_artifact(str(state["run_id"]), "workflow/checkpoint.json",
+                                      config, str(state["task_id"]))
+        snapshot = detached_graph.get_state(config)
+        if not snapshot.values:
+            _seed_legacy_approval(detached_graph, config, resolved_store,
+                                  str(state["run_id"]), str(state["task_id"]))
+            snapshot = detached_graph.get_state(config)
+        value = None if snapshot.values else state
+        result = invoke_task(detached_graph, value, config)
+        return task_result(state, result)
+
     def collect_task(state: dict[str, Any]) -> dict[str, Any]:
         # 收尾报告可能先于分析分支交付生成；只有子图退出才真正收敛任务生命周期。
         patch = collect(state)
-        resolved_store.complete_task(str(state["run_id"]), str(state["task_id"]))
+        if state.get("terminal_status") != "WAITING_APPROVAL":
+            resolved_store.complete_task(str(state["run_id"]), str(state["task_id"]))
         return patch
 
-    return build_state_graph(nodes, task_graph, checkpointer=saver, task_collector=collect_task)
+    # Keep the node name stable so legacy parent cursors can advance after migration.
+    graph = build_state_graph(
+        nodes, detached_graph, checkpointer=saver,
+        task_collector=collect_task, task_runner=run_task,
+    )
+    return graph
+
+
+def _seed_legacy_approval(
+    graph: CompiledStateGraph, checkpoint_config: dict[str, Any], store: RecordStore,
+    run_id: str, task_id: str,
+) -> bool:
+    """Move a legacy approval wait without rerunning delivery or earlier agents."""
+    approval = store.load(run_id, "request_approval", task_id)
+    delivery = store.load(run_id, "prepare_delivery", task_id)
+    if not approval or approval.status != "waiting" or not delivery or delivery.status != "succeeded":
+        return False
+    from app.application.step_runner import state_from_records
+    from app.workflow.routes import DELIVER
+    from app.workflow.task_execution import invoke_task
+
+    state = state_from_records(store, run_id, task_id)
+    # Approval input is the persisted contract actually shown to the reviewer.
+    # Restore it verbatim so migration cannot change the approval fingerprint.
+    for key in (
+        "changed_files", "baseline_manifest", "baseline_dir", "ai_workspace_path",
+        "manual_confirmation_required", "manual_confirmation_reasons", "repair_branch",
+        "delivery_pushed", "delivery_local_branch", "source_repo_path",
+    ):
+        if key in approval.input:
+            state[key] = approval.input[key]
+    from app.workflow.steps.prepare_delivery import _patch as delivery_patch
+    state.update(delivery_patch(delivery.output))
+    claim = store.load(run_id, "claim_repair_slot", task_id)
+    state["repair_slot_claimed"] = bool(claim and claim.output.get("claimed"))
+    state["decision"] = "PENDING"
+    state["last_result"] = "passed"
+    graph.update_state(checkpoint_config, state, as_node=DELIVER)
+    invoke_task(graph, None, checkpoint_config)
+    return True
+
+
+def resume_task_approval(
+    store: RecordStore, run_id: str, task_id: str, payload: dict[str, Any],
+    config: RuntimeConfig, services: WorkflowServices,
+) -> bool:
+    """Resume an independent approval checkpoint, migrating legacy waits as needed."""
+    from langgraph.types import Command
+    from app.workflow.task_execution import invoke_task, task_config
+
+    graph = build_task_graph(
+        build_nodes(store, services, config=config),
+        workspace_manager=getattr(services, "workspaces", None),
+        checkpointer=_checkpoint_saver(config.runtime_dir),
+        retry_context_builder=lambda state: capture_retry_context(state, store),
+    )
+    checkpoint_config = task_config(run_id, task_id)
+    pointer = store.task_dir(run_id, task_id) / "workflow" / "checkpoint.json"
+    if pointer.is_file():
+        checkpoint_config = store.read_artifact(run_id, "workflow/checkpoint.json", task_id)
+    snapshot = graph.get_state(checkpoint_config)
+    if not snapshot.values:
+        if not _seed_legacy_approval(graph, checkpoint_config, store, run_id, task_id):
+            return False
+        snapshot = graph.get_state(checkpoint_config)
+    if not any(task.interrupts for task in snapshot.tasks):
+        raise StepFailed("该任务检查点没有待恢复的审批")
+    if snapshot.values.get("repair_slot_claimed"):
+        from app.workflow.steps.claim_repair_slot.node import renew_claim
+        renew_claim(store.root, run_id=run_id, task_id=task_id)
+    result = invoke_task(graph, Command(resume=payload), checkpoint_config)
+    if not result.get("__interrupt__"):
+        store.complete_task(run_id, task_id)
+    return True
+
+
+def continue_task_after_step(
+    store: RecordStore, run_id: str, task_id: str, step_name: str, payload: dict[str, Any],
+    config: RuntimeConfig, services: WorkflowServices,
+) -> dict[str, Any]:
+    """Continue the selected task through authoritative routers without rerunning the step."""
+    import uuid
+    import re
+    from app.application.step_runner import state_from_records
+    from app.workflow.task_execution import task_config, invoke_task
+
+    state = {**state_from_records(store, run_id, task_id), **payload}
+    record = store.load(run_id, step_name, task_id)
+    state["attempt"] = max(int(state.get("attempt") or 1), int(record.attempt if record else 1))
+    state["automatic_attempt"] = 1
+    state["terminal_status"] = str(payload.get("terminal_status") or "")
+    state["task_summary"] = {}
+    state["max_attempts"] = int(store.load_run(run_id).get("max_attempts") or config.max_attempts)
+    nodes = build_nodes(store, services, config=config)
+    owner = next((name for name, members in PHASE_COMPOSITIONS.items() if step_name in members), step_name)
+    partial = owner != step_name
+    if partial:
+        state["continuation"] = {"after_step": step_name, "started_at": utc_now()}
+    saver = _checkpoint_saver(config.runtime_dir)
+    graph = build_task_graph(nodes, workspace_manager=getattr(services, "workspaces", None),
+                             checkpointer=saver, entry_node=owner if partial else None,
+                             retry_context_builder=lambda value: capture_retry_context(value, store))
+    checkpoint = task_config(run_id, task_id)
+    cycle = 1
+    pointer = store.task_dir(run_id, task_id) / "workflow/checkpoint.json"
+    if pointer.is_file():
+        old = store.read_artifact(run_id, "workflow/checkpoint.json", task_id)
+        match = re.search(r":attempt:(\d+)$", str(old.get("configurable", {}).get("thread_id") or ""))
+        cycle = int(old.get("metadata", {}).get("task_cycle") or (match.group(1) if match else 1))
+    checkpoint["configurable"]["thread_id"] += ":step:" + uuid.uuid4().hex
+    checkpoint["metadata"] = {"continuation": True, "task_cycle": cycle}
+    store.write_artifact(run_id, "workflow/checkpoint.json", checkpoint, task_id)
+    if partial:
+        result = invoke_task(graph, state, checkpoint)
+    else:
+        graph.update_state(checkpoint, state, as_node=owner)
+        result = invoke_task(graph, None, checkpoint)
+    if not result.get("__interrupt__"):
+        store.complete_task(run_id, task_id)
+    return result
 
 
 __all__ = [
@@ -834,4 +1097,5 @@ __all__ = [
     "build_nodes",
     "build_services",
     "close_checkpoints",
+    "resume_task_approval",
 ]

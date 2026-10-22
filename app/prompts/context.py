@@ -57,7 +57,7 @@ def prompt_context(
         framework=framework,
         problem=problem,
         source_snapshot=source_snapshot or {},
-        evidence=evidence,
+        evidence={**evidence, **({"previous_attempt": state["retry_context"]} if state.get("retry_context") else {})},
         changed_files=changed_files,
         diff_summary=diff_summary,
         gate_results=gate_results or {},

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from config.settings import settings
@@ -14,10 +15,10 @@ def _control_flags(runtime_dir: str | Path, run_id: str) -> tuple[bool, bool]:
     if not run_id or not database.is_file():
         return False, False
     try:
-        with sqlite3.connect(
+        with closing(sqlite3.connect(
             str(database),
             timeout=settings.workbench_control_read_timeout_seconds,
-        ) as connection:
+        )) as connection:
             columns = {row[1] for row in connection.execute("PRAGMA table_info(run_control)")}
             names = [name for name in ("pause_requested", "cancel_requested") if name in columns]
             if not names:

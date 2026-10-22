@@ -36,6 +36,10 @@ class SourceRepoCancelled(SourceRepoError):
     """Run 收到用户停止请求，已主动终止当前 Git 子进程。"""
 
 
+class SourceRepoPaused(SourceRepoCancelled):
+    """Run 请求暂停，Git 已退出并可从同步节点重新开始。"""
+
+
 # 同一进程内的运行串行同步镜像；不同进程共享镜像属于部署错误，不在处理范围。
 _SYNC_LOCK = threading.Lock()
 _logger = logging.getLogger(__name__)
@@ -278,30 +282,27 @@ def _run_git(
             text=True,
             encoding="utf-8",
             errors="replace",
+            start_new_session=os.name != "nt",
         )
         started = time.monotonic()
         while True:
             if cancel_requested and cancel_requested():
-                process.terminate()
-                try:
-                    process.communicate(timeout=2)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.communicate()
                 raise SourceRepoCancelled("Run 已请求停止，已终止正在执行的 Git 命令")
             remaining = timeout - (time.monotonic() - started)
             if remaining <= 0:
-                process.kill()
-                stdout, stderr = process.communicate()
-                raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr)
+                raise subprocess.TimeoutExpired(command, timeout)
             try:
                 stdout, stderr = process.communicate(timeout=min(0.5, remaining))
                 break
             except subprocess.TimeoutExpired:
                 continue
     except SourceRepoCancelled:
+        if process is not None:
+            _terminate_git_process(process)
         raise
     except subprocess.TimeoutExpired as error:
+        if process is not None:
+            _terminate_git_process(process)
         raise SourceRepoError(
             f"Git 命令超时: git {' '.join(_redact_args(args))}"
         ) from error
@@ -315,6 +316,38 @@ def _run_git(
             f"Git 命令失败（git {' '.join(_redact_args(args))}）: {detail[-1500:]}"
         )
     return stdout
+
+
+def _terminate_git_process(process: subprocess.Popen[str]) -> None:
+    """Terminate this Git process tree and bound pipe draining on every platform."""
+    if os.name == "nt":
+        # git.exe launches remote helpers that inherit stdout/stderr. Killing only
+        # the root leaves those pipes open, so communicate() can wait forever.
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=5, check=False,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            _logger.warning("终止 Git 进程树失败 pid=%s", process.pid)
+    else:
+        import signal
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
+    if process.poll() is None:
+        try:
+            process.kill()
+        except OSError:
+            pass
+    try:
+        process.communicate(timeout=2)
+    except subprocess.TimeoutExpired:
+        # Never wait without a deadline, including when a remote helper is stuck.
+        _logger.warning("Git 管道回收超时 pid=%s", process.pid)
 
 
 def _redact_args(args: list[str]) -> list[str]:

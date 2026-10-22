@@ -52,6 +52,7 @@ class ClaudeSessionProvider(RepairProvider):
 
     def run(self, request: AgentRequest) -> dict[str, Any]:
         """在常驻会话中提交任务提示词。同一任务跨重试轮复用会话。"""
+        from app.agents.output_schema import output_schema
         ToolPolicy.validate(request)
         from app.infrastructure.runtime import drop_session, session_scope
 
@@ -65,6 +66,7 @@ class ClaudeSessionProvider(RepairProvider):
                 request.workspace,
                 self.env,
                 request.system_prompt,
+                output_schema=output_schema("repair"),
                 tools=self.config.tools or None,
                 writable=self.config.writable,
                 max_turns=self.config.max_turns,
@@ -96,6 +98,7 @@ class ClaudeQueryProvider(RepairProvider):
 
     def run(self, request: AgentRequest) -> dict[str, Any]:
         """以一次性查询方式调用智能体。"""
+        from app.agents.output_schema import output_schema
         try:
             ToolPolicy.validate(request)
             if request.write_root is None:
@@ -113,6 +116,7 @@ class ClaudeQueryProvider(RepairProvider):
                 timeout_seconds=self.config.timeout_seconds,
                 allowed_roots=request.allowed_read_roots,
                 allowed_write_roots=request.allowed_write_roots,
+                output_schema=output_schema("repair"),
             ))
         except TimeoutError:
             return {"passed": False, "reason": "AGENT_TIMEOUT"}
