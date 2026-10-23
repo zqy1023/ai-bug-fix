@@ -349,5 +349,7 @@ export interface StepDetailResponse {
   task_id: string;
   step: StepRecord;
   artifacts: ArtifactRef[];
+  artifact_count?: number;
   model_call_ids: string[];
+  model_call_count?: number;
 }
