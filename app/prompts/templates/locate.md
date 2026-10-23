@@ -186,9 +186,9 @@
 `acceptance_contract` 必须是对象，包含：
 - `business_goal`：修复后应实现的业务结果，不能只写“异常消失”或“测试通过”。
 - `reproduction`：基线版本如何复现或证明原始失败行为；缺少可重放输入时，明确写出证据限制。
-- `required_assertions`：修复后必须满足的可观察断言，至少一项，具体到结果/协议/状态，不得仅描述过程。
-- `regression_cases`：至少一项需要保护的正常、边界或相关回归场景；若当前没有可执行样本，明确写出限制与替代验证。
-- `verification_methods`：至少一种具体验证方法，例如原始响应重放、受控真实请求、确定性测试或结果结构断言。
+- `required_assertions`：修复后必须满足的可观察业务断言，至少一项；每项是对象，包含唯一 `assertion_id`（如 `business_result_1`）、`expected`（具体结果/协议/状态）和 `verification_method`。
+- `regression_cases`：至少一项需要保护的正常、边界或相关回归场景；每项同样包含唯一 `assertion_id`、`expected` 和 `verification_method`，且必须使用 `request_regression`。
+- `verification_methods`：至少一种具体验证方法，例如原始响应重放、受控真实请求或确定性测试。验收项的 `verification_method` 只能是 `original_response_replay`（验证原始异常回放）或 `request_regression`（验证真实请求/回归）；不能用语法检查代替业务断言。
 - `assumptions`：所有影响预期结果的假设；没有则空数组。
 - `known_limitations`：无法验证的事项及原因；没有则空数组。
 
