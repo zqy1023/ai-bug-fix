@@ -44,6 +44,7 @@ class WorkflowState(TypedDict, total=False):
     acceptance_contract: dict[str, Any]
     acceptance_contract_id: str
     acceptance_contract_meta: dict[str, Any]
+    acceptance_contract_artifact: str
     validation_summary: dict[str, Any]
     validation_decision: dict[str, Any]
     validation_recovery_counts: dict[str, int]
