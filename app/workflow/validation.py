@@ -8,8 +8,9 @@ from app.workflow.spec import FrozenModel
 
 from app.workflow.evidence_version import evidence_version
 from app.workflow.steps.verify_issue.assessment import changed_functions, verification_is_complete
+from app.agents.locate.models import AcceptanceContract
 
-WORKFLOW_VERSION = 5
+WORKFLOW_VERSION = 6
 PLAN = "plan_validation"
 SUMMARY = "summarize_validation"
 DECIDE = "decide_validation"
@@ -17,8 +18,10 @@ RECOVERY_TARGETS = {"validate_changes", "verify_issue", "run_regression", "revie
 
 
 class ValidationPlan(FrozenModel):
-    workflow_version: Literal[5]
+    workflow_version: Literal[6]
     plan_id: str
+    acceptance_contract_id: str
+    acceptance_contract: dict[str, Any]
     evidence_version: dict[str, Any]
     gate_policy_id: str
     changed_files: list[str]
@@ -41,8 +44,9 @@ class VerificationFact(FrozenModel):
 
 
 class ValidationSummary(FrozenModel):
-    workflow_version: Literal[5]
+    workflow_version: Literal[6]
     plan_id: str
+    acceptance_contract_id: str
     evidence_version: dict[str, Any]
     stale: bool
     dimensions: dict[str, VerificationFact]
@@ -50,7 +54,7 @@ class ValidationSummary(FrozenModel):
 
 
 class ValidationDecision(FrozenModel):
-    workflow_version: Literal[5]
+    workflow_version: Literal[6]
     plan_id: str | None
     action: Literal["retry", "repair", "deliver", "blocked"]
     target: Literal["", "repair_agent", "validate_changes", "verify_issue", "run_regression", "review_agent"]
@@ -65,10 +69,68 @@ def fingerprint(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
 
 
+def freeze_acceptance_contract(state: dict[str, Any], locate: dict[str, Any]) -> dict[str, Any]:
+    """工作流独立校验并冻结根因 Agent 在修改前提出的验收契约。"""
+    if str(locate.get("status") or "").upper() != "LOCATED":
+        raise ValueError("只有根因定位成功时才能冻结验收契约")
+    contract = AcceptanceContract.model_validate(locate.get("acceptance_contract")).model_dump(mode="json")
+    problem = state.get("problem")
+    baseline_manifest = state.get("baseline_manifest")
+    if not isinstance(problem, dict) or not problem:
+        raise ValueError("缺少原始异常事实，不能冻结验收契约")
+    if not isinstance(baseline_manifest, dict) or not baseline_manifest:
+        raise ValueError("缺少修复前基线 manifest，不能冻结验收契约")
+    problem_id = fingerprint(problem)
+    baseline_id = fingerprint(baseline_manifest)
+    contract_id = fingerprint({
+        "version": 1,
+        "contract": contract,
+        "problem_id": problem_id,
+        "baseline_id": baseline_id,
+    })
+    return {
+        "acceptance_contract": contract,
+        "acceptance_contract_id": contract_id,
+        "acceptance_contract_meta": {
+            "version": 1,
+            "stage": "before_repair",
+            "problem_id": problem_id,
+            "baseline_id": baseline_id,
+            "contract_id": contract_id,
+        },
+    }
+
+
+def acceptance_contract_is_current(state: dict[str, Any]) -> bool:
+    """验证冻结契约仍绑定原始问题与同一份修复前基线。"""
+    contract = state.get("acceptance_contract")
+    meta = state.get("acceptance_contract_meta")
+    contract_id = str(state.get("acceptance_contract_id") or "")
+    if not isinstance(contract, dict) or not isinstance(meta, dict) or not contract_id:
+        return False
+    if meta.get("version") != 1 or meta.get("stage") != "before_repair":
+        return False
+    problem_id = fingerprint(state.get("problem") or {})
+    baseline_id = fingerprint(state.get("baseline_manifest") or {})
+    if meta.get("problem_id") != problem_id or meta.get("baseline_id") != baseline_id:
+        return False
+    expected = fingerprint({
+        "version": 1,
+        "contract": contract,
+        "problem_id": problem_id,
+        "baseline_id": baseline_id,
+    })
+    return expected == contract_id == str(meta.get("contract_id") or "")
+
+
 def make_plan(state: dict[str, Any]) -> dict[str, Any]:
+    """修改后绑定实际 diff/符号/版本；验收目标必须来自修改前冻结的契约。"""
     from pathlib import Path
     from app.workflow.steps.check_changes import verification
     problem = dict(state.get("problem") or {})
+    if not acceptance_contract_is_current(state):
+        raise ValueError("修改前验收契约缺失、被改写或已脱离原始问题/基线，禁止建立验证计划")
+    contract = dict(state["acceptance_contract"])
     request = problem.get("req") or {}
     if isinstance(request, str):
         try:
@@ -81,17 +143,25 @@ def make_plan(state: dict[str, Any]) -> dict[str, Any]:
     files = list(state.get("changed_files") or [])
     version = evidence_version(state["ai_workspace_path"], files, state["baseline_dir"])
     if not state.get("check_passed") or not state.get("syntax_passed"):
-        raise ValueError("范围与语法检查尚未通过，不能建立验证计划")
+        raise ValueError("范围与语法检查尚未通过，不能绑定验证证据")
     functions = changed_functions(Path(state["ai_workspace_path"]), Path(state["baseline_dir"]), files)
-    plan = {"workflow_version": WORKFLOW_VERSION, "evidence_version": version,
-            "gate_policy_id": hashlib.sha256(Path(verification.__file__).read_bytes()).hexdigest(),
-            "changed_files": files, "changed_symbols": functions,
-            "input_id": fingerprint(problem), "has_original_response": bool(body),
-            "original_error": str(problem.get("error") or problem.get("raw_error") or ""),
-            "issue_required": True, "request_required": True,
-            "sample_policy": "original_recording_and_actual_request",
-            "acceptance": ["原始异常在基线复现且修复后符合框架协议", "原请求通过 server_dev.main 执行并核对实际结果"],
-            "review_mode": state.get("review_mode", "agent")}
+    plan = {
+        "workflow_version": WORKFLOW_VERSION,
+        "acceptance_contract_id": state["acceptance_contract_id"],
+        "acceptance_contract": contract,
+        "evidence_version": version,
+        "gate_policy_id": hashlib.sha256(Path(verification.__file__).read_bytes()).hexdigest(),
+        "changed_files": files,
+        "changed_symbols": functions,
+        "input_id": fingerprint(problem),
+        "has_original_response": bool(body),
+        "original_error": str(problem.get("error") or problem.get("raw_error") or ""),
+        "issue_required": True,
+        "request_required": True,
+        "sample_policy": "original_recording_and_actual_request",
+        "acceptance": [str(item) for item in contract["required_assertions"]],
+        "review_mode": state.get("review_mode", "agent"),
+    }
     plan["plan_id"] = fingerprint(plan)
     return ValidationPlan.model_validate(plan).model_dump(mode="json")
 
@@ -106,6 +176,9 @@ def summarize(state: dict[str, Any]) -> dict[str, Any]:
     current = evidence_version(state["ai_workspace_path"], state.get("changed_files") or [], state["baseline_dir"])
     stale = (plan.get("plan_id") != fingerprint({k: v for k, v in plan.items() if k != "plan_id"})
              or current != version or fingerprint(state.get("problem") or {}) != plan["input_id"]
+             or not acceptance_contract_is_current(state)
+             or plan.get("acceptance_contract_id") != state.get("acceptance_contract_id")
+             or plan.get("acceptance_contract") != state.get("acceptance_contract")
              or not state.get("check_passed") or not state.get("syntax_passed")
              or (state.get("gate_result") or {}).get("evidence_version", {}).get("patch_id") != version["patch_id"])
     stale = (stale or plan["gate_policy_id"] != hashlib.sha256(Path(verification.__file__).read_bytes()).hexdigest()
@@ -135,6 +208,7 @@ def summarize(state: dict[str, Any]) -> dict[str, Any]:
                             "retryable": status == "unverified" and not unavailable,
                             "report_path": report.get("report_path", "")}
     return ValidationSummary.model_validate({"workflow_version": WORKFLOW_VERSION, "plan_id": plan["plan_id"],
+            "acceptance_contract_id": plan["acceptance_contract_id"],
             "evidence_version": version, "stale": stale, "dimensions": dimensions,
             "changed_symbols": plan["changed_symbols"]}).model_dump(mode="json")
 
