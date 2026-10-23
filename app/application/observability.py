@@ -40,6 +40,9 @@ def _project_output(name: str, output: Any) -> dict[str, Any]:
         "finalize_execution": common + ("result", "terminal_step"),
     }
     selected = _pick(output, fields.get(name, common))
+    raw_output = output if isinstance(output, dict) else {}
+    if name == "repair_agent" and isinstance(raw_output.get("changed_files"), list):
+        selected["changed_files_count"] = len(raw_output["changed_files"])
     if name == "locate_agent":
         evidence = selected.get("source_evidence")
         if isinstance(evidence, list):
@@ -57,6 +60,9 @@ def _project_output(name: str, output: Any) -> dict[str, Any]:
         claim = selected.get("claim")
         if isinstance(claim, dict):
             selected["claim"] = _pick(claim, ("actual", "declared", "missing", "extra", "passed", "reason"))
+            raw_claim = raw_output.get("claim")
+            if isinstance(raw_claim, dict) and isinstance(raw_claim.get("actual"), list):
+                selected["claim"]["actual_count"] = len(raw_claim["actual"])
         scope = selected.get("scope")
         if isinstance(scope, dict):
             selected["scope"] = _pick(scope, ("diffable", "baseline_files", "passed", "reason", "violations"))
