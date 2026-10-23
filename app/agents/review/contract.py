@@ -9,9 +9,9 @@ from dataclasses import dataclass
 from typing import Any
 
 RESULT_VALUES = ("PASS", "FAIL", "MANUAL")
-REVIEW_CONTRACT_VERSION = 5
+REVIEW_CONTRACT_VERSION = 6
 # 需要跟着任务状态长期携带的字段：结论、公开发现项与回修要求。
-RESULT_FIELDS = ("verdict", "passed", "code_verdict", "coverage", "summary", "findings", "required_changes", "change_plan")
+RESULT_FIELDS = ("verdict", "passed", "code_verdict", "coverage", "summary", "findings", "required_changes", "change_plan", "acceptance_results")
 _MAX_FIELD_CHARS = 4000
 _MAX_ITEMS = 20
 
