@@ -1508,9 +1508,10 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
         }
     artifacts = []
     artifact_count = 0
-    for step in steps:
+    for raw_step, step in zip(raw_steps, steps):
+        raw_refs = raw_step.get("artifacts") or [] if isinstance(raw_step, dict) else []
+        artifact_count += len(raw_refs)
         refs = step.get("artifacts") or []
-        artifact_count += len(refs)
         for ref in refs:
             if len(artifacts) >= 40:
                 break
