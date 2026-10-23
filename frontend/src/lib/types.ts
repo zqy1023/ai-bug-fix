@@ -136,6 +136,7 @@ export interface TaskDetailResponse {
   config: Record<string, unknown>;
   task: TaskSummary & { steps: StepRecord[]; report: WorkflowReport };
   artifacts: ArtifactRef[];
+  artifact_count?: number;
 }
 
 export interface WorkflowStage {
