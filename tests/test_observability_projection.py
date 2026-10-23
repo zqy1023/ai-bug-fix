@@ -87,3 +87,21 @@ def test_incident_and_report_projection_keep_only_display_contract_fields() -> N
     assert report["terminal_step"] == "prepare_delivery"
     assert "prompt_dump" not in report
     assert "full_diff" not in report
+
+
+
+def test_verified_change_count_is_exact_while_file_list_is_bounded() -> None:
+    record = {
+        "name": "check_changes",
+        "status": "succeeded",
+        "output": {
+            "claim": {"actual": [f"carrier_{index}.py" for index in range(25)], "declared": []},
+            "files": [{"path": f"carrier_{index}.py", "status": "modified"} for index in range(25)],
+        },
+    }
+
+    projected = project_step(record)
+
+    assert projected["output"]["claim"]["actual_count"] == 25
+    assert len(projected["output"]["claim"]["actual"]) == 8
+    assert len(projected["output"]["files"]) <= 20
