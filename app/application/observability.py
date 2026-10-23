@@ -135,6 +135,8 @@ def project_step(record: Any, *, include_raw: bool = False) -> dict[str, Any]:
     if include_raw:
         result["output"] = source.get("output") if isinstance(source.get("output"), dict) else {}
         result["input"] = source.get("input") if isinstance(source.get("input"), dict) else {}
+        if isinstance(error, dict):
+            result["error"] = {str(key): value for key, value in error.items()}
     return result
 
 
