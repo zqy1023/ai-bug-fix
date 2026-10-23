@@ -2171,7 +2171,7 @@ def _reinvestigate_task(run_id: str, task_id: str, background: BackgroundTasks) 
     task = {**original, "problem_key": str(original.get("problem_key") or task_id) + "-revision-" + new_id[:8]}
     task.pop("repair_branch", None)
     task["_workflow_attempt"] = 1
-    metadata = {**store.load_run(run_id), "parent_run_id": run_id, "parent_task_id": task_id,
+    metadata = {**store.load_run(run_id), "workflow_version": 6, "parent_run_id": run_id, "parent_task_id": task_id,
                 "reinvestigation": True, "startup_state": "started"}
     store.create_run(new_id, metadata)
     artifact_dir = store.run_dir(run_id) / "artifacts"
@@ -2183,7 +2183,7 @@ def _reinvestigate_task(run_id: str, task_id: str, background: BackgroundTasks) 
         payload = record.model_dump()
         payload["input"] = {**payload.get("input", {}), "run_id": new_id} if "run_id" in payload.get("input", {}) else payload.get("input", {})
         store.save(new_id, StepRecord.model_validate(payload))
-    values.update(run_id=new_id, tasks=[task], task_cursor=0, task_results=[], task_id="", task={},
+    values.update(run_id=new_id, workflow_version=6, tasks=[task], task_cursor=0, task_results=[], task_id="", task={},
                   attempt=1, automatic_attempt=1, terminal_status="", task_summary={}, last_result="passed")
     graph.update_state({"configurable": {"thread_id": new_id}}, values, as_node=IDENTIFY)
     LifecycleStore(store.root).update_run(new_id, status="queued", worker_active=False, phase="reinvestigation")
