@@ -1,4 +1,4 @@
-from app.application.observability import project_step
+from app.application.observability import project_problem, project_report, project_step
 
 
 def test_step_projection_omits_bulk_input_and_unrelated_output_by_default() -> None:
@@ -58,3 +58,32 @@ def test_step_error_is_shortened_for_default_ui_projection() -> None:
     assert len(projected["error"]["message"]) <= 360
     assert projected["input"] == {"analysis_only": True, "report_paths": ["reports/final.json"]}
     assert "full_traceback" not in projected["output"]
+
+
+
+def test_incident_and_report_projection_keep_only_display_contract_fields() -> None:
+    problem = project_problem({
+        "service_name": "carrier_spider",
+        "error": "time parse failed",
+        "raw_error": "raw exception",
+        "full_log": "x" * 10000,
+        "request_body": "secret body",
+    })
+    report = project_report({
+        "result": "FAILED",
+        "terminal_step": "prepare_delivery",
+        "terminal_reason": "clone failed",
+        "next_action": "retry after fixing Git configuration",
+        "prompt_dump": "y" * 10000,
+        "full_diff": "z" * 10000,
+    })
+
+    assert problem == {
+        "service_name": "carrier_spider",
+        "error": "time parse failed",
+        "raw_error": "raw exception",
+    }
+    assert report["result"] == "FAILED"
+    assert report["terminal_step"] == "prepare_delivery"
+    assert "prompt_dump" not in report
+    assert "full_diff" not in report
