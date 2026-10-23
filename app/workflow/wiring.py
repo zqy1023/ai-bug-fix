@@ -900,7 +900,21 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
                 # 根因 Agent 与验收方案一次输出；工作流独立校验后，在任何 repair 调用前冻结。
                 try:
                     from app.workflow.validation import freeze_acceptance_contract
-                    patch.update(freeze_acceptance_contract(state, patch["locate"]))
+                    frozen_contract = freeze_acceptance_contract(state, patch["locate"])
+                    contract_path = store.write_artifact(
+                        run_id, "acceptance/contract.json", frozen_contract, task_id,
+                    )
+                    refs.append(ArtifactRef(
+                        name="acceptance_contract",
+                        path=contract_path,
+                        task_id=task_id,
+                    ))
+                    record.artifacts = list(refs)
+                    store.save(
+                        run_id, record, task_id,
+                        input_view=spec.input_record, output_view=spec.output_record,
+                    )
+                    patch.update(frozen_contract, acceptance_contract_artifact=contract_path)
                 except (TypeError, ValueError) as error:
                     locate_payload = dict(patch["locate"])
                     locate_payload.update({
