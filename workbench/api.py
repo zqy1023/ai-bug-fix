@@ -21,7 +21,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, 
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
-from app.application.observability import project_step
+from app.application.observability import project_problem, project_report, project_step
 
 from app.infrastructure.config import load_config
 from app.infrastructure.records.store import RecordStore
@@ -1533,11 +1533,11 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
         "task": {
             "task_id": task_id, "carrier": source.get("carrier", ""),
             "biztype": source.get("biztype", ""), "result": source.get("status", "PENDING"),
-            "problem": source.get("problem") or {}, "approval_pending": bool(source.get("approval_pending")),
+            "problem": project_problem(source.get("problem") or {}), "approval_pending": bool(source.get("approval_pending")),
             "lifecycle": source.get("lifecycle") if isinstance(source.get("lifecycle"), dict) else {},
             "current_step": str((source.get("lifecycle") or {}).get("current_step") or ""),
             "attempt": int((source.get("lifecycle") or {}).get("attempt") or 0),
-            "steps": steps, "report": report,
+            "steps": steps, "report": project_report(report),
         },
         "artifacts": artifacts,
         "config": {
