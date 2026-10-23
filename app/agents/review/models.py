@@ -60,6 +60,17 @@ class CoverageAssessment(FrozenModel):
     missing_checks: list[str] = Field(default_factory=list)
 
 
+class AcceptanceReviewResult(FrozenModel):
+    """审查 Agent 对单条验收项的证据核对结果。"""
+
+    assertion_id: str
+    status: Literal["passed", "failed", "unverified"]
+    actual: str = ""
+    evidence_refs: list[str] = Field(default_factory=list)
+    evidence_version: dict[str, Any] = Field(default_factory=dict)
+    reason: str = ""
+
+
 class ReviewAgentOutput(FrozenModel):
     """审查步骤对外只留结论、发现项和回修要求。
 
@@ -95,4 +106,4 @@ class ReviewView(ReviewAgentOutput):
     review_notes: str = ""
 
 
-__all__ = ["ReviewAgentOutput", "ReviewInput", "ReviewView"]
+__all__ = ["AcceptanceReviewResult", "ReviewAgentOutput", "ReviewInput", "ReviewView"]
