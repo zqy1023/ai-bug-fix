@@ -608,9 +608,21 @@ class GitBranchDelivery:
         _cleanup_quietly(target)
         try:
             _clone_repo(git_root, target)
+        except DeliveryError as error:
+            _cleanup_quietly(target)
+            raise DeliveryError(
+                f"交付工作区克隆失败: {git_root}；{error}",
+                status=error.status,
+                branch_workspace_path=str(target),
+            ) from error
         except Exception as error:
             _cleanup_quietly(target)
-            raise DeliveryError(f"交付工作区克隆失败: {git_root}") from error
+            detail = redact_output(f"{type(error).__name__}: {error}")[:800]
+            raise DeliveryError(
+                f"交付工作区克隆失败: {git_root}；{detail}",
+                status="GIT_CLONE_FAILED",
+                branch_workspace_path=str(target),
+            ) from error
         return target
 
     def _repo_root(self, source_repo: Any) -> Path:
