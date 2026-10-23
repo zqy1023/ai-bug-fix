@@ -60,7 +60,7 @@ def prepare_run(
     resolved = run_id or uuid.uuid4().hex
     store = RecordStore(config.runtime_dir)
     metadata = {
-        "workflow_version": 5,
+        "workflow_version": 6,
         "source_repo_path": str(config.source_repo),
         "project_subdir": str(config.project_subdir or ""),
         "log_service_name": config.log_service_name,
