@@ -40,21 +40,44 @@ def _project_output(name: str, output: Any) -> dict[str, Any]:
         "finalize_execution": common + ("result", "terminal_step"),
     }
     selected = _pick(output, fields.get(name, common))
+    if name == "locate_agent":
+        evidence = selected.get("source_evidence")
+        if isinstance(evidence, list):
+            selected["source_evidence"] = [
+                _pick(item, ("path", "symbol", "finding", "line", "line_start", "line_end"))
+                for item in evidence[:8] if isinstance(item, dict)
+            ]
     if name == "check_changes":
         files = selected.get("files")
         if isinstance(files, list):
             selected["files"] = [
                 _pick(item, ("path", "status", "added", "removed"))
-                for item in files[:30] if isinstance(item, dict)
+                for item in files[:20] if isinstance(item, dict)
             ]
+        claim = selected.get("claim")
+        if isinstance(claim, dict):
+            selected["claim"] = _pick(claim, ("actual", "declared", "missing", "extra", "passed", "reason"))
+        scope = selected.get("scope")
+        if isinstance(scope, dict):
+            selected["scope"] = _pick(scope, ("diffable", "baseline_files", "passed", "reason", "violations"))
+        totals = selected.get("totals")
+        if isinstance(totals, dict):
+            selected["totals"] = _pick(totals, ("files", "added", "removed"))
     if name == "verify_issue":
         verification = selected.get("verification")
         if isinstance(verification, dict):
-            selected["verification"] = _pick(verification, ("goal", "assertions", "limitations"))
+            verification = _pick(verification, ("goal", "assertions", "limitations"))
+            assertions = verification.get("assertions")
+            if isinstance(assertions, list):
+                verification["assertions"] = [
+                    _pick(item, ("key", "label", "status", "expected", "actual", "reason", "evidence_ref"))
+                    for item in assertions[:8] if isinstance(item, dict)
+                ]
+            selected["verification"] = verification
     if name == "run_regression":
         request = selected.get("request_regression")
         if isinstance(request, dict):
-            request = _pick(request, ("entrypoint", "reason", "items", "business_observation"))
+            request = _pick(request, ("entrypoint", "reason", "items"))
             if isinstance(request.get("items"), list):
                 request["items"] = [
                     _pick(item, ("request_number", "error_type", "event_count", "error_msg"))
@@ -107,3 +130,20 @@ def project_step(record: Any, *, include_raw: bool = False) -> dict[str, Any]:
         result["output"] = source.get("output") if isinstance(source.get("output"), dict) else {}
         result["input"] = source.get("input") if isinstance(source.get("input"), dict) else {}
     return result
+
+
+
+def project_problem(problem: Any) -> dict[str, Any]:
+    """Return only the incident fields needed in the task header and root-cause card."""
+    fields = ("service_name", "carrier", "biztype", "error_type", "error", "raw_error",
+              "request_number", "timestamp", "log_excerpt")
+    return _pick(problem, fields)
+
+
+def project_report(report: Any) -> dict[str, Any]:
+    """Keep the terminal contract while omitting bulky report payloads from the task API."""
+    fields = ("report_version", "report_kind", "run_id", "task_id", "carrier", "biztype",
+              "result", "status", "terminal_status", "terminal_step", "terminal_reason",
+              "next_action", "finished_at", "elapsed_ms", "tokens", "change_summary",
+              "completed_steps", "legacy_report", "service_name")
+    return _pick(report, fields)
