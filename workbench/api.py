@@ -1269,7 +1269,8 @@ def _settle_task_lifecycles_after_run_failure(
     reason: str,
     next_action: str,
 ) -> None:
-    from app.application.audit import StepError
+    from app.application.observability import project_step
+from app.application.audit import StepError
 
     lifecycle = LifecycleStore(store.root)
     payload = _read_json(store.steps_path(run_id), {})
@@ -1490,7 +1491,8 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
     source = next((item for item in payload.get("tasks", []) if item.get("task_id") == task_id), None)
     if source is None:
         raise HTTPException(status_code=404, detail="该执行中不存在此任务")
-    steps = list(source.get("steps") or [])
+    raw_steps = list(source.get("steps") or [])
+    steps = [project_step(step) for step in raw_steps]
     report = source.get("report") if isinstance(source.get("report"), dict) else {}
     if not report:
         last = steps[-1] if steps else {}
@@ -2415,8 +2417,9 @@ def v1_retry_task(
 @router.get("/api/v1/runs/{run_id}/tasks/{task_id}/steps/{step_name}")
 def v1_get_step(
     run_id: str, task_id: str, step_name: str, _: None = Depends(_authorize),
+    include_raw: bool = Query(default=False),
 ) -> dict[str, Any]:
-    """单步详情：步骤记录、产物引用、关联模型调用与脱敏上下文。"""
+    """单步详情默认返回轻量投影；仅用户主动展开诊断时才返回原始输入输出。"""
     run_id, task_id, step_name = _safe_id(run_id), _safe_id(task_id), _safe_id(step_name)
     store = _store()
     _run_payload(store, run_id)
@@ -2442,7 +2445,7 @@ def v1_get_step(
     return {
         "run_id": run_id,
         "task_id": task_id,
-        "step": record.model_dump(mode="json"),
+        "step": project_step(record, include_raw=include_raw),
         "artifacts": [ref.model_dump(mode="json") for ref in record.artifacts],
         "model_call_ids": [str(item.get("model_call_id") or "") for item in calls],
         "context": _step_context(record),
