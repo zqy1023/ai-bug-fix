@@ -64,25 +64,39 @@ class SourceEvidence(FrozenModel):
     snippet: str = ""
 
 
+class AcceptanceAssertion(FrozenModel):
+    """一条可追溯的验收项，必须声明由哪类业务证据验证。"""
+
+    assertion_id: str = Field(min_length=3, pattern=r"^[a-z][a-z0-9_]{2,63}$")
+    expected: str = Field(min_length=8)
+    verification_method: Literal["original_response_replay", "request_regression"]
+
+
 class AcceptanceContract(FrozenModel):
     """根因 Agent 在修改前提出的可执行验收方案；工作流随后冻结其版本。"""
 
     business_goal: str = Field(min_length=8)
     reproduction: list[str] = Field(min_length=1)
-    required_assertions: list[str] = Field(min_length=1)
-    regression_cases: list[str] = Field(min_length=1)
+    required_assertions: list[AcceptanceAssertion] = Field(min_length=1)
+    regression_cases: list[AcceptanceAssertion] = Field(min_length=1)
     verification_methods: list[str] = Field(min_length=1)
     assumptions: list[str] = Field(default_factory=list)
     known_limitations: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_actionable_items(self) -> AcceptanceContract:
-        for field_name in ("reproduction", "required_assertions", "regression_cases", "verification_methods"):
+        for field_name in ("reproduction", "verification_methods"):
             values = getattr(self, field_name)
             if not values or any(not isinstance(value, str) or not value.strip() for value in values):
                 raise ValueError(f"验收方案 {field_name} 必须包含非空、可执行的条目")
         if not self.business_goal.strip():
             raise ValueError("验收方案 business_goal 不能为空")
+        all_items = [*self.required_assertions, *self.regression_cases]
+        ids = [item.assertion_id for item in all_items]
+        if len(ids) != len(set(ids)):
+            raise ValueError("验收方案 assertion_id 必须全局唯一")
+        if any(item.verification_method == "original_response_replay" for item in self.regression_cases):
+            raise ValueError("回归场景必须使用 request_regression 验证")
         return self
 
 
@@ -152,4 +166,4 @@ class LocateOutput(FrozenModel):
         return self
 
 
-__all__ = ["AcceptanceContract", "LocateInput", "LocateOutput", "SourceEvidence"]
+__all__ = ["AcceptanceAssertion", "AcceptanceContract", "LocateInput", "LocateOutput", "SourceEvidence"]
