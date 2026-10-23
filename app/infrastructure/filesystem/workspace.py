@@ -32,6 +32,20 @@ class WorkspaceError(RuntimeError):
     """工作区创建或文件复制失败。"""
 
 
+def _git_long_path_env() -> dict[str, str]:
+    """让当前 Git 进程在首次 checkout 前启用 Windows 长路径支持。
+
+    --config 选项会写入新仓库配置，但 GitPython/不同 Git for Windows 版本
+    对 clone 初始 checkout 的配置时机并不完全一致。环境级配置可确保 clone
+    自身首次物化工作树时就生效，且不修改用户全局 Git 配置。
+    """
+    return {
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "core.longpaths",
+        "GIT_CONFIG_VALUE_0": "true",
+    }
+
+
 def _clone_repo(git_root: Path, target: Path, *, sparse: str = "") -> Repo:
     """克隆源仓库。优先硬链接，跨盘或权限不足时退回普通复制。
 
@@ -48,8 +62,13 @@ def _clone_repo(git_root: Path, target: Path, *, sparse: str = "") -> Repo:
     options = ["--config=core.longpaths=true"]
     if sparse:
         options.append("--sparse")
+    # core.longpaths must be active during clone's *initial checkout*, not merely
+    # after Repo.clone_from returns. This is scoped to the child process, not global.
+    git_env = _git_long_path_env()
     try:
-        repo = Repo.clone_from(str(git_root), str(target), local=True, multi_options=options)
+        repo = Repo.clone_from(
+            str(git_root), str(target), local=True, multi_options=options, env=git_env
+        )
     except Exception as local_error:
         if target.exists():
             # 半成品克隆里可能已有只读的 .git/objects，裸 rmtree 会静默失败，
@@ -59,7 +78,9 @@ def _clone_repo(git_root: Path, target: Path, *, sparse: str = "") -> Repo:
             except OSError:
                 pass
         try:
-            repo = Repo.clone_from(str(git_root), str(target), multi_options=options)
+            repo = Repo.clone_from(
+                str(git_root), str(target), multi_options=options, env=git_env
+            )
         except Exception:
             raise local_error from None
     if sparse:
@@ -122,7 +143,7 @@ class WorkspaceManager:
     }
 
     # 修改过滤行为时递增版本；名单内容本身也参与缓存键。
-    _SHARED_FILTER_VERSION = 1
+    _SHARED_FILTER_VERSION = 2
     _SHARED_SUFFIXES = {
         ".py", ".json", ".js", ".csv", ".txt", ".xml", ".html", ".htm", ".yaml", ".yml",
     }
