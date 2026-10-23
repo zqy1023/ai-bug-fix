@@ -35,9 +35,9 @@ class WorkspaceError(RuntimeError):
 def _git_long_path_env() -> dict[str, str]:
     """让当前 Git 进程在首次 checkout 前启用 Windows 长路径支持。
 
-    --config 选项会写入新仓库配置，但 GitPython/不同 Git for Windows 版本
-    对 clone 初始 checkout 的配置时机并不完全一致。环境级配置可确保 clone
-    自身首次物化工作树时就生效，且不修改用户全局 Git 配置。
+    使用 Git 的环境级配置，避免把 --config 作为 clone 选项传给 GitPython：
+    新版 GitPython 会将该选项识别为不安全参数并抛出 UnsafeOptionError。
+    该配置只影响子进程，不修改用户全局 Git 配置。
     """
     return {
         "GIT_CONFIG_COUNT": "1",
@@ -57,9 +57,10 @@ def _clone_repo(git_root: Path, target: Path, *, sparse: str = "") -> Repo:
     这样共享源码树不必先物化整仓库再删掉。回归和交付工作区需要完整树，
     不传该参数。
     """
-    # clone 的配置必须在首次检出前生效，并保存在新仓库中供后续 checkout 使用。
+    # 长路径配置通过 git_env 注入，不能作为 --config clone 参数传入：
+    # GitPython 会把它视为不安全选项并抛出 UnsafeOptionError。
     # 共享缓存的哈希名和临时后缀会使合法的业务路径超过 Windows 的 MAX_PATH。
-    options = ["--config=core.longpaths=true"]
+    options: list[str] = []
     if sparse:
         options.append("--sparse")
     # core.longpaths must be active during clone's *initial checkout*, not merely
@@ -83,6 +84,10 @@ def _clone_repo(git_root: Path, target: Path, *, sparse: str = "") -> Repo:
             )
         except Exception:
             raise local_error from None
+    # 初次 checkout 已通过进程级 GIT_CONFIG_* 启用长路径；再持久化到本仓库，
+    # 供后续 checkout / sparse-checkout 命令使用，不触碰全局 Git 配置。
+    with repo.config_writer() as config:
+        config.set_value("core", "longpaths", "true")
     if sparse:
         # 非锥形模式：连仓库根目录文件也不检出，只留业务目录。
         repo.git.sparse_checkout("set", "--no-cone", f"/{sparse}/")
