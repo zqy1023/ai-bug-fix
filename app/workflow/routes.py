@@ -138,6 +138,11 @@ def after_locate(state: WorkflowState) -> str:
     locate = state.get("locate") or {}
     if legacy_analysis_required(state):
         return FINALIZE
+    if _result(state) == "passed":
+        from app.workflow.validation import acceptance_contract_is_current
+        if not acceptance_contract_is_current(state):
+            # 定位成功但没有有效的修改前验收契约，禁止领取修复资格。
+            return FINALIZE
     if (
         str(locate.get("recommended_scope") or "") != "carrier"
         or str(locate.get("category") or "") != "carrier"
