@@ -57,7 +57,7 @@ export function StepDetail({ runId, taskId, step, detail, runActive, approvalPen
     ['业务结论', outputRecord.verdict || outputRecord.status || step.result],
     ['修复分支', outputRecord.repair_branch],
     ['Commit', outputRecord.commit],
-    ['实际变更文件', Array.isArray(outputRecord.changed_files) ? outputRecord.changed_files.length : undefined],
+    ['实际变更文件', outputRecord.changed_files_count ?? (Array.isArray(outputRecord.changed_files) ? outputRecord.changed_files.length : undefined)],
   ].filter(([, value]) => value !== undefined && value !== null && value !== '');
   const artifacts = detail?.artifacts?.length ? detail.artifacts : step.artifacts ?? [];
 
