@@ -92,6 +92,7 @@ class ReviewAgentOutput(FrozenModel):
     required_changes: list[str] = Field(default_factory=list)
     # change_plan：字段说明见该模型文档与工作流契约。
     change_plan: ChangePlan | None = None
+    acceptance_results: list[AcceptanceReviewResult] = Field(default_factory=list)
 
 
 class ReviewView(ReviewAgentOutput):
