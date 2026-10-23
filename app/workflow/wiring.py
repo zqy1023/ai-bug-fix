@@ -896,6 +896,26 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
         if kind == "locate":
             patch["last_result"] = "manual" if failed else "passed"
             patch["scope_escalation_required"] = bool(final.get("scope_escalation_required")) or bool(view.recommended_scope == "project")
+            if not failed:
+                # 根因 Agent 与验收方案一次输出；工作流独立校验后，在任何 repair 调用前冻结。
+                try:
+                    from app.workflow.validation import freeze_acceptance_contract
+                    patch.update(freeze_acceptance_contract(state, patch["locate"]))
+                except (TypeError, ValueError) as error:
+                    locate_payload = dict(patch["locate"])
+                    locate_payload.update({
+                        "status": "MANUAL",
+                        "recommended_scope": "manual",
+                        "passed": False,
+                        "summary": (str(locate_payload.get("summary") or "") + f"；验收契约冻结失败：{error}").strip("；"),
+                    })
+                    patch.update({
+                        "locate": locate_payload,
+                        "last_result": "manual",
+                        "terminal_status": "manual",
+                        "retry_target": "",
+                        "retry_reason": f"验收契约未能在修改前冻结：{error}",
+                    })
         if kind == "review":
             patch["review_decision"] = str(view.verdict)
             patch["review_contract_error"] = view.contract_error
