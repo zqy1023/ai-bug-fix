@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from app.agents.locate.config import LocateConfig, LocateConfigError
 from app.agents.locate.graph import build
-from app.agents.locate.models import LocateInput, LocateOutput, SourceEvidence
+from app.agents.locate.models import AcceptanceContract, LocateInput, LocateOutput, SourceEvidence
 from app.agents.locate.provider import PROVIDERS, create_provider
 from app.agents.locate.state import LocateState
 from app.workflow.spec import AgentSpec, Dependency, RecordView
@@ -32,6 +32,7 @@ __all__ = [
     "SPEC",
     "LocateConfig",
     "LocateConfigError",
+    "AcceptanceContract",
     "LocateInput",
     "LocateOutput",
     "LocateState",
