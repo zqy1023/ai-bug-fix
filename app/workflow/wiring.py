@@ -930,6 +930,13 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
                         "retry_target": "",
                         "retry_reason": f"验收契约未能在修改前冻结：{error}",
                     })
+                    record.output = locate_payload
+                    record.result = "MANUAL"
+                    record.summary = str(locate_payload.get("summary") or patch["retry_reason"])
+                    store.save(
+                        run_id, record, task_id,
+                        input_view=spec.input_record, output_view=spec.output_record,
+                    )
         if kind == "review":
             patch["review_decision"] = str(view.verdict)
             patch["review_contract_error"] = view.contract_error
@@ -966,11 +973,23 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
             else:
                 if scope_escalation:
                     patch["terminal_status"] = "manual"
+            # 修复 Agent 不能替换冻结契约绑定的基线指针或 manifest。
             baseline = final.get("baseline_manifest")
-            if isinstance(baseline, dict):
-                patch["baseline_manifest"] = {str(key): str(value) for key, value in baseline.items()}
-            if final.get("baseline_dir"):
-                patch["baseline_dir"] = str(final.get("baseline_dir"))
+            if isinstance(baseline, dict) and baseline != dict(state.get("baseline_manifest") or {}):
+                patch.update({
+                    "last_result": "manual",
+                    "terminal_status": "manual",
+                    "retry_target": "",
+                    "blocked_reason": "修复 Agent 返回的 baseline_manifest 与修改前冻结的基线不一致",
+                })
+            returned_baseline_dir = str(final.get("baseline_dir") or "")
+            if returned_baseline_dir and returned_baseline_dir != str(state.get("baseline_dir") or ""):
+                patch.update({
+                    "last_result": "manual",
+                    "terminal_status": "manual",
+                    "retry_target": "",
+                    "blocked_reason": "修复 Agent 返回的 baseline_dir 与修改前冻结的基线不一致",
+                })
         if cancellation_requested(store.root, run_id):
             patch.update({
                 "last_result": "cancelled",
