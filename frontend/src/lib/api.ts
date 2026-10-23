@@ -96,8 +96,8 @@ export const api = {
     request<CheckpointHistoryResponse>('/runs/' + encode(runId) + '/checkpoints?limit=' + limit),
   task: (runId: string, taskId: string) =>
     request<TaskDetailResponse>('/runs/' + encode(runId) + '/tasks/' + encode(taskId)),
-  step: (runId: string, taskId: string, stepName: string) =>
-    request<StepDetailResponse>('/runs/' + encode(runId) + '/tasks/' + encode(taskId) + '/steps/' + encode(stepName)),
+  step: (runId: string, taskId: string, stepName: string, includeRaw = false) =>
+    request<StepDetailResponse>('/runs/' + encode(runId) + '/tasks/' + encode(taskId) + '/steps/' + encode(stepName) + (includeRaw ? '?include_raw=true' : '')),
   runStep: (runId: string, taskId: string, stepName: string, confirmWrite: boolean, continueAfter = true) =>
     request<{ run_id: string; task_id: string; step: string; status: string; accepted: boolean; started_at: string }>(
       '/runs/' + encode(runId) + '/tasks/' + encode(taskId) + '/steps/' + encode(stepName) + '/run',
