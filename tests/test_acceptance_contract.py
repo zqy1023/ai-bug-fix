@@ -159,3 +159,55 @@ def test_unverified_required_acceptance_item_cannot_deliver() -> None:
     assert decision["action"] == "retry"
     assert decision["target"] == "verify_issue"
     assert decision["delivery_eligible"] is False
+
+
+
+def test_delivery_requires_review_of_every_acceptance_item_on_current_patch() -> None:
+    contract = _contract()
+    all_items = [*contract["required_assertions"], *contract["regression_cases"]]
+    summary = {
+        "workflow_version": 6,
+        "plan_id": "plan",
+        "acceptance_contract_id": "contract",
+        "acceptance_contract": contract,
+        "evidence_version": {"patch_id": "patch-1"},
+        "stale": False,
+        "dimensions": {
+            "issue": {"status": "passed", "reason": "回放通过", "retryable": False, "report_path": "artifacts/verification_report.json"},
+            "request": {"status": "passed", "reason": "请求通过", "retryable": False, "report_path": "artifacts/regression_report.json"},
+        },
+        "changed_symbols": [],
+        "acceptance_results": [
+            {"assertion_id": item["assertion_id"], "expected": item["expected"],
+             "verification_method": item["verification_method"], "status": "passed",
+             "retryable": False, "evidence_refs": ["artifacts/verification_report.json"],
+             "evidence_version": {"patch_id": "patch-1"}}
+            for item in all_items
+        ],
+    }
+    review = {
+        "verdict": "PASS",
+        "code_verdict": "PASS",
+        "review_contract_version": 6,
+        "evidence_version": {"patch_id": "patch-1"},
+    }
+    state = {
+        "validation_summary": summary, "review": review, "review_mode": "agent",
+        "automatic_attempt": 1, "max_attempts": 3, "validation_recovery_counts": {},
+    }
+
+    missing_review = decide(state)
+    assert missing_review["action"] == "retry"
+    assert missing_review["target"] == "review_agent"
+    assert missing_review["delivery_eligible"] is False
+
+    review["acceptance_results"] = [
+        {"assertion_id": item["assertion_id"], "status": "passed",
+         "actual": "当前补丁的验证报告支持预期结果",
+         "evidence_refs": ["artifacts/verification_report.json"],
+         "evidence_version": {"patch_id": "patch-1"}, "reason": "已核对"}
+        for item in all_items
+    ]
+    accepted = decide(state)
+    assert accepted["action"] == "deliver"
+    assert accepted["delivery_eligible"] is True
