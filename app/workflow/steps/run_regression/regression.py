@@ -8,16 +8,18 @@ from __future__ import annotations
 
 import hashlib
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
+
+from git import Repo
 
 from app.infrastructure.commands.runner import run_fixed_commands
 from app.infrastructure.filesystem.safe_cleanup import remove_tree
 from app.infrastructure.filesystem.workspace import WorkspaceError, WorkspaceManager
 from app.infrastructure.redaction import public_exception
+from app.workflow.steps.run_regression.environment import prepare_regression_environment
 from config.settings import settings
-from git import Repo
 
 
 class RegressionRunner:
@@ -29,11 +31,13 @@ class RegressionRunner:
         commands: Sequence[Sequence[str]],
         source_repo: str | Path | None = None,
         timeout_seconds: int = settings.command_timeout_seconds,
+        request_executor: Callable[..., dict[str, Any]] | None = None,
     ) -> None:
         self._workspaces = workspace_manager
         self._commands = [list(command) for command in commands]
         self._source_repo = source_repo
         self._timeout_seconds = max(1, int(timeout_seconds))
+        self._request_executor = request_executor
 
     def run(self, state: Mapping[str, Any]) -> dict[str, Any]:
         ai_workspace = state.get("ai_workspace_path")
@@ -41,7 +45,7 @@ class RegressionRunner:
         source_repo = state.get("source_repo_path") or self._source_repo
         if not ai_workspace or not carrier:
             return {"passed": False, "mode": "regression", "reason": "缺少 AI 工作区或 carrier"}
-        if not self._commands:
+        if not self._commands and self._request_executor is None:
             return {"passed": False, "mode": "regression", "reason": "未配置固定准生产回归命令", "regression": {}}
         if not source_repo:
             return {"passed": False, "mode": "regression", "reason": "源仓库未配置，无法建立独立回归环境"}
@@ -86,12 +90,17 @@ class RegressionRunner:
                         ) from retry_error
                     raise
             project = self._workspaces.project_root(workspace)
+            environment = prepare_regression_environment(project) if self._request_executor is not None else {}
             repo = Repo(workspace)
             before = str(repo.head.commit.hexsha)
             status_before = repo.git.status(
                 "--porcelain", "--untracked-files=all", "--ignored=matching"
             )
             hashes_before = _changed_hashes(project, changed)
+            request_result = (
+                self._request_executor(project, dict(state.get("normalized_log") or {}), carrier=str(carrier))
+                if self._request_executor is not None else {}
+            )
             commands_to_run = _commands_for(self._commands, changed, project)
             if commands_to_run:
                 result = run_fixed_commands(project, commands_to_run, timeout_seconds=self._timeout_seconds)
@@ -99,10 +108,25 @@ class RegressionRunner:
                 # 全部命令都是"仅在有 .py 改动时执行"的语法检查且本轮没有 .py 改动：
                 # 没有需要执行的命令，按通过处理，而不是把缺参的原始命令塞回去假失败。
                 result = {"passed": True, "results": [], "reason": "没有需要执行的回归命令"}
+            if request_result:
+                result["environment"] = environment
+                result["request_regression"] = request_result
+                result["results"] = request_result.get("commands", []) + result.get("results", [])
+                result["passed"] = result.get("passed") is True and (
+                    request_result.get("passed") is True or request_result.get("status") == "unverified"
+                )
+                if not request_result.get("passed"):
+                    result["reason"] = request_result.get("reason") or "真实业务请求未通过"
             after = str(repo.head.commit.hexsha)
             status_after = repo.git.status(
                 "--porcelain", "--untracked-files=all", "--ignored=matching"
             )
+            if self._request_executor is not None:
+                # main 初始化日志与 Nacos 本地缓存是入口的正常行为。仅豁免两个
+                # 已被 Git 忽略的运行目录；受跟踪文件、源码和其它新文件仍须对账。
+                status_before, _ = _runtime_status(status_before, workspace, project)
+                status_after, runtime_artifacts = _runtime_status(status_after, workspace, project)
+                result["runtime_artifacts"] = runtime_artifacts
             hashes_after = _changed_hashes(project, changed)
         except WorkspaceError as error:
             reason = public_exception(error, prefix="回归环境建立失败")
@@ -127,7 +151,7 @@ class RegressionRunner:
                 failure["regression"] = result
             return failure
         if not result.get("passed"):
-            return {"passed": False, "mode": "regression", "regression": result, "reason": "准生产回归命令执行失败"}
+            return {"passed": False, "mode": "regression", "regression": result, "reason": result.get("reason") or "准生产回归命令执行失败"}
         if before != after:
             return {
                 "passed": False, "mode": "regression",
@@ -180,6 +204,15 @@ def _changed_hashes(project: Path, changed_files: list[str]) -> dict[str, str]:
         else:
             result[relative] = "MISSING"
     return result
+
+
+def _runtime_status(status: str, workspace: Path, project: Path) -> tuple[str, list[str]]:
+    """仅从状态对账中剔除明确的、被 Git 忽略的入口运行目录。"""
+    prefix = project.relative_to(workspace).as_posix()
+    prefix = "" if prefix == "." else prefix + "/"
+    allowed = {f"!! {prefix}{name}/" for name in ("logs", "nacos-data")}
+    lines = status.splitlines()
+    return "\n".join(line for line in lines if line not in allowed), [line[3:] for line in lines if line in allowed]
 
 
 def _commands_for(

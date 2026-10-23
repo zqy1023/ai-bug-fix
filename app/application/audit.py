@@ -207,6 +207,8 @@ def _business_result(output: dict[str, Any] | None) -> str | None:
     """只提取契约允许的业务结论；不把普通 status 或 decision 值塞进 result。"""
     if not isinstance(output, dict):
         return None
+    if output.get("status") in {"syntax_only", "not_configured", "not_executed"}:
+        return "UNVERIFIED"
     allowed = {
         "UNVERIFIED",
         "LOCATED", "INSUFFICIENT_EVIDENCE", "MANUAL", "PASS", "FAIL",

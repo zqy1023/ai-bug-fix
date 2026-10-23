@@ -51,6 +51,7 @@ class RepairState(TypedDict, total=False):
     # result：该模型字段用于承载对应契约中的结构化数据。
     result: Literal["passed", "failed"]
     passed: bool            # LangGraph 只保留声明过的通道，漏声明会被静默丢弃
+    failure_kind: str
     # raw_result：该模型字段用于承载对应契约中的结构化数据。
     raw_result: str
     # _usage：该模型字段用于承载对应契约中的结构化数据。

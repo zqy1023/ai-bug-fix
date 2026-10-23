@@ -46,6 +46,11 @@ def _call(
     task = str(state["task_id"])
     carrier = str(state["carrier"])
     locate = dict(state.get("locate") or {})
+    from app.domain.repair_scope import legacy_analysis_required
+
+    if legacy_analysis_required(state):
+        return {"passed": False, "reason": "旧框架只分析并交付结论，不修改旧插件", "changed_files": [],
+                "blocked_reason": "旧框架只读", "change_plan": {"scope": "manual"}}, {}, {}, ""
     if locate.get("status") != "LOCATED":
         return {"passed": False, "reason": "缺少 locate_agent 的 LOCATED 结论", "changed_files": []}, {}, {}, ""
     try:
@@ -108,7 +113,8 @@ def _call(
         },
         read_roots=read_roots,
         write_roots=tuple(str(path) for path in carrier_write_paths(Path(workspace), carrier)),
-        budget={"max_tool_calls": config.max_tool_calls, "max_turns": config.max_turns},
+        budget={"max_tool_calls": config.max_tool_calls, "max_turns": config.max_turns,
+                "max_context_chars": config.max_context_chars},
         retry_feedback=str(state.get("retry_reason") or ""),
         source_snapshot={
             "baseline_dir": baseline_dir,
@@ -130,6 +136,19 @@ def _call(
     )
     raw = runtime.run(request)
     raw = raw if isinstance(raw, dict) else {}
+    original = raw_result(raw)
+    provider_failed = raw.get("passed") is False and bool(raw.get("reason"))
+    if provider_failed or not original.strip():
+        category = ("agent_timeout" if raw.get("reason") == "AGENT_TIMEOUT" else "provider_error") if provider_failed else "empty_response"
+        if raw.get("failure_kind") in {"tool_budget_exhausted", "tool_access_blocked"}:
+            category = raw["failure_kind"]
+        reason = {"agent_timeout": "修复调用超时，未取得有效结果", "provider_error": "修复调用失败，未取得有效结果",
+                  "empty_response": "修复调用返回空正文，未取得修复方案",
+                  "tool_budget_exhausted": "修复工具预算耗尽，已停止无效调用；需收敛证据后重试",
+                  "tool_access_blocked": "修复工具连续被拒绝，已停止循环；需核对范围和路径"}[category]
+        usage = usage_of(raw)
+        return ({"passed": False, "reason": reason, "analysis": "", "summary": reason, "changed_files": []},
+                usage, {**audit_metadata(request, usage), "failure_stage": "invocation", "error_type": category}, original)
     payload = parse_result(raw, "repair")
     usage = usage_of(raw)
     return payload, usage, audit_metadata(request, usage), raw_result(raw)
@@ -144,10 +163,18 @@ def analyze(state: RepairState, runtime: Any) -> dict[str, Any]:
     payload, usage, audit, original = _call(runtime, "analyze", state)
     plan = slim_plan(payload)
     verdict = judge(payload)
+    failure_kind = str(audit.get("error_type") or "")
+    if not failure_kind and not verdict.valid:
+        failure_kind = "output_protocol_error"
+    if not failure_kind and not verdict.passed:
+        import re
+        text = " ".join(str(payload.get(key) or "") for key in ("summary", "analysis", "blocked_reason"))
+        failure_kind = "tool_budget_exhausted" if re.search(r"(?:工具|tool).{0,30}(?:预算|budget)|预算.{0,12}(?:耗尽|用完)", text, re.IGNORECASE) else "no_valid_change"
     changed = changed_files_of(plan) if verdict.passed else []
     syntax_error = _run_syntax_check(str(state.get("ai_workspace_path") or ""), changed)
     if syntax_error:
         verdict = type(verdict)(passed=False, valid=verdict.valid, reason=syntax_error)
+        failure_kind = "syntax_error"
     change_plan = change_plan_of(payload)
     return {
         "analysis": str(plan.get("analysis") or ""),
@@ -158,6 +185,7 @@ def analyze(state: RepairState, runtime: Any) -> dict[str, Any]:
         "change_plan": change_plan,
         "blocked_reason": blocked_reason_of(payload, verdict),
         "scope_escalation_required": needs_escalation(payload, passed=verdict.passed),
+        "failure_kind": failure_kind,
         "baseline_manifest": dict(state.get("baseline_manifest") or {}),
         "baseline_dir": str(state.get("baseline_dir") or ""),
         "raw_result": original,
@@ -207,6 +235,7 @@ def execute(state: RepairState, runtime: Any) -> dict[str, Any]:
         change_plan=dict(state.get("change_plan") or {}),
         blocked_reason=str(state.get("blocked_reason") or ""),
         scope_escalation_required=bool(state.get("scope_escalation_required")),
+        failure_kind=str(state.get("failure_kind") or ""),
     )
     return {
         **view.model_dump(),

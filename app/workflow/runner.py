@@ -37,7 +37,7 @@ from app.application.context import RunContext, StepContext, TaskContext
 from app.workflow.spec import StepSpec
 from app.domain.approval import APPROVAL_RETRY_TARGETS
 from app.domain.errors import StepFailed
-from app.workflow.routes import CLAIM, DELIVER, PREPARE_CONTEXT, REGRESSION, VALIDATE
+from app.workflow.routes import CLAIM, DELIVER, PREPARE_CONTEXT, REGRESSION, VALIDATE, REPAIR
 from langgraph.errors import GraphInterrupt
 from langgraph.types import interrupt
 from pydantic import ValidationError
@@ -100,6 +100,7 @@ def run_stage(
             task=_task_context(state, task_id) if task_id else None,
             store=store,
             services=services,
+            artifacts=artifacts,
         )
         output = spec.runner(context, parsed)
         artifacts = context.artifacts
@@ -183,7 +184,7 @@ def _retry_target_for_step(step_name: str) -> str:
     if step_name in {"prepare_source_snapshot", "repair_branch_preflight", "prepare_workspace", "prepare_evidence"}:
         return PREPARE_CONTEXT
     if step_name in {"check_changes", "syntax_regression", "verify_issue"}:
-        return VALIDATE
+        return REPAIR
     if step_name == "run_regression":
         return REGRESSION
     if step_name == "prepare_delivery":

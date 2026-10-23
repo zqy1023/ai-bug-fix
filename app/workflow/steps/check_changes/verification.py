@@ -202,12 +202,15 @@ def validate_changed_files(
         return _blocked(public_exception(error, prefix="定位 carrier 失败"), carrier)
     if not carrier_paths:
         return _blocked(f"工作区缺少目标 carrier: {carrier}", carrier)
-    allowed_root = [item.relative_to(root).as_posix() for item in carrier_paths]
+    # 扫描仍覆盖新旧目录，避免旧脚本变更因不在可写白名单而漏报。
+    scan_roots = [item.relative_to(root).as_posix() for item in carrier_paths]
+    writable_paths = [item for item in carrier_paths if item.relative_to(root).parts[0] == "gathers"]
+    allowed_root = [item.relative_to(root).as_posix() for item in writable_paths]
 
     actual: set[str] = set()
     if baseline_manifest is not None:
         actual = set()
-        for scope in allowed_root:
+        for scope in scan_roots:
             actual.update(_actual_changed_files(root, baseline_manifest, Path(scope)))
 
     # diff 证据必须覆盖全部声明∪真实变化文件：file_changes 的默认 max_files 截断会让
@@ -245,7 +248,7 @@ def validate_changed_files(
     all_keys = sorted(claimed_keys | actual_keys)
     for key in all_keys:
         raw = claimed_by_norm[key] if key in claimed_by_norm else actual_by_norm[key]
-        entry = _inspect_file(root, carrier_paths, raw, baseline_manifest, diff)
+        entry = _inspect_file(root, writable_paths, raw, baseline_manifest, diff, baseline_dir)
         files.append(entry)
         failures.extend(
             {"file": raw, "reason": reason, "code": "FILE_PROBLEM"}
@@ -260,7 +263,7 @@ def validate_changed_files(
         "passed": not failures,
         "reason": _summary(failures),
         "failures": failures,
-        "checks": list(_CHECKS),
+        "checks": [*_CHECKS, *(["基线 AST 新增辅助函数检查"] if baseline_dir else [])],
         "scope": {
             "carrier": carrier,
             "allowed_root": allowed_root,
@@ -290,6 +293,7 @@ def _inspect_file(
     raw: str,
     baseline_manifest: dict[str, str] | None,
     diff: dict[str, dict[str, Any]],
+    baseline_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """逐文件检查并返回证据行；problems 同时作为失败原因使用。
 
@@ -359,12 +363,49 @@ def _inspect_file(
             entry["dangerous_calls"] = list(visitor.failures)
             entry["ast"] = "failed" if visitor.failures else "ok"
             problems.extend(visitor.failures)
+            if baseline_dir:
+                before_root = Path(baseline_dir).resolve()
+                before_file = before_root / raw
+                if not _under(before_root, before_file) or before_file.is_symlink():
+                    problems.append("无法核验基线函数：基线路径不合法")
+                else:
+                    before = read_text_cached(before_file, max_bytes=None) if before_file.is_file() else ""
+                    if before is None:
+                        problems.append("无法核验基线函数：基线不是可读 UTF-8 文本")
+                    else:
+                        problems.extend(_new_helper_problems(ast.parse(before), tree))
         else:
             entry["ast"] = "n/a"
     except (OSError, SyntaxError, RecursionError) as error:
         entry["ast"] = "error"
         problems.append(public_exception(error, prefix="文件检查失败"))
     return entry
+
+
+def _new_helper_problems(before: ast.AST, after: ast.AST) -> list[str]:
+    """比较限定名，只拦新增辅助函数，保留已有函数及框架入口覆写。"""
+    def definitions(tree: ast.AST) -> dict[tuple[str, ...], ast.AST]:
+        result: dict[tuple[str, ...], ast.AST] = {}
+
+        def visit(node: ast.AST, parents: tuple[str, ...]) -> None:
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                    name = (*parents, child.name)
+                    if not isinstance(child, ast.ClassDef):
+                        result[name] = node
+                    visit(child, name)
+                else:
+                    visit(child, parents)
+
+        visit(tree, ())
+        return result
+
+    original = definitions(before)
+    current = definitions(after)
+    callbacks = {"__init__", "read_html", "process_html", "on_finish"}
+    return [f"禁止新增辅助函数：{'.'.join(name)}；请在已有业务方法中局部修复，不新增 helper"
+            for name, parent in current.items() if name not in original
+            and not (isinstance(parent, ast.ClassDef) and name[-1] in callbacks)]
 
 
 def _blocked(reason: str, carrier: str) -> dict[str, Any]:

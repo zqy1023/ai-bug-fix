@@ -12,6 +12,7 @@ class ReviewState(TypedDict, total=False):
 
     # run_id：该模型字段用于承载对应契约中的结构化数据。
     run_id: str
+    source_project_path: str
     # task_id：该模型字段用于承载对应契约中的结构化数据。
     task_id: str
     # carrier：该模型字段用于承载对应契约中的结构化数据。
@@ -55,6 +56,15 @@ class ReviewState(TypedDict, total=False):
     verdict: Literal["PASS", "FAIL", "MANUAL"]
     # passed：该模型字段用于承载对应契约中的结构化数据。
     passed: bool
+    delivery_eligible: bool
+    review_contract_version: int
+    contract_error: str
+    evidence_version: dict[str, Any]
+    checks: list[dict[str, str]]
+    next_action: str
+    review_notes: str
+    code_verdict: str
+    coverage: dict[str, Any]
     # summary：该模型字段用于承载对应契约中的结构化数据。
     summary: str
     # findings：该模型字段用于承载对应契约中的结构化数据。

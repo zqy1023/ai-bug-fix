@@ -43,6 +43,13 @@ def validate_shape(payload: dict[str, Any]) -> tuple[bool, str]:
         return False, "summary 必须是字符串"
     if not isinstance(payload.get("passed"), bool):
         return False, "passed 必须是布尔值"
+    if payload.get("change_plan"):
+        from app.application.plans import ChangePlan
+        from pydantic import ValidationError
+        try:
+            ChangePlan.model_validate(payload["change_plan"])
+        except ValidationError as error:
+            return False, f"change_plan 协议错误：{error}"
     return True, ""
 
 
@@ -68,12 +75,14 @@ def needs_escalation(payload: dict[str, Any], *, passed: bool) -> bool:
     """方案影响共享层且本轮未完成修改时，转分析报告。"""
     if passed:
         return False
+    if payload.get("scope_escalation_required") is True:
+        return True
     raw_plan = payload.get("change_plan")
     if not isinstance(raw_plan, dict):
         return False
     # 共享层方案即使只有理由、没有 edits，也必须进入分析报告流程。
     scope = raw_plan.get("scope")
-    return isinstance(scope, str) and scope.casefold() == "project"
+    return isinstance(scope, str) and scope.casefold() in {"project", "manual"}
 
 
 def _slim_value(value: Any) -> Any:
@@ -93,6 +102,8 @@ def blocked_reason_of(payload: dict[str, Any], verdict: RepairVerdict) -> str:
     """改不动的结构化原因：优先用方案理由，其次用判定理由。"""
     if verdict.passed:
         return ""
+    if str(payload.get("blocked_reason") or "").strip():
+        return str(payload["blocked_reason"])
     plan = plan_of(payload)
     if plan is not None:
         return plan.rationale or "根因超出目标 carrier 范围，已产出待授权方案"
@@ -112,7 +123,8 @@ def slim_plan(payload: dict[str, Any]) -> dict[str, Any]:
             continue
         value = payload[field]
         if field == "change_plan" and isinstance(value, dict):
-            slim[field] = _slim_value(value)
+            from copy import deepcopy
+            slim[field] = deepcopy(value)
         else:
             slim[field] = value if not isinstance(value, str) else _clip_field(value)
     slim["changed_files"] = changed_files_of(payload)

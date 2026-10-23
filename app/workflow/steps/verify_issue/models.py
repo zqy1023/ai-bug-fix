@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from pydantic import Field
+
 from app.workflow.spec import FrozenModel
 
 
@@ -26,7 +28,8 @@ class VerifyInput(FrozenModel):
     source_repo_path: str = ""
     # baseline_dir：修复前的 carrier 源码快照，作为差分重放的基线。
     baseline_dir: str = ""
-    normalized_log: dict[str, Any] = {}  # 用于 response 重放验证
+    normalized_log: dict[str, Any] = Field(default_factory=dict)
+    validation_requirements: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class VerifyOutput(FrozenModel):
@@ -34,14 +37,17 @@ class VerifyOutput(FrozenModel):
 
     # passed：字段说明见该模型文档与工作流契约。
     passed: bool
+    evidence_version: dict[str, Any] = Field(default_factory=dict)
     # status：verified 表示完成业务验证；unverified 表示缺少业务证据，需人工确认。
-    status: str = "verified"
+    status: str = "unverified"
     # reason：字段说明见该模型文档与工作流契约。
     reason: str = ""
     # mode：实际执行的验证级别。
     mode: str = "custom"
-    replay: dict[str, Any] = {}
+    replay: dict[str, Any] = Field(default_factory=dict)
     report_path: str = ""
+    verification: dict[str, Any] = Field(default_factory=dict)
+    validation_requirements: list[dict[str, Any]] = Field(default_factory=list)
 
 
 __all__ = ["VerifyInput", "VerifyOutput"]

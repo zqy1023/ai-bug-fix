@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import time
@@ -172,6 +173,13 @@ class RecordStore:
                 if slot is None:
                     slot = {"task_id": task_id}
                     tasks.append(slot)
+                previous = slot.get(record.name)
+                if isinstance(previous, dict) and previous.get("finished_at") and previous != body:
+                    identity = hashlib.sha256(json.dumps(previous, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+                    history = self.task_dir(run_id, task_id) / "history" / "steps" / f"{record.name}-{identity}.json"
+                    history.parent.mkdir(parents=True, exist_ok=True)
+                    if not history.exists():
+                        history.write_text(json.dumps(previous, ensure_ascii=False, indent=2), encoding="utf-8")
                 slot[record.name] = body
             else:
                 payload[record.name] = body
@@ -343,6 +351,14 @@ class RecordStore:
         if not target.parent.resolve().is_relative_to(base.resolve()):
             raise StepFailed(f"产物目录越界: {relative!r}", code="ARTIFACT_PATH_INVALID")
         text = json.dumps(value, ensure_ascii=False, indent=2, default=str)
+        if task_id and target.is_file() and relative.startswith(("agents/", "artifacts/", "reports/")):
+            previous = target.read_bytes()
+            if previous != text.encode("utf-8"):
+                identity = hashlib.sha256(previous).hexdigest()
+                archive = base / "history" / "artifacts" / identity / relative
+                archive.parent.mkdir(parents=True, exist_ok=True)
+                if not archive.exists():
+                    archive.write_bytes(previous)
         # 临时文件与目标同目录：同文件系统才能原子替换，写完整才返回引用。
         temporary = target.with_name(target.name + ".tmp")
         temporary.write_text(text, encoding="utf-8")

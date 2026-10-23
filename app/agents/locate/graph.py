@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import ast
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -148,17 +150,14 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
     except ValueError as error:
         # 与其它预检不一致场景保持同一降级策略：转人工，而不是让节点崩溃。
         return _manual(f"预检候选路径非法: {error}")
+    # 调查候选覆盖当前运输商的新旧实现；只读调查不能复用修复写入白名单。
+    candidate_roots = [path.resolve() for framework_name in ("gathers", "spiders")
+                       if (path := WorkspaceManager.find_carrier_dir(root, framework_name, incoming.carrier)) is not None]
     for relative in verified_candidates:
         candidate = (root / relative).resolve()
-        if not candidate.is_relative_to(carrier_root):
-            return _manual(f"预检候选超出目标 carrier 范围: {relative}")
+        if not any(candidate.is_relative_to(directory) for directory in candidate_roots):
+            return _manual(f"候选文件不属于当前运输商 {incoming.carrier} 的新旧实现目录：{relative}；停止定位，请重新生成候选文件")
 
-    serialized_problem = json.dumps(incoming.problem, ensure_ascii=False)
-    if len(serialized_problem) > config.max_context_chars:
-        return _manual(
-            f"原始问题长度 {len(serialized_problem)} 字符，超过 locate.max_context_chars="
-            f"{config.max_context_chars}；为避免丢失真实异常上下文，本次未截断输入，也未调用模型。"
-        )
     rules = WorkspaceManager.readable_rule_paths(root)
     legacy_root = WorkspaceManager.find_carrier_dir(root, "spiders", incoming.carrier)
     legacy_carrier_dir = (
@@ -173,6 +172,7 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
         for key in ("carrier_dir", "candidates", "symbols", "category", "extracted", "legacy_only", "legacy_dependency", "legacy_reason")
         if key in evidence
     }
+    prepared_evidence["source_index"] = [source_index(root / path, path) for path in verified_candidates]
     context = prompt_context(
         "locate",
         incoming.model_dump(),
@@ -205,15 +205,6 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
         workspace=str(root),
         model=model_name(runtime),
     )
-    # max_context_chars 限制序列化后的原始异常；渲染后的 Prompt 还包含身份、候选源码证据、
-    # 快照摘要和输出契约。预留 30k 字符结构开销，避免 50k 原始异常被重复包装后误判超限。
-    prompt_limit = config.max_context_chars + 30000
-    if len(request.prompt) > prompt_limit:
-        return _manual(
-            f"定位用户上下文长度 {len(request.prompt)} 字符，超过允许值 {prompt_limit} "
-            f"(locate.max_context_chars={config.max_context_chars} + 30000 字符结构开销)；"
-            "未截断原始异常，也未调用模型。请压缩重复证据后重试。"
-        )
     raw = runtime.run(request)
     raw = raw if isinstance(raw, dict) else {}
     payload = parse_result(raw, "locate")
@@ -261,6 +252,14 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
         contract_summary = _locate_contract_summary(error)
         if contract_summary not in output.summary:
             output.summary = f"{output.summary.strip()}；{contract_summary}".strip("；")
+    from app.domain.repair_scope import legacy_analysis_required
+
+    if legacy_analysis_required({"evidence": evidence, "locate": output.model_dump()}):
+        output.status = "MANUAL"
+        output.recommended_scope = "manual"
+        output.passed = False
+        output.proposed_edit_files = []
+        output.summary = f"{output.summary}；旧框架只读：保留根因分析及源码证据，交付分析报告，不修改脚本".strip("；")
     return {
         **output.model_dump(),
         "passed": output.status == "LOCATED",
@@ -349,6 +348,7 @@ def _validate_output_paths(
         target = _evidence_target(root, item.path, shared_root)
         if not any(target == base or target.is_relative_to(base) for base in allowed):
             raise ValueError(f"模型输出源码证据超出只读范围: {item.path}")
+        bind_source_evidence(target, item)
     from app.agents.policy import carrier_write_paths
     writable = carrier_write_paths(root, carrier_root.name)
     for value in output.proposed_edit_files:
@@ -356,6 +356,58 @@ def _validate_output_paths(
         target = (root / relative).resolve()
         if not any(target.is_relative_to(base) for base in writable):
             output.recommended_scope = "project"
+
+
+def source_index(path: Path, relative: str) -> dict[str, Any]:
+    """提供实际符号和行号，减少反复扫描和拼错路径。"""
+    content = path.read_bytes()
+    symbols = []
+    if path.suffix == ".py":
+        try:
+            tree = ast.parse(content.decode("utf-8-sig"))
+            def walk(node: Any, prefix: str = "") -> None:
+                for child in ast.iter_child_nodes(node):
+                    if isinstance(child, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                        qualified = f"{prefix}.{child.name}".strip(".")
+                        symbols.append({"symbol": qualified, "start_line": child.lineno, "end_line": child.end_lineno})
+                        walk(child, qualified)
+                    else:
+                        walk(child, prefix)
+            walk(tree)
+        except (SyntaxError, UnicodeError):
+            pass
+    return {"path": relative, "source_sha256": hashlib.sha256(content).hexdigest(), "symbols": symbols}
+
+
+def bind_source_evidence(path: Path, evidence: Any) -> None:
+    """证据符号必须存在于该文件；哈希与片段由系统计算。"""
+    content = path.read_bytes()
+    text = content.decode("utf-8-sig")
+    lines = text.splitlines()
+    if path.suffix == ".py":
+        tree = ast.parse(text)
+        symbol = evidence.symbol.strip().split(":")[-1].removesuffix("()")
+        indexed: dict[str, Any] = {"<module>": tree}
+        def walk(node: Any, prefix: str = "") -> None:
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                    qualified = f"{prefix}.{child.name}".strip(".")
+                    indexed[qualified] = child
+                    indexed.setdefault(child.name, child)
+                    walk(child, qualified)
+                else:
+                    walk(child, prefix)
+        walk(tree)
+        node = indexed.get(symbol)
+        if node is None:
+            raise ValueError(f"源码证据符号不存在：{evidence.path}:{evidence.symbol}")
+        start = getattr(node, "lineno", 1)
+        end = getattr(node, "end_lineno", len(lines)) or len(lines)
+    else:
+        start, end = 1, len(lines)
+    evidence.source_sha256 = hashlib.sha256(content).hexdigest()
+    evidence.start_line, evidence.end_line = start, end
+    evidence.snippet = "\n".join(lines[start - 1:min(end, start + 11)])
 
 
 def _manual(reason: str) -> dict[str, Any]:

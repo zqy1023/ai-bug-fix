@@ -42,6 +42,8 @@ class DeliveryInput(FrozenModel):
     # review_summary：字段说明见该模型文档与工作流契约。
     review_summary: str = ""
     review_decision: str = ""  # PASS/FAIL/MANUAL
+    delivery_eligible: bool = False
+    legacy_analysis_required: bool = False
     # analysis_only：只提交最终分析报告，不修改任何源码。
     analysis_only: bool = False
     # report_paths：AI 隔离工作区内需要随报告分支交付的审计产物。
@@ -66,6 +68,7 @@ class DeliveryOutput(FrozenModel):
     # local_branch：未推送时提交已写回源仓库的本地修复分支。
     local_branch: bool = False
     manual_confirmation_required: bool = False
+    manual_confirmation_reasons: list[str] = Field(default_factory=list)
 
 
 __all__ = ["DeliveryInput", "DeliveryOutput"]

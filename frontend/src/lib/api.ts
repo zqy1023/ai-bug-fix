@@ -57,6 +57,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 function encode(value: string) { return encodeURIComponent(value); }
 
 export const api = {
+  artifactDownload: async (runId: string, taskId: string, path: string) => {
+    const query = new URLSearchParams({ path, task_id: taskId });
+    const response = await fetch(API_BASE + '/runs/' + encode(runId) + '/artifacts/download?' + query, { headers: authorizationHeaders(), credentials: 'same-origin' });
+    if (!response.ok) throw new ApiError('下载产物失败', response.status);
+    return response.blob();
+  },
   health: async () => {
     const response = await fetch(API_BASE + '/health', {
       headers: { Accept: 'application/json', ...authorizationHeaders() },
@@ -79,7 +85,11 @@ export const api = {
     return request<PageResult<RunSummary>>('/runs?' + params.toString());
   },
   run: (runId: string) => request<RunDetail>('/runs/' + encode(runId)),
-  board: (runId: string) => request<RunBoard>('/runs/' + encode(runId) + '/board'),
+  board: (runId: string, query: { page?: number; page_size?: number; category?: string; keyword?: string } = {}) => {
+    const params = new URLSearchParams();
+    Object.entries(query).forEach(([key, value]) => { if (value !== undefined && value !== '') params.set(key, String(value)); });
+    return request<RunBoard>('/runs/' + encode(runId) + '/board?' + params.toString());
+  },
   checkpoint: (runId: string) =>
     request<{ run_id: string; checkpoint: CheckpointProjection }>('/runs/' + encode(runId) + '/checkpoint'),
   checkpoints: (runId: string, limit = 30) =>

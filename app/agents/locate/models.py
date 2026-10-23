@@ -58,6 +58,10 @@ class SourceEvidence(FrozenModel):
     symbol: str
     # finding：字段说明见该模型文档与工作流契约。
     finding: str
+    source_sha256: str = ""
+    start_line: int = 0
+    end_line: int = 0
+    snippet: str = ""
 
 
 class LocateOutput(FrozenModel):

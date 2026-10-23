@@ -13,7 +13,7 @@ export function PromptViewer({ snapshot }: { snapshot?: PromptSnapshot | Record<
     return (
       <EmptyState
         title="本次调用没有提示词快照"
-        description="旧运行或服务端关闭了提示词快照。提示词快照默认开启、脱敏并按上限截断。"
+        description="旧运行或服务端关闭了提示词快照。新运行完整保留实际提示词。"
         compact
       />
     );
@@ -24,6 +24,7 @@ export function PromptViewer({ snapshot }: { snapshot?: PromptSnapshot | Record<
     { key: 'role', label: `角色提示词 · ${prompt.chars?.system_prompt_role ?? 0} 字`, children: <Section text={prompt.system_prompt_role} /> },
     { key: 'task', label: `任务上下文 · ${prompt.chars?.task_prompt ?? 0} 字`, children: <Section text={prompt.task_prompt} /> },
     { key: 'context', label: `上下文快照 · ${prompt.chars?.prompt_context ?? 0} 字`, children: <Section text={prompt.prompt_context} /> },
+    ...(prompt.full_task_context ? [{ key: 'full', label: `完整任务证据（压缩前归档） · ${prompt.chars?.full_task_context ?? prompt.full_task_context.length} 字`, children: <Section text={prompt.full_task_context} /> }] : []),
   ];
 
   return (
@@ -36,7 +37,7 @@ export function PromptViewer({ snapshot }: { snapshot?: PromptSnapshot | Record<
         {prompt.redacted && <span className="prompt-flag">已脱敏</span>}
         {prompt.truncated && <span className="prompt-flag is-warn">已截断</span>}
       </div>
-      <Collapse defaultActiveKey={['common']} ghost items={items} />
+      <Collapse defaultActiveKey={['task']} ghost items={items} />
     </div>
   );
 }

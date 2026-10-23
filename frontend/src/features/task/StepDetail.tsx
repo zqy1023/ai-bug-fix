@@ -74,6 +74,8 @@ export function StepDetail({
   detail?: StepDetailResponse; runActive: boolean; approvalPending?: boolean;
 }) {
   const [searchParams, setSearchParams] = useSearchParams();
+  // 详情请求完成后使用该步骤的最新记录，避免继续展示列表中的旧投影。
+  step = detail?.step.name === step.name ? detail.step : step;
   const tab = searchParams.get('trace');
   const stepFailed = step.status === 'failed'
     || (step.result ? FAILED_RESULTS.has(String(step.result).toUpperCase()) : false);
@@ -141,8 +143,7 @@ export function StepDetail({
           <span className="step-kicker">步骤 / {step.name}</span>
           <div>
             <h3>{step.title || step.name}</h3>
-            {step.result === 'UNVERIFIED' && <StatusBadge kind="task" value="UNVERIFIED" />}
-            {step.result && FAILED_RESULTS.has(String(step.result).toUpperCase()) ? (
+            {step.result && (FAILED_RESULTS.has(String(step.result).toUpperCase()) || ['UNVERIFIED', 'MANUAL', 'INSUFFICIENT_EVIDENCE'].includes(String(step.result).toUpperCase())) ? (
               <>
                 <StatusBadge kind="task" value={step.result} />
                 <span className="step-exec-note">{step.status === 'failed' ? '执行异常' : '执行完成'}</span>
@@ -150,7 +151,7 @@ export function StepDetail({
             ) : (
               <StatusBadge kind="step" value={step.status} stepName={step.name} />
             )}
-            {step.attempt ? <span className="step-attempt">attempt {step.attempt}</span> : null}
+            {step.attempt ? <span className="step-attempt">节点第 {step.attempt} 次执行</span> : null}
             <span className="step-duration">
               {step.status === 'running' ? '执行中…' : formatDuration(step.duration_ms)}
             </span>
@@ -159,9 +160,9 @@ export function StepDetail({
             ) : null}
           </div>
         </div>
-        {step.summary && (
+        {step.summary && step.name !== 'review_agent' && (
           <div className="step-summary-block">
-            <p className="step-summary">{step.summary}</p>
+            {step.summary.length > 180 ? <details className="step-summary-expand"><summary>{compactText(step.summary, 180)} <span>展开全文</span></summary><p>{step.summary}</p></details> : <p className="step-summary">{step.summary}</p>}
 
           </div>
         )}

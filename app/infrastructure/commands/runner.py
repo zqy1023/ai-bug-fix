@@ -28,8 +28,7 @@ def run_fixed_commands(
 ) -> dict[str, Any]:
     """只执行工作流预先配置的命令，禁止 AI 选择或拼接命令。
 
-    原样返回 stdout/stderr：脱敏与截断属于"报告怎么留存"的决定，由 run_regression
-    统一做（先脱敏再截断），这里不做取舍。
+    原样返回 stdout/stderr；run_regression 分别生成摘要和完整归档。
     """
     root = Path(workspace).resolve()
     results: list[dict[str, Any]] = []
@@ -41,6 +40,8 @@ def run_fixed_commands(
             **os.environ,
             "PYTHONPYCACHEPREFIX": pycache,
             "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONUNBUFFERED": "1",
         }
         for command in commands:
             try:

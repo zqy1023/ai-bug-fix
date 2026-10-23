@@ -309,6 +309,7 @@ def run(ctx: StepContext, data: CheckInput) -> CheckOutput:
     ctx.emit_artifact("diff", "artifacts/diff.json", diff_payload)
     output = CheckOutput(
         passed=result.get("passed") is True,
+        evidence_version={},
         reason=str(result.get("reason") or ""),
         failure_count=len(result.get("failures") or []),
         changed_files=list(data.changed_files),
@@ -321,4 +322,10 @@ def run(ctx: StepContext, data: CheckInput) -> CheckOutput:
     )
     if not output.passed:
         raise StepFailed(output.reason or "确定性检查失败", output.model_dump())
+    from app.workflow.evidence_version import evidence_version
+    import hashlib
+    from app.workflow.steps.check_changes import verification
+    version = evidence_version(data.ai_workspace_path, data.changed_files, data.baseline_dir)
+    version["policy_id"] = hashlib.sha256(Path(verification.__file__).read_bytes()).hexdigest()
+    output = output.model_copy(update={"evidence_version": version})
     return output

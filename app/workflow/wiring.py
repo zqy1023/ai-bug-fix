@@ -108,6 +108,7 @@ def build_services(
     """
     from app.infrastructure.config import create_es_client, index_days
     from app.infrastructure.git.source import git_auth_env
+    from app.workflow.steps.run_regression.request_runner import run_request_regression
     config = config or load_config()
     resolved_source = source_repo if source_repo is not None else config.source_repo
     workspaces = WorkspaceManager(WorkspaceConfig(root_dir=config.workspace_root, project_subdir=config.project_subdir))
@@ -147,6 +148,11 @@ def build_services(
         log_source=log_source,
         ignore_errors=list(config.ignore_errors),
         metadata={
+            "request_regression": partial(
+                run_request_regression,
+                python_executable=config.replay_python,
+                timeout_seconds=config.command_timeout_seconds,
+            ),
             "independent_verify": partial(
                 _independent_verify,
                 timeout_seconds=config.replay_timeout_seconds,
@@ -163,46 +169,26 @@ def _independent_verify(
     timeout_seconds: int = settings.replay_timeout_seconds,
     replay_python: str = settings.replay_python,
 ) -> dict[str, Any]:
-    """两阶段验证：1) Python 语法检查 2) Response 重放验证（可选）。"""
+    """固定原始正文验证解析行为；语法检查由前置步骤独立负责。"""
+    import hashlib
     import json
-    import py_compile
     import shutil
     from pathlib import Path
 
     from app.infrastructure.filesystem.safe_cleanup import remove_tree, temporary_directory
 
-    # ========== 阶段 1: Python 语法检查 ==========
-    files = [str(item) for item in payload.get("changed_files") or [] if str(item).endswith(".py")]
+    from app.workflow.steps.verify_issue.assessment import assessment, changed_functions, parser_configuration_changes
+
+    files = [str(item) for item in payload.get("changed_files") or []]
     workspace = Path(str(payload.get("ai_workspace_path") or ""))
     if not workspace.is_dir():
-        return {"passed": False, "mode": "unavailable", "reason": "验证工作区不存在"}
+        return {"passed": False, "status": "unverified", "mode": "unavailable", "reason": "验证工作区不存在"}
     if not files:
-        return {"passed": True, "mode": "syntax_only", "reason": "本轮仅修改非 Python 文件，未执行问题重放"}
-    # py_compile 默认把 .pyc 写到源文件旁的 __pycache__，会污染隔离区和后续
-    # check_changes 的 diff。编译产物必须落在工作区外的临时目录。
-    with temporary_directory("ai-verify-pycache-") as pycache:
-        for relative in files:
-            target = (workspace / relative).resolve()
-            try:
-                target.relative_to(workspace.resolve())
-            except ValueError:
-                return {"passed": False, "mode": "unavailable", "reason": "改动文件超出工作区"}
-            if not target.is_file():
-                return {"passed": False, "mode": "unavailable", "reason": f"改动文件不存在: {relative}"}
-            try:
-                py_compile.compile(
-                    str(target),
-                    cfile=str(Path(pycache) / f"{abs(hash(relative))}.pyc"),
-                    doraise=True,
-                )
-            except py_compile.PyCompileError as error:
-                return {"passed": False, "mode": "syntax_only", "reason": f"语法检查失败: {relative}: {error.msg}"}
-
-    # ========== 阶段 2: Response 重放验证（可选）==========
+        return {"passed": False, "status": "unverified", "mode": "unavailable", "reason": "没有可核对的修改文件"}
     # response / track_config 既可能在记录顶层，也可能嵌在 req 对象里。
     normalized_log = payload.get("normalized_log")
     if not isinstance(normalized_log, dict):
-        return {"passed": True, "mode": "syntax_only", "reason": f"语法检查通过: {len(files)} 个文件；未执行问题重放"}
+        return {"passed": False, "status": "unverified", "mode": "response_replay", "reason": "缺少原始问题记录，无法执行业务验证"}
     carrier = str(normalized_log.get("carrier") or payload.get("carrier") or "")
     req_data = normalized_log.get("req", {})
     if isinstance(req_data, str):
@@ -213,7 +199,9 @@ def _independent_verify(
     if not isinstance(req_data, dict):
         req_data = {}
     response_data = normalized_log.get("response") or req_data.get("response")
-    track_config_data = normalized_log.get("track_config") or req_data.get("track_config")
+    from app.workflow.steps.verify_issue.replay_model import extract_track_config
+
+    track_config_data = extract_track_config(normalized_log)
     if not isinstance(response_data, str):
         response_data = json.dumps(response_data, ensure_ascii=False) if response_data else ""
     if not isinstance(track_config_data, str):
@@ -223,10 +211,21 @@ def _independent_verify(
     from app.workflow.steps.verify_issue.replay_runner import run_replay
     from app.workflow.steps.verify_issue.semantic_compare import ReplayOutcome, compare
 
-    # 有 carrier 和合法 req 就能重放：response 只是加速手段，不是前置条件。
-    # 没有录制的 response 时两侧分别请求上游，结果仅供人工确认。
     if not (carrier and req_data and request_numbers(req_data)):
-        return {"passed": True, "mode": "syntax_only", "reason": f"语法检查通过: {len(files)} 个文件；未执行问题重放"}
+        return {"passed": False, "status": "unverified", "mode": "response_replay", "reason": "缺少运输商或有效原始请求，未执行业务验证"}
+    if not original_error.strip():
+        return {"passed": False, "status": "unverified", "mode": "response_replay", "reason": "缺少原始异常，无法判断基线是否复现问题"}
+    if not response_data and not payload.get("allow_live_replay", False):
+        return {"passed": False, "status": "unverified", "mode": "response_replay",
+                "replay_input_mode": "missing_response", "replay_verdict": "missing_evidence",
+                "reason": "没有录制响应，未发起不稳定的在线请求；需补充原始响应或人工确认，语法检查不能代替业务验证"}
+    from app.workflow.steps.verify_issue.replay_runner import _resolve_interpreter
+    try:
+        _resolve_interpreter(replay_python)
+    except FileNotFoundError as error:
+        return {"passed": False, "status": "unverified", "mode": "response_replay",
+                "replay_input_mode": "recorded" if response_data else "live", "replay_verdict": "environment",
+                "reason": str(error), "replay_exception_type": "FileNotFoundError"}
 
     # 共享树是给模型阅读的脱敏快照：_sanitize_shared_tree 只保留 .py/.json 等
     # 白名单后缀，会删除 py_rules_new.zip 这类运行资产。重放必须在未脱敏的
@@ -245,6 +244,11 @@ def _independent_verify(
             "passed": False, "status": "unverified", "mode": "response_replay",
             "reason": "重放源目录不可用，无法建立独立镜像，业务修复未验证",
         }
+    baseline_dir = Path(str(payload.get("baseline_dir") or ""))
+    if not payload.get("baseline_dir") or not baseline_dir.is_dir():
+        return {"passed": False, "status": "unverified", "mode": "response_replay",
+                "reason": "缺少本次修复前源码快照，不允许把当前源码猜作基线"}
+    functions = changed_functions(workspace, baseline_dir, files)
     # 重放需要 server_dev、framework 和公共库；任务工作区只有目标 carrier。
     # 两侧使用独立文件副本，避免业务运行写文件污染源仓库或另一侧重放。
     with temporary_directory("ai-replay-workspace-", parent=baseline_root.parent) as directory:
@@ -254,7 +258,7 @@ def _independent_verify(
 
         # 基线重放：装入修复前的 carrier 源码快照，用未修复的代码跑同一输入。
         if not _install_baseline_carrier(replay_root, str(payload.get("baseline_dir") or ""), carrier):
-            return {"passed": False, "mode": "response_replay", "reason": "重放工作区基线 carrier 清理失败"}
+            return {"passed": False, "status": "unverified", "mode": "response_replay", "reason": "修复前源码快照不可用，无法建立基线"}
         fixed_root = Path(directory) / "fixed"
         shutil.copytree(replay_root, fixed_root)
         baseline_result = run_replay(
@@ -275,7 +279,7 @@ def _independent_verify(
                 continue
             destination = replay_carrier or fixed_root / framework / source_carrier.name
             if destination.exists() and not remove_tree(destination):
-                return {"passed": False, "mode": "response_replay", "reason": "重放工作区 carrier 清理失败"}
+                return {"passed": False, "status": "unverified", "mode": "response_replay", "reason": "重放工作区 carrier 清理失败"}
             shutil.copytree(source_carrier, destination, copy_function=shutil.copy2)
         fixed_result = run_replay(
             carrier=carrier,
@@ -300,20 +304,50 @@ def _independent_verify(
     comparison = compare(
         baseline=baseline_outcome, fixed=fixed_outcome, original_error=original_error,
         live=not bool(response_data), expected_numbers=request_numbers(req_data),
-        captured_response=json.dumps(response_data, ensure_ascii=False) if response_data else "",
+        captured_response=response_data,
     )
-    # 重放输出是完整结果 dump，只留头部；结构化证据在 replay_comparison 里。
-    output_chars = settings.replay_output_chars
+    verification = assessment(
+        verdict=comparison.verdict, passed=comparison.passed, functions=functions,
+        original_error=original_error,
+        response_sha256=hashlib.sha256(response_data.encode("utf-8")).hexdigest(),
+        comparison=comparison.details,
+        parser_configuration_changes=parser_configuration_changes(workspace, baseline_dir, files),
+    )
+    passed = comparison.passed and not verification["requires_request_validation"]
+    reason = comparison.reason
+    if comparison.passed and not passed:
+        reason += "；本次还修改请求、初始化或收尾逻辑，解析样本无法覆盖这些变更，整体业务修复未验证"
+    # 全量原文进入脱敏后的验证产物；步骤投影只负责摘要。
     report: dict[str, Any] = {
-        "passed": comparison.passed,
-        "status": "verified" if comparison.passed else ("failed" if comparison.verified else "unverified"),
+        "passed": passed,
+        "status": "verified" if passed else ("failed" if comparison.verified and not comparison.passed else "unverified"),
         "mode": "response_replay",
-        "reason": f"{comparison.reason}（语法检查 {len(files)} 个文件）",
+        "reason": reason,
+        "verification": verification,
+        "replay_recipe": {
+            "description": "在相同业务依赖根目录重建 input.json 并运行平台脚本；历史临时路径已清理，不能直接复制 command 重跑",
+            "input": {"carrier": carrier, "req": req_data, "response": response_data,
+                      "track_config": json.loads(track_config_data or "{}")},
+            "entry_script": baseline_result.command[2] if baseline_result.command else "",
+            "model_builder": Path(__file__).with_name("steps").joinpath("verify_issue/replay_model.py").read_text(encoding="utf-8"),
+            "runtime_adapter": Path(__file__).with_name("steps").joinpath("verify_issue/replay_runtime.py").read_text(encoding="utf-8"),
+            "business_observer": Path(__file__).with_name("steps").joinpath("verify_issue/business_observation.py").read_text(encoding="utf-8"),
+        },
         "replay_verdict": comparison.verdict,
         "replay_input_mode": "live" if not response_data else "recorded",
         "replay_comparison": comparison.details,
-        "replay_baseline_output": baseline_result.output[:output_chars],
-        "replay_output": fixed_result.output[:output_chars],
+        "replay_baseline_output": baseline_result.output,
+        "replay_output": fixed_result.output,
+        "replay_full_output": True,
+        "replay_baseline_stdout": getattr(baseline_result, "stdout", ""),
+        "replay_baseline_stderr": getattr(baseline_result, "stderr", ""),
+        "replay_baseline_error": baseline_result.error,
+        "replay_baseline_exception_type": baseline_result.exception_type,
+        "replay_baseline_traceback": baseline_result.traceback,
+        "replay_baseline_returncode": getattr(baseline_result, "returncode", None),
+        "replay_stdout": getattr(fixed_result, "stdout", ""),
+        "replay_stderr": getattr(fixed_result, "stderr", ""),
+        "replay_baseline_command": getattr(baseline_result, "command", []),
         "replay_command": getattr(fixed_result, "command", []),
         "replay_returncode": getattr(fixed_result, "returncode", None),
         "replay_error": fixed_result.error,
@@ -328,18 +362,19 @@ def _independent_verify(
 def _install_baseline_carrier(replay_root: Path, baseline_dir: str, carrier: str) -> bool:
     """把修复前的 carrier 源码基线装进重放工作区。
 
-    基线快照来自本轮 Git 干净树，是本次修改之前的真实代码；没有快照时保留
-    重放工作区现状（源仓库检出），此时基线可能包含未提交改动。
+    基线快照必须来自本次修改前的实际源码；没有快照就返回 False，
+    不把当前源仓库的状态猜作修复前代码。
     """
     from app.infrastructure.filesystem.safe_cleanup import remove_tree
 
     import shutil
 
     if not baseline_dir.strip():
-        return True
+        return False
     root = Path(baseline_dir).resolve()
     if not root.is_dir():
-        return True
+        return False
+    installed = False
     for framework in ("gathers", "spiders"):
         source = WorkspaceManager.find_carrier_dir(root, framework, carrier)
         if source is None:
@@ -353,7 +388,8 @@ def _install_baseline_carrier(replay_root: Path, baseline_dir: str, carrier: str
             return False
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(source, target, copy_function=shutil.copy2)
-    return True
+        installed = True
+    return installed
 
 
 _MAX_DIFF_SUMMARY_CHARS = settings.max_diff_summary_chars
@@ -672,6 +708,9 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
                     verify_result=dict(state.get("verify_result") or {}),
                     regression_result=dict(state.get("regression_result") or {}),
                     check_passed=bool(state.get("check_passed")),
+                    baseline_dir=str(state.get("baseline_dir") or ""),
+                    syntax_passed=bool(state.get("syntax_passed")),
+                    business_verification_status=str(state.get("business_verification_status") or "unknown"),
                     verify_passed=bool(state.get("verify_passed")),
                     regression_passed=bool(state.get("regression_passed")),
                 )
@@ -679,10 +718,12 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
                     **task,
                     **dump_model(incoming),
                     "repair": repair_payload,
+                    "problem": dict(state.get("problem") or task.get("problem") or {}),
                     "run_id": str(state["run_id"]),
                     "baseline_dir": str(state.get("baseline_dir") or ""),
                     "baseline_manifest": dict(state.get("baseline_manifest") or {}),
                     "framework": str(state.get("framework") or ""),
+                    "source_project_path": str(state.get("source_project_path") or ""),
                 }
     
         except Exception as error:
@@ -860,10 +901,13 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
         if kind == "review":
             # 交付门禁读的是审查结论，不能只留在 review 子字典里。
             patch["review_decision"] = str(view.verdict or "")
+            if view.contract_error:
+                patch["review_contract_error"] = view.contract_error
+                patch["retry_target"] = ""
         if failed and kind == "repair":
             patch["retry_target"] = "repair_agent"
         elif failed and kind == "review":
-            patch["retry_target"] = "review_agent"
+            patch["retry_target"] = "validate_changes" if (final.get("_audit") or {}).get("blocked_by") == "stale_evidence" else "repair_agent"
         if kind == "repair":
             repair_files = [str(item) for item in (final.get("changed_files") or [])]
             change_plan = dict(final.get("change_plan") or {})

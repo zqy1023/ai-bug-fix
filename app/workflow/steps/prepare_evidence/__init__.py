@@ -23,11 +23,7 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _patch(output: dict[str, Any]) -> dict[str, Any]:
-    """预检结论回写状态；新旧框架都交给 Locate 决定是否可修复。
-
-    ``legacy_only`` / ``legacy_dependency`` 只是证据标签，不能在预检阶段
-    把任务提前终止，否则旧框架永远到不了 repair_agent。
-    """
+    """保留完整定位证据；旧框架仍执行只读定位，再统一转分析报告。"""
     return {"evidence": output}
 
 

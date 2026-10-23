@@ -39,6 +39,16 @@ def build_report(ctx: StepContext, data: FinalizeInput) -> dict[str, Any]:
     finished_at = datetime.now(timezone.utc).isoformat()
     locate = full_output(ctx.store, ctx.run.run_id, data.task_id, records, "locate_agent")
     repair = full_output(ctx.store, ctx.run.run_id, data.task_id, records, "repair_agent")
+    from app.workflow.confirmation import confirmation
+    review = full_output(ctx.store, ctx.run.run_id, data.task_id, records, "review_agent")
+    delivered = _output(records, "prepare_delivery")
+    manual_required, manual_reasons = confirmation({
+        "review": review,
+        "verify_result": _output(records, "verify_issue"),
+        "regression_result": _output(records, "run_regression"),
+        "manual_confirmation_required": delivered.get("manual_confirmation_required"),
+        "manual_confirmation_reasons": delivered.get("manual_confirmation_reasons") or [],
+    })
     report = {
         "report_version": 2, "report_kind": "task_final",
         "task_id": data.task_id, "carrier": data.carrier, "biztype": data.biztype,
@@ -59,6 +69,10 @@ def build_report(ctx: StepContext, data: FinalizeInput) -> dict[str, Any]:
         "blocked_reason": repair.get("blocked_reason", ""),
         "validation": {record.name: record.output for record in records if record.name in {"verify_issue", "syntax_regression", "run_regression"}},
         "change_summary": str(repair.get("summary") or repair.get("analysis") or ""),
+        "review_decision": str(review.get("verdict") or ""),
+        "manual_confirmation_required": manual_required,
+        "manual_confirmation_reasons": manual_reasons,
+        "repair_failure_kind": str(repair.get("failure_kind") or ""),
         "completed_steps": [record.name for record in records if record.status in {"succeeded", "skipped"}],
         "delivery": _output(records, "prepare_delivery"),
         "repair_branch": str(_output(records, "prepare_delivery").get("repair_branch")
@@ -296,9 +310,39 @@ def refresh_completed_report(store: Any, run_id: str, task_id: str) -> None:
         terminal_status=str(previous.get("result") or ""), report_destination="",
     ))
     records = store.list_steps(run_id, task_id)
-    report["elapsed_ms"] = round(sum(record.duration_ms for record in records), 2)
+    report.update(_execution_timing(store, run_id, task_id, records))
     report["completed_steps"] = [record.name for record in records if record.status in {"succeeded", "skipped"}]
     store.write_artifact(run_id, FINAL_REPORT, report, task_id)
+
+
+def _execution_timing(store: Any, run_id: str, task_id: str, records: list[StepRecord]) -> dict[str, float]:
+    """累计历史步骤；旧 Agent 历史从模型调用账本补齐，避免重复计算。"""
+    all_records = { (r.name, r.attempt, r.started_at): r for r in records }
+    directory = store.task_dir(run_id, task_id)
+    for path in (directory / "history" / "steps").glob("*.json"):
+        try:
+            record = StepRecord.model_validate(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            continue
+        all_records.setdefault((record.name, record.attempt, record.started_at), record)
+    total = sum(r.duration_ms for r in all_records.values())
+    metrics = directory / "metrics" / "agent.jsonl"
+    agent_totals: dict[str, float] = {}
+    if metrics.exists():
+        for line in metrics.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+                name = str(row.get("agent_role") or "") + "_agent"
+                agent_totals[name] = agent_totals.get(name, 0) + float(row.get("duration_ms") or 0)
+            except (ValueError, TypeError):
+                continue
+    for name, elapsed in agent_totals.items():
+        total += max(0, elapsed - sum(r.duration_ms for r in all_records.values() if r.name == name))
+    starts = [datetime.fromisoformat(r.started_at) for r in all_records.values() if r.started_at]
+    ends = [datetime.fromisoformat(r.finished_at) for r in all_records.values() if r.finished_at]
+    wall = max(0, (max(ends) - min(starts)).total_seconds() * 1000) if starts and ends else 0
+    return {"elapsed_ms": round(total, 2), "cumulative_execution_ms": round(total, 2),
+            "latest_records_ms": round(sum(r.duration_ms for r in records), 2), "wall_elapsed_ms": round(wall, 2)}
 
 
 

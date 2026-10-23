@@ -51,6 +51,9 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
     )
     from app.workflow.routes import _analysis_only_task
     analysis_only = _analysis_only_task(state)
+    from app.domain.repair_scope import legacy_analysis_required
+    from app.workflow.confirmation import confirmation
+    manual_required, manual_reasons = confirmation(state)
     return {
         "task_id": task_id,
         "carrier": str(task.get("carrier") or ""),
@@ -75,12 +78,14 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         "repair_summary": str(repair_payload.get("summary") or ""),
         "review_summary": str(review_payload.get("summary") or ""),
         "review_decision": review_decision,
+        "delivery_eligible": review_payload.get("delivery_eligible") is True or review_decision == "HUMAN",
+        "legacy_analysis_required": legacy_analysis_required(state),
         "analysis_only": analysis_only,
         "report_paths": [f"{report_dir}/final.json"] if analysis_only else [],
         "allow_push": bool(state.get("allow_push", state.get("git_push", False))),
         "require_push": bool(state.get("require_push", False)),
-        "manual_confirmation_required": bool(state.get("manual_confirmation_required")),
-        "manual_confirmation_reasons": [str(item) for item in state.get("manual_confirmation_reasons") or []],
+        "manual_confirmation_required": manual_required,
+        "manual_confirmation_reasons": manual_reasons,
     }
 
 
@@ -92,6 +97,7 @@ def _patch(output: dict[str, Any]) -> dict[str, Any]:
         "delivery_local_branch": bool(output.get("local_branch")),
         "delivery_commit": str(output.get("commit") or ""),
         "manual_confirmation_required": bool(output.get("manual_confirmation_required")),
+        "manual_confirmation_reasons": list(output.get("manual_confirmation_reasons") or []),
     }
 
 

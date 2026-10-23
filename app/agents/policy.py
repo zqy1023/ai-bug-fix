@@ -36,8 +36,8 @@ def retry_read_paths(root: Path, run_id: str, task_id: str) -> list[Path]:
 
 
 def carrier_write_paths(root: Path, carrier: str) -> list[Path]:
-    """目标运输商的新旧实现均可写，其他运输商及共享层不在写白名单内。"""
-    return [path.resolve() for framework in ("gathers", "spiders")
+    """只允许新框架目标目录；旧插件始终作为只读分析证据。"""
+    return [path.resolve() for framework in ("gathers",)
             if (path := WorkspaceManager.find_carrier_dir(root, framework, carrier)) is not None]
 
 
@@ -50,7 +50,8 @@ def carrier_read_paths(root: Path, primary: Path, shared: Path | None, carrier: 
     legacy_root = WorkspaceManager.find_carrier_dir(root, "spiders", carrier)
     if legacy_root is not None:
         paths.append(legacy_root.resolve())
-    pending = [file for base in carrier_write_paths(root, carrier) for file in base.rglob("*.py")]
+    source_roots = [*carrier_write_paths(root, carrier), *([legacy_root] if legacy_root is not None else [])]
+    pending = [file for base in source_roots for file in base.rglob("*.py")]
     seen: set[Path] = set()
     while pending and len(seen) < 64:
         file = pending.pop(0)
@@ -128,6 +129,19 @@ def _shared_root_of(context: dict[str, object]) -> Path | None:
     return root if root.is_dir() else None
 
 
+def review_read_paths(root: Path, primary: Path, shared: Path | None, carrier: str,
+                      baseline: str = "") -> list[Path]:
+    """审查可核对同运输商基线及有限共享依赖；始终没有写权限。"""
+    paths = [primary.resolve(), *carrier_write_paths(root, carrier), *shared_read_paths(shared)]
+    if baseline:
+        base = Path(baseline).resolve()
+        for framework in ("gathers", "spiders"):
+            directory = WorkspaceManager.find_carrier_dir(base, framework, carrier)
+            if directory is not None:
+                paths.append(directory.resolve())
+    return list(dict.fromkeys(paths))
+
+
 class ToolPolicyError(ValueError):
     """Agent 请求试图访问声明范围之外的文件。"""
 
@@ -156,11 +170,15 @@ class ToolPolicy:
         if request.agent_role in {"locate", "repair"}:
             expected_reads: tuple[Path, ...] = tuple(carrier_read_paths(workspace, expected_carrier, shared_root, carrier))
         else:
-            expected_reads = tuple(dict.fromkeys([expected_carrier, *carrier_write_paths(workspace, carrier)]))
+            snapshot = context.get("source_snapshot") or {}
+            expected_reads = tuple(review_read_paths(workspace, expected_carrier, shared_root, carrier,
+                                                     str(snapshot.get("baseline_dir") or "")))
         expected_reads = (*expected_reads, *retry_read_paths(
             workspace, str(request.run_id), str(request.task_id),
         ))
         expected_reads = tuple(dict.fromkeys(expected_reads))
+        from app.prompts.budget import readable_context
+        expected_reads = (*expected_reads, *readable_context(workspace, request.run_id, request.task_id, request.agent_role))
 
         actual_reads = tuple(Path(value).resolve() for value in request.allowed_read_roots)
         if len(actual_reads) != len(set(actual_reads)) or actual_reads != expected_reads:
@@ -168,6 +186,10 @@ class ToolPolicy:
                 f"{request.agent_role} Agent 读取范围不符合角色白名单"
             )
         if request.agent_role == "repair":
+            from app.domain.repair_scope import legacy_analysis_required
+
+            if legacy_analysis_required(context):
+                raise ToolPolicyError("旧框架及依赖旧插件的任务只允许分析报告，不允许修复写入")
             if not request.allowed_write_roots or not request.write_root:
                 raise ToolPolicyError("repair Agent 必须指定运输商写入根")
             write_root = Path(request.write_root).resolve()

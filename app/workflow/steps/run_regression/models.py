@@ -1,7 +1,9 @@
 """09 准生产回归的输入输出契约。"""
 
 from __future__ import annotations
+
 from typing import Any
+
 from pydantic import Field
 
 from app.workflow.spec import FrozenModel
@@ -19,6 +21,10 @@ class RegressionInput(FrozenModel):
     # changed_files：字段说明见该模型文档与工作流契约。
     changed_files: list[str]
     business_verification_status: str = "unknown"
+    normalized_log: dict[str, Any] = Field(default_factory=dict)
+    baseline_dir: str = ""
+    source_project_path: str = ""
+    validation_requirements: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class RegressionOutput(FrozenModel):
@@ -26,15 +32,19 @@ class RegressionOutput(FrozenModel):
 
     # passed：字段说明见该模型文档与工作流契约。
     passed: bool
+    evidence_version: dict[str, Any] = Field(default_factory=dict)
     # reason：字段说明见该模型文档与工作流契约。
     reason: str = ""
     # mode：实际执行的验证级别。
     mode: str = "regression"
     # command_count：字段说明见该模型文档与工作流契约。
     command_count: int = 0
-    status: str = "verified"
+    status: str = "unverified"
     commands: list[dict[str, Any]] = Field(default_factory=list)
     report_path: str = ""
+    request_regression: dict[str, Any] = Field(default_factory=dict)
+    supplemental_verification: dict[str, Any] = Field(default_factory=dict)
+    validation_requirements: list[dict[str, Any]] = Field(default_factory=list)
 
 
 __all__ = ["RegressionInput", "RegressionOutput"]

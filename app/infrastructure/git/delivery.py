@@ -40,10 +40,7 @@ class DeliveryPort(Protocol):
         """删除最终审批拒绝的修复分支。"""
 
 
-# 提交说明会永久留在版本库里，比运行记录更难回收，因此对随单变化的内容脱敏。
-# 单号、运单号这类连续数字是最容易泄露又最没信息量的部分。敏感键名的掩码规则
-# 与运行记录共用 ``app.infrastructure.redaction.mask_secrets``。
-_LONG_NUMBER = re.compile(r"\d{8,}")
+# 提交说明采用简短摘要；原始运行证据保留原值。
 _MAX_COMMENT_CHARS = settings.max_commit_comment_chars
 _MAX_AUDIT_BYTES = settings.git_audit_max_bytes
 _logger = logging.getLogger(__name__)
@@ -61,16 +58,9 @@ def _is_delivery_attachment(relative: str) -> bool:
 
 
 def _redact_report(value: Any) -> Any:
-    """Redact values before serialization so JSON syntax remains intact."""
-    if isinstance(value, dict):
-        return {
-            key: "***" if re.search(r"(?i)(?:^|[_-])(?:token|password|secret|authorization|cookie|api[_-]?key)(?:$|[_-])", str(key))
-            else _redact_report(item)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_redact_report(item) for item in value]
-    return redact_output(value) if isinstance(value, str) else value
+    """保留交付报告原始字段值。"""
+    from copy import deepcopy
+    return deepcopy(value)
 
 
 def _force_remove(path: Path) -> None:
@@ -130,12 +120,11 @@ def _is_ref_rejected(error: Exception) -> bool:
 
 
 def _one_line(value: Any, limit: int = _MAX_COMMENT_CHARS) -> str:
-    """把一段文本压成提交说明里的一行：脱敏、压空白、限长。"""
+    """把一段文本压成提交说明里的一行：压空白、限长。"""
     text = str(value or "").strip()
     if not text:
         return ""
     text = mask_secrets(text)
-    text = _LONG_NUMBER.sub("***", text)
     # 换行会把段落写乱，一行一段地压平；多空格也会让正文看起来参差不齐。
     text = " ".join(text.split())
     if len(text) > limit:
@@ -239,11 +228,29 @@ class GitBranchDelivery:
             raise DeliveryError(f"不是有效的本地 Git 仓库: {branch_root}") from error
         git_root = Path(repo.working_tree_dir or branch_root).resolve()
         fingerprint = self._fingerprint(source_root, state)
+        identity = json.dumps(
+            [str(state.get("run_id") or ""), str(state.get("task_id") or ""), str(branch)], ensure_ascii=True,
+        )
+        anchor = "refs/ai-bug-fixer/" + hashlib.sha256(identity.encode()).hexdigest()
         receipt = state.get("delivery_receipt") or {}
         if isinstance(receipt, dict) and receipt:
             if receipt.get("fingerprint") != fingerprint or receipt.get("repair_branch") != str(branch):
                 raise DeliveryError("交付内容已改变，不能复用旧提交；请重新执行验证与审查")
             return self._resume_delivery(repo, state, receipt)
+
+        # anchor 与步骤收据之间可能中断。只恢复带本次内容指纹的提交，绝不覆盖其它对象。
+        anchored = next((ref for ref in repo.refs if ref.path == anchor), None)
+        if anchored is not None:
+            previous = anchored.commit
+            if f"AI-Delivery-Fingerprint: {fingerprint}" not in previous.message.splitlines():
+                raise DeliveryError("交付 anchor 已存在但缺少匹配的内容指纹；需核验已有提交，禁止重建后覆盖",
+                                    status="GIT_ANCHOR_UNVERIFIED", commit=previous.hexsha)
+            recovered = {"repair_branch": str(branch), "commit": previous.hexsha,
+                         "fingerprint": fingerprint, "anchor": anchor}
+            persist = state.get("persist_delivery")
+            if callable(persist):
+                persist(recovered)
+            return self._resume_delivery(repo, state, recovered)
 
         workspace: Path | None = None
         delivery_repo: Repo | None = None
@@ -324,7 +331,8 @@ class GitBranchDelivery:
                 ]
                 if not staged:
                     raise DeliveryError(f"修复文件未能进入暂存区: {git_paths[0]}")
-                delivery_repo.git.commit("-m", self._commit_message(state), "--", *staged)
+                delivery_repo.git.commit("-m", self._commit_message(state),
+                                         "-m", f"AI-Delivery-Fingerprint: {fingerprint}", "--", *staged)
                 commit = delivery_repo.head.commit
             except Exception as error:
                 raise DeliveryError(
@@ -335,12 +343,7 @@ class GitBranchDelivery:
 
             # 先把提交对象锚定到源仓库的专用引用，再持久化操作收据。
             # 即使远端推送成功后断网或进程崩溃，下一次也只确认/重推同一提交。
-            identity = json.dumps(
-                [str(state.get("run_id") or ""), str(state.get("task_id") or ""), str(branch)],
-                ensure_ascii=True,
-            )
-            anchor = "refs/ai-bug-fixer/" + hashlib.sha256(identity.encode()).hexdigest()
-            delivery_repo.git.push(str(git_root), f"HEAD:{anchor}")
+            delivery_repo.git.push(str(git_root), f"HEAD:{anchor}", f"--force-with-lease={anchor}:")
             prepared = {
                 "repair_branch": str(branch), "commit": commit.hexsha,
                 "fingerprint": fingerprint, "anchor": anchor,
@@ -817,14 +820,14 @@ class GitBranchDelivery:
                     encoding="utf-8",
                     dir=destination.parent,
                     prefix=f".{destination.name}.",
-                    suffix=".redacted",
+                    suffix=".audit",
                     delete=False,
                 ) as output:
                     output.write(redact_output(content))
                     temporary = Path(output.name)
                 shutil.copyfile(temporary, destination)
             except OSError as error:
-                _logger.warning("跳过无法写入的脱敏审计产物: %s (%s)", source, type(error).__name__)
+                _logger.warning("跳过无法写入的审计产物: %s (%s)", source, type(error).__name__)
                 continue
             finally:
                 if temporary is not None:

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from config.settings import settings
+from app.infrastructure.claude.tool_budget import ToolBudget
 
 _ALL_TOOLS = (
     "Read",
@@ -58,24 +59,50 @@ _TOOL_INPUT_KEYS = (
 )
 
 
-def _tokens(usage: Any) -> dict[str, int | None]:
-    """从 SDK 结果里取 token。没有用量时记 0，不把调用统计冒充 token。"""
+def _tokens(usage: Any) -> dict[str, Any]:
+    """从 SDK 结果里取 token；缺失保持未知，不冒充零消耗。"""
     if not isinstance(usage, dict):
-        return {"input_tokens": None, "output_tokens": None, "total_tokens": None}
+        return {"input_tokens": None, "output_tokens": None, "total_tokens": None, "token_total_scope": "unknown"}
     input_tokens = usage.get("input_tokens")
     output_tokens = usage.get("output_tokens")
     input_tokens = input_tokens if isinstance(input_tokens, int) else None
     output_tokens = output_tokens if isinstance(output_tokens, int) else None
     total = usage.get("total_tokens")
+    scope = "sdk_reported" if isinstance(total, int) else "input_plus_output_excludes_cache"
     if not isinstance(total, int):
         total = input_tokens + output_tokens if input_tokens is not None and output_tokens is not None else None
     return {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "total_tokens": total,
+        "token_total_scope": scope if total is not None else "unknown",
         "cache_read_input_tokens": usage.get("cache_read_input_tokens"),
         "cache_creation_input_tokens": usage.get("cache_creation_input_tokens"),
     }
+
+
+def _sdk_receipt(result: Any) -> dict[str, Any]:
+    """保留 SDK 实际回执，配置模型与实际用量来源分别呈现。"""
+    if result is None:
+        return {}
+    return {name: getattr(result, name, None) for name in
+            ("session_id", "subtype", "is_error", "num_turns", "model_usage", "stop_reason", "api_error_status")}
+
+
+def _decision_event(name: str, values: dict[str, Any], tool_id: str | None,
+                    decision: str, reason: str, started_at: float) -> dict[str, Any]:
+    """在真实工具开始之前记录身份、权限和读取文件版本。"""
+    event: dict[str, Any] = {"type": "tool_decision", "tool_use_id": tool_id,
+                             "tool": name, "input": dict(values), "decision": decision, "reason": reason,
+                             "elapsed_ms": round((time.perf_counter() - started_at) * 1000, 2)}
+    path = Path(str(values.get("file_path") or ""))
+    if name == "Read" and decision == "allow" and path.is_file():
+        import hashlib
+        try:
+            event["source_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError as error:
+            event["source_hash_error"] = str(error)
+    return event
 
 
 def _clip(value: object, limit: int) -> str:
@@ -101,19 +128,8 @@ def _text_of(content: Any) -> str:
 
 
 def _tool_input_summary(tool_input: Any) -> dict[str, Any]:
-    """工具入参只保留定位信息与长度。
-
-    整段代码或正文不重复进事件记录：既没有排查价值，又会让记录体积翻倍。
-    """
-    if not isinstance(tool_input, dict):
-        return {}
-    summary: dict[str, Any] = {}
-    for key in _TOOL_INPUT_KEYS:
-        if key not in tool_input:
-            continue
-        item = tool_input[key]
-        summary[key] = _clip(item, _MAX_EVENT_VALUE) if isinstance(item, str) else item
-    return summary
+    """完整保留公开工具入参，包含读取区间和实际编辑内容。"""
+    return dict(tool_input) if isinstance(tool_input, dict) else {}
 
 
 def _public_events(message: Any) -> list[dict[str, Any]]:
@@ -128,7 +144,7 @@ def _public_events(message: Any) -> list[dict[str, Any]]:
     content = getattr(message, "content", None)
     if isinstance(content, str):
         if content.strip():
-            events.append({"type": "assistant", "text": _clip(content, _MAX_EVENT_TEXT)})
+            events.append({"type": "assistant", "text": content})
         return events
     if not isinstance(content, list):
         return events
@@ -137,21 +153,22 @@ def _public_events(message: Any) -> list[dict[str, Any]]:
         tool_input = getattr(block, "input", None)
         if isinstance(tool_name, str) and tool_input is not None:
             events.append(
-                {"type": "tool_use", "tool": tool_name, "input": _tool_input_summary(tool_input)}
+                {"type": "tool_use", "tool_use_id": getattr(block, "id", None), "tool": tool_name, "input": _tool_input_summary(tool_input)}
             )
             continue
         if hasattr(block, "tool_use_id"):
             events.append(
                 {
                     "type": "tool_result",
+                    "tool_use_id": getattr(block, "tool_use_id", None),
                     "is_error": bool(getattr(block, "is_error", False)),
-                    "text": _clip(_text_of(getattr(block, "content", "")), settings.claude_event_tool_text_chars),
+                    "text": _text_of(getattr(block, "content", "")),
                 }
             )
             continue
         text = getattr(block, "text", None)
         if isinstance(text, str) and text.strip():
-            events.append({"type": "assistant", "text": _clip(text, _MAX_EVENT_TEXT)})
+            events.append({"type": "assistant", "text": text})
     return events
 
 
@@ -161,8 +178,6 @@ def _collect_events(
     """记录公开 SDK 事件及其相对调用开始的时间。"""
     elapsed_ms = round((time.perf_counter() - started_at) * 1000, 2) if started_at is not None else None
     for event in _public_events(message):
-        if len(events) >= _MAX_EVENTS:
-            return
         if elapsed_ms is not None:
             event["elapsed_ms"] = elapsed_ms
         events.append(event)
@@ -521,63 +536,23 @@ async def _run(
     sdk_env = {key: value for key, value in (env or {}).items() if key != "AI_REPAIR_WRITE_ROOT"}
     file_tools = resolve_tools(writable, tools)
 
-    tool_count = 0
-    repeated_calls: dict[str, int] = {}
+    budget = ToolBudget(max_tool_calls)
 
-    async def pre_tool_use(
-        hook_input: Any,
-        _tool_use_id: str | None,
-        _context: Any,
-    ) -> dict[str, Any]:
-        """在每次工具调用前强制执行权限检查和重复调用预算。"""
-        nonlocal tool_count
-        tool_count += 1
-        tool_name = hook_input.get("tool_name")
-        tool_input = hook_input.get("tool_input")
-        signature = ""
-        if isinstance(tool_name, str) and isinstance(tool_input, dict):
-            signature = json.dumps(
-                {"tool": tool_name, "input": tool_input},
-                ensure_ascii=False,
-                sort_keys=True,
-                default=str,
-            )
-            repeated_calls[signature] = repeated_calls.get(signature, 0) + 1
-        if tool_count > max_tool_calls:
-            decision, reason = "deny", f"工具调用超过预算 {max_tool_calls}"
-        elif signature and repeated_calls[signature] > 3:
-            decision, reason = "deny", "相同工具和参数已重复调用 4 次，停止无效循环"
-        elif not isinstance(tool_name, str):
-            decision, reason = "deny", "工具名称无效"
-        elif not isinstance(tool_input, dict):
-            decision, reason = "deny", "工具输入不是对象"
+    async def pre_tool_use(hook_input: Any, tool_use_id: str | None, _context: Any) -> dict[str, Any]:
+        name = hook_input.get("tool_name") if isinstance(hook_input, dict) else ""
+        values = hook_input.get("tool_input") if isinstance(hook_input, dict) else {}
+        if not isinstance(name, str) or not isinstance(values, dict):
+            name, values = str(name or ""), {}
+            decision, reason = "deny", "工具输入不是有效对象"
         else:
-            tool_input = _mapped_tool_input(tool_name, tool_input, root, read_roots)
-            decision, reason = _check_tool_access(
-                tool_name,
-                tool_input,
-                root,
-                [Path(item).resolve() for item in (allowed_write_roots or [write_root])],
-                set(file_tools),
-                read_roots,
-            )
-        _debug_hook_event(
-            {
-                "event": "PreToolUse",
-                "tool_name": tool_name,
-                "tool_input": tool_input,
-                "decision": decision,
-                "reason": reason,
-            }
-        )
-        return {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": decision,
-                "permissionDecisionReason": reason,
-                **({"updatedInput": tool_input} if decision == "allow" and isinstance(tool_input, dict) else {}),
-            }
-        }
+            values = _mapped_tool_input(name, values, root, read_roots)
+            decision, reason = _check_tool_access(name, values, root,
+                [Path(item).resolve() for item in (allowed_write_roots or [write_root])], set(file_tools), read_roots)
+        decision, reason = budget.decide(name, values, decision, reason)
+        events.append(_decision_event(name, values, tool_use_id, decision, reason, started_at))
+        _debug_hook_event({"event": "PreToolUse", "tool_name": name, "tool_input": values,
+                           "decision": decision, "reason": reason})
+        return budget.hook_output(name, values, decision, reason)
 
     options = ClaudeAgentOptions(
         **({"output_format": {"type": "json_schema", "schema": output_schema}} if output_schema else {}),
@@ -627,11 +602,16 @@ async def _run(
         # SDK 在流结束前异常时也把已经收到的有效事件交给调用审计层落盘。
         try:
             setattr(error, "agent_events", events)
+            setattr(error, "agent_usage", {**_tokens(getattr(result, "usage", None)), **budget.usage(events)})
+            setattr(error, "sdk_receipt", _sdk_receipt(result))
         except Exception:
             pass
         raise
     if result is None:
-        raise RuntimeError("Claude 智能体未返回结果")
+        error = RuntimeError("Claude 智能体未返回结果")
+        setattr(error, "agent_events", events)
+        setattr(error, "agent_usage", {**_tokens(None), **budget.usage(events)})
+        raise error
     if result.is_error:
         hint = ""
         if result.subtype == "error_max_turns":
@@ -640,6 +620,8 @@ async def _run(
         error_msg = result.result or f"SDK 标记调用失败（is_error=true, subtype={result.subtype or 'unknown'}），但未提供错误正文"
         error = RuntimeError(f"Claude 智能体执行失败: {error_msg}{hint}")
         setattr(error, "agent_events", events)
+        setattr(error, "agent_usage", {**_tokens(getattr(result, "usage", None)), **budget.usage(events)})
+        setattr(error, "sdk_receipt", _sdk_receipt(result))
         raise error
     structured = getattr(result, "structured_output", None)
     text = json.dumps(structured, ensure_ascii=False) if isinstance(structured, dict) else result.result or ""
@@ -649,8 +631,9 @@ async def _run(
         "passed": True,
         "result": text,
         "messages": events,
+        "sdk_receipt": _sdk_receipt(result),
         "usage": {
-            "tool_calls": tool_count,
+            **budget.usage(events),
             "prompt_chars": len(prompt),
             "result_chars": len(text),
             **tokens,
@@ -769,58 +752,25 @@ class ClaudeSession:
         current_read_roots: Sequence[Path] = [self._workspace]
         current_write_root: Path | Sequence[Path] = self._workspace
         tools = list(self._tools)
-        tool_count = 0
-        repeated_calls: dict[str, int] = {}
+        budget = ToolBudget(self._max_tool_calls)
+        events: list[dict[str, Any]] = []
+        started_at = time.perf_counter()
 
-        async def pre_tool_use(
-            hook_input: Any, _tool_id: str | None, _context: Any
-        ) -> dict[str, Any]:
-            nonlocal tool_count
-            tool_count += 1
-            tool_name = hook_input.get("tool_name")
-            tool_input = hook_input.get("tool_input")
-            signature = ""
-            if isinstance(tool_name, str) and isinstance(tool_input, dict):
-                signature = json.dumps(
-                    {"tool": tool_name, "input": tool_input},
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    default=str,
-                )
-                repeated_calls[signature] = repeated_calls.get(signature, 0) + 1
-            if tool_count > self._max_tool_calls:
-                decision, reason = "deny", f"工具调用超过预算 {self._max_tool_calls}"
-            elif signature and repeated_calls[signature] > 3:
-                decision, reason = "deny", "相同工具和参数已重复调用 4 次，停止无效循环"
-            elif not isinstance(tool_name, str) or not isinstance(tool_input, dict):
-                decision, reason = "deny", "工具输入无效"
+        async def pre_tool_use(hook_input: Any, tool_use_id: str | None, _context: Any) -> dict[str, Any]:
+            name = hook_input.get("tool_name") if isinstance(hook_input, dict) else ""
+            values = hook_input.get("tool_input") if isinstance(hook_input, dict) else {}
+            if not isinstance(name, str) or not isinstance(values, dict):
+                name, values = str(name or ""), {}
+                decision, reason = "deny", "工具输入不是有效对象"
             else:
-                tool_input = _mapped_tool_input(tool_name, tool_input, self._workspace, current_read_roots)
-                decision, reason = _check_tool_access(
-                    tool_name,
-                    tool_input,
-                    self._workspace,
-                    current_write_root,
-                    set(tools),
-                    current_read_roots,
-                )
-            _debug_hook_event(
-                {
-                    "event": "PreToolUse",
-                    "tool_name": tool_name,
-                    "tool_input": tool_input,
-                    "decision": decision,
-                    "reason": reason,
-                }
-            )
-            return {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": decision,
-                    "permissionDecisionReason": reason,
-                **({"updatedInput": tool_input} if decision == "allow" and isinstance(tool_input, dict) else {}),
-                }
-            }
+                values = _mapped_tool_input(name, values, self._workspace, current_read_roots)
+                decision, reason = _check_tool_access(name, values, self._workspace, current_write_root,
+                                                      set(tools), current_read_roots)
+            decision, reason = budget.decide(name, values, decision, reason)
+            events.append(_decision_event(name, values, tool_use_id, decision, reason, started_at))
+            _debug_hook_event({"event": "PreToolUse", "tool_name": name, "tool_input": values,
+                               "decision": decision, "reason": reason})
+            return budget.hook_output(name, values, decision, reason)
 
         options = ClaudeAgentOptions(
             **({"output_format": {"type": "json_schema", "schema": self._output_schema}} if getattr(self, "_output_schema", None) else {}),
@@ -857,13 +807,12 @@ class ClaudeSession:
             # invoke_with_audit 会将已收集事件持久化到当前 task，而不是只保存失败元数据。
             events: list[dict[str, Any]] = []
             try:
-                tool_count = 0
-                repeated_calls = {}
+                budget = ToolBudget(self._max_tool_calls)
+                result = None
                 if context_prompt:
-                    await client.query(context_prompt)
-                    async for _ in client.receive_response():
-                        pass
+                    prompt = f"{context_prompt}\n\n{prompt}"
                 started_at = time.perf_counter()
+                result = None
                 await client.query(self._with_rules(prompt))
                 result: Any = None
                 async with asyncio.timeout(self._timeout_seconds):
@@ -879,15 +828,16 @@ class ClaudeSession:
                         if isinstance(message, ResultMessage):
                             result = message
                 if result is None or result.is_error:
-                    raise RuntimeError(f"Agent 返回错误: {getattr(result, 'subtype', 'empty')}")
+                    raise RuntimeError(f"Agent 返回错误: {getattr(result, 'subtype', 'empty')}：{getattr(result, 'result', '') or ''}")
                 structured = getattr(result, "structured_output", None)
                 text = json.dumps(structured, ensure_ascii=False) if isinstance(structured, dict) else result.result or ""
                 result_queue.put({
                     "passed": True,
                     "result": text,
                     "messages": events,
+                    "sdk_receipt": _sdk_receipt(result),
                     "usage": {
-                        "tool_calls": tool_count,
+                        **budget.usage(events),
                         "prompt_chars": len(prompt),
                         "result_chars": len(text),
                         **_tokens(getattr(result, "usage", None)),
@@ -903,11 +853,15 @@ class ClaudeSession:
                 result_queue.put({
                     "passed": False,
                     "reason": reason,
+                    "failure_detail": str(error),
+                    "failure_kind": budget.stop_kind or ("agent_timeout" if isinstance(error, TimeoutError) else "provider_error"),
                     "messages": events,
+                    "sdk_receipt": _sdk_receipt(result),
                     "usage": {
-                        "tool_calls": tool_count,
+                        **budget.usage(events),
                         "prompt_chars": len(prompt),
                         "result_chars": 0,
+                        **_tokens(getattr(result, "usage", None)),
                     },
                 })
                 if isinstance(error, TimeoutError):

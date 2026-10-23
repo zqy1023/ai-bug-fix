@@ -28,3 +28,7 @@ frontend/.env.local
 .vite/
 tests/
 docs/
+diagnostics/
+pytest.ini
+requirements-dev.txt
+.coderules.json

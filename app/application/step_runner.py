@@ -161,7 +161,7 @@ def state_from_records(store: RecordStore, run_id: str, task_id: str = "") -> di
             state["verify_result"] = output
             state["business_verification_status"] = str(output.get("status") or ("verified" if output.get("passed") else "unverified"))
         elif record.name == "run_regression":
-            state["regression_passed"] = bool(output.get("passed"))
+            state["regression_passed"] = bool(output.get("passed")) and output.get("status") == "verified"
             state["regression_result"] = output
         elif record.name == "review_agent":
             state["review"] = output
@@ -179,6 +179,18 @@ def state_from_records(store: RecordStore, run_id: str, task_id: str = "") -> di
     problem = task.get("problem")
     if not isinstance(problem, dict):
         raise StepRunnerError(f"任务 {task_id} 缺少原始 problem")
+    # identify_carrier 的步骤投影会裁剪 req/response；重跑不能把投影视为完整业务输入。
+    normalized = store.run_dir(run_id) / "artifacts/normalized_records.json"
+    if normalized.is_file() and task.get("problem_key"):
+        from app.domain.keys import problem_key
+        data = store.read_artifact(run_id, "artifacts/normalized_records.json")
+        rows = data.get("records", []) if isinstance(data, dict) else []
+        matched = [row.get("problem") for row in rows if isinstance(row, dict)
+                   and isinstance(row.get("problem"), dict) and problem_key(row["problem"]) == task["problem_key"]]
+        if matched:
+            problem = dict(matched[0])
+            task = {**task, "problem": problem}
+            state["task"] = task
     state["problem"] = dict(problem)
     retry_path = store.task_dir(run_id, task_id) / "retry" / "latest.json"
     if retry_path.is_file():

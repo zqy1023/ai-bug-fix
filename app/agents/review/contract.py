@@ -9,8 +9,9 @@ from dataclasses import dataclass
 from typing import Any
 
 RESULT_VALUES = ("PASS", "FAIL", "MANUAL")
+REVIEW_CONTRACT_VERSION = 3
 # 需要跟着任务状态长期携带的字段：结论、公开发现项与回修要求。
-RESULT_FIELDS = ("result", "passed", "summary", "findings", "required_changes", "change_plan")
+RESULT_FIELDS = ("verdict", "result", "passed", "code_verdict", "coverage", "summary", "findings", "required_changes", "change_plan")
 _MAX_FIELD_CHARS = 4000
 _MAX_ITEMS = 20
 
@@ -23,6 +24,9 @@ def slim_review(payload: dict[str, Any]) -> dict[str, Any]:
             continue
         value = payload[field]
         if field == "change_plan" and isinstance(value, dict):
+            from copy import deepcopy
+            slim[field] = deepcopy(value)
+        elif field == "coverage" and isinstance(value, dict):
             slim[field] = _clip_nested(value)
         elif isinstance(value, str):
             slim[field] = _clip(value)
@@ -78,39 +82,70 @@ class ReviewVerdict:
 
 def result_of(payload: dict[str, Any]) -> str:
     """返回大写结论，缺失时为空串。"""
-    value = payload.get("result")
+    value = payload.get("verdict", payload.get("result"))
     return value.upper().strip() if isinstance(value, str) else ""
 
 
 def validate_shape(payload: dict[str, Any]) -> tuple[bool, str]:
     """校验审查输出的结构：结论、布尔值和两个清单。"""
     value = result_of(payload)
+    if "verdict" in payload and "result" in payload and str(payload["verdict"]).upper() != str(payload["result"]).upper():
+        return False, "verdict 与旧版 result 冲突"
     if value not in RESULT_VALUES:
-        return False, f"result 必须是 {'/'.join(RESULT_VALUES)}"
+        return False, f"verdict 必须是 {'/'.join(RESULT_VALUES)}"
     if not isinstance(payload.get("passed"), bool):
         return False, "passed 必须是布尔值"
-    if value != "MANUAL" and (value == "PASS") != payload["passed"]:
+    if (value == "PASS") != payload["passed"]:
         return False, "passed 必须与 result 一致"
     if not isinstance(payload.get("findings"), list):
         return False, "findings 必须是数组"
     if not isinstance(payload.get("required_changes"), list):
         return False, "required_changes 必须是数组"
+    if payload.get("code_verdict") not in {"PASS", "FAIL", "UNKNOWN"}:
+        return False, "code_verdict 必须独立声明 PASS/FAIL/UNKNOWN"
+    if value == "PASS" and payload["code_verdict"] != "PASS":
+        return False, "批准补丁必须先明确代码审查通过"
+    for field in ("findings", "required_changes"):
+        if any(not isinstance(item, str) or not item.strip() for item in payload[field]):
+            return False, f"{field} 只能包含非空字符串"
+    if payload["code_verdict"] == "FAIL" and not payload["findings"]:
+        return False, "代码缺陷结论必须提供具体 findings"
+    if payload["code_verdict"] == "PASS" and payload["findings"]:
+        return False, "已确认缺陷尚存在时不能声明代码检查通过"
+    if value == "PASS" and payload["required_changes"]:
+        return False, "仍有必需处理项时不能批准补丁"
+    coverage = payload.get("coverage")
+    if not isinstance(coverage, dict) or coverage.get("decision") not in {"sufficient", "insufficient", "unknown"}:
+        return False, "coverage 必须明确声明 sufficient/insufficient/unknown"
+    if not isinstance(coverage.get("reason"), str) or not coverage["reason"].strip():
+        return False, "coverage 必须说明针对本次变更的覆盖依据或证据缺口"
+    for field in ("reviewed_functions", "missing_checks"):
+        if not isinstance(coverage.get(field), list) or any(not isinstance(item, str) for item in coverage[field]):
+            return False, f"coverage.{field} 必须是字符串数组"
+    if coverage["decision"] == "sufficient" and coverage["missing_checks"]:
+        return False, "覆盖仍有必需检查缺口时不能声明 sufficient"
+    if payload.get("change_plan"):
+        from app.application.plans import ChangePlan
+        from pydantic import ValidationError
+        try:
+            ChangePlan.model_validate(payload["change_plan"])
+        except ValidationError as error:
+            return False, f"change_plan 协议错误：{error}"
     return True, ""
 
 
 def judge(payload: dict[str, Any]) -> ReviewVerdict:
     """判定审查输出。
 
-    MANUAL 表示 AI 无法独立关闭审查，需转最终人工审批；它按可交付处理，
-    不等于“只提交分析报告”。主图必须先提交源码分支，成功后才允许挂起审批。
-    PASS 通过；FAIL 未通过并进入有界回修。
+    passed 只表示批准；MANUAL 合法但未批准。候选交付资格由图中的
+    delivery_eligible 单独决定，不能再把“可提交候选”写成“审查通过”。
     """
     valid, reason = validate_shape(payload)
     if not valid:
         return ReviewVerdict(False, False, reason)
     value = result_of(payload)
     if value == "MANUAL":
-        return ReviewVerdict(True, True, "审查 agent 要求转人工审查")
+        return ReviewVerdict(True, False, "审查 agent 要求转人工审查")
     if value != "PASS":
         return ReviewVerdict(True, False, f"审查未通过: {value}")
     return ReviewVerdict(True, True, "审查通过")

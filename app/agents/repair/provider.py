@@ -53,12 +53,16 @@ class ClaudeSessionProvider(RepairProvider):
     def run(self, request: AgentRequest) -> dict[str, Any]:
         """在常驻会话中提交任务提示词。同一任务跨重试轮复用会话。"""
         from app.agents.output_schema import output_schema
+        request = request.model_copy(update={"provider": self.name})
         ToolPolicy.validate(request)
         from app.infrastructure.runtime import drop_session, session_scope
+        from app.agents.session_context import invoke_session, session_fingerprint
 
         # key 不含 prompt_hash：每轮提示词必然不同，带它进来会让缓存永不命中。
         # workspace+run_id+task_id 已保证跨任务隔离，提示词按 invoke 逐次下发。
         session_key = f"{request.workspace}\x00{request.run_id}\x00{request.task_id}"
+        schema = output_schema("repair")
+        fingerprint = session_fingerprint(request, schema, self.config.to_dict(), self.env)
         with session_scope(
             request.agent_role,
             session_key,
@@ -66,7 +70,7 @@ class ClaudeSessionProvider(RepairProvider):
                 request.workspace,
                 self.env,
                 request.system_prompt,
-                output_schema=output_schema("repair"),
+                output_schema=schema,
                 tools=self.config.tools or None,
                 writable=self.config.writable,
                 max_turns=self.config.max_turns,
@@ -76,14 +80,15 @@ class ClaudeSessionProvider(RepairProvider):
             ),
             run_id=request.run_id,
             task_id=request.task_id,
+            fingerprint=fingerprint,
         ) as session:
-            result = invoke_with_audit(request, lambda: session.invoke(
-                request.prompt,
+            result = invoke_session(request, session, lambda sent: invoke_with_audit(sent, lambda: session.invoke(
+                sent.prompt,
                 request.write_root,
                 allowed_roots=request.allowed_read_roots,
                 allowed_write_roots=request.allowed_write_roots,
-            ))
-            if result.get("reason") == "AGENT_TIMEOUT":
+            )))
+            if result.get("reason"):
                 drop_session(request.agent_role, session_key)
         return result
 
@@ -100,6 +105,7 @@ class ClaudeQueryProvider(RepairProvider):
         """以一次性查询方式调用智能体。"""
         from app.agents.output_schema import output_schema
         try:
+            request = request.model_copy(update={"provider": self.name})
             ToolPolicy.validate(request)
             if request.write_root is None:
                 raise ValueError("repair Agent 请求没有 write_root")
@@ -130,6 +136,7 @@ class ManualProvider(RepairProvider):
 
     def run(self, request: AgentRequest) -> dict[str, Any]:
         """返回明确的人工处理结果，不伪造模型输出。"""
+        request = request.model_copy(update={"provider": self.name})
         ToolPolicy.validate(request)
         payload = {"passed": False, "result": "MANUAL", "reason": self._REASON}
         return {

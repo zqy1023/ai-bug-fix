@@ -37,6 +37,8 @@ class ReplayResult:
         self.live = live
         self.command: list[str] = []
         self.returncode: int | None = None
+        self.stdout = ""
+        self.stderr = ""
 
     def __repr__(self) -> str:
         if self.success:
@@ -45,8 +47,8 @@ class ReplayResult:
 
 
 # 重放脚本在子进程里执行，直接产出 TrackResponseModel 的结构化结果。
-# server_dev.main() 没有返回值（只 asyncio.run），拿不到结果就无法比较，
-# 所以这里直接调用 TrackServer.track()。
+# 此脚本只用于固定正文的解析对比。真实请求必须走 server_dev.main，
+# 读取它实际打印的 result，不能以 main 无返回值为由绕开入口。
 _REPLAY_SCRIPT = r'''
 import asyncio
 import importlib.util
@@ -55,15 +57,15 @@ import sys
 from pathlib import Path
 
 
-def load_model_builder(path):
+def load_module(path):
     """按文件路径加载请求还原模块，不污染业务项目的 import 路径。
 
     业务项目根下也有 config.py，工具根一旦先入 sys.path 就会顶掉它。
     """
-    spec = importlib.util.spec_from_file_location("ai_replay_model", path)
+    spec = importlib.util.spec_from_file_location(Path(path).stem, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.build_track_model
+    return module
 
 
 def main():
@@ -76,12 +78,23 @@ def main():
     import server_dev  # noqa: F401
     from framework.track_server import TrackServer
 
-    build_track_model = load_model_builder(payload["model_path"])
-    model = build_track_model(payload)
-    response = asyncio.run(TrackServer().track(track_model=model))
+    model_runtime = load_module(payload["model_path"])
+    model = model_runtime.build_track_model(payload)
+    model_runtime.prepare_request_runtime(model, recorded=bool(payload["response"]))
+    runtime = load_module(payload["runtime_path"])
+    # 事件循环和 TrackServer 初始化涉及本机 socket；网络守卫在协程
+    # 进入后启用，不阻断事件循环自身的唤醒，不改业务框架的异常映射。
+    server = TrackServer()
+    observer = load_module(payload["observation_path"])
+    with observer.observe_business_errors() as business_observation:
+        result = asyncio.run(runtime.replay_track(server, model, recorded=bool(payload["response"])))
+    result["replay_business_observation"] = business_observation
     print(json.dumps({
         "success": True,
-        "result": response.model_dump(mode="json"),
+        "result": result,
+        # 上游原始响应：录制的重放输入不会被改写，实时重放则是本次实际取到的正文。
+        # 解析结果只有对照原文才能判断归类对错，所以原样带回，不在这里做裁剪。
+        "response": model.response,
     }, ensure_ascii=False, default=str))
 
 
@@ -92,8 +105,8 @@ except Exception as error:
     print(json.dumps({
         "success": False,
         "exception_type": type(error).__name__,
-        "error": str(error)[:2000],
-        "traceback": traceback.format_exc()[-4000:],
+        "error": str(error),
+        "traceback": traceback.format_exc(),
     }, ensure_ascii=False), file=sys.stderr)
     sys.exit(1)
 '''
@@ -140,6 +153,8 @@ def run_replay(
         value = ReplayResult(*args, **kwargs)
         value.command = command
         value.returncode = getattr(locals_result[0], "returncode", None) if locals_result else None
+        value.stdout = getattr(locals_result[0], "stdout", "") if locals_result else ""
+        value.stderr = getattr(locals_result[0], "stderr", "") if locals_result else ""
         return value
     locals_result: list[Any] = []
     live = not response_json
@@ -163,9 +178,36 @@ def run_replay(
             "track_config": json.loads(track_config_json or "{}"),
             "gather_main_path": str(gather_path),
             "model_path": str(_MODEL_PATH),
+            "runtime_path": str(_MODEL_PATH.with_name("replay_runtime.py")),
+            "observation_path": str(_MODEL_PATH.with_name("business_observation.py")),
         }
     except (json.JSONDecodeError, TypeError) as error:
         return finish(False, error="重放输入 JSON 无效", exception_type=type(error).__name__)
+
+    if live:
+        from app.workflow.steps.run_regression.request_runner import (
+            run_request_regression,
+        )
+
+        request = run_request_regression(
+            root.parent, payload, carrier=carrier,
+            python_executable=python_executable, timeout_seconds=timeout_seconds,
+        )
+        raw_result = request.get("result")
+        value = ReplayResult(
+            isinstance(raw_result, dict), result=raw_result if isinstance(raw_result, dict) else {},
+            output=json.dumps({"success": isinstance(raw_result, dict), "result": raw_result,
+                               "response": request.get("response")}, ensure_ascii=False),
+            error="" if isinstance(raw_result, dict) else str(request.get("reason") or "main 执行未取得结果"),
+            live=True,
+        )
+        entries = request.get("commands") or []
+        if entries:
+            value.command = entries[0].get("command") or []
+            value.returncode = entries[0].get("returncode")
+            value.stdout = entries[0].get("stdout") or ""
+            value.stderr = entries[0].get("stderr") or ""
+        return value
 
     with temporary_directory("ai-replay-") as directory:
         input_path = Path(directory) / "input.json"

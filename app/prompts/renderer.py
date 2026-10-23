@@ -48,6 +48,8 @@ class PromptRenderer:
         write_root: str | None = None,
     ) -> AgentRequest:
         """将渲染结果和运行权限组合成 Provider 的唯一请求契约。"""
+        from app.prompts.budget import bounded_context
+        context = bounded_context(context, workspace)
         rendered = self.render(role, context)
         return AgentRequest(
             agent_role=role,
@@ -63,6 +65,7 @@ class PromptRenderer:
             prompt=rendered.prompt,
             prompt_version=rendered.prompt_version,
             prompt_hash=rendered.prompt_hash,
+            logical_context_hash=rendered.prompt_hash,
             model=model,
             allowed_read_roots=context.allowed_read_roots,
             allowed_write_roots=context.allowed_write_roots,

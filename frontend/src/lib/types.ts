@@ -236,8 +236,8 @@ export interface ControlAuditItem {
 
 export type AgentEvent =
   | { type: 'assistant'; text?: string; final?: boolean }
-  | { type: 'tool_use'; tool?: string; input?: Record<string, unknown>; elapsed_ms?: number }
-  | { type: 'tool_result'; is_error?: boolean; text?: string; elapsed_ms?: number };
+  | { type: 'tool_use' | 'tool_decision'; tool_use_id?: string | null; tool?: string; input?: Record<string, unknown>; elapsed_ms?: number; decision?: string; reason?: string; source_sha256?: string }
+  | { type: 'tool_result'; tool_use_id?: string | null; is_error?: boolean; text?: string; elapsed_ms?: number };
 
 export interface PromptSnapshot {
   model_call_id: string;
@@ -252,9 +252,13 @@ export interface PromptSnapshot {
   system_prompt_role: string;
   task_prompt: string;
   prompt_context: string;
+  full_task_context?: string;
   chars: Record<string, number>;
   truncated: boolean;
   redacted: boolean;
+  context_mode?: 'full' | 'delta';
+  logical_context_hash?: string;
+  previous_context_hash?: string;
 }
 
 export interface ModelCall {
@@ -267,6 +271,10 @@ export interface ModelCall {
   model: string;
   prompt_version?: string;
   prompt_hash?: string;
+  logical_context_hash?: string;
+  sent_prompt_hash?: string;
+  context_mode?: 'full' | 'delta';
+  previous_context_hash?: string;
   prompt_snapshot?: string;
   started_at: string;
   finished_at?: string;
@@ -277,9 +285,17 @@ export interface ModelCall {
   cache_tokens?: number | null;
   total_tokens?: number | null;
   tool_call_count?: number | null;
+  tool_allowed?: number | null;
+  tool_denied?: number | null;
+  tool_completed?: number | null;
+  structured_output_calls?: number | null;
+  usage_source?: string;
+  sdk_receipt?: Record<string, unknown>;
+  token_total_scope?: string;
   prompt_chars?: number | null;
   result_chars?: number | null;
   error_type?: string;
+  error_detail?: string;
   event_count?: number;
   event_persistence_status?: 'persisted' | 'empty' | 'failed';
   events_path?: string;
@@ -316,6 +332,10 @@ export interface BoardTask {
 }
 
 export interface RunBoard {
+  counts?: Record<string, number>;
+  all_total?: number;
+  page?: number;
+  page_size?: number;
   run_id: string;
   summary: RunSummary;
   stages?: WorkflowStage[];

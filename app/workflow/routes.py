@@ -5,6 +5,7 @@ from __future__ import annotations
 from app.workflow.state import WorkflowState
 from app.domain.decisions import locate_disposition
 from app.domain.approval import APPROVAL_RETRY_TARGETS
+from app.domain.repair_scope import legacy_analysis_required
 from config.settings import settings
 from langgraph.graph import END
 
@@ -66,6 +67,8 @@ def after_validate_changes(state: WorkflowState) -> str:
     但交付必须携带人工确认标识。
     """
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
+        return FINALIZE
+    if legacy_analysis_required(state):
         return FINALIZE
     if _result(state) != "passed":
         return _retry_or_finalize(state)
@@ -132,6 +135,8 @@ def after_locate(state: WorkflowState) -> str:
     if _result(state) == "failed":
         return _retry_or_finalize(state)
     locate = state.get("locate") or {}
+    if legacy_analysis_required(state):
+        return FINALIZE
     if (
         str(locate.get("recommended_scope") or "") != "carrier"
         or str(locate.get("category") or "") != "carrier"
@@ -152,7 +157,7 @@ def after_repair(state: WorkflowState) -> str:
     if str(state.get("terminal_status") or "").upper() == "MANUAL":
         return FINALIZE
     # 共享层范围升级即使带有 change_plan，也不能进入自动修改或审批。
-    if state.get("scope_escalation_required"):
+    if state.get("scope_escalation_required") or legacy_analysis_required(state):
         # 共享层/范围升级不属于允许自动修改的 carrier 局部问题。
         return FINALIZE
     if _result(state) != "passed":
@@ -163,6 +168,8 @@ def after_repair(state: WorkflowState) -> str:
 
 def after_regression(state: WorkflowState) -> str:
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
+        return FINALIZE
+    if legacy_analysis_required(state):
         return FINALIZE
     if _result(state) != "passed":
         return _retry_or_finalize(state)
@@ -180,6 +187,8 @@ def after_review(state: WorkflowState) -> str:
     由最终人工审批检查真实 diff 并决定保留或拒绝。
     FAIL：在上限内回修，超过上限后由 finalize 记录失败。
     """
+    if (state.get("review") or {}).get("contract_error"):
+        return FINALIZE
     if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
         return FINALIZE
     if _result(state) == "failed":
@@ -188,8 +197,14 @@ def after_review(state: WorkflowState) -> str:
     review = state.get("review") or {}
     result = str(review.get("verdict") or review.get("result") or "").upper()
 
+    if legacy_analysis_required(state):
+        return FINALIZE
+
     if result == "FAIL":
         return _retry_or_finalize(state)
+
+    if review.get("delivery_eligible") is not True:
+        return FINALIZE
 
     # MANUAL 不代表进入审批态。此时分支还未提交，必须先完成交付。
     if result in {"PASS", "MANUAL"}:
@@ -236,6 +251,8 @@ def _analysis_only_task(state: WorkflowState) -> bool:
     locate_status = str(locate.get("status") or "").upper()
     if locate_status not in {"LOCATED", "MANUAL", "INSUFFICIENT_EVIDENCE"}:
         return False
+    if legacy_analysis_required(state):
+        return True
     if (
         state.get("scope_escalation_required")
         or str(((state.get("repair") or {}).get("change_plan") or {}).get("scope") or "") == "manual"

@@ -1,99 +1,92 @@
 import { useState } from 'react';
-import { CheckCircleFilled, CloseCircleFilled, ToolFilled } from '@ant-design/icons';
+import { CheckCircleFilled, CloseCircleFilled, QuestionCircleOutlined, ToolFilled } from '@ant-design/icons';
 import type { AgentEvent } from '../../lib/types';
 import { EmptyState } from '../../components/EmptyState';
 import { formatDuration } from '../../lib/format';
 
 type Call = {
+  id?: string;
   tool: string;
   input: Record<string, unknown>;
   elapsedMs?: number;
   result?: string;
   isError?: boolean;
   durationMs?: number;
+  status: 'pending' | 'succeeded' | 'failed' | 'denied' | 'unlinked';
+  startMs?: number;
 };
 
-function pairEvents(events: AgentEvent[]): Call[] {
+export function pairEvents(events: AgentEvent[]): Call[] {
   const calls: Call[] = [];
+  const byId = new Map<string, Call>();
   for (const event of events) {
-    if (event.type === 'tool_use') {
-      calls.push({ tool: event.tool ?? 'unknown', input: event.input ?? {}, elapsedMs: event.elapsed_ms });
-    } else if (event.type === 'tool_result' && calls.length) {
-      const target = calls[calls.length - 1];
+    if (event.type === 'assistant') continue;
+    const id = event.tool_use_id || undefined;
+    let target = id ? byId.get(id) : undefined;
+    if (!target) {
+      target = { id, tool: event.type === 'tool_result' ? '未关联的工具结果' : event.tool || 'unknown',
+        input: {}, status: id ? 'pending' : 'unlinked' };
+      calls.push(target);
+      if (id) byId.set(id, target);
+    }
+    if (event.type === 'tool_use' || event.type === 'tool_decision') {
+      target.tool = event.tool || target.tool;
+      if (event.type === 'tool_decision' || target.startMs === undefined) target.input = event.input || target.input;
+      if (event.type === 'tool_decision') {
+        target.startMs = event.elapsed_ms;
+        if (event.decision === 'deny') {
+          target.status = 'denied'; target.result = event.reason; target.isError = true;
+        }
+      }
+    } else if (event.type === 'tool_result') {
       target.result = event.text;
-      target.isError = event.is_error;
-      target.durationMs = event.elapsed_ms;
+      target.isError = target.status === 'denied' || event.is_error;
+      target.elapsedMs = event.elapsed_ms;
+      if (id && target.status !== 'denied') target.status = event.is_error ? 'failed' : 'succeeded';
+      if (typeof target.startMs === 'number' && typeof event.elapsed_ms === 'number') {
+        target.durationMs = Math.max(0, event.elapsed_ms - target.startMs);
+      }
     }
   }
   return calls;
 }
 
-/** 工具调用时间线：结果默认截断为 3 行，避免长输出淹没追踪视图。 */
-export function ToolCallTimeline({
-  events, expectedCount,
-}: { events: AgentEvent[]; expectedCount?: number }) {
+/** 按 SDK 调用 ID 关联；旧归档缺 ID 时保留未关联结果。 */
+export function ToolCallTimeline({ events, expectedCount }: { events: AgentEvent[]; expectedCount?: number }) {
   const calls = pairEvents(events);
   const [openResult, setOpenResult] = useState<Record<number, boolean>>({});
-
+  const [showAll, setShowAll] = useState(false);
   if (!calls.length) {
-    if (typeof expectedCount === 'number' && expectedCount > 0) {
-      return (
-        <EmptyState
-          title="工具事件明细缺失"
-          description={`调用记录显示使用了 ${expectedCount} 次工具，但服务端没有返回对应事件。`}
-          compact
-        />
-      );
-    }
-    if (expectedCount === 0) {
-      return <EmptyState title="本次没有工具调用" description="调用记录确认未使用工具。" compact />;
-    }
-    return (
-      <EmptyState
-        title="工具事件暂无记录"
-        description="服务端未提供工具调用数量，无法确认本次是否使用了工具。"
-        compact
-      />
-    );
+    return <EmptyState title={expectedCount === 0 ? '本次没有工具调用' : '工具事件明细缺失'}
+      description={expectedCount ? `记录有 ${expectedCount} 次工具尝试，服务端未返回对应明细。` : '暂无可关联的执行证据。'} compact />;
   }
-
-  const toggle = (index: number) => setOpenResult((current) => ({ ...current, [index]: !current[index] }));
-
-  return (
+  const labels = { pending: '结果缺失／执行中', succeeded: '已完成', failed: '执行失败', denied: '已拒绝', unlinked: '旧记录缺少调用 ID，未关联' };
+  const visible = showAll ? calls : calls.slice(0, 12);
+  return <div>
+    {calls.some(call => call.status === 'unlinked') && <p className="text-warning">旧归档缺少调用 ID，结果单独展示，不能据此判断某次读取或修改成功。</p>}
     <ol className="tool-timeline">
-      {calls.map((call, index) => {
-        const expanded = Boolean(openResult[index]);
-        const longResult = (call.result?.length ?? 0) > 220;
-        return (
-          <li key={`${call.tool}-${index}`} className={'tool-item' + (call.isError ? ' is-error' : '')}>
-            <span className="tool-icon"><ToolFilled /></span>
-            <div className="tool-body">
-              <div className="tool-head">
-                <strong>{call.tool}</strong>
-                {call.input && Object.keys(call.input).length > 0 && (
-                  <span className="tool-input">
-                    {Object.entries(call.input).slice(0, 4).map(([key, value]) => (
-                      <code key={key}>{key}={String(value).slice(0, 80)}</code>
-                    ))}
-                  </span>
-                )}
-                <span className="tool-duration">{formatDuration(call.durationMs ?? call.elapsedMs)}</span>
-                {call.isError ? <CloseCircleFilled className="tool-status is-error" /> : <CheckCircleFilled className="tool-status" />}
-              </div>
-              {call.result && (
-                <>
-                  <pre className={'tool-result' + (expanded ? ' is-open' : '')}>{call.result}</pre>
-                  {longResult && (
-                    <button type="button" className="tool-result-toggle" onClick={() => toggle(index)}>
-                      {expanded ? '收起结果' : `展开结果（${call.result.length} 字）`}
-                    </button>
-                  )}
-                </>
-              )}
-            </div>
-          </li>
-        );
-      })}
+      {visible.map((call, index) => <li key={`${call.id || call.tool}-${index}`} className={'tool-item' + (call.isError ? ' is-error' : '')}>
+        <span className="tool-icon"><ToolFilled /></span>
+        <div className="tool-body">
+          <div className="tool-head">
+            <strong>{call.tool}</strong>
+            <span className="tool-input">{Object.entries(call.input).filter(([key]) => ['file_path', 'path', 'pattern', 'offset', 'limit'].includes(key)).map(([key, value]) =>
+              <code key={key} style={{ whiteSpace: 'normal', overflowWrap: 'anywhere' }}>{key}={String(value)}</code>)}</span>
+            <span className="tool-duration">{typeof call.durationMs === 'number' ? formatDuration(call.durationMs) : '耗时未记录'}</span>
+            <span>{labels[call.status]}</span>
+            {call.status === 'succeeded' ? <CheckCircleFilled className="tool-status" /> :
+              call.isError ? <CloseCircleFilled className="tool-status is-error" /> : <QuestionCircleOutlined />}
+          </div>
+          {Object.keys(call.input).length > 0 && <details><summary>完整调用参数</summary><pre>{JSON.stringify(call.input, null, 2)}</pre></details>}
+          {call.result && <>
+            <pre className={'tool-result' + (openResult[index] ? ' is-open' : '')}>{call.result}</pre>
+            {call.result.length > 220 && <button type="button" className="tool-result-toggle"
+              onClick={() => setOpenResult(current => ({ ...current, [index]: !current[index] }))}>
+              {openResult[index] ? '收起结果' : `展开完整结果（${call.result.length} 字）`}</button>}
+          </>}
+        </div>
+      </li>)}
     </ol>
-  );
+    {calls.length > 12 && <button type="button" onClick={() => setShowAll(!showAll)}>{showAll ? '收起' : `查看全部 ${calls.length} 条工具记录`}</button>}
+  </div>;
 }

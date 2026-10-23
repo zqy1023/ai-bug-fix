@@ -8,9 +8,12 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from app.agents.repair.models import RepairView
-from app.workflow.spec import FrozenModel
 from pydantic import Field
+
+from app.agents.repair.models import RepairView
+from app.application.plans import ChangePlan
+from app.agents.review.contract import REVIEW_CONTRACT_VERSION
+from app.workflow.spec import FrozenModel
 
 
 class ReviewInput(FrozenModel):
@@ -47,7 +50,16 @@ class ReviewInput(FrozenModel):
     regression_passed: bool = False
 
 
-class ReviewView(FrozenModel):
+class CoverageAssessment(FrozenModel):
+    """审查针对实际变更判断覆盖是否足够，不能按 syntax_only 自动豁免。"""
+
+    decision: Literal["sufficient", "insufficient", "unknown"] = "unknown"
+    reason: str = ""
+    reviewed_functions: list[str] = Field(default_factory=list)
+    missing_checks: list[str] = Field(default_factory=list)
+
+
+class ReviewAgentOutput(FrozenModel):
     """审查步骤对外只留结论、发现项和回修要求。
 
     ``change_plan`` 是可选的结构化回修方案：审查 agent 恒只读，但它的回修要求
@@ -58,6 +70,8 @@ class ReviewView(FrozenModel):
     verdict: Literal["PASS", "FAIL", "MANUAL"] = "FAIL"
     # passed：字段说明见该模型文档与工作流契约。
     passed: bool = False
+    code_verdict: Literal["PASS", "FAIL", "UNKNOWN"] = "UNKNOWN"
+    coverage: CoverageAssessment = Field(default_factory=CoverageAssessment)
     # summary：字段说明见该模型文档与工作流契约。
     summary: str = ""
     # findings：字段说明见该模型文档与工作流契约。
@@ -65,7 +79,20 @@ class ReviewView(FrozenModel):
     # required_changes：字段说明见该模型文档与工作流契约。
     required_changes: list[str] = Field(default_factory=list)
     # change_plan：字段说明见该模型文档与工作流契约。
-    change_plan: dict[str, Any] = Field(default_factory=dict)
+    change_plan: ChangePlan | None = None
 
 
-__all__ = ["ReviewInput", "ReviewView"]
+class ReviewView(ReviewAgentOutput):
+    """规范化审查状态：批准、可交付和协议执行结果分别保存。"""
+
+    delivery_eligible: bool = False
+    review_contract_version: int = REVIEW_CONTRACT_VERSION
+    contract_error: str = ""
+    evidence_version: dict[str, Any] = Field(default_factory=dict)
+    checks: list[dict[str, str]] = Field(default_factory=list)
+    validation_requirements: list[dict[str, Any]] = Field(default_factory=list)
+    next_action: str = ""
+    review_notes: str = ""
+
+
+__all__ = ["ReviewAgentOutput", "ReviewInput", "ReviewView"]

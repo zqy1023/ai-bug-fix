@@ -86,7 +86,9 @@ def _normalize(record: Any, index: int) -> dict[str, Any]:
     # 上游日志常把 response / track_config 嵌在 req 对象里，而不是放在记录顶层。
     # 顶层优先，缺失时回退到 req 内部；两者都统一成 JSON 字符串，供重放使用。
     response = record.get("response") or request.get("response") or ""
-    track_config = record.get("track_config") or request.get("track_config") or ""
+    from app.workflow.steps.verify_issue.replay_model import extract_track_config
+
+    track_config = extract_track_config(record)
     if not isinstance(response, str):
         response = json.dumps(response, ensure_ascii=False)
     if not isinstance(track_config, str):
@@ -151,9 +153,12 @@ def run(ctx: StepContext, data: NormalizeErrorInput) -> NormalizeErrorOutput:
         "artifacts/normalized_records.json",
         {"records": groups["records"], **counts},
     )
+    ctx.emit_artifact("log_parse_failures", "artifacts/log_parse_failures.json",
+                      {"unparseable": funnel.get("unparseable", 0),
+                       **(scan_state.get("parse_failures") or {"counts": {}, "samples": []})})
     path.unlink(missing_ok=True)
     observed.update(funnel)
-    observed.update({"normalized_count": groups["input_count"], "unique_count": counts["unique_count"]})
+    observed.update({**counts, "normalized_count": groups["input_count"]})
     ctx.store.report_progress(
         ctx.run.run_id, "normalize_error",
         "已达到扫描上限，当前结果为部分日志" if funnel.get("limit_reached") else "日志读取与规范化已完成",

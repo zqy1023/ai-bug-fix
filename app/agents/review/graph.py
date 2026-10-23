@@ -203,10 +203,10 @@ def _evidence_block(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
                 continue
             if kind == "add" and any(keyword in text for keyword in _CONTROL_FLOW):
                 added_control += 1
-            lines.append(f"    {'新增' if kind == 'add' else '删除'}：{text[:200]}")
+            lines.append(f"    {'新增' if kind == 'add' else '删除'}：{text}")
             shown += 1
-            if shown >= 20:
-                break
+        if item.get("truncated"):
+            lines.append("    差异列表未完整展示；必须读取当前文件及对应只读基线后再作代码结论。")
 
     if secret_warnings > 0:
         lines.append(
@@ -255,14 +255,26 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
     config = getattr(runtime, "config", None)
     config = config if isinstance(config, ReviewConfig) else ReviewConfig.load()
     changed_files = [str(item) for item in state.get("changed_files", [])]
+    from app.workflow.evidence_version import evidence_version
+    import hashlib
+    from app.workflow.steps.check_changes import verification
+    current_version = evidence_version(workspace, changed_files, str(state.get("baseline_dir") or ""))
+    current_policy = hashlib.sha256(Path(verification.__file__).read_bytes()).hexdigest()
+    for name in ("gate_result", "verify_result", "regression_result"):
+        recorded = (state.get(name) or {}).get("evidence_version") or {}
+        if recorded and (recorded.get("patch_id") != current_version["patch_id"] or (
+            name == "gate_result" and recorded.get("policy_id") != current_policy
+        )):
+            return {**ReviewView(verdict="MANUAL", passed=False, summary=f"{name} 对应的源码或门禁版本已变化，需要重跑验证",
+                                required_changes=["重新执行变更检查及后续验证"], evidence_version=current_version).model_dump(),
+                    "raw_result": "", "_usage": {}, "_audit": {"blocked_by": "stale_evidence"}}
     evidence_text, evidence_meta = _evidence_block(
         {**state, "ai_workspace_path": workspace, "changed_files": changed_files}
     )
-    evidence_text = _bounded_evidence(evidence_text, config.max_diff_chars)
+    from app.agents.review.boundaries import datetime_reset_risks, not_found_guard_changes
+    classification_boundaries = not_found_guard_changes(workspace, str(state.get("baseline_dir") or ""), changed_files)
+    datetime_boundaries = datetime_reset_risks(workspace, str(state.get("baseline_dir") or ""), changed_files)
     full_diff_summary = str(state.get("diff_summary") or "")
-    compact_diff_summary = full_diff_summary
-    if len(compact_diff_summary) > 1200:
-        compact_diff_summary = compact_diff_summary[:1200] + "\n[摘要已裁剪；逐文件证据以 diff_and_gate_evidence 为准]"
     deterministic_context = build_context(
         dict(state["problem"]),
         changed_files,
@@ -270,18 +282,27 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
         max_chars=config.max_context_chars,
         max_candidates=config.max_candidate_files,
     )
-    from app.agents.policy import carrier_write_paths
-    roots = tuple(str(path) for path in dict.fromkeys([carrier_root.resolve(), *carrier_write_paths(Path(workspace), carrier)]))
+    from app.agents.policy import review_read_paths
+    shared_root = Path(str(state["source_project_path"])).resolve() if state.get("source_project_path") else None
+    roots = tuple(str(path) for path in review_read_paths(Path(workspace), carrier_root, shared_root, carrier,
+                                                        str(state.get("baseline_dir") or "")))
     from app.agents.policy import retry_read_paths
     roots = (*roots, *(str(path) for path in retry_read_paths(Path(workspace), str(state["run_id"]), str(state["task_id"]))))
+    from app.workflow.steps.verify_issue.assessment import verification_for_review
     request_context = prompt_context(
         "review",
         state,
         framework=framework,
         evidence={
+            "evidence_version": current_version,
             "diff_and_gate_evidence": evidence_text,
+            "classification_boundaries": classification_boundaries,
+            "datetime_boundaries": datetime_boundaries,
             "deterministic_context": deterministic_context,
             "changed_files": changed_files,
+            "repair_plan": dict((state.get("repair") or {}).get("change_plan") or {}),
+            "validation_requirements": ((state.get("regression_result") or {}).get("validation_requirements")
+                                        or (state.get("verify_result") or {}).get("validation_requirements") or []),
             "check_passed": bool(state.get("check_passed")),
             "syntax_passed": bool(state.get("syntax_passed")),
             "verify_passed": bool(state.get("verify_passed")),
@@ -290,18 +311,20 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
         },
         read_roots=roots,
         write_roots=(),
-        budget={"max_tool_calls": config.max_tool_calls, "max_turns": config.max_turns},
+        budget={"max_tool_calls": config.max_tool_calls, "max_turns": config.max_turns,
+                "max_context_chars": config.max_context_chars},
         source_snapshot={
             "baseline_dir": str(state.get("baseline_dir") or ""),
             "baseline_manifest": dict(state.get("baseline_manifest") or {}),
         },
         changed_files=tuple(changed_files),
-        diff_summary=compact_diff_summary,
+        diff_summary=full_diff_summary,
         gate_results=dict(state.get("gate_result") or {}),
-        verification_results=dict(state.get("verify_result") or {}),
+        verification_results=verification_for_review(state),
         regression_results=dict(state.get("regression_result") or {}),
         allowed_scope=(carrier_dir,),
         stop_conditions=("必需验证证据缺失", "真实 diff 与声明不一致", "发现未授权范围"),
+        source_project_path=str(shared_root) if shared_root else "",
     )
     request = PromptRenderer().request(
         "review",
@@ -320,21 +343,91 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
             "_audit": {"tool_call_count": 0, "blocked_by": "secret_gate"},
         }
     raw = runtime.run(request)
+    if evidence_version(workspace, changed_files, str(state.get("baseline_dir") or "")) != current_version:
+        return {**ReviewView(verdict="MANUAL", passed=False, summary="审查期间源码变化，结论无效，需重跑验证和审查",
+                             required_changes=["重新执行变更检查、问题验证及审查"],
+                             evidence_version=current_version).model_dump(),
+                "raw_result": "", "_usage": {}, "_audit": {"blocked_by": "source_changed_during_review"}}
     raw = raw if isinstance(raw, dict) else {}
-    payload = parse_result(raw, "review")
     original = raw_result(raw)
     usage = usage_of(raw)
+    # 调用层失败和无返回不属于模型 verdict 协议错误，也不能认定代码有缺陷。
+    # 部分测试/人工 provider 直接返回业务对象，不能将这类对象误当作空正文。
+    direct_payload = "result" not in raw and ("verdict" in raw or "findings" in raw)
+    provider_failed = raw.get("passed") is False and bool(raw.get("reason")) and not direct_payload
+    if provider_failed or (not original.strip() and not direct_payload):
+        from app.agents.review.checklist import review_checks
+
+        category = (str(raw.get("failure_kind") or "") or ("agent_timeout" if raw.get("reason") == "AGENT_TIMEOUT" else "provider_error")) if provider_failed else "empty_response"
+        summary = ("审查调用超时，未取得有效审查结论" if category == "agent_timeout" else
+                   "审查工具放行预算耗尽，未取得有效结论" if category == "tool_budget_exhausted" else
+                   "审查连续遇到权限或重复操作拒绝，已停止无效调用" if category == "tool_access_blocked" else
+                   "审查调用失败，未取得有效审查结论" if provider_failed else "审查未返回结果，未取得有效审查结论")
+        # reason 可能包含连接串或 SDK 正文，仅持久化受控类别。
+        return {
+            **ReviewView(verdict="MANUAL", passed=False, delivery_eligible=False,
+                         summary=summary, code_verdict="UNKNOWN",
+                         required_changes=["重新执行 AI 审查；若持续失败，检查模型服务调用记录"],
+                         evidence_version=current_version, checks=review_checks(state, "UNKNOWN", {}),
+                         next_action="重新执行 AI 审查，取得有效结论后再决定交付").model_dump(),
+            "raw_result": original, "_usage": usage,
+            "_audit": {**audit_metadata(request, usage), "failure_stage": "invocation", "error_type": category},
+        }
+    payload = parse_result(raw, "review")
     slim = slim_review(payload)
     findings = _lines(slim.get("findings"))
     required = _lines(slim.get("required_changes"))
     checked = judge(payload)
-    result = str(payload.get("result") or "").upper()
+    from app.agents.review.contract import result_of
+    result = result_of(payload)
     verdict = "MANUAL" if checked.valid and result == "MANUAL" else ("PASS" if checked.passed else "FAIL")
+    from app.agents.review.decision import evidence_constraints
+    coverage = dict(payload.get("coverage") or {}) if checked.valid else {}
+    failures, gaps = evidence_constraints(state, coverage)
+    if checked.valid and failures:
+        verdict = "FAIL"
+        required.extend(failures)
+    elif checked.valid and verdict == "FAIL" and payload.get("code_verdict") != "FAIL":
+        verdict = "MANUAL"
+        gaps.append("未提供已确认代码缺陷或确定性失败依据，需核对证据后复核")
+    elif checked.valid and verdict == "PASS" and gaps:
+        verdict = "MANUAL"
+    if checked.valid:
+        required.extend(gaps)
+        if gaps and coverage.get("decision") == "sufficient":
+            coverage = {**coverage, "decision": "insufficient",
+                        "reason": "当前证据仍有必需验证缺口：" + "；".join(gaps),
+                        "missing_checks": list(dict.fromkeys([*(coverage.get("missing_checks") or []), *gaps]))}
+    required = list(dict.fromkeys(required))
     plan = plan_of(payload)
+    from app.agents.review.checklist import review_checks
+    code_verdict = str(payload.get("code_verdict") or "UNKNOWN").upper()
+    if code_verdict not in {"PASS", "FAIL", "UNKNOWN"}:
+        code_verdict = "UNKNOWN"
+    if checked.valid and datetime_boundaries and code_verdict == "PASS":
+        code_verdict = "UNKNOWN"
+    if checked.valid and code_verdict == "FAIL":
+        verdict = "FAIL"
+    checks = review_checks(state, code_verdict, coverage)
+    next_action = ("修正审查输出协议后重新执行审查" if not checked.valid else
+                   "修复下列代码缺陷后重新检查" if verdict == "FAIL" else
+                   "提交候选分支，由人工确认未验证项" if verdict == "MANUAL" else "提交修复分支，等待最终审批")
     view = ReviewView(
         verdict=verdict,
-        passed=verdict != "FAIL",
-        summary=str(slim.get("summary") or checked.reason),
+        passed=verdict == "PASS",
+        delivery_eligible=checked.valid and verdict in {"PASS", "MANUAL"},
+        contract_error="" if checked.valid else checked.reason,
+        evidence_version=current_version,
+        code_verdict=code_verdict,
+        coverage=coverage,
+        checks=checks,
+        validation_requirements=((state.get("regression_result") or {}).get("validation_requirements")
+                                 or (state.get("verify_result") or {}).get("validation_requirements") or []),
+        next_action=next_action,
+        review_notes=str(slim.get("summary") or ""),
+        summary=(("证据约束未通过：" + "；".join(failures or gaps) + "。模型意见：" + str(slim.get("summary") or ""))
+                 if verdict != result else str(slim.get("summary") or checked.reason))
+                if checked.valid else f"审查输出协议错误：{checked.reason}",
         findings=findings,
         required_changes=required,
         change_plan=plan.model_dump(mode="json") if plan is not None else {},

@@ -1,5 +1,3 @@
-import { outcomeText } from './StepOutcome';
-import { StatusBadge } from '../../components/StatusBadge';
 import { useMemo } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Alert, Button, Result, Skeleton, Tabs } from 'antd';
@@ -7,7 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { api, ApiError } from '../../lib/api';
 import { queryKeys } from '../../lib/queryKeys';
 import { TaskHeader } from './TaskHeader';
-import { NodeRail } from './NodeRail';
+import { ExecutionNav } from './ExecutionNav';
 import { StepDetail } from './StepDetail';
 import { ContextInspector } from './ContextInspector';
 import { TaskOverview } from './TaskOverview';
@@ -93,29 +91,23 @@ export function TaskWorkspace() {
       />
       {tab === 'overview' && <TaskOverview detail={task.data} onOpenStep={selectStep} />}
       {executionOpen && <section className="execution-section">
-        <div className="execution-ledger">
-          <header><h3>逐步骤执行结论</h3><span>每一步的结果与依据均保留，点击查看证据</span></header>
-          {steps.map((record, index) => <button type="button" key={record.name} onClick={() => selectStep(record.name)} className={'ledger-row' + (selected === record.name ? ' is-selected' : '')}>
-            <span className="ledger-index">{String(index + 1).padStart(2, '0')}</span>
-            <div><strong>{record.title || record.name}</strong><p>{outcomeText(record)}</p></div>
-            <div className="ledger-status"><StatusBadge kind="step" value={record.status} stepName={record.name} /><span>{record.result || '—'}</span></div>
-          </button>)}
-        </div>
+        <header className="execution-toolbar"><div><strong>执行记录</strong><span>选择节点查看结果、证据与调用记录</span></div><span>{steps.filter((item) => item.status === 'failed').length} 个执行异常 · {steps.length} 个节点</span></header>
+        {approvalRecoveryFailed && <Alert type="error" showIcon message="审批恢复失败" description={task.data.run_error?.message || '请在交付审批页重新提交决策'} />}
+
         {executionOpen && (
           steps.length ? (
-            <div className="task-layout">
-              <NodeRail
+            <div className="task-layout execution-layout">
+              <ExecutionNav
                 steps={steps}
                 selected={selected}
                 onSelect={selectStep}
-                task={task.data.task}
-                recoveryError={approvalRecoveryFailed ? task.data.run_error : undefined}
                 stages={task.data.stages}
               />
               <div className="task-main">
                 {detail.isError && <Alert type="error" showIcon message="步骤详情暂时无法加载" description={detail.error instanceof Error ? detail.error.message : '请刷新重试'} action={<Button size="small" onClick={() => void detail.refetch()}>重试加载</Button>} />}
                 {step ? (
                   <StepDetail
+                    key={selected}
                     runId={runId}
                     taskId={taskId}
                     step={step}

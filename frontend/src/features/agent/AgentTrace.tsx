@@ -130,7 +130,7 @@ export function AgentTrace({
           </div>
           <Divider />
           <div className="agent-section">
-            <h4>工具调用 <small>{selected.tool_call_count ?? detail.data?.event_total ?? 0} 次</small></h4>
+            <h4>工具执行轨迹 <small>{selected.tool_call_count ?? '未知'} 次尝试</small></h4>
             <ToolCallTimeline
               events={detail.data?.events ?? selected.events ?? []}
               expectedCount={typeof selected.tool_call_count === 'number' ? selected.tool_call_count : undefined}
@@ -139,7 +139,8 @@ export function AgentTrace({
           <Divider />
           <div className="agent-section">
             <h4>模型输出</h4>
-            <ModelOutputPanel call={detail.data?.call ?? selected} />
+            <ModelOutputPanel call={detail.data?.call ?? selected}
+              fullOutput={detail.data?.events.filter(event => event.type === 'assistant').find(event => event.final)?.text} />
           </div>
         </>
       )}

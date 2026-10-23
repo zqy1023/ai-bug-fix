@@ -78,9 +78,9 @@ class Settings:
     workbench_max_attempts: int = 5
     # workbench_max_log_hours：单次运行允许回溯的最大小时数。
     workbench_max_log_hours: int = 720
-    # workbench_prompt_snapshot：是否把脱敏后的提示词快照写入任务审计目录。
+    # workbench_prompt_snapshot：是否把完整提示词快照写入任务审计目录。
     workbench_prompt_snapshot: bool = True
-    # workbench_prompt_max_chars：提示词快照单段字符上限，超出部分截断并标记。
+    # workbench_prompt_max_chars：保留旧配置兼容；完整审计快照不再按此值截断。
     workbench_prompt_max_chars: int = 120000
     # dashboard_recent_hours：工作台“最近”统计窗口小时数。
     dashboard_recent_hours: int = 24

@@ -22,6 +22,7 @@ class _SessionEntry:
     session: Any
     run_id: str
     task_id: str
+    fingerprint: str = ""
     users: int = 0
     closing: bool = False
 
@@ -60,16 +61,22 @@ def close_sessions(run_id: str | None = None, task_id: str | None = None) -> Non
 @contextmanager
 def session_scope(
     kind: str, workspace: str, factory: Callable[[], Any], *, run_id: str, task_id: str,
+    fingerprint: str = "",
 ) -> Iterator[Any]:
     """租用本任务会话；活跃调用期间禁止容量淘汰或提前关闭。"""
     key = (kind, workspace)
     retired: list[Any] = []
     with _SESSION_LOCK:
         entry = _SESSIONS.get(key)
+        if entry is not None and entry.fingerprint != fingerprint:
+            if entry.users:
+                raise RuntimeError("会话规则已变化，等待当前调用结束后重试")
+            retired.append(_SESSIONS.pop(key).session)
+            entry = None
         if entry is not None and entry.closing:
             raise RuntimeError("该任务会话正在关闭，不能再次提交请求")
         if entry is None:
-            created = _SessionEntry(factory(), run_id, task_id)
+            created = _SessionEntry(factory(), run_id, task_id, fingerprint=fingerprint)
             for oldest, candidate in list(_SESSIONS.items()):
                 if len(_SESSIONS) < _MAX_SESSIONS:
                     break

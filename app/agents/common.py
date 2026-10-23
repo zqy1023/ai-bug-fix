@@ -57,7 +57,12 @@ def audit_metadata(
     return {
         "agent_role": request.agent_role,
         "prompt_version": request.prompt_version,
-        "prompt_hash": request.prompt_hash,
+        "prompt_hash": usage.get("sent_prompt_hash") or request.prompt_hash,
+        "sent_prompt_hash": usage.get("sent_prompt_hash") or request.prompt_hash,
+        "logical_context_hash": usage.get("logical_context_hash") or request.logical_context_hash or request.prompt_hash,
+        "context_mode": usage.get("context_mode", request.context_mode),
+        "model_call_id": usage.get("model_call_id", ""),
+        "provider": usage.get("provider", request.provider),
         "model": request.model,
         "run_id": request.run_id,
         "task_id": request.task_id,
@@ -66,6 +71,9 @@ def audit_metadata(
         "allowed_write_roots": list(request.allowed_write_roots),
         "tool_call_count": int(tool_call_count),
         "total_tokens": usage.get("total_tokens"),
+        "tool_allowed": usage.get("tool_allowed"),
+        "tool_denied": usage.get("tool_denied"),
+        "tool_completed": usage.get("tool_completed"),
     }
 
 
@@ -109,7 +117,10 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
     try:
         raw = invoke()
         raw = raw if isinstance(raw, dict) else {}
-        usage = usage_of(raw)
+        usage = {**usage_of(raw), "model_call_id": call_id, "sent_prompt_hash": request.prompt_hash,
+                 "logical_context_hash": request.logical_context_hash or request.prompt_hash,
+                 "context_mode": request.context_mode, "provider": request.provider}
+        raw["usage"] = usage
         record = {
             "model_call_id": call_id, "run_id": str(getattr(request, "run_id", "") or ""),
             "task_id": str(getattr(request, "task_id", "") or ""),
@@ -118,7 +129,9 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
             "provider": str(getattr(request, "provider", "") or ""),
             "model": str(getattr(request, "model", "") or ""),
             "prompt_version": str(getattr(request, "prompt_version", "") or ""),
-            "prompt_hash": str(getattr(request, "prompt_hash", "") or ""),
+            "prompt_hash": request.prompt_hash, "sent_prompt_hash": request.prompt_hash,
+            "logical_context_hash": request.logical_context_hash or request.prompt_hash,
+            "context_mode": request.context_mode, "previous_context_hash": request.previous_context_hash,
             "started_at": started_at, "duration_ms": round((time.perf_counter() - started) * 1000, 2),
             "status": "failed" if raw.get("passed") is False and raw.get("reason") else "succeeded",
             "input_tokens": usage.get("input_tokens", usage.get("input", None)),
@@ -126,6 +139,12 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
             "cache_tokens": usage.get("cache_read_input_tokens", usage.get("cache_tokens", None)),
             "total_tokens": usage.get("total_tokens", None),
             "tool_call_count": usage.get("tool_calls", None),
+            **{key: usage.get(key) for key in ("tool_attempts", "tool_allowed", "tool_denied", "tool_completed",
+                                               "tool_errors", "structured_output_calls", "tool_stop_kind", "tool_stop_reason")},
+            "sdk_receipt": raw.get("sdk_receipt") or {},
+            "usage_source": "sdk_reported" if isinstance(usage.get("input_tokens"), int) else "unknown",
+            "token_total_scope": usage.get("token_total_scope", "unknown"),
+            "error_detail": raw.get("failure_detail") or raw.get("reason") or "",
             "prompt_chars": usage.get("prompt_chars", len(str(getattr(request, "system_prompt", "") or "")) + len(str(getattr(request, "prompt", "") or ""))),
             "result_chars": usage.get("result_chars"),
             **_prompt_metrics(request),
@@ -133,11 +152,11 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
             "events_path": "",
             "event_count": 0,
             "output_preview": _audit_text(raw_result(raw), 500),
-            # Provider 的 reason 可能包含连接串、响应正文或 SDK 原始异常；审计只保存类别。
+            # 类别用于统计，完整原因另存 error_detail。
             "error_type": "provider_error" if raw.get("passed") is False and raw.get("reason") else "",
             "finished_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
         }
-        final_text = _audit_text(raw_result(raw), 3000)
+        final_text = raw_result(raw)
         if final_text:
             record["events"].append({"type": "assistant", "text": final_text, "final": True})
         event_path, event_count = _persist_agent_events(record, record["events"])
@@ -156,6 +175,14 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
     except Exception as exc:
         status = "failed"
         error_type = type(exc).__name__
+        failed_usage = getattr(exc, "agent_usage", {})
+        failed_usage = {**failed_usage, "model_call_id": call_id, "sent_prompt_hash": request.prompt_hash,
+                        "logical_context_hash": request.logical_context_hash or request.prompt_hash,
+                        "context_mode": request.context_mode, "provider": request.provider}
+        try:
+            setattr(exc, "agent_usage", failed_usage)
+        except Exception:
+            pass
         record = {
             "model_call_id": call_id, "run_id": str(getattr(request, "run_id", "") or ""),
             "task_id": str(getattr(request, "task_id", "") or ""),
@@ -164,10 +191,17 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
             "provider": str(getattr(request, "provider", "") or ""),
             "model": str(getattr(request, "model", "") or ""),
             "prompt_version": str(getattr(request, "prompt_version", "") or ""),
-            "prompt_hash": str(getattr(request, "prompt_hash", "") or ""),
+            "prompt_hash": request.prompt_hash, "sent_prompt_hash": request.prompt_hash,
+            "logical_context_hash": request.logical_context_hash or request.prompt_hash,
+            "context_mode": request.context_mode, "previous_context_hash": request.previous_context_hash,
             "started_at": started_at, "finished_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
             "duration_ms": round((time.perf_counter() - started) * 1000, 2),
-            "status": status, "error_type": error_type,
+            "status": status, "error_type": error_type, "error_detail": str(exc),
+            "sdk_receipt": getattr(exc, "sdk_receipt", {}),
+            "input_tokens": failed_usage.get("input_tokens"), "output_tokens": failed_usage.get("output_tokens"),
+            "cache_tokens": failed_usage.get("cache_read_input_tokens"), "total_tokens": failed_usage.get("total_tokens"),
+            "usage_source": "sdk_reported" if isinstance(failed_usage.get("input_tokens"), int) else "unknown",
+            **{key: failed_usage.get(key) for key in ("tool_allowed", "tool_denied", "tool_completed", "tool_stop_kind", "tool_stop_reason")},
             "prompt_chars": len(str(getattr(request, "system_prompt", "") or "")) + len(str(getattr(request, "prompt", "") or "")),
             **_prompt_metrics(request),
             "events": _audit_events(getattr(exc, "agent_events", [])),
@@ -238,10 +272,10 @@ def _persist_agent_events(
 
 
 def _persist_prompt_snapshot(record: dict[str, Any], request: Any) -> str:
-    """把脱敏、限长的提示词快照写入任务审计目录；返回相对路径。
+    """把完整提示词快照写入任务审计目录；返回相对路径。
 
     ``model_calls.jsonl`` 只保存 hash 与字符数，无法支撑"查看提示词"。快照是审计
-    策略的显式扩展：默认开启、统一脱敏、按上限截断，且只在任务级目录内落盘。
+    快照保留原文，仅在任务级目录内落盘；页面预览与完整归档分开。
     """
     if not settings.workbench_prompt_snapshot:
         return ""
@@ -286,6 +320,19 @@ def _persist_prompt_snapshot(record: dict[str, Any], request: Any) -> str:
             text, was_cut = _snapshot_text(value, roots, limit)
             rendered[key] = text
             truncated = truncated or was_cut
+        # 工作区可被回收；把压缩前完整任务证据一并归档，页面可直接展开。
+        reference = (context.get("evidence") or {}).get("full_context") or {}
+        if reference.get("path"):
+            import hashlib
+            from app.prompts.budget import readable_context
+            full_path = Path(reference["path"]).resolve()
+            owned = readable_context(Path(request.workspace).resolve(), run_id, task_id, request.agent_role)
+            if full_path.parent not in owned or full_path.is_symlink():
+                raise ValueError("完整上下文归档引用不属于本任务")
+            full_text = full_path.read_text(encoding="utf-8")
+            if hashlib.sha256(full_text.encode()).hexdigest() != reference.get("sha256"):
+                raise ValueError("完整上下文归档哈希不一致")
+            rendered["full_task_context"] = full_text
         payload = {
             "model_call_id": call_id,
             "run_id": run_id,
@@ -296,9 +343,12 @@ def _persist_prompt_snapshot(record: dict[str, Any], request: Any) -> str:
             "prompt_version": str(record.get("prompt_version") or ""),
             "prompt_hash": str(record.get("prompt_hash") or ""),
             **rendered,
-            "chars": {key: len(value) for key, value in sections.items()},
+            "chars": {key: len(value) for key, value in {**sections, **rendered}.items()},
             "truncated": truncated,
-            "redacted": True,
+            "redacted": False,
+            "context_mode": request.context_mode,
+            "logical_context_hash": request.logical_context_hash or request.prompt_hash,
+            "previous_context_hash": request.previous_context_hash,
         }
         target = run_root / "tasks" / task_id / "audit" / "prompts" / f"{call_id}.json"
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -320,28 +370,13 @@ def _persist_prompt_snapshot(record: dict[str, Any], request: Any) -> str:
 
 
 def _snapshot_text(value: str, roots: list[str], limit: int) -> tuple[str, bool]:
-    """先归一化绝对工作区路径，再遮蔽凭据并按上限截断。"""
-    text = str(value or "")
-    normalized = text
-    for root in roots:
-        if not root:
-            continue
-        for variant in {root, root.replace(chr(92), "/")}:
-            if variant:
-                normalized = normalized.replace(variant, "<workspace>")
-    return _audit_text(normalized, limit), len(normalized) > limit
+    """完整保留实际输入的字符串和路径；预算只限制发送，不裁剪审计副本。"""
+    return str(value or ""), False
 
 
 def _audit_text(value: Any, limit: int) -> str:
-    """裁剪审计文本并遮蔽常见凭据格式，避免工具输出把密钥写进运行记录。"""
-    text = str(value or "").strip()
-    text = re.sub(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;]+", r"\1[REDACTED]", text)
-    text = re.sub(
-        r"(?i)((?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret)\s*[:=]\s*)['\"]?[^\s,'\"]+",
-        r"\1[REDACTED]",
-        text,
-    )
-    return text[:limit]
+    """预览可限长，原始值不脱敏。"""
+    return str(value or "")[:limit]
 
 
 _SAFE_TOOL_INPUT_KEYS = frozenset({
@@ -350,53 +385,23 @@ _SAFE_TOOL_INPUT_KEYS = frozenset({
 
 
 def _safe_tool_input(value: Any) -> dict[str, Any]:
-    """仅保留定位工具调用所需的短字段；不保存 prompt、正文、命令或编辑前后文。"""
-    if not isinstance(value, dict):
-        return {}
-    safe: dict[str, Any] = {}
-    for key in _SAFE_TOOL_INPUT_KEYS:
-        item = value.get(key)
-        if item in (None, "", [], {}):
-            continue
-        if isinstance(item, str):
-            safe[key] = _audit_text(item, 240)
-        elif isinstance(item, (int, float, bool)):
-            safe[key] = item
-        elif isinstance(item, list):
-            safe[key] = [_audit_text(part, 120) for part in item[:5] if isinstance(part, str)]
-    return safe
+    """保留完整公开工具入参。"""
+    return dict(value) if isinstance(value, dict) else {}
 
 
 def _audit_events(value: Any) -> list[dict[str, Any]]:
-    """保留公开助手与工具事件；隐藏思考和未知事件不入库。"""
+    """持久化公开工具证据和关联 ID；不记录隐藏思考。"""
     if not isinstance(value, list):
         return []
-    result: list[dict[str, Any]] = []
-    for item in value[:200]:
+    result = []
+    for item in value:
         if not isinstance(item, dict):
             continue
-        kind = str(item.get("type") or "")
-        # SDK 流式收集的助手事件带 elapsed_ms，视为中间分析；无计时的公开摘要可保留。
-        if kind == "assistant" and "elapsed_ms" not in item:
-            text = _audit_text(item.get("text") or "", 500)
-            if text and "分析" not in text and "analysis" not in text.casefold():
-                result.append({"type": "assistant", "text": text})
-        elif kind == "tool_use":
-            result.append({
-                "type": "tool_use",
-                "tool": str(item.get("tool") or "unknown")[:80],
-                "input": _safe_tool_input(item.get("input")),
-                "elapsed_ms": item.get("elapsed_ms"),
-            })
-        elif kind == "tool_result":
-            result.append({
-                "type": "tool_result",
-                "is_error": bool(item.get("is_error")),
-                "text": _audit_text(item.get("text") or "", 500),
-                "elapsed_ms": item.get("elapsed_ms"),
-            })
-        if len(result) >= 99:
-            break
+        kind = item.get("type")
+        if kind in {"tool_use", "tool_result", "tool_decision"}:
+            result.append(dict(item))
+        elif kind == "assistant" and "elapsed_ms" not in item:
+            result.append(dict(item))
     return result
 
 

@@ -318,7 +318,9 @@ export function TaskOverview({
   const verifyMode = getText(verify, 'mode');
   const syntaxOnlyVerification = verifyMode === 'syntax_only';
   const verifyPassed = verify.passed === true && !syntaxOnlyVerification;
-  const regressionPassed = regression.passed === true;
+  const regressionSyntaxOnly = getText(regression, 'status') === 'syntax_only' || getText(regression, 'mode') === 'syntax';
+  const regressionPassed = regression.passed === true && !regressionSyntaxOnly;
+  const verifyUnverified = getText(verify, 'status') === 'unverified';
   const qualitySteps = [stepOf(steps, 'syntax_regression'), verifyStep, regressionStep].filter(Boolean) as StepRecord[];
   const qualityFailed = qualitySteps.some((step) => toneForStep(step) === 'danger');
   const resultFailed = !taskActive && !taskPaused
@@ -656,7 +658,7 @@ export function TaskOverview({
             <div className="quality-check-row">
               <span>问题验证</span>
               <strong className={syntaxOnlyVerification ? 'is-muted' : verifyPassed ? 'is-good' : verifyStep ? 'is-bad' : 'is-muted'}>
-                {syntaxOnlyVerification ? '仅语法检查' : verifyPassed ? '通过' : verifyStep ? '未通过' : '未执行'}
+                {syntaxOnlyVerification ? '仅语法检查' : verifyPassed ? '通过' : verifyUnverified ? '未验证' : verifyStep ? '未通过' : '未执行'}
               </strong>
               <small className="quality-detail-clamp">
                 {syntaxOnlyVerification
@@ -666,8 +668,8 @@ export function TaskOverview({
             </div>
             <div className="quality-check-row">
               <span>回归测试</span>
-              <strong className={regressionPassed ? 'is-good' : regressionStep ? 'is-bad' : 'is-muted'}>
-                {regressionPassed ? '通过' : regressionStep ? '未通过' : '未执行'}
+              <strong className={regressionSyntaxOnly ? 'is-muted' : regressionPassed ? 'is-good' : regressionStep ? 'is-bad' : 'is-muted'}>
+                {regressionSyntaxOnly ? '仅语法编译' : regressionPassed ? '通过' : regressionStep ? '未通过' : '未执行'}
               </strong>
               <small className="quality-detail-clamp">
                 {regression.command_count !== undefined ? `${String(regression.command_count)} 条命令` : '未记录命令数'}

@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from app.workflow.spec import FrozenModel
 
-ScopeTier = Literal["carrier", "project"]
+ScopeTier = Literal["carrier", "project", "manual"]
 EditAction = Literal["create", "update", "delete"]
 
 
@@ -21,6 +21,12 @@ class FileEdit(FrozenModel):
     content: str = ""
     # note：该模型字段用于承载对应契约中的结构化数据。
     note: str = ""
+    symbol: str = ""
+    problem: str = ""
+    operation: str = ""
+    rationale: str = ""
+    validation_requirements: str = ""
+    risk: str = ""
 
 
 class ChangePlan(FrozenModel):
@@ -48,8 +54,7 @@ def plan_of(payload: dict[str, Any]) -> ChangePlan | None:
         plan = ChangePlan.model_validate(raw)
     except Exception:
         return None
-    # 只有理由、没有待改文件的"方案"无法落盘，按无方案处理
-    return plan if plan.edits else None
+    return plan if plan.edits or plan.rationale or plan.scope != "carrier" else None
 
 
 __all__ = ["ChangePlan", "EditAction", "FileEdit", "ScopeTier", "plan_of"]

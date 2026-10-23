@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 from pydantic import BaseModel, Field, model_validator
 
 from app.infrastructure.config import load_config
@@ -513,10 +513,15 @@ def _all_run_ids(store: RecordStore) -> list[str]:
 @router.get("/api/health")
 def health(_: None = Depends(_authorize)) -> dict[str, Any]:
     config = _config()
+    from app.workflow.steps.verify_issue.assessment import CONTRACT_VERSION
+    from app.agents.review.contract import REVIEW_CONTRACT_VERSION
     return {
         "status": "ok",
         "service": SERVICE_NAME,
         "version": SERVICE_VERSION,
+        "verification_contract_version": CONTRACT_VERSION,
+        "review_contract_version": REVIEW_CONTRACT_VERSION,
+        "log_redaction_enabled": False,
         "runtime_dir_configured": bool(config.runtime_dir),
         "source_repo_configured": config.source_repo is not None,
         "api_token_required": bool(os.getenv("WORKBENCH_API_TOKEN", "").strip()),
@@ -664,6 +669,24 @@ def get_artifact_content(
     except json.JSONDecodeError:
         value = target.read_text(encoding="utf-8", errors="replace")
     return JSONResponse(content={"path": path, "task_id": task_id, "content": value})
+
+
+@router.get("/api/v1/runs/{run_id}/artifacts/download")
+def download_artifact(run_id: str, path: str = Query(..., min_length=1, max_length=500),
+                      task_id: str = "", _: None = Depends(_authorize)) -> FileResponse:
+    """下载完整归档产物；与预览使用同一权限和目录边界，无预览大小限制。"""
+    store = _store()
+    run_id = _safe_id(run_id)
+    if task_id:
+        task_id = _safe_id(task_id)
+    base = (store.task_dir(run_id, task_id) if task_id else store.run_dir(run_id)).resolve()
+    relative = Path(path)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise HTTPException(status_code=400, detail="非法产物路径")
+    target = (base / relative).resolve()
+    if not target.is_relative_to(base) or not target.is_file():
+        raise HTTPException(status_code=404, detail="产物不存在")
+    return FileResponse(target, filename=target.name, media_type="application/octet-stream")
 
 
 @router.post("/api/runs/{run_id}/tasks/{task_id}/approval")
@@ -2094,7 +2117,11 @@ def _step_context(record: Any) -> dict[str, Any]:
 
 
 @router.get("/api/v1/runs/{run_id}/board")
-def v1_run_board(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
+def v1_run_board(run_id: str, _: None = Depends(_authorize),
+                 page: int = Query(default=1, ge=1),
+                 page_size: int = Query(default=20, ge=1, le=100),
+                 category: str = Query(default="all", pattern="^(all|active|approval|success|manual|failed|skipped|cancelled|paused|other)$"),
+                 keyword: str = Query(default="", max_length=160)) -> dict[str, Any]:
     """任务板首屏投影：只返回任务卡摘要与步骤状态，不携带 input/output。"""
     store = _store()
     payload = _run_payload(store, _safe_id(run_id))
@@ -2123,12 +2150,12 @@ def v1_run_board(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
                 for step in steps
             },
         })
+    from app.application.task_board import paginate_tasks
     return {
         "run_id": str(payload.get("run_id") or run_id),
         "summary": _v1_run_summary(payload),
         "stages": task_stages(),
-        "tasks": tasks,
-        "total": len(tasks),
+        **paginate_tasks(tasks, page, page_size, category, keyword),
     }
 
 

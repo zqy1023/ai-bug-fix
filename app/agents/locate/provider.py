@@ -64,8 +64,10 @@ def _interrupted_call_fallback(error: BaseException, request: AgentRequest, atte
         "usage": {
             "tool_calls": sum(1 for event in messages if isinstance(event, dict) and event.get("type") == "tool_use"),
             "prompt_chars": len(request.system_prompt) + len(request.prompt),
-            "result_chars": len(result), "input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+            "result_chars": len(result), "input_tokens": None, "output_tokens": None, "total_tokens": None,
+            **getattr(error, "agent_usage", {}),
         },
+        "sdk_receipt": getattr(error, "sdk_receipt", {}),
     }
 
 def _is_max_turns_error(error: BaseException) -> bool:
@@ -110,10 +112,12 @@ def _max_turns_fallback(
             "tool_calls": tool_calls,
             "prompt_chars": max(0, int(prompt_chars)),
             "result_chars": len(result),
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "total_tokens": 0,
+            "input_tokens": None,
+            "output_tokens": None,
+            "total_tokens": None,
+            **getattr(error, "agent_usage", {}),
         },
+        "sdk_receipt": getattr(error, "sdk_receipt", {}),
     }
 
 
@@ -127,6 +131,7 @@ class ClaudeQueryLocateProvider:
         self.env = dict(env or {})
 
     def run(self, request: AgentRequest) -> dict[str, Any]:
+        request = request.model_copy(update={"provider": self.name})
         ToolPolicy.validate(request)
         if request.agent_role != "locate":
             raise ValueError("Locate provider 只接受 locate 角色请求")
@@ -140,12 +145,12 @@ class ClaudeQueryLocateProvider:
             last_error: BaseException | None = None
             for attempt in range(1, attempts + 1):
                 try:
-                    return run_agent_once(
+                    return invoke_with_audit(request, lambda: run_agent_once(
                         prompt, request.workspace, self.env, writable=False, tools=self.config.tools,
                         max_turns=self.config.max_turns, max_tool_calls=self.config.max_tool_calls,
                         timeout_seconds=self.config.timeout_seconds, allowed_roots=request.allowed_read_roots,
                         output_schema=output_schema("locate"),
-                    )
+                    ))
                 except Exception as error:
                     last_error = error
                     if _is_max_turns_error(error):
@@ -160,7 +165,7 @@ class ClaudeQueryLocateProvider:
                 return _interrupted_call_fallback(last_error, request, attempts)
             raise last_error
 
-        return invoke_with_audit(request, invoke)
+        return invoke()
 
 
 PROVIDERS: dict[str, type[ClaudeQueryLocateProvider]] = {

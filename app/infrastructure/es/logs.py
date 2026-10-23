@@ -144,6 +144,17 @@ class ESLogAdapter:
                 row = self.parse_hit(hit)
                 if row is None:
                     funnel["unparseable"] += 1
+                    source = hit.get("_source") or {}
+                    message = str(source.get("message") or "")
+                    missing = [key for key in ("service_name", "biztype", "message")
+                               if not isinstance(source.get(key), str) or not source[key]]
+                    reason = "missing_required_fields" if missing else "missing_req_marker" if "req:" not in message else "invalid_request_or_error_structure"
+                    failures = checkpoint.setdefault("parse_failures", {"counts": {}, "samples": []})
+                    failures["counts"][reason] = failures["counts"].get(reason, 0) + 1
+                    if len(failures["samples"]) < 20:
+                        from app.infrastructure.redaction import redact_output
+                        failures["samples"].append({"reason": reason, "missing_fields": missing,
+                                                   "message_preview": redact_output(message)[:1000]})
                 else:
                     funnel["parsed"] += 1
                     yield row
@@ -275,6 +286,12 @@ class ESLogAdapter:
         }
         if track_config:
             result["track_config"] = track_config
+        # 显式 error: 后可能只剩异常摘要，必须在丢弃 message 上下文前保留代理渠道。
+        from app.workflow.steps.verify_issue.replay_model import extract_track_config
+
+        recovered_config = extract_track_config({"req": req_obj, "track_config": track_config, "message": message})
+        if recovered_config:
+            result["track_config"] = json.dumps(recovered_config, ensure_ascii=False, separators=(",", ":"))
         if response:
             result["response"] = response
         return result

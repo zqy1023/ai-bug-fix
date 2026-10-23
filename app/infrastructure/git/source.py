@@ -19,7 +19,6 @@ import uuid
 import time
 from collections.abc import Callable
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
 
 from git import Repo
 from git.exc import InvalidGitRepositoryError, NoSuchPathError
@@ -269,7 +268,7 @@ def _run_git(
     *,
     cancel_requested: Callable[[], bool] | None = None,
 ) -> str:
-    """执行 Git 命令；失败信息先脱敏再抛出。"""
+    """执行 Git 命令，失败信息保留原值。"""
     command = ["git", *args]
     process: subprocess.Popen[str] | None = None
     try:
@@ -351,22 +350,13 @@ def _terminate_git_process(process: subprocess.Popen[str]) -> None:
 
 
 def _redact_args(args: list[str]) -> list[str]:
-    """隐藏 URL 中的 userinfo，避免凭据进入错误信息。"""
+    """保留原始参数，兼容旧接口。"""
     return [_redact_url(arg) for arg in args]
 
 
 def _redact_url(value: str) -> str:
-    """去掉 URL 的 username/password 部分。"""
-    try:
-        parts = urlsplit(value)
-    except ValueError:
-        return value
-    if not parts.scheme or (parts.username is None and parts.password is None):
-        return value
-    host = parts.hostname or ""
-    if parts.port:
-        host = f"{host}:{parts.port}"
-    return urlunsplit((parts.scheme, host, parts.path, parts.query, parts.fragment))
+    """日志保留原始命令参数，兼容旧接口。"""
+    return value
 
 
 def _display(value: Path | str) -> str:

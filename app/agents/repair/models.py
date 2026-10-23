@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from app.workflow.spec import FrozenModel
+from app.application.plans import ChangePlan
 from app.workflow.steps.prepare_evidence.models import EvidenceOutput
 from pydantic import Field
 
@@ -30,7 +31,7 @@ class RepairInput(FrozenModel):
     locate: dict[str, Any] = Field(default_factory=dict)
 
 
-class RepairView(FrozenModel):
+class RepairAgentOutput(FrozenModel):
     """修复步骤对外只保留核心结论，去脂提效。
 
     ``changed_files`` 必须留在视图里：它是模型**自己声明**的修改清单，下游
@@ -39,7 +40,7 @@ class RepairView(FrozenModel):
     报告里也查不出模型声称改了什么。
 
     ``change_plan`` 是结构化分析：根因落在共享层时仍然保留以供终态报告记录。
-    **本轮改动直接落在目标 carrier 内时它为空是正常的**。
+    运输商内的修改同样保留理由、风险和验证条件，下游逐项核对执行证据。
     """
 
     # passed：字段说明见该模型文档与工作流契约。
@@ -53,11 +54,17 @@ class RepairView(FrozenModel):
     # changed_files：字段说明见该模型文档与工作流契约。
     changed_files: list[str] = Field(default_factory=list)
     # change_plan：字段说明见该模型文档与工作流契约。
-    change_plan: dict[str, Any] = Field(default_factory=dict)
+    change_plan: ChangePlan | None = None
     # blocked_reason：字段说明见该模型文档与工作流契约。
     blocked_reason: str = ""
     # scope_escalation_required：字段说明见该模型文档与工作流契约。
     scope_escalation_required: bool = False
 
 
-__all__ = ["RepairInput", "RepairView"]
+class RepairView(RepairAgentOutput):
+    """平台派生的失败类别不要求模型生成。"""
+
+    failure_kind: str = ""
+
+
+__all__ = ["RepairAgentOutput", "RepairInput", "RepairView"]

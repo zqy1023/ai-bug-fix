@@ -16,11 +16,21 @@ logger = logging.getLogger(__name__)
 
 def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
     """把通过审查的修复交付到修复分支。交付前检查必要的门禁条件。"""
+    if data.review_decision.upper() in {"MANUAL", "HUMAN"} and not data.manual_confirmation_required:
+        data = data.model_copy(update={
+            "manual_confirmation_required": True,
+            "manual_confirmation_reasons": list(data.manual_confirmation_reasons)
+            or [data.review_summary or "本次候选需要人工审查确认"],
+        })
 
     if data.analysis_only:
         if not data.report_paths:
             raise StepFailed("分析任务交付失败：缺少最终报告", {"reason": "report_missing"})
     else:
+        if data.legacy_analysis_required or any(str(path).replace("\\", "/").casefold().startswith("spiders/") for path in data.changed_files):
+            raise StepFailed("旧框架只允许分析报告交付，不允许提交脚本变更", {"reason": "legacy_analysis_only"})
+        if not data.delivery_eligible:
+            raise StepFailed("交付已阻断：尚未取得允许交付的有效审查结论", {"reason": "review_not_eligible"})
         # 源码交付必须有实际改动。PASS 表示 AI 审查通过；MANUAL 表示 AI
         # 明确要求人工复核。两者都要先提交候选分支，再由最终审批决定保留或删除。
         # HUMAN 则表示配置为人工审查模式，因此跳过 AI 审查。
@@ -56,9 +66,18 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
             from app.workflow.steps.finalize_execution.node import build_report
 
             report_path = "delivery/final.json"
-            if receipt and (store.task_dir(ctx.run.run_id, data.task_id) / report_path).is_file():
+            if (store.task_dir(ctx.run.run_id, data.task_id) / report_path).is_file():
                 repair_report = store.read_artifact(ctx.run.run_id, report_path, data.task_id)
-            else:
+                from app.workflow.evidence_version import evidence_version
+                recorded_patch = (((repair_report.get("validation") or {}).get("verify_issue") or {})
+                                  .get("evidence_version") or {}).get("patch_id")
+                current_patch = evidence_version(data.ai_workspace_path, list(data.changed_files)).get("patch_id")
+                if (repair_report.get("review_decision") != data.review_decision
+                    or repair_report.get("manual_confirmation_required") != data.manual_confirmation_required
+                    or repair_report.get("manual_confirmation_reasons") != list(data.manual_confirmation_reasons)
+                    or recorded_patch != current_patch):
+                    repair_report = {}
+            if not repair_report:
                 repair_report = build_report(ctx, FinalizeInput(
                     task_id=data.task_id, carrier=data.carrier,
                     biztype=str(getattr(getattr(ctx, "task", None), "biztype", "")),
@@ -137,6 +156,7 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
         pushed=bool(result.get("pushed")),
         local_branch=bool(result.get("local_branch")),
         manual_confirmation_required=data.manual_confirmation_required,
+        manual_confirmation_reasons=list(data.manual_confirmation_reasons),
     )
 
 

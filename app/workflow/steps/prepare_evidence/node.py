@@ -213,9 +213,6 @@ def run(ctx: StepContext, data: EvidenceInput) -> EvidenceOutput:
         if path.is_file() and not path.is_symlink()
     ]
     if legacy_dependency and legacy_dir is not None:
-        all_files.extend(path.relative_to(root).as_posix() for path in sorted(legacy_dir.rglob("*.py"))
-                         if path.is_file() and not path.is_symlink())
-    if legacy_dependency and legacy_dir is not None:
         all_files.extend(
             path.relative_to(root).as_posix()
             for path in sorted(legacy_dir.rglob("*.py"))
@@ -261,7 +258,7 @@ def run(ctx: StepContext, data: EvidenceInput) -> EvidenceOutput:
         extracted=_extract(data.problem),
         legacy_only=legacy_only,
         legacy_dependency=legacy_dependency,
-        legacy_reason="",
+        legacy_reason="旧框架只读：完成根因定位后只交付分析报告" if legacy_only or legacy_dependency else "",
     )
 
 

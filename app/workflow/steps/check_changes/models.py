@@ -71,6 +71,7 @@ class CheckOutput(FrozenModel):
 
     # passed：是否通过当前门禁。
     passed: bool
+    evidence_version: dict[str, Any] = Field(default_factory=dict)
     # reason：处理原因。
     reason: str = ""
     # failure_count：失败项数量。

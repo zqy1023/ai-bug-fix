@@ -48,6 +48,10 @@ class AgentRequest(BaseModel):
     allowed_write_roots: tuple[str, ...]
     # write_root：该模型字段用于承载对应契约中的结构化数据。
     write_root: str | None = None
+    provider: str = ""
+    logical_context_hash: str = ""
+    context_mode: Literal["full", "delta"] = "full"
+    previous_context_hash: str = ""
 
 
 StepStatus = Literal["passed", "failed", "skipped", "manual"]

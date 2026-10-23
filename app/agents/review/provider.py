@@ -54,11 +54,15 @@ class ClaudeSessionProvider(ReviewProvider):
     def run(self, request: AgentRequest) -> dict[str, Any]:
         """在常驻只读会话中提交提示词；同一任务跨回修轮次复用。"""
         from app.agents.output_schema import output_schema
+        request = request.model_copy(update={"provider": self.name})
         ToolPolicy.validate(request)
         from app.infrastructure.runtime import drop_session, session_scope
+        from app.agents.session_context import invoke_session, session_fingerprint
 
         # key 不含 prompt_hash：每轮提示词必然不同，带它进来会让缓存永不命中。
         session_key = f"{request.workspace}\x00{request.run_id}\x00{request.task_id}"
+        schema = output_schema("review")
+        fingerprint = session_fingerprint(request, schema, self.config.to_dict(), self.env)
         with session_scope(
             request.agent_role,
             # 一个 workspace 可能承载多个 carrier/task；按 task 隔离即可在回修轮次复用
@@ -68,7 +72,7 @@ class ClaudeSessionProvider(ReviewProvider):
                 request.workspace,
                 self.env,
                 request.system_prompt,
-                output_schema=output_schema("review"),
+                output_schema=schema,
                 tools=self.tools,
                 writable=False,
                 max_turns=self.config.max_turns,
@@ -77,13 +81,14 @@ class ClaudeSessionProvider(ReviewProvider):
             ),
             run_id=request.run_id,
             task_id=request.task_id,
+            fingerprint=fingerprint,
         ) as session:
-            result = invoke_with_audit(request, lambda: session.invoke(
-                request.prompt,
+            result = invoke_session(request, session, lambda sent: invoke_with_audit(sent, lambda: session.invoke(
+                sent.prompt,
                 request.workspace,
                 allowed_roots=request.allowed_read_roots,
-            ))
-            if result.get("reason") == "AGENT_TIMEOUT":
+            )))
+            if result.get("reason"):
                 drop_session(request.agent_role, session_key)
         return result
 
@@ -100,6 +105,7 @@ class ClaudeQueryProvider(ReviewProvider):
         """以一次性查询方式调用只读智能体。"""
         from app.agents.output_schema import output_schema
         try:
+            request = request.model_copy(update={"provider": self.name})
             ToolPolicy.validate(request)
             return invoke_with_audit(request, lambda: run_agent_once(
                 f"{request.system_prompt}\n\n---\n\n{request.prompt}",
@@ -125,10 +131,14 @@ class ManualProvider(ReviewProvider):
 
     def run(self, request: AgentRequest) -> dict[str, Any]:
         """返回 MANUAL 结论，交由人工审批。"""
+        request = request.model_copy(update={"provider": self.name})
         ToolPolicy.validate(request)
         payload = {
             "result": "MANUAL",
-            "passed": True,
+            "passed": False,
+            "code_verdict": "UNKNOWN",
+            "coverage": {"decision": "unknown", "reason": "人工审查模式，尚未评估本次变更覆盖",
+                         "reviewed_functions": [], "missing_checks": ["人工核对源码及验证证据"]},
             "mode": "MANUAL_REVIEW_REQUIRED",
             "summary": self._REASON,
             "findings": [],

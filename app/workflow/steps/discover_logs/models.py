@@ -42,6 +42,9 @@ class DiscoverOutput(FrozenModel):
     es_hits: int = 0
     # unparseable：字段说明见该模型文档与工作流契约。
     unparseable: int = 0
+    query_prepared: bool = True
+    counts_final: bool = False
+    reason: str = "查询条件已准备；实际读取及最终计数见日志读取与规范化步骤"
 
 
 __all__ = ["DiscoverInput", "DiscoverOutput"]

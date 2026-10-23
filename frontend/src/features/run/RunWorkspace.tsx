@@ -35,13 +35,13 @@ export function RunWorkspace() {
   });
   const board = useQuery({
     queryKey: queryKeys.board(runId),
-    queryFn: () => api.board(runId),
+    queryFn: () => api.board(runId, { page_size: 1 }),
     enabled: Boolean(runId),
     refetchInterval: 5000,
   });
 
   // 任务板比 run 详情更细粒度；只要还有活跃任务，就不能渲染成已完成。
-  const boardActive = (board.data?.tasks ?? []).some((task) => {
+  const boardActive = Boolean((board.data?.counts?.active ?? 0) + (board.data?.counts?.approval ?? 0)) || (board.data?.tasks ?? []).some((task) => {
     const value = String(task.result || '').toUpperCase();
     return value === 'RUNNING' || value === 'PENDING' || value === 'WAITING_APPROVAL';
   });
@@ -76,7 +76,7 @@ export function RunWorkspace() {
       label: '任务板',
       children: (
         <TaskBoard
-          tasks={board.data?.tasks ?? []}
+          runId={runId}
           stages={board.data?.stages}
           onOpen={(task) => navigate(`/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(task.task_id)}`)}
         />
@@ -117,7 +117,7 @@ export function RunWorkspace() {
       </div>
       <Tabs
         activeKey={tab}
-        onChange={(key) => setSearchParams({ tab: key }, { replace: true })}
+        onChange={(key) => { const next = new URLSearchParams(searchParams); next.set('tab', key); setSearchParams(next, { replace: true }); }}
         items={items}
         className="workspace-tabs"
       />

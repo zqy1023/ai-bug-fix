@@ -15,8 +15,7 @@
 - [本地启动](#本地启动)
 - [真实数据单步调试](#真实数据单步调试)
 - [Docker 部署](#docker-部署)
-- [开发验证](#开发验证)
-- [延伸文档](#延伸文档)
+- [准生产目录](#准生产目录)
 - [日志查询范围](#日志查询范围)
 
 ## 主流程
@@ -162,7 +161,7 @@ Agent 子图的 `State` 使用 TypedDict：**新增字段必须显式声明**，
 - Provider 请求级模型调用审计：模型、Prompt 哈希、耗时、Token 用量（供应商未返回时为空）、工具调用统计与错误类型。
 - 运行状态快照 SSE 和控制操作审计查询。
 - 审批队列与 LangGraph checkpoint 恢复。
-- 任务板投影（`/runs/{run_id}/board`）与单步骤详情、关联模型调用、脱敏上下文检查器。
+- 任务板投影（`/runs/{run_id}/board`）与单步骤详情、关联模型调用、上下文检查器。
 - 单步骤重跑（`/runs/{run_id}/tasks/{task_id}/steps/{step_name}/run`）：仅在非活跃执行上允许，写步骤必须显式确认。
 - 产物读取限制在当前运行/任务目录，限制最大读取大小。
 
@@ -170,7 +169,7 @@ Agent 子图的 `State` 使用 TypedDict：**新增字段必须显式声明**，
 
 模型调用审计文件写入 `<运行时目录>/runs/<run_id>/model_calls.jsonl`。历史运行不会补造缺失的模型调用记录。Token 等用量字段以 Provider 实际返回为准。
 
-提示词快照写入 `tasks/<task_id>/audit/prompts/<model_call_id>.json`，包含公共规则、角色提示词、任务上下文与字符数。快照由 `workbench_prompt_snapshot` 开关控制（默认开启），写入前按 `redact_output` 掩码凭据、把工作区绝对路径归一为项目相对路径，并按单段/总量上限截断；因此运行目录应视为包含业务上下文的高敏感数据，必须限制访问权限。
+提示词快照写入 `tasks/<task_id>/audit/prompts/<model_call_id>.json`，包含公共规则、角色提示词、实际发送的任务上下文和压缩前完整任务证据。快照由 `workbench_prompt_snapshot` 开关控制（默认开启）；新记录保留原始字段和值，不脱敏、不裁剪完整归档。模型上下文按预算引用完整证据，页面提供按需展开。历史已脱敏或截断的记录保留原标记。
 
 运行与安全边界：
 
@@ -189,7 +188,7 @@ Agent 子图的 `State` 使用 TypedDict：**新增字段必须显式声明**，
 
 - 执行阵列（`/runs`）：指标带、run 卡与任务热力条、状态/关键词筛选、分页和发起执行向导。
 - Run 工作区（`/runs/:runId`）：run 级拓扑、按优先级分组的任务板、暂停/恢复/停止、只读 checkpoint 时间线与控制审计。
-- Task 工作区（`/runs/:runId/tasks/:taskId`）：任务头、真实子图节点轨（组合阶段可展开）、步骤输入/输出/产物/错误、Agent 追踪与脱敏上下文检查器。
+- Task 工作区（`/runs/:runId/tasks/:taskId`）：任务头、真实子图节点轨（组合阶段可展开）、步骤输入/输出/产物/错误、Agent 追踪与上下文检查器。
 - Agent 追踪：提示词分段（版本、hash、字符数）、工具调用时间线与模型输出/Token 统计，按 attempt 切换。
 - 交付审批（`/approvals`）：左队列右审阅；驳回必须填写理由并二次确认，批准保留分支供人工合并。
 
@@ -285,36 +284,13 @@ docker compose logs -f api frontend
 
 前端默认监听 `http://localhost:8080`。API 不直接映射宿主机端口；远程部署必须在 HTTPS 反向代理后访问。容器需要 Git 远程访问权限，必须确认 Git 身份、分支策略和凭据可用。默认不自动推送，禁止自动合并。不要将 `.env`、密钥或运行数据打入镜像。
 
-## 开发验证
+## 准生产目录
 
-开发依赖包含运行依赖和 pytest、Ruff、Mypy；生产镜像只安装 `requirements.txt`。
+根目录只保留运行源码 `app/`、`config/`、`workbench/`，前端源码及构建配置 `frontend/`，服务入口、运行依赖清单、环境配置、Docker 部署文件和本说明。`.git/` 保留版本记录；本机 `.venv/`、前端 `node_modules/` 和 `dist/` 用于当前运行及构建，不进入容器构建上下文。
 
-```powershell
-python -m pip install -r requirements-dev.txt
-python -m pytest -q
-cd frontend
-npm ci
-npm run build
-```
+测试脚本、诊断产物、历史审计文档、开发工具配置及缓存已移出项目。业务回归执行器、Agent 提示词和真实运行记录属于生产功能，不按测试文件清理。运行数据由 `AI_REPAIR_RUNTIME_DIR` 管理，不作为发布源码。
 
-现有浏览器冒烟脚本为 `tests/frontend_smoke.cjs`，使用拦截的 API 数据，不会发起真实修复。
-脚本需在 Node.js 可解析 `playwright` 的环境下运行，也可用 `PLAYWRIGHT_MODULE` 指定模块路径。
-先构建前端，再从仓库根目录以静态模式执行：
-
-```powershell
-$env:WORKBENCH_STATIC_UI = "1"
-node tests/frontend_smoke.cjs
-Remove-Item Env:WORKBENCH_STATIC_UI
-```
-
-## 延伸文档
-
-以下为历史审计与修复记录；当前架构以实际入口、`app/workflow/definitions.py`、插件契约及本 README 为准。
-
-- [工作流生命周期修复](docs/workflow-lifecycle-fixes.md)
-- [运行审计记录](docs/latest-run-audit-2026-10-21.md)
-- [运行修复记录](docs/latest-run-repair-2026-10-21.md)
-- [人工报告审计](docs/manual-report-audit-2026-10-21.md)
+准生产检查使用后端 `/api/health` 和前端构建；健康接口应报告 `review_contract_version=3`、`log_redaction_enabled=false`。修改后需重启后端才能加载新代码。
 
 ## 日志查询范围
 

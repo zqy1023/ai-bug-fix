@@ -13,6 +13,8 @@ from app.workflow.steps.request_approval.node import run
 
 def _input(state: dict[str, Any]) -> dict[str, Any]:
     task = dict(state.get("task") or {})
+    from app.workflow.confirmation import confirmation
+    manual_required, manual_reasons = confirmation(state)
     return {
         "task_id": str(state.get("task_id") or ""),
         "decision": str(state.get("decision") or "PENDING").upper(),
@@ -23,8 +25,8 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         "repair_branch": str(state.get("repair_branch") or ""),
         "delivery_pushed": bool(state.get("delivery_pushed")),
         "delivery_local_branch": bool(state.get("delivery_local_branch")),
-        "manual_confirmation_required": bool(state.get("manual_confirmation_required")),
-        "manual_confirmation_reasons": [str(item) for item in state.get("manual_confirmation_reasons") or []],
+        "manual_confirmation_required": manual_required,
+        "manual_confirmation_reasons": manual_reasons,
         "ai_workspace_path": str(state.get("ai_workspace_path") or ""),
         "changed_files": [str(item) for item in state.get("changed_files") or []],
         "baseline_manifest": dict(state.get("baseline_manifest") or {}),
@@ -36,8 +38,8 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
                     "change_plan": state.get("change_plan") or {},
                     "changed_files": sorted(str(item) for item in state.get("changed_files") or []),
                     "baseline_manifest": state.get("baseline_manifest") or {},
-                    "manual_confirmation_required": bool(state.get("manual_confirmation_required")),
-                    "manual_confirmation_reasons": list(state.get("manual_confirmation_reasons") or []),
+                    "manual_confirmation_required": manual_required,
+                    "manual_confirmation_reasons": manual_reasons,
                 },
                 ensure_ascii=False,
                 sort_keys=True,

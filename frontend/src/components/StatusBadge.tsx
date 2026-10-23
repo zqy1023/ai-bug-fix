@@ -37,7 +37,7 @@ const TASK: Record<string, BadgeSpec> = {
   SUCCEEDED: { label: '待手动合并', tone: 'success', icon: <CheckCircleFilled /> },
   DELIVERED: { label: '交付已提交', tone: 'success', icon: <CheckCircleFilled /> },
   COMPLETED: { label: '已结束（无交付记录）', tone: 'neutral', icon: <MinusCircleOutlined /> },
-  MANUAL: { label: '转人工报告', tone: 'manual', icon: <FileTextOutlined /> },
+  MANUAL: { label: '需人工处理', tone: 'manual', icon: <FileTextOutlined /> },
   INSUFFICIENT_EVIDENCE: { label: '证据不足', tone: 'manual', icon: <FileTextOutlined /> },
   REJECTED: { label: '已驳回', tone: 'danger', icon: <CloseCircleFilled /> },
   FAILED: { label: '失败', tone: 'danger', icon: <CloseCircleFilled /> },
