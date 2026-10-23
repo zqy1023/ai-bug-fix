@@ -1507,8 +1507,13 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
             "legacy_report": True,
         }
     artifacts = []
+    artifact_count = 0
     for step in steps:
-        for ref in step.get("artifacts") or []:
+        refs = step.get("artifacts") or []
+        artifact_count += len(refs)
+        for ref in refs:
+            if len(artifacts) >= 40:
+                break
             artifacts.append({
                 "name": ref.get("name") or "artifact",
                 "path": ref.get("path") or "",
@@ -1518,11 +1523,13 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
                 "task_id": task_id,
             })
     if (store.task_dir(run_id, task_id) / "reports" / "final.json").is_file():
-        artifacts.append({
-            "name": "任务终态报告", "path": "reports/final.json",
-            "media_type": "application/json", "description": "最终结果与处置原因",
-            "size_bytes": None, "task_id": task_id,
-        })
+        artifact_count += 1
+        if len(artifacts) < 40:
+            artifacts.append({
+                "name": "任务终态报告", "path": "reports/final.json",
+                "media_type": "application/json", "description": "最终结果与处置原因",
+                "size_bytes": None, "task_id": task_id,
+            })
     run_meta = _read_json(store.run_dir(run_id) / "run.json", {})
     run_error = payload.get("run_error") or {}
     return {
@@ -1542,6 +1549,7 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
             "steps": steps, "report": project_report(report),
         },
         "artifacts": artifacts,
+        "artifact_count": artifact_count,
         "config": {
             **_config().run_parameters(run_meta),
         },
