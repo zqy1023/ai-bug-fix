@@ -12,6 +12,7 @@ from app.workflow.steps.run_regression.node import run
 def _input(state: dict[str, Any]) -> dict[str, Any]:
     task = dict(state.get("task") or {})
     return {
+        "previous_result": dict(state.get("regression_result") or {}),
         "task_id": str(state.get("task_id") or ""),
         "carrier": str(task.get("carrier") or ""),
         "ai_workspace_path": str(state.get("ai_workspace_path") or ""),
@@ -20,7 +21,6 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         "normalized_log": dict(state.get("problem") or {}),
         "baseline_dir": str(state.get("baseline_dir") or ""),
         "source_project_path": str(state.get("source_project_path") or ""),
-        "validation_requirements": list((state.get("verify_result") or {}).get("validation_requirements") or []),
     }
 
 
@@ -44,7 +44,7 @@ SPEC = StepSpec(
     input_builder=_input,
     output_patch=_patch,
     depends_on=(Dependency("verify_issue", "task"),),
-    next_step="review_agent",
+    next_step="summarize_validation",
 )
 
 __all__ = ["SPEC"]

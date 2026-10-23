@@ -18,6 +18,7 @@ from app.workflow.spec import FrozenModel
 
 class ReviewInput(FrozenModel):
     """09 的输入：只给审查需要的结论，不给修复侧内部状态。"""
+    validation_summary: dict[str, Any] = Field(default_factory=dict)
 
     # task_id：字段说明见该模型文档与工作流契约。
     task_id: str
@@ -90,7 +91,6 @@ class ReviewView(ReviewAgentOutput):
     contract_error: str = ""
     evidence_version: dict[str, Any] = Field(default_factory=dict)
     checks: list[dict[str, str]] = Field(default_factory=list)
-    validation_requirements: list[dict[str, Any]] = Field(default_factory=list)
     next_action: str = ""
     review_notes: str = ""
 

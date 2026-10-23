@@ -60,6 +60,7 @@ def prepare_run(
     resolved = run_id or uuid.uuid4().hex
     store = RecordStore(config.runtime_dir)
     metadata = {
+        "workflow_version": 5,
         "source_repo_path": str(config.source_repo),
         "project_subdir": str(config.project_subdir or ""),
         "log_service_name": config.log_service_name,
@@ -134,6 +135,7 @@ def run_workflow(
                 "log_excluded_biztypes": list(config.excluded_biztypes),
                 "log_hours": config.log_hours,
                 "log_limit": config.limit,
+                "workflow_version": 5,
                 "attempt": 1,
                 "max_attempts": config.max_attempts,
                 "review_mode": config.review_mode,
@@ -154,6 +156,8 @@ def run_workflow(
         raise
     finally:
         close_sessions(resolved)
+        from app.infrastructure.filesystem.workspace_gc import collect_configured_workspaces
+        collect_configured_workspaces(config)
     return {"run_id": resolved, "steps": [item.name for item in store.list_steps(resolved)]}
 
 
@@ -387,7 +391,10 @@ def _write_run_report(
             skipped = counts.get("SKIPPED", 0)
             failures = sum(count for key, count in counts.items()
                            if key in {"FAILED", "FAIL", "REJECTED", "INCOMPLETE", "CANCELLED"})
-            if failures or manuals:
+            blocked = counts.get("BLOCKED", 0)
+            if blocked:
+                result = "PARTIAL_FAILED" if successes else "BLOCKED"
+            elif failures or manuals:
                 result = "PARTIAL_FAILED" if successes else ("MANUAL" if manuals and not failures else "FAILED")
             elif successes + skipped == total:
                 result = "SUCCESS"
@@ -407,6 +414,23 @@ def _write_run_report(
             "task_count": len(task_results), "task_results": task_results,
         }
         _atomic_json(reports_dir / "final.json", report)
+        from app.infrastructure.records.lifecycle import LifecycleStore
+        status = {"SUCCESS": "succeeded", "NO_TASKS": "succeeded", "CANCELLED": "cancelled",
+                  "MANUAL": "partial_failed", "PARTIAL_FAILED": "partial_failed"}.get(result, "failed")
+        LifecycleStore(store.root).update_run(run_id, status=status, finished_at=now)
+        lifecycle = LifecycleStore(store.root)
+        for task in task_results:
+            current = lifecycle.read_task(run_id, task["task_id"])
+            if current.get("status") in {"waiting_approval", "paused"}:
+                continue
+            task_status = {"SUCCESS": "succeeded", "SUCCEEDED": "succeeded", "COMPLETED": "succeeded",
+                           "DELIVERED": "succeeded", "SKIPPED": "skipped",
+                           "MANUAL": "manual", "MANUAL_REVIEW_REQUIRED": "manual", "INSUFFICIENT_EVIDENCE": "manual",
+                           "CANCELLED": "cancelled"}.get(task["result"].upper(), "failed")
+            lifecycle.update_task(
+                run_id, task["task_id"], status=task_status, workspace_released=True,
+                terminal_step=task["terminal_step"], terminal_reason=task["terminal_reason"],
+            )
     except Exception:
         logger.exception("写入 Run 级终态报告失败 run_id=%s", run_id)
 

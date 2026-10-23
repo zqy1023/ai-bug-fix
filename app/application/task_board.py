@@ -2,7 +2,7 @@
 
 from typing import Any
 
-CATEGORIES = ("active", "approval", "success", "manual", "failed", "skipped", "cancelled", "paused", "other")
+CATEGORIES = ("active", "approval", "success", "manual", "blocked", "failed", "skipped", "cancelled", "paused", "other")
 
 
 def task_category(task: dict[str, Any]) -> str:
@@ -13,6 +13,7 @@ def task_category(task: dict[str, Any]) -> str:
     mapping = {"active": {"RUNNING", "RETRYING", "PENDING", "QUEUED"},
                "success": {"SUCCESS", "SUCCEEDED", "PASSED", "APPROVED"},
                "manual": {"MANUAL", "INSUFFICIENT_EVIDENCE", "UNVERIFIED"},
+               "blocked": {"BLOCKED"},
                "failed": {"FAILED", "FAIL", "REJECTED", "PARTIAL_FAILED"},
                "skipped": {"SKIPPED"}, "cancelled": {"CANCELLED", "CANCELED"}, "paused": {"PAUSED"}}
     return next((key for key, values in mapping.items() if status in values), "other")

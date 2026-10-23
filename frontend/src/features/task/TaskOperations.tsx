@@ -47,7 +47,7 @@ export const TaskOperations: FC<TaskOperationsProps> = ({ detail, onInspect, onR
         <div className="task-operations-identity">
           <span className={`operation-signal ${active ? 'is-active' : ''}`} />
           <StatusBadge kind="task" value={taskState(detail.task)} />
-          <strong>{active ? currentTitle || '正在分派任务' : failed ? '需要处理' : '执行状态已同步'}</strong>
+          <strong>{active ? currentTitle || '正在分派任务' : taskState(detail.task) === 'BLOCKED' ? '验证受阻' : failed ? '需要处理' : '执行状态已同步'}</strong>
           {(detail.task.attempt ?? 0) > 0 && <span>第 {detail.task.attempt} 次尝试</span>}
         </div>
         <div className="task-operations-buttons">

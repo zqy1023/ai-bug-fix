@@ -37,7 +37,7 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
         if not data.changed_files:
             raise StepFailed("交付失败：没有实际变更文件", {"changed_files": [], "reason": "no_changes"})
         review_decision = str(data.review_decision or "").upper()
-        if review_decision not in ("PASS", "APPROVED", "MANUAL", "HUMAN"):
+        if review_decision not in ("PASS", "HUMAN"):
             raise StepFailed(
                 f"交付失败：审查未通过，decision={review_decision}",
                 {"review_decision": review_decision, "reason": "review_not_passed"},

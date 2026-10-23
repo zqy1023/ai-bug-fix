@@ -42,7 +42,9 @@ def build_report(ctx: StepContext, data: FinalizeInput) -> dict[str, Any]:
     from app.workflow.confirmation import confirmation
     review = full_output(ctx.store, ctx.run.run_id, data.task_id, records, "review_agent")
     delivered = _output(records, "prepare_delivery")
+    validation_decision = (_output(records, "decide_validation").get("payload") or {}).get("validation_decision") or {}
     manual_required, manual_reasons = confirmation({
+        "validation_decision": validation_decision,
         "review": review,
         "verify_result": _output(records, "verify_issue"),
         "regression_result": _output(records, "run_regression"),
@@ -69,6 +71,10 @@ def build_report(ctx: StepContext, data: FinalizeInput) -> dict[str, Any]:
         "blocked_reason": repair.get("blocked_reason", ""),
         "validation": {record.name: record.output for record in records if record.name in {"verify_issue", "syntax_regression", "run_regression"}},
         "change_summary": str(repair.get("summary") or repair.get("analysis") or ""),
+        "workflow_version": 5,
+        "validation_plan": _output(records, "plan_validation").get("payload") or {},
+        "validation_summary": _output(records, "summarize_validation").get("payload") or {},
+        "validation_decision": validation_decision,
         "review_decision": str(review.get("verdict") or ""),
         "manual_confirmation_required": manual_required,
         "manual_confirmation_reasons": manual_reasons,
@@ -147,6 +153,12 @@ def _terminal_details(
     ordered = sorted(records, key=lambda item: str(getattr(item, "finished_at", "") or getattr(item, "started_at", "") or ""))
     latest = ordered[-1] if ordered else None
     status, outcome = str(terminal_status or "").upper(), str(result or "").upper()
+
+    if status == "BLOCKED" or outcome == "BLOCKED":
+        decision_record = next((item for item in reversed(ordered) if item.name == "decide_validation"), None)
+        if decision_record and not blocked_reason:
+            blocked_reason = str(((decision_record.output.get("payload") or {}).get("validation_decision") or {}).get("reason") or "")
+        return ("decide_validation", blocked_reason or retry_reason or "验证受阻", "排除具体受阻原因后重新运行对应任务；无需批准未验证修改")
 
     if status == "CANCELLED" or outcome == "CANCELLED":
         return (latest.name if latest else "workflow",
@@ -318,24 +330,20 @@ def refresh_completed_report(store: Any, run_id: str, task_id: str) -> None:
 def _execution_timing(store: Any, run_id: str, task_id: str, records: list[StepRecord]) -> dict[str, float]:
     """累计历史步骤；旧 Agent 历史从模型调用账本补齐，避免重复计算。"""
     all_records = { (r.name, r.attempt, r.started_at): r for r in records }
-    directory = store.task_dir(run_id, task_id)
-    for path in (directory / "history" / "steps").glob("*.json"):
+    for body in store.step_history(run_id, task_id):
         try:
-            record = StepRecord.model_validate(json.loads(path.read_text(encoding="utf-8")))
+            record = StepRecord.model_validate(body)
         except (OSError, ValueError):
             continue
         all_records.setdefault((record.name, record.attempt, record.started_at), record)
     total = sum(r.duration_ms for r in all_records.values())
-    metrics = directory / "metrics" / "agent.jsonl"
     agent_totals: dict[str, float] = {}
-    if metrics.exists():
-        for line in metrics.read_text(encoding="utf-8").splitlines():
-            try:
-                row = json.loads(line)
-                name = str(row.get("agent_role") or "") + "_agent"
-                agent_totals[name] = agent_totals.get(name, 0) + float(row.get("duration_ms") or 0)
-            except (ValueError, TypeError):
-                continue
+    for row in store.read_metrics(run_id, task_id):
+        try:
+            name = str(row.get("agent_role") or "") + "_agent"
+            agent_totals[name] = agent_totals.get(name, 0) + float(row.get("duration_ms") or 0)
+        except (ValueError, TypeError):
+            continue
     for name, elapsed in agent_totals.items():
         total += max(0, elapsed - sum(r.duration_ms for r in all_records.values() if r.name == name))
     starts = [datetime.fromisoformat(r.started_at) for r in all_records.values() if r.started_at]
@@ -359,36 +367,22 @@ def _problem(ctx: StepContext, task_id: str) -> str:
 
 
 def _tokens(ctx: StepContext, task_id: str) -> int | None:
-    path = ctx.store.task_dir(ctx.run.run_id, task_id) / "metrics" / "agent.jsonl"
-    if not path.is_file():
-        return 0
     total = 0
-    try:
-        handle = path.open("r", encoding="utf-8", errors="replace")
-    except OSError:
-        logger.warning("读取 token 指标失败 path=%s", path, exc_info=True)
-        return None
-    with handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            try:
-                item = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(item, dict):
-                if item.get("total_tokens") is None:
-                    return None
-                try:
-                    total += max(0, int(item["total_tokens"]))
-                except (TypeError, ValueError):
-                    return None
+    for item in ctx.store.read_metrics(ctx.run.run_id, task_id):
+        if item.get("total_tokens") is None:
+            return None
+        try:
+            total += max(0, int(item["total_tokens"]))
+        except (TypeError, ValueError):
+            return None
     return total
 
 
 def _delivery_status(records: list[StepRecord], terminal_status: str) -> str:
     # MANUAL 是业务终态，不是节点异常。定位/审查给出 MANUAL 时，节点本身可能是
     # succeeded；必须先检查业务结论，否则 final.json 会把转人工错误记成 FAILED。
+    if str(terminal_status or "").upper() == "BLOCKED":
+        return "BLOCKED"
     results = {str(record.result or "").upper() for record in records}
     if str(terminal_status or "").upper() == "CANCELLED":
         return "CANCELLED"

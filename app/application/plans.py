@@ -25,7 +25,7 @@ class FileEdit(FrozenModel):
     problem: str = ""
     operation: str = ""
     rationale: str = ""
-    validation_requirements: str = ""
+    validation_notes: str = ""
     risk: str = ""
 
 

@@ -6,21 +6,7 @@ import ast
 from pathlib import Path
 from typing import Any
 
-CONTRACT_VERSION = 4
-
-
-def verification_for_review(state: dict[str, Any]) -> dict[str, Any]:
-    """新采集样本只有完整双侧证据且同补丁时才能补足原先缺正文的验证。"""
-    original = state.get("verify_result") or {}
-    supplemental = (state.get("regression_result") or {}).get("supplemental_verification") or {}
-    if (original.get("status") == "unverified"
-        and (verification_is_complete(supplemental) or supplemental.get("status") == "failed")
-        and (supplemental.get("sample_source") or {}).get("kind") == "newly_captured_response"
-        and bool((supplemental.get("evidence_version") or {}).get("patch_id"))
-        and (supplemental.get("evidence_version") or {}).get("patch_id")
-        == (original.get("evidence_version") or {}).get("patch_id")):
-        return supplemental
-    return original
+CONTRACT_VERSION = 5
 
 
 def verification_is_complete(report: dict[str, Any]) -> bool:
@@ -34,7 +20,6 @@ def verification_is_complete(report: dict[str, Any]) -> bool:
         and report.get("mode") == "response_replay"
         and facts.get("schema_version") == CONTRACT_VERSION
         and facts.get("scope") == "parser_only"
-        and not facts.get("requires_request_validation")
         and isinstance(assertions, list) and len(assertions) == 3
         and all(isinstance(item, dict) and item.get("status") == "passed" for item in assertions)
         and {item.get("key") for item in assertions} == {"input", "baseline", "fixed"}
@@ -57,6 +42,11 @@ def changed_functions(workspace: Path, baseline: Path, files: list[str]) -> list
                 for member in node.body:
                     if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         found[f"{node.name}.{member.name}"] = ast.dump(member)
+                attributes = [ast.dump(member) for member in node.body
+                              if not isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))]
+                found[f"{node.name}.<class_config>"] = repr(attributes)
+        found["<module>"] = repr([ast.dump(node) for node in tree.body
+                                  if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))])
         return found
 
     changed = []
@@ -77,7 +67,7 @@ def assessment(
     """生成简短、可追查的业务验证说明，不把单个异常样本当全量回归。"""
     parser_configuration_changes = parser_configuration_changes or []
     request_changes = [name for name in functions
-                       if name.rsplit(".", 1)[-1] in {"read_html", "__init__", "on_finish"}
+                       if name.rsplit(".", 1)[-1] in {"read_html", "__init__", "on_finish", "<module>", "<class_config>"}
                        and name not in parser_configuration_changes]
     delivery = comparison.get("input_delivery") or []
     received = len(delivery) == 2 and all(isinstance(value, dict)

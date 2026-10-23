@@ -2,13 +2,13 @@
 
 from typing import Any
 
-from app.workflow.steps.verify_issue.assessment import verification_is_complete, verification_for_review
+from app.workflow.steps.verify_issue.assessment import verification_is_complete
 
 
 def review_checks(state: dict[str, Any], code_verdict: str, coverage: dict[str, Any] | None = None) -> list[dict[str, str]]:
     """区分未验证与失败，每行保留一句可操作说明。"""
     gate = state.get("gate_result") or {}
-    verify = verification_for_review(state)
+    verify = dict(state.get("verify_result") or {})
     regression = state.get("regression_result") or {}
     coverage = coverage or {}
     versions = [(state.get(name) or {}).get("evidence_version") or {}
@@ -27,15 +27,8 @@ def review_checks(state: dict[str, Any], code_verdict: str, coverage: dict[str, 
          str(regression.get("status")) if regression.get("status") in {"syntax_only", "not_configured", "not_executed", "failed"} else "unverified",
          str(regression.get("reason") or "未取得补充回归执行记录")),
         ("coverage", "本次变更的验证覆盖", {"sufficient": "passed", "insufficient": "unverified"}.get(str(coverage.get("decision")), "unverified"),
-         str(coverage.get("reason") or "尚未对照实际变更评估覆盖，不能因语法通过而自动豁免")),
+         str(coverage.get("reason") or "按实际变更核对证据覆盖范围")),
         ("version", "证据与补丁版本", "passed" if version_ok else "unverified",
          "三项证据对应同一补丁哈希" if version_ok else "证据版本缺失或不一致，需要重新检查"),
     ]
-    requirements = regression.get("validation_requirements") or verify.get("validation_requirements") or []
-    if requirements:
-        failed = [r for r in requirements if r.get("status") == "failed"]
-        missing = [r for r in requirements if r.get("status") != "passed"]
-        rows.append(("requirements", "变更验证要求", "failed" if failed else "unverified" if missing else "passed",
-                     f"{len(requirements) - len(missing)}/{len(requirements)} 项已取得样本与断言执行证据；" +
-                     ("存在失败项" if failed else "仍有未验证条件" if missing else "全部通过")))
     return [{"key": key, "label": label, "status": status, "detail": detail[:280]} for key, label, status, detail in rows]

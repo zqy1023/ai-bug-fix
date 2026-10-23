@@ -70,7 +70,7 @@ export function RunHeader({ run }: { run: RunDetail }) {
         </div>
         <div className="run-header-meta">
           <span>开始 {formatTime(run.started_at)}</span>
-          <span>任务 {run.succeeded_tasks} 自动 / {run.waiting_tasks} 待审批 / {run.manual_tasks} 转人工 / {run.failed_tasks} 失败</span>
+          <span>任务 {run.succeeded_tasks} 自动 / {run.waiting_tasks} 待审批 / {run.manual_tasks} 转人工 / {run.blocked_tasks} 验证受阻 / {run.failed_tasks} 失败</span>
           {identified > 0 ? (
             <span>已派发 {run.dispatched_tasks ?? run.task_count}/{identified}</span>
           ) : (

@@ -9,6 +9,7 @@ from app.workflow.registry import PluginError, register
 from app.workflow.spec import AgentSpec, PluginSpec, StepSpec
 
 BUILTIN_STEPS = (
+    "plan_validation", "summarize_validation", "decide_validation",
     "check_changes",
     "claim_repair_slot",
     "deduplicate_error",

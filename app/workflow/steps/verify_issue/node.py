@@ -12,6 +12,7 @@ from app.workflow.steps.verify_issue.models import VerifyInput, VerifyOutput
 def run(ctx: StepContext, data: VerifyInput) -> VerifyOutput:
     """未配置验证器就失败，不跳过。"""
     from app.workflow.evidence_version import evidence_version
+    from app.workflow.validation import fingerprint
     version = evidence_version(data.ai_workspace_path, data.changed_files, data.baseline_dir)
     callback = ctx.services.metadata.get("independent_verify")
     if not callable(callback):
@@ -35,7 +36,6 @@ def run(ctx: StepContext, data: VerifyInput) -> VerifyOutput:
             "clean_source_path": clean_source_path,
             "baseline_dir": data.baseline_dir,
             "normalized_log": dict(data.normalized_log),
-            "validation_requirements": data.validation_requirements,
         }
     )
     if not isinstance(verified, dict):
@@ -50,13 +50,12 @@ def run(ctx: StepContext, data: VerifyInput) -> VerifyOutput:
     if verified.get("status") not in {"verified", "failed", "unverified"}:
         verified = {**verified, "passed": False, "status": "unverified",
                     "reason": str(verified.get("reason") or "验证器未声明可核验的业务结论")}
-    from app.workflow.validation_requirements import assess
-    requirements = assess(data.validation_requirements, verified, version)
-    safe_report = {**redact_value(verified), "evidence_version": version, "validation_requirements": requirements}
+    input_id = fingerprint(data.normalized_log)
+    safe_report = {**redact_value(verified), "evidence_version": version, "input_id": input_id}
     ctx.emit_artifact("verification_report", "artifacts/verification_report.json", safe_report)
     replay = {key: value for key, value in safe_report.items() if key.startswith("replay_")}
-    details = {"replay": replay, "report_path": "artifacts/verification_report.json", "evidence_version": version,
-               "verification": safe_report.get("verification") or {}, "validation_requirements": requirements}
+    details = {"replay": replay, "input_id": input_id, "report_path": "artifacts/verification_report.json", "evidence_version": version,
+               "verification": safe_report.get("verification") or {}}
     if verified.get("status") == "unverified":
         return VerifyOutput(
             passed=False,

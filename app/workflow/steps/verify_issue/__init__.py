@@ -10,7 +10,6 @@ from app.workflow.steps.verify_issue.node import run
 
 
 def _input(state: dict[str, Any]) -> dict[str, Any]:
-    from app.workflow.validation_requirements import from_repair
     task = dict(state.get("task") or {})
     problem = dict(state.get("problem") or {})
     return {
@@ -23,7 +22,6 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         "source_repo_path": str(state.get("source_repo_path") or ""),
         "baseline_dir": str(state.get("baseline_dir") or ""),
         "normalized_log": problem,  # 传递完整的 problem 数据用于 response 重放
-        "validation_requirements": from_repair(dict(state.get("repair") or {})),
     }
 
 
@@ -33,8 +31,6 @@ def _patch(output: dict[str, Any]) -> dict[str, Any]:
         "verify_passed": bool(output["passed"]),
         "verify_result": output,
         "business_verification_status": "unverified" if unverified else ("verified" if output["passed"] else "failed"),
-        "manual_confirmation_required": unverified,
-        "manual_confirmation_reasons": ["业务问题未验证"] if unverified else [],
         # 未验证允许继续到业务回归和 AI 审查，但绝不当作业务通过。
         "last_result": "passed" if unverified else ("passed" if output["passed"] else "failed"),
     }
@@ -48,7 +44,7 @@ SPEC = StepSpec(
     output_model=VerifyOutput,
     input_builder=_input,
     output_patch=_patch,
-    depends_on=(Dependency("syntax_regression", "task"),),
+    depends_on=(Dependency("plan_validation", "task"),),
     next_step="run_regression",
     # 落盘投影：重放日志正文（结果 JSON / stdout / 命令）原文只落在
     # artifacts/verification_report.json。步骤记录里留同一份会被审计投影按

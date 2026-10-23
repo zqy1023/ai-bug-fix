@@ -29,7 +29,6 @@ class VerifyInput(FrozenModel):
     # baseline_dir：修复前的 carrier 源码快照，作为差分重放的基线。
     baseline_dir: str = ""
     normalized_log: dict[str, Any] = Field(default_factory=dict)
-    validation_requirements: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class VerifyOutput(FrozenModel):
@@ -37,6 +36,7 @@ class VerifyOutput(FrozenModel):
 
     # passed：字段说明见该模型文档与工作流契约。
     passed: bool
+    input_id: str = ""
     evidence_version: dict[str, Any] = Field(default_factory=dict)
     # status：verified 表示完成业务验证；unverified 表示缺少业务证据，需人工确认。
     status: str = "unverified"
@@ -47,7 +47,6 @@ class VerifyOutput(FrozenModel):
     replay: dict[str, Any] = Field(default_factory=dict)
     report_path: str = ""
     verification: dict[str, Any] = Field(default_factory=dict)
-    validation_requirements: list[dict[str, Any]] = Field(default_factory=list)
 
 
 __all__ = ["VerifyInput", "VerifyOutput"]

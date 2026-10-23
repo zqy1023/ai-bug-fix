@@ -39,6 +39,11 @@ def _union(current: list[str] | None, update: list[str] | None) -> list[str]:
 
 
 class WorkflowState(TypedDict, total=False):
+    workflow_version: int
+    validation_plan: dict[str, Any]
+    validation_summary: dict[str, Any]
+    validation_decision: dict[str, Any]
+    validation_recovery_counts: dict[str, int]
     """任务子图状态：单个 carrier 任务从源码快照到交付的完整通道。"""
 
     # 身份与执行参数：由父图分发任务时注入
@@ -144,6 +149,7 @@ class WorkflowState(TypedDict, total=False):
 
 
 class RunState(TypedDict, total=False):
+    workflow_version: int
     """父图状态：run 级步骤、任务分发游标与各任务结果汇总。
 
     ``task`` / ``problem`` / ``terminal_status`` / ``task_summary`` 用普通通道

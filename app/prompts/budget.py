@@ -84,6 +84,18 @@ def bounded_context(context: PromptContext, workspace: str) -> PromptContext:
             value[key] = compact(value[key], key)
         if len(value["diff_summary"]) > threshold:
             value["diff_summary"] = f"完整差异见 {target} 的 diff_summary；必须核对全部变更"
+    # 大量短字段/逐项收据也可能超预算；缩短长字符串无法解决结构体积。
+    # 整份结构仍在上述带哈希的只读文件中，保留状态摘要和精确 JSON 路径。
+    for key in sorted(("verification_results", "regression_results", "gate_results", "evidence"),
+                      key=lambda k: len(json.dumps(value[k], ensure_ascii=False)), reverse=True):
+        if size() <= limit:
+            break
+        report = value[key]
+        summary = {k: report[k] for k in ("passed", "status", "mode", "evidence_version") if k in report}
+        if key == "evidence" and "full_context" in report:
+            summary["full_context"] = report["full_context"]
+        value[key] = {**summary, "full_evidence": {"path": str(target), "json_path": key,
+                                                   "notice": "完整结构及逐项执行收据须读取该文件后核对"}}
     if size() > limit:
         raise ValueError(f"任务上下文仍需 {size()} 字符，超过预算 {limit}；未调用模型，完整输入已留存")
     return PromptContext.model_validate(value)

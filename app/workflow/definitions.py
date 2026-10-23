@@ -7,17 +7,18 @@ from __future__ import annotations
 
 from app.workflow.routes import (
     APPROVE, CLAIM, DELIVER, FINALIZE, LOCATE, PREPARE_CONTEXT,
-    REGRESSION, REPAIR, REVIEW, RETRY, RUN_PREPARE, VALIDATE,
+    REGRESSION, REPAIR, REVIEW, RETRY, RUN_PREPARE, VALIDATE, VERIFY,
     after_approval, after_delivery, after_finalize, after_retry, after_claim, after_prepare_context,
     after_regression, after_repair, after_review, after_validate_changes, after_locate,
 )
 from langgraph.graph import END, START
+from app.workflow.validation import PLAN, SUMMARY, DECIDE
 
 # 编排节点 -> 实际执行的插件。每个插件仍独立写入自己的步骤记录。
 PHASE_COMPOSITIONS = {
     RUN_PREPARE: ("discover_logs", "normalize_error", "deduplicate_error"),
     PREPARE_CONTEXT: ("prepare_source_snapshot", "repair_branch_preflight", "prepare_workspace", "prepare_evidence"),
-    VALIDATE: ("check_changes", "syntax_regression", "verify_issue"),
+    VALIDATE: ("check_changes", "syntax_regression"),
 }
 
 RUN_PHASES = (RUN_PREPARE,)
@@ -29,7 +30,7 @@ TASK_PHASES = {
 # 10 个业务主节点；retry_prepare 是仅供有界回修使用的内部控制节点。
 TASK_NODE_NAMES = (
     PREPARE_CONTEXT, LOCATE, CLAIM, REPAIR, VALIDATE,
-    REGRESSION, REVIEW, DELIVER, APPROVE, FINALIZE, RETRY,
+    PLAN, VERIFY, REGRESSION, SUMMARY, REVIEW, DECIDE, DELIVER, APPROVE, FINALIZE, RETRY,
 )
 
 TASK_STATIC_TRANSITIONS: tuple[tuple[str, str], ...] = (
@@ -42,15 +43,19 @@ TASK_CONDITIONAL_TRANSITIONS = (
     (LOCATE, after_locate, (CLAIM, RETRY, FINALIZE)),
     (CLAIM, after_claim, (REPAIR, RETRY, FINALIZE)),
     (REPAIR, after_repair, (VALIDATE, RETRY, FINALIZE)),
-    (VALIDATE, after_validate_changes, (REGRESSION, RETRY, FINALIZE)),
+    (VALIDATE, after_validate_changes, (PLAN, RETRY, FINALIZE)),
+    (PLAN, lambda state: FINALIZE if state.get("last_result") != "passed" or str(state.get("terminal_status", "")).upper() == "CANCELLED" else VERIFY, (VERIFY, FINALIZE)),
+    (VERIFY, lambda state: FINALIZE if str(state.get("terminal_status", "")).upper() == "CANCELLED" else REGRESSION, (REGRESSION, FINALIZE)),
     # human 模式跳过 AI 审查直接交付分支，因此 REGRESSION 也可以直达 DELIVER。
-    (REGRESSION, after_regression, (REVIEW, DELIVER, RETRY, FINALIZE)),
-    (REVIEW, after_review, (DELIVER, RETRY, FINALIZE)),
+    (REGRESSION, after_regression, (SUMMARY, FINALIZE)),
+    (SUMMARY, lambda state: DECIDE if state.get("review_mode") == "human" else REVIEW, (REVIEW, DECIDE)),
+    (REVIEW, after_review, (DECIDE, FINALIZE)),
+    (DECIDE, lambda state: RETRY if (state.get("validation_decision") or {}).get("action") in {"retry", "repair"} else DELIVER if (state.get("validation_decision") or {}).get("action") == "deliver" else FINALIZE, (RETRY, DELIVER, FINALIZE)),
     # APPROVE 仅用于分支交付后的最终人工审批。
     (APPROVE, after_approval, (LOCATE, CLAIM, REPAIR, RETRY, FINALIZE)),
     (DELIVER, after_delivery, (APPROVE, RETRY, FINALIZE, END)),
     (FINALIZE, after_finalize, (DELIVER, END)),
-    (RETRY, after_retry, (PREPARE_CONTEXT, CLAIM, LOCATE, REPAIR, VALIDATE, REGRESSION, REVIEW, DELIVER, FINALIZE)),
+    (RETRY, after_retry, (PREPARE_CONTEXT, CLAIM, LOCATE, REPAIR, VALIDATE, VERIFY, REGRESSION, REVIEW, DELIVER, FINALIZE)),
 )
 
 __all__ = [

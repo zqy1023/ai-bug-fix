@@ -53,6 +53,8 @@ def run_stage(
     run_id = str(state.get("run_id") or "")
     if not run_id:
         raise StepFailed(f"{spec.name} 缺少真实 run_id，拒绝生成调试身份")
+    from app.workflow.validation import assert_workflow_version
+    assert_workflow_version(store.load_run(run_id))
     task_id = str(state.get("task_id") or "") if spec.task_level else ""
     if spec.task_level and not task_id:
         raise StepFailed(f"{spec.name} 缺少真实 task_id，拒绝生成调试身份")
@@ -246,7 +248,7 @@ def bind(
             route_status = str(patch.get("last_result") or result.status)
             # A business FAIL is an ordinary node return, so LangGraph RetryPolicy cannot
             # see it. Convert only explicitly retryable phases into bounded graph retries.
-            target = _retry_target_for_step(spec.name) if route_status == "failed" else ""
+            target = str(patch.get("retry_target") or "") or (_retry_target_for_step(spec.name) if route_status == "failed" else "")
             patch["retry_target"] = target
             if target:
                 patch["retry_reason"] = summary_of(result.output) or f"{spec.name} 返回失败结论"
@@ -278,6 +280,11 @@ def bind(
         else:
             # 只对明确可恢复的原子步骤设置任务子图的有界重试目标。
             patch = _failure_route_patch(result)
+            if spec.name in {"verify_issue", "run_regression"}:
+                payload = {"passed": False, "status": "unverified", **result.output}
+                if "reason" not in payload:
+                    payload["reason"] = result.failure.reason
+                patch.update(spec.patch(payload))
             if result.failure is not None and result.failure.recoverable:
                 target = _retry_target_for_step(spec.name)
                 if target:
@@ -292,7 +299,7 @@ def bind(
         return {
             **patch,
             "last_result": "cancelled" if cancelled else patch.get("last_result", result.status),
-            "terminal_status": "CANCELLED" if cancelled else state.get("terminal_status", ""),
+            "terminal_status": "CANCELLED" if cancelled else patch.get("terminal_status", state.get("terminal_status", "")),
             "next_step": action,
             "step_result": result.model_dump(mode="json"),
         }

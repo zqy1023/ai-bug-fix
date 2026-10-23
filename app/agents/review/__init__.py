@@ -23,8 +23,9 @@ SPEC = AgentSpec(
         Dependency("check_changes", "task"),
         Dependency("verify_issue", "task"),
         Dependency("run_regression", "task"),
+        Dependency("summarize_validation", "task"),
     ),
-    next_step="prepare_delivery",
+    next_step="decide_validation",
     # 审查记录里曾把上游四个节点的输出整份搬进来：repair 的完整 analysis、
     # gate_result 的完整门禁输出（含第二份 diff），以及与 gate_result.diff_text
     # 完全重叠的 diff_summary——input 是 output 的 89 倍。真正属于审查依据的

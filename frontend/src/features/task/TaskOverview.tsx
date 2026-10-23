@@ -125,6 +125,7 @@ function fileStatusLabel(value: unknown): string {
 }
 
 function resultHeadline(result: string, analysisOnly: boolean, deliveredCode: boolean, delivered: boolean, changedCount: number, changeEvidenceKnown: boolean, finalApprovalPending: boolean, executionFailed: boolean): string {
+  if (result === 'BLOCKED') return '验证受阻';
   if (executionFailed || ['FAILED', 'FAIL'].includes(result)) return '任务未完成';
   if (finalApprovalPending) return '源码分支已提交，等待最终审批';
   if (result === 'CANCELLED') return '任务已取消';
@@ -143,6 +144,7 @@ function resultHeadline(result: string, analysisOnly: boolean, deliveredCode: bo
 }
 
 function resultDescription(analysisOnly: boolean, delivered: boolean, deliveredCode: boolean, changedCount: number, changeEvidenceKnown: boolean, finalApprovalPending: boolean, result: string, executionFailed: boolean): string {
+  if (result === 'BLOCKED') return '已保留当前补丁与有效证据；排除具体受阻原因后重新验证，无需批准未验证修改。';
   if (executionFailed || result === 'FAILED' || result === 'FAIL') return '任务未完成；请查看停止原因和失败节点。';
   if (finalApprovalPending) return '源码分支已提交，等待最终审批；系统不会自动合并。';
   if (analysisOnly && delivered) return '仅提交 final.json 分析报告，源码改动未随分支交付。';

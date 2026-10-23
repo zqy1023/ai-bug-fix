@@ -34,7 +34,7 @@ SPEC = StepSpec(
     input_builder=_input,
     output_patch=_patch,
     depends_on=(Dependency("check_changes", "task"),),
-    next_step="verify_issue",
+    next_step="plan_validation",
 )
 
 __all__ = ["SPEC"]

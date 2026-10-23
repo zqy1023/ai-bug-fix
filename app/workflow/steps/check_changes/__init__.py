@@ -37,7 +37,7 @@ SPEC = StepSpec(
     input_builder=_input,
     output_patch=_patch,
     depends_on=(Dependency("repair_agent", "task"),),
-    next_step="verify_issue",
+    next_step="syntax_regression",
     # 落盘投影：baseline_manifest 是"carrier 全部文件 × 哈希"的门禁中间态，
     # 逐文件证据里size/sha256/nlink/secret_samples/ast/dangerous_calls 也都是
     # 过程量。判定要看的只有改动量与问题清单。

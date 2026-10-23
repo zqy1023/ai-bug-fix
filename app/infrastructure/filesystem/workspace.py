@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -21,6 +22,7 @@ from pathlib import Path
 from git import InvalidGitRepositoryError, NoSuchPathError, Repo
 
 from config.settings import settings
+from app.infrastructure.filesystem.locking import shared_cache_lock
 
 # Windows 文件名非法字符；读目录名只替换这些，保留中文与可读性。
 _INVALID_PATH_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -77,8 +79,8 @@ class WorkspaceConfig:
 class WorkspaceManager:
     """创建并管理 AI 隔离工作区（不含 Git）与回归独立克隆。
 
-    AI 隔离工作区：修复和验证在此完成，不含 .git。每轮从 Git 拉取一份只读
-    干净树，任务工作区只复制目标 carrier，其余目录硬链接共享这一份。
+    AI 隔离工作区：修复和验证在此完成，不含 .git。按提交复用过滤后的只读
+    干净树，任务工作区只复制目标 carrier，共享依赖直接只读访问。
     回归独立克隆：从源仓库本地克隆，带 Git 历史，用后删除。
     交付工作区：由交付器临时克隆，在独立分支操作后推送，不碰源仓库检出。
     """
@@ -115,69 +117,95 @@ class WorkspaceManager:
         "build",
     }
 
+    # 修改过滤行为时递增版本；名单内容本身也参与缓存键。
+    _SHARED_FILTER_VERSION = 1
+    _SHARED_SUFFIXES = {
+        ".py", ".json", ".js", ".csv", ".txt", ".xml", ".html", ".htm", ".yaml", ".yml",
+    }
+    _SHARED_RELATIVE = {"docs/rules.md"}
+
     def __init__(self, config: WorkspaceConfig | None = None) -> None:
         """创建工作区管理器。"""
         self._config = config or WorkspaceConfig()
         self._root: Path | None = None
 
     def prepare_run_tree(self, source_repo: str | Path, run_id: str) -> Path:
-        """从 Git 拉取本轮唯一的干净源码树，供所有任务共享只读使用。
-
-        克隆的是提交内容而不是开发人员的工作区，因此未提交改动不会进入隔离区。
-        共享树以业务目录（``project_subdir``，如 ``Src/gather_spider_track``）为根：
-        Git 侧用稀疏检出只物化该目录，其余仓库内容既不检出也不进入隔离区。
-        连续任务直接复用同一份只读树。
-        """
+        """按提交、业务路径及过滤规则复用只读基线，并固定本轮引用。"""
         source = self._require_directory(source_repo)
-        try:
-            git_root = Path(
-                Repo(source, search_parent_directories=True).working_tree_dir or source
-            ).resolve()
-        except (InvalidGitRepositoryError, NoSuchPathError, OSError, ValueError) as error:
-            raise WorkspaceError(f"源项目不是本地 Git 仓库，无法拉取干净源码树: {source}") from error
-        try:
-            project_relative = self.project_root(source).relative_to(git_root)
-        except ValueError as error:
-            raise WorkspaceError("业务项目目录不在 Git 仓库内，无法建立共享源码树") from error
         if self._root is None:
             self._root = self._config.root_dir or Path(tempfile.mkdtemp(prefix="ai-repair-"))
-        target = self._root / "shared" / self._safe_name(run_id)
-        # 共享树以业务目录为根；旧布局（仓库根 + project_subdir）不兼容，直接重建。
-        if target.is_dir() and ((target / "gathers").is_dir() or (target / "spiders").is_dir()):
+        shared = self._root / "shared"
+        with shared_cache_lock(shared):
+            # 历史 checkpoint 继续使用原路径，不移动或重写旧任务的基线。
+            legacy = shared / self._safe_name(run_id)
+            if legacy.is_dir() and ((legacy / "gathers").is_dir() or (legacy / "spiders").is_dir()):
+                return legacy.resolve()
+            reference = shared / "refs" / f"{self._safe_name(run_id)}.json"
+            rules = {
+                "version": self._SHARED_FILTER_VERSION,
+                "suffixes": sorted(self._SHARED_SUFFIXES),
+                "relative": sorted(self._SHARED_RELATIVE),
+                "skip_dirs": sorted(self._SKIP_DIRS),
+                "sensitive_names": self._SENSITIVE_NAMES,
+                "sensitive_suffixes": self._SENSITIVE_SUFFIXES,
+                "build_suffixes": self._BUILD_ARTIFACT_SUFFIXES,
+            }
+            fingerprint = hashlib.sha256(json.dumps(rules, sort_keys=True).encode()).hexdigest()
+            if reference.is_file():
+                metadata = json.loads(reference.read_text(encoding="utf-8"))
+                if not re.fullmatch(r"cache-[0-9a-f]{64}", str(metadata.get("cache") or "")):
+                    raise WorkspaceError("共享源码引用损坏，拒绝改用其它版本")
+                target = shared / metadata["cache"]
+                if target.is_dir():
+                    return target.resolve()
+                if metadata.get("filter") != fingerprint:
+                    raise WorkspaceError("旧过滤规则的共享基线已回收，请重新发起执行")
+            else:
+                try:
+                    with Repo(source, search_parent_directories=True) as repo:
+                        git_root = Path(repo.working_tree_dir or source).resolve()
+                        commit = repo.head.commit.hexsha
+                except (InvalidGitRepositoryError, NoSuchPathError, OSError, ValueError) as error:
+                    raise WorkspaceError(f"源项目不是有效 Git 仓库: {source}") from error
+                project = self.project_root(source).relative_to(git_root).as_posix()
+                key = hashlib.sha256(json.dumps([commit, project, fingerprint]).encode()).hexdigest()
+                metadata = {"cache": f"cache-{key}", "commit": commit, "project": project,
+                            "filter": fingerprint, "run_id": run_id}
+                target = shared / metadata["cache"]
+            if not target.is_dir():
+                self._publish_shared_tree(source, target, metadata)
+            # 发布树和引用受同一跨进程锁保护，回收器不会看到无引用的在用缓存。
+            reference.parent.mkdir(parents=True, exist_ok=True)
+            temporary = reference.with_suffix(".tmp")
+            temporary.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+            temporary.replace(reference)
             return target.resolve()
-        target.parent.mkdir(parents=True, exist_ok=True)
+
+    def _publish_shared_tree(self, source: Path, target: Path, metadata: dict[str, str]) -> None:
+        """从指定提交构建基线；只在完整过滤并设为只读后原子发布。"""
+        with Repo(source, search_parent_directories=True) as source_git:
+            git_root = Path(source_git.working_tree_dir or source).resolve()
+        project = Path(metadata["project"])
+        if project.is_absolute() or ".." in project.parts:
+            raise WorkspaceError("共享源码业务路径越界")
         temporary = target.with_name(f"{target.name}.tmp-{uuid.uuid4().hex}")
         try:
-            # 只检出业务目录：整仓库 checkout 出来再删掉既慢又占盘。
-            sparse = "" if project_relative == Path(".") else project_relative.as_posix()
-            repo = _clone_repo(git_root, temporary, sparse=sparse)
-            try:
-                repo.close()
-            except Exception:
-                pass
-            cloned_project = temporary / project_relative
+            sparse = "" if project == Path(".") else project.as_posix()
+            with _clone_repo(git_root, temporary, sparse=sparse) as repo:
+                repo.git.checkout("--detach", metadata["commit"])
+            cloned_project = temporary / project
             if not cloned_project.is_dir():
-                raise WorkspaceError(f"干净源码树缺少业务目录: {project_relative.as_posix()}")
-            # AI 可访问的目录中不能保留 Git 元数据。
-            git_dir = temporary / ".git"
-            if git_dir.exists():
-                self._force_remove(git_dir)
+                raise WorkspaceError(f"提交中缺少业务目录: {project.as_posix()}")
+            self._force_remove(temporary / ".git")
             self._sanitize_shared_tree(cloned_project)
             self._make_read_only(cloned_project)
-            if target.exists():
-                self._force_remove(target)
-            if project_relative == Path("."):
-                temporary.replace(target)
+            if project == Path("."):
+                temporary.rename(target)
             else:
-                # 只保留业务目录（如 Src/gather_spider_track），仓库其它内容不进入共享树。
-                cloned_project.replace(target)
-                if temporary.exists():
-                    self._force_remove(temporary)
-        except Exception:
+                cloned_project.rename(target)
+        finally:
             if temporary.exists():
                 self._force_remove(temporary)
-            raise
-        return target.resolve()
 
     def create_task_workspace(
         self,
@@ -278,11 +306,8 @@ class WorkspaceManager:
         重放缺少框架外文件。这里按后缀白名单保留这些文件，凭据文件仍由
         ``_is_sensitive`` 排除。
         """
-        kept_suffixes = {
-            ".py", ".json", ".js", ".csv", ".txt",
-            ".xml", ".html", ".htm", ".yaml", ".yml",
-        }
-        kept_relative = {"docs/rules.md"}
+        kept_suffixes = cls._SHARED_SUFFIXES
+        kept_relative = cls._SHARED_RELATIVE
         for current, directories, filenames in os.walk(root, topdown=True, followlinks=False):
             current_path = Path(current)
             kept: list[str] = []

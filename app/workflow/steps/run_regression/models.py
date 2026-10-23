@@ -11,6 +11,7 @@ from app.workflow.spec import FrozenModel
 
 class RegressionInput(FrozenModel):
     """08 的输入。"""
+    previous_result: dict[str, Any] = Field(default_factory=dict)
 
     # task_id：字段说明见该模型文档与工作流契约。
     task_id: str = ""
@@ -24,10 +25,12 @@ class RegressionInput(FrozenModel):
     normalized_log: dict[str, Any] = Field(default_factory=dict)
     baseline_dir: str = ""
     source_project_path: str = ""
-    validation_requirements: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class RegressionOutput(FrozenModel):
+    failure_kind: str = ""
+    input_id: str = ""
+    reused: bool = False
     """08 的输出。"""
 
     # passed：字段说明见该模型文档与工作流契约。
@@ -44,7 +47,6 @@ class RegressionOutput(FrozenModel):
     report_path: str = ""
     request_regression: dict[str, Any] = Field(default_factory=dict)
     supplemental_verification: dict[str, Any] = Field(default_factory=dict)
-    validation_requirements: list[dict[str, Any]] = Field(default_factory=list)
 
 
 __all__ = ["RegressionInput", "RegressionOutput"]

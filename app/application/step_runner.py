@@ -111,6 +111,7 @@ def state_from_records(store: RecordStore, run_id: str, task_id: str = "") -> di
         "task_id": task_id,
         "attempt": 1,
         "schema_version": 2,
+        "workflow_version": run_meta.get("workflow_version"),
         "source_repo_path": str(run_meta.get("source_repo_path") or ""),
         "allow_push": bool(run_meta.get("allow_push", config.git_push)),
         "require_push": bool(run_meta.get("require_push", False)),
@@ -129,6 +130,7 @@ def state_from_records(store: RecordStore, run_id: str, task_id: str = "") -> di
         return state
 
     records = store.list_steps(run_id, task_id)
+    from app.workflow.registry import resolve
     from app.workflow.steps.finalize_execution.node import full_output
     for record in records:
         output = full_output(store, run_id, task_id, records, record.name) if record.name.endswith("_agent") else record.output
@@ -149,6 +151,8 @@ def state_from_records(store: RecordStore, run_id: str, task_id: str = "") -> di
             state["attempt"] = int(record.attempt or state["attempt"])
         elif record.name == "locate_agent":
             state["locate"] = output
+        elif record.name in {"plan_validation", "summarize_validation", "decide_validation"}:
+            state.update(resolve(record.name).patch(output))
         elif record.name == "check_changes":
             state["gate_result"] = dict(output)
             state["check_passed"] = bool(output.get("passed"))

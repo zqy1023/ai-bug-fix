@@ -23,6 +23,12 @@ def invoke_task(
     """Execute outside the parent's LangGraph context and interrupt namespace."""
     # A fresh thread deliberately does not inherit the parent's contextvars. Otherwise
     # LangGraph attaches this checkpoint/interrupt to the currently running parent node.
+    from app.workflow.validation import assert_workflow_version
+    snapshot = graph.get_state(config) if graph.checkpointer else None
+    if snapshot is not None and snapshot.values:
+        assert_workflow_version(snapshot.values)
+    elif isinstance(value, dict):
+        assert_workflow_version(value)
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="workflow-task") as pool:
         return pool.submit(graph.invoke, value, config=config).result()
 

@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
-from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
 from app.infrastructure.config import load_config
@@ -129,7 +129,7 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
                 "pending": "PENDING", "queued": "PENDING", "running": "RUNNING",
                 "retrying": "RETRYING", "waiting_approval": "WAITING_APPROVAL",
                 "paused": "PAUSED", "succeeded": "SUCCESS", "partial_failed": "PARTIAL_FAILED",
-                "failed": "FAILED", "cancelled": "CANCELLED", "manual": "MANUAL",
+                "failed": "FAILED", "cancelled": "CANCELLED", "manual": "MANUAL", "blocked": "BLOCKED",
                 "skipped": "SKIPPED",
             }
             fallback_report = _report_from_steps(
@@ -234,7 +234,7 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
         "pause_requested": "pause_requested", "paused": "paused",
         "waiting_approval": "waiting_approval", "cancel_requested": "cancel_requested",
         "succeeded": "succeeded", "partial_failed": "partial_failed",
-        "failed": "failed", "cancelled": "cancelled", "manual": "partial_failed",
+        "failed": "failed", "cancelled": "cancelled", "manual": "partial_failed", "blocked": "partial_failed",
     }
     # A terminal lifecycle must not be shown as running just because the worker
     # still holds its lock while flushing failure artifacts and releasing resources.
@@ -242,7 +242,7 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
         # If the worker is still unwinding an exception, keep controls usable and the
         # Run non-terminal until the worker has released its lease.
         status = "running"
-    elif lifecycle_status in {"succeeded", "partial_failed", "failed", "cancelled", "manual"}:
+    elif lifecycle_status in {"succeeded", "partial_failed", "failed", "cancelled", "manual", "blocked"}:
         status = lifecycle_to_run[lifecycle_status]
     elif lifecycle_status in lifecycle_to_run:
         status = lifecycle_to_run[lifecycle_status]
@@ -281,6 +281,7 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
             "tasks_success": sum(1 for result in results if result in {"SUCCESS", "SUCCEEDED"}),
             "tasks_failed": sum(1 for result in results if result in {"FAILED", "FAIL"}),
             "tasks_manual": sum(1 for result in results if result in {"MANUAL", "REJECTED"}),
+            "tasks_blocked": sum(1 for result in results if result == "BLOCKED"),
             "tasks_waiting_approval": pending,
             "tasks_inactive": sum(1 for result in results if result in {"CANCELLED", "SKIPPED", "COMPLETED"}),
             "steps_total": len(run_steps) + sum(len(task["steps"]) for task in tasks),
@@ -409,6 +410,8 @@ def _task_status(steps: list[dict[str, Any]], approval: dict[str, Any] | None) -
             return "COMPLETED"
         if result in {"MANUAL", "INSUFFICIENT_EVIDENCE", "MANUAL_REVIEW_REQUIRED"}:
             return "MANUAL"
+        if result == "BLOCKED":
+            return "BLOCKED"
         if result == "CANCELLED":
             return "CANCELLED"
         if result in {"FAILED", "FAIL", "REJECTED"} or finalizer.get("status") == "failed":
@@ -659,6 +662,9 @@ def get_artifact_content(
     relative = Path(path)
     if relative.is_absolute() or ".." in relative.parts:
         raise HTTPException(status_code=400, detail="非法产物路径")
+    if path == "metrics/agent.jsonl":
+        return JSONResponse(content={"path": path, "task_id": task_id,
+                                     "content": store.read_metrics(run_id, task_id)})
     target = (base / relative).resolve()
     if not target.is_relative_to(base) or not target.is_file():
         raise HTTPException(status_code=404, detail="产物不存在")
@@ -673,7 +679,7 @@ def get_artifact_content(
 
 @router.get("/api/v1/runs/{run_id}/artifacts/download")
 def download_artifact(run_id: str, path: str = Query(..., min_length=1, max_length=500),
-                      task_id: str = "", _: None = Depends(_authorize)) -> FileResponse:
+                      task_id: str = "", _: None = Depends(_authorize)) -> Response:
     """下载完整归档产物；与预览使用同一权限和目录边界，无预览大小限制。"""
     store = _store()
     run_id = _safe_id(run_id)
@@ -683,6 +689,12 @@ def download_artifact(run_id: str, path: str = Query(..., min_length=1, max_leng
     relative = Path(path)
     if relative.is_absolute() or ".." in relative.parts:
         raise HTTPException(status_code=400, detail="非法产物路径")
+    if path == "metrics/agent.jsonl":
+        content = "".join(json.dumps(row, ensure_ascii=False) + "\n"
+                          for row in store.read_metrics(run_id, task_id))
+        return Response(content, media_type="application/x-ndjson", headers={
+            "Content-Disposition": 'attachment; filename="agent.jsonl"',
+        })
     target = (base / relative).resolve()
     if not target.is_relative_to(base) or not target.is_file():
         raise HTTPException(status_code=404, detail="产物不存在")
@@ -697,6 +709,7 @@ def decide_approval(
     background: BackgroundTasks,
     _: None = Depends(_authorize),
 ) -> dict[str, Any]:
+    _require_current_workflow(run_id)
     decision = request.decision.upper()
     if decision not in {"APPROVE", "REJECT"}:
         raise HTTPException(status_code=422, detail="变更审批 decision 只能是 APPROVE 或 REJECT")
@@ -883,6 +896,7 @@ def _v1_run_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "task_count": int(summary.get("tasks_total") or len(payload.get("tasks") or [])),
         "succeeded_tasks": int(summary.get("tasks_success") or 0),
         "failed_tasks": int(summary.get("tasks_failed") or 0),
+        "blocked_tasks": int(summary.get("tasks_blocked") or 0),
         "manual_tasks": int(summary.get("tasks_manual") or 0),
         "waiting_tasks": int(summary.get("tasks_waiting_approval") or 0),
         "inactive_tasks": int(summary.get("tasks_inactive") or 0),
@@ -1200,7 +1214,7 @@ def _complete_run_lifecycle(run_id: str, store: RecordStore) -> None:
             status = "succeeded"
         elif result in {"CANCELLED", "CANCELED"}:
             status = "cancelled"
-        elif result in {"MANUAL", "MANUAL_REVIEW_REQUIRED", "INSUFFICIENT_EVIDENCE"}:
+        elif result in {"MANUAL", "MANUAL_REVIEW_REQUIRED", "INSUFFICIENT_EVIDENCE", "BLOCKED"}:
             status = "partial_failed"
         elif result in {"PARTIAL_FAILED", "PARTIAL_FAILURE"}:
             status = "partial_failed"
@@ -1270,7 +1284,7 @@ def _settle_task_lifecycles_after_run_failure(
         status = str(state.get("status") or "")
         if phase in {"approval_recovery", "worker_timeout"} and status == "waiting_approval":
             continue
-        if status in {"succeeded", "partial_failed", "failed", "cancelled", "manual", "skipped"}:
+        if status in {"succeeded", "partial_failed", "failed", "cancelled", "manual", "skipped", "blocked"}:
             continue
         records = store.list_steps(run_id, task_id)
         finalizer = next((record for record in records if record.name == "finalize_execution"), None)
@@ -1410,6 +1424,8 @@ def _run_workflow_background_v1(
         close_sessions(run_id)
         try:
             LifecycleStore(_store().root).update_run(run_id, worker_active=False)
+            from app.infrastructure.filesystem.workspace_gc import collect_configured_workspaces
+            collect_configured_workspaces(_config())
         except Exception:
             logger.exception("清理 Run 活动租约失败 run_id=%s", run_id)
         run_lock.release()
@@ -1551,6 +1567,7 @@ def v1_pause_run(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
 @router.post("/api/v1/runs/{run_id}/retry", status_code=202)
 def v1_retry_run(run_id: str, background: BackgroundTasks, _: None = Depends(_authorize)) -> dict[str, Any]:
     """重试失败的 Run：优先从 LangGraph checkpoint 恢复，仅允许安全的启动阶段从头重启。"""
+    _require_current_workflow(run_id)
     run_id = _safe_id(run_id)
     store = _store()
     detail = _v1_detail(run_id)
@@ -1626,6 +1643,7 @@ def v1_retry_run(run_id: str, background: BackgroundTasks, _: None = Depends(_au
 
 @router.post("/api/v1/runs/{run_id}/resume", status_code=202)
 def v1_resume_run(run_id: str, background: BackgroundTasks, _: None = Depends(_authorize)) -> dict[str, Any]:
+    _require_current_workflow(run_id)
     run_id = _safe_id(run_id)
     with _RUN_LOCKS_GUARD:
         lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
@@ -1725,13 +1743,21 @@ def _resume_workflow_background(
             # task.interrupts 上。审批接口已校验当前任务处于待决状态且持有 run 锁，因此
             # 必须直接把决定交给 checkpoint；绝不能因快照未显示 interrupt 而重新 invoke(None)。
             if detached:
+                from app.workflow.validation import assert_workflow_version
+                assert_workflow_version(_store().load_run(run_id))
                 final_state = graph.invoke(None, config=config) if snapshot.next else dict(snapshot.values)
             else:
+                from app.workflow.validation import assert_workflow_version
+                assert_workflow_version(_store().load_run(run_id))
                 final_state = graph.invoke(Command(resume=resume_payload), config=config)
         elif has_interrupt:
             from langgraph.types import Command
+            from app.workflow.validation import assert_workflow_version
+            assert_workflow_version(_store().load_run(run_id))
             final_state = graph.invoke(Command(resume={"control": "resume"}), config=config)
         else:
+            from app.workflow.validation import assert_workflow_version
+            assert_workflow_version(_store().load_run(run_id))
             final_state = graph.invoke(None, config=config)
         # 本次恢复已成功推进 checkpoint；清理之前后台异常写入的失败标记，避免 UI 继续把已恢复运行判为 FAILED。
         failure_path = store.run_dir(run_id) / "reports" / "run_failure.json"
@@ -1761,6 +1787,8 @@ def _resume_workflow_background(
             heartbeat_thread.join(timeout=1)
         try:
             LifecycleStore(_store().root).update_run(run_id, worker_active=False)
+            from app.infrastructure.filesystem.workspace_gc import collect_configured_workspaces
+            collect_configured_workspaces(_config())
         except Exception:
             logger.exception("清理恢复 Run 活动租约失败 run_id=%s", run_id)
         run_lock.release()
@@ -1922,6 +1950,7 @@ def v1_decide_approval(
         raise HTTPException(status_code=400, detail="无效的审批 ID")
     run_id, task_id = approval_id.split(":", 1)
     run_id, task_id = _safe_id(run_id), _safe_id(task_id)
+    _require_current_workflow(run_id)
     actor = "bearer-token" if authorization else "local-user"
     _audit_control(run_id, task_id, "approval." + request.decision, actor, request.reason)
     return decide_approval(
@@ -1960,29 +1989,9 @@ def v1_model_calls(
     run_dir = _store().run_dir(run_id)
     if not run_dir.is_dir():
         raise HTTPException(status_code=404, detail="运行记录不存在")
-    path = run_dir / "model_calls.jsonl"
-    items: list[dict[str, Any]] = []
-    if path.is_file():
-        try:
-            # 按行读取调用元数据，避免把整个审计文件一次性复制到内存。
-            with path.open("r", encoding="utf-8") as stream:
-                for line in stream:
-                    if not line.strip():
-                        continue
-                    try:
-                        item = json.loads(line)
-                    except json.JSONDecodeError:
-                        logger.warning("忽略损坏的模型调用审计行 run_id=%s", run_id)
-                        continue
-                    if not isinstance(item, dict):
-                        continue
-                    if task_id and str(item.get("task_id") or "") != task_id:
-                        continue
-                    # Run 级默认只展示轻量元数据；只有选中具体任务时才加载该任务事件。
-                    item["events"] = []
-                    items.append(item)
-        except OSError as exc:
-            raise HTTPException(status_code=503, detail="模型调用审计暂时不可读取") from exc
+    items = _load_model_calls(run_id, task_id)
+    for item in items:
+        item["events"] = []
 
     if task_id:
         event_path = run_dir / "tasks" / task_id / "audit" / "agent_events.jsonl"
@@ -2074,25 +2083,8 @@ class V1StepRunRequest(BaseModel):
 
 def _load_model_calls(run_id: str, task_id: str | None = None) -> list[dict[str, Any]]:
     """按行读取 Provider 审计并按任务过滤；损坏行跳过，不伪造数据。"""
-    path = _store().run_dir(run_id) / "model_calls.jsonl"
-    items: list[dict[str, Any]] = []
-    if not path.is_file():
-        return items
-    with path.open("r", encoding="utf-8") as stream:
-        for line in stream:
-            if not line.strip():
-                continue
-            try:
-                item = json.loads(line)
-            except json.JSONDecodeError:
-                logger.warning("忽略损坏的模型调用审计行 run_id=%s", run_id)
-                continue
-            if not isinstance(item, dict):
-                continue
-            if task_id and str(item.get("task_id") or "") != task_id:
-                continue
-            items.append(item)
-    return items
+    from app.infrastructure.records.database import model_calls
+    return model_calls(_store().run_dir(run_id), task_id)
 
 
 def _step_context(record: Any) -> dict[str, Any]:
@@ -2120,7 +2112,7 @@ def _step_context(record: Any) -> dict[str, Any]:
 def v1_run_board(run_id: str, _: None = Depends(_authorize),
                  page: int = Query(default=1, ge=1),
                  page_size: int = Query(default=20, ge=1, le=100),
-                 category: str = Query(default="all", pattern="^(all|active|approval|success|manual|failed|skipped|cancelled|paused|other)$"),
+                 category: str = Query(default="all", pattern="^(all|active|approval|success|manual|blocked|failed|skipped|cancelled|paused|other)$"),
                  keyword: str = Query(default="", max_length=160)) -> dict[str, Any]:
     """任务板首屏投影：只返回任务卡摘要与步骤状态，不携带 input/output。"""
     store = _store()
@@ -2207,6 +2199,7 @@ def v1_retry_task(
     _: None = Depends(_authorize),
 ) -> dict[str, Any]:
     """Retry one terminal failed task in the same run without replaying already completed tasks."""
+    _require_current_workflow(run_id)
     from app.infrastructure.config import load_config, workflow_recursion_limit
     from app.infrastructure.filesystem.workspace import WorkspaceManager
     from app.workflow.graph import TASK_DISPATCH
@@ -2223,7 +2216,7 @@ def v1_retry_task(
     task_detail = v1_get_task(run_id, task_id, None)
     task_payload = task_detail.get("task") if isinstance(task_detail.get("task"), dict) else {}
     task_result = str(task_payload.get("result") or "").upper()
-    if task_result in {"MANUAL", "INSUFFICIENT_EVIDENCE"}:
+    if task_result in {"MANUAL", "INSUFFICIENT_EVIDENCE", "BLOCKED"}:
         return _reinvestigate_task(run_id, task_id, background)
     if detail["status"] not in {"failed", "partial_failed", "succeeded"}:
         raise HTTPException(status_code=409, detail="失败任务只能在 Run 停止后重试")
@@ -2463,6 +2456,7 @@ def v1_run_step(
     _: None = Depends(_authorize),
 ) -> dict[str, Any]:
     """基于已落盘记录单步执行一个步骤或 Agent；写操作必须显式确认。"""
+    _require_current_workflow(run_id)
     from app.application.step_runner import StepRunRequest, StepRunner, StepRunnerError
 
     run_id, task_id, step_name = _safe_id(run_id), _safe_id(task_id), _safe_id(step_name)
@@ -2593,3 +2587,11 @@ def v1_agent_call(
         "events": events,
         "event_total": len(events),
     }
+
+
+def _require_current_workflow(run_id: str) -> None:
+    from app.workflow.validation import assert_workflow_version
+    try:
+        assert_workflow_version(_store().load_run(run_id))
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error

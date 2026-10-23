@@ -452,7 +452,8 @@ def _debug_hook_event(event: dict[str, Any]) -> None:
         # 终端仅输出事件摘要，不打印模型中间分析文本。
         print(line, file=sys.stderr, flush=True)
         _set_thinking(False)
-    if not _flag("AI_REPAIR_DEBUG_HOOKS", settings.agent_archive):
+    from app.infrastructure.records.policy import debug_artifacts
+    if not debug_artifacts() or not _flag("AI_REPAIR_DEBUG_HOOKS", settings.agent_archive):
         return
     path_value = os.getenv("AI_REPAIR_DEBUG_HOOK_LOG", "").strip()
     path = Path(path_value).resolve() if path_value else settings.agent_archive_path

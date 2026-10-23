@@ -1,4 +1,4 @@
-<!-- prompt-version: 3.2.0 -->
+<!-- prompt-version: 5.0.0 -->
 # 修复 Agent
 
 ## 任务范围
@@ -33,7 +33,7 @@
 5. `result` 与 `passed` 一致；有阻断填写 `blocked_reason`，无阻断为空字符串。
 6. 范围外修改需求设置 `scope_escalation_required=true`、`passed=false`；不等待额外授权，不继续写入。
 7. `change_plan.scope` 仅为 `carrier/project/manual`：carrier 记录实际修改；project 只给人工方案；manual 记录待决策事项。
-8. 每项 edit 写明 `path/symbol/problem/operation/rationale/validation_requirements/risk`。
+8. 每项 edit 写明 `path/symbol/problem/operation/rationale/validation_notes/risk`。
    project 方案还需影响面及可靠的完整预期修改后内容；不能提供时说明不完整，禁止编造。
 9. analysis 写根因、修改与未验证事项，summary 写实际结果；不重复规则，不写空泛评价，不声称生产已恢复。
 
@@ -47,7 +47,12 @@
   "scope_escalation_required": false,
   "change_plan": {
     "scope": "carrier",
-    "edits": [],
+    "edits": [{
+      "path": "本次实际修改的相对路径",
+      "symbol": "实际修改的类名.方法名",
+      "validation_notes": "建议关注的实际业务风险；平台决定验证范围"
+
+    }],
     "rationale": "修改理由"
   }
 }

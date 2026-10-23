@@ -137,10 +137,12 @@ class RuntimeConfig:
     workspace_retention_days: int
     # delivery_workspace_ttl_hours：交付临时克隆保留小时数。
     delivery_workspace_ttl_hours: int
-    # workspace_gc_enabled：启动时是否回收过期工作区。
+    # workspace_gc_enabled：是否自动回收过期工作区。
     workspace_gc_enabled: bool
     # claude：模型网关配置。
     claude: ClaudeConfig
+    # workspace_gc_interval_seconds：服务运行期间定时回收间隔。
+    workspace_gc_interval_seconds: int = 3600
 
     @property
     def workspace_root(self) -> Path:
@@ -325,6 +327,9 @@ def load_config() -> RuntimeConfig:
                 str(settings.workspace_gc_enabled).lower(),
             ).lower() == "true"
         ),
+        workspace_gc_interval_seconds=max(1, int(os.getenv(
+            "AI_REPAIR_WORKSPACE_GC_INTERVAL_SECONDS", str(settings.workspace_gc_interval_seconds),
+        ))),
         claude=ClaudeConfig(
             auth_token=os.getenv("ANTHROPIC_AUTH_TOKEN", ""),
             base_url=os.getenv("ANTHROPIC_BASE_URL", ""),

@@ -78,7 +78,7 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         "repair_summary": str(repair_payload.get("summary") or ""),
         "review_summary": str(review_payload.get("summary") or ""),
         "review_decision": review_decision,
-        "delivery_eligible": review_payload.get("delivery_eligible") is True or review_decision == "HUMAN",
+        "delivery_eligible": (state.get("validation_decision") or {}).get("delivery_eligible") is True,
         "legacy_analysis_required": legacy_analysis_required(state),
         "analysis_only": analysis_only,
         "report_paths": [f"{report_dir}/final.json"] if analysis_only else [],

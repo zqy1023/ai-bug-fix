@@ -14,6 +14,8 @@ _AUDIT_LOCK = threading.Lock()
 
 from app.domain.json_text import loads_object
 from config.settings import settings
+from app.infrastructure.records.policy import debug_artifacts
+from app.infrastructure.records.database import RecordDatabase
 
 
 def parse_result(raw: dict[str, Any], role: str) -> dict[str, Any]:
@@ -163,7 +165,8 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
         record["events_path"] = event_path
         record["event_count"] = event_count
         record["event_persistence_status"] = (
-            "persisted" if event_count > 0 and event_path
+            "disabled" if not _debug_for_record(record)
+            else "persisted" if event_count > 0 and event_path
             else "failed" if record["events"] and not event_path
             else "empty"
         )
@@ -212,7 +215,8 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
         record["events_path"] = event_path
         record["event_count"] = event_count
         record["event_persistence_status"] = (
-            "persisted" if event_count > 0 and event_path
+            "disabled" if not _debug_for_record(record)
+            else "persisted" if event_count > 0 and event_path
             else "failed" if record["events"] and not event_path
             else "empty"
         )
@@ -222,10 +226,20 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
         raise
 
 
+def _debug_for_record(record: dict[str, Any]) -> bool:
+    from app.infrastructure.config import load_config
+    run_id = str(record.get("run_id") or "")
+    if not run_id or any(part in run_id for part in ("/", "\\", "..")):
+        return debug_artifacts()
+    return debug_artifacts(Path(load_config().runtime_dir).resolve() / "runs" / run_id)
+
+
 def _persist_agent_events(
     record: dict[str, Any], events: list[dict[str, Any]]
 ) -> tuple[str, int]:
     """将有效公开事件按任务、调用拆分持久化；不写隐藏思考或原始 SDK 对象。"""
+    if not _debug_for_record(record):
+        return "", 0
     run_id = str(record.get("run_id") or "")
     task_id = str(record.get("task_id") or "")
     call_id = str(record.get("model_call_id") or "")
@@ -277,7 +291,7 @@ def _persist_prompt_snapshot(record: dict[str, Any], request: Any) -> str:
     ``model_calls.jsonl`` 只保存 hash 与字符数，无法支撑"查看提示词"。快照是审计
     快照保留原文，仅在任务级目录内落盘；页面预览与完整归档分开。
     """
-    if not settings.workbench_prompt_snapshot:
+    if not _debug_for_record(record) or not settings.workbench_prompt_snapshot:
         return ""
     run_id = str(record.get("run_id") or "")
     task_id = str(record.get("task_id") or "")
@@ -411,12 +425,8 @@ def _persist_model_call(record: dict[str, Any]) -> None:
         return
     try:
         from app.infrastructure.config import load_config
-        target = Path(load_config().runtime_dir).resolve() / "runs" / run_id / "model_calls.jsonl"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
-        with _AUDIT_LOCK:
-            with target.open("a", encoding="utf-8") as stream:
-                stream.write(line + chr(10))
+        run_dir = Path(load_config().runtime_dir).resolve() / "runs" / run_id
+        RecordDatabase(run_dir).append(str(record.get("task_id") or ""), "model_calls", record)
     except Exception:
         # 审计落盘故障不能覆盖原始模型结果；系统日志会暴露该缺口。
         import logging

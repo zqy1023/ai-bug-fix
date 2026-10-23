@@ -9,9 +9,9 @@ from dataclasses import dataclass
 from typing import Any
 
 RESULT_VALUES = ("PASS", "FAIL", "MANUAL")
-REVIEW_CONTRACT_VERSION = 3
+REVIEW_CONTRACT_VERSION = 5
 # 需要跟着任务状态长期携带的字段：结论、公开发现项与回修要求。
-RESULT_FIELDS = ("verdict", "result", "passed", "code_verdict", "coverage", "summary", "findings", "required_changes", "change_plan")
+RESULT_FIELDS = ("verdict", "passed", "code_verdict", "coverage", "summary", "findings", "required_changes", "change_plan")
 _MAX_FIELD_CHARS = 4000
 _MAX_ITEMS = 20
 
@@ -82,15 +82,15 @@ class ReviewVerdict:
 
 def result_of(payload: dict[str, Any]) -> str:
     """返回大写结论，缺失时为空串。"""
-    value = payload.get("verdict", payload.get("result"))
+    value = payload.get("verdict")
     return value.upper().strip() if isinstance(value, str) else ""
 
 
 def validate_shape(payload: dict[str, Any]) -> tuple[bool, str]:
     """校验审查输出的结构：结论、布尔值和两个清单。"""
     value = result_of(payload)
-    if "verdict" in payload and "result" in payload and str(payload["verdict"]).upper() != str(payload["result"]).upper():
-        return False, "verdict 与旧版 result 冲突"
+    if "result" in payload:
+        return False, "审查协议不接受 result 字段，必须使用 verdict"
     if value not in RESULT_VALUES:
         return False, f"verdict 必须是 {'/'.join(RESULT_VALUES)}"
     if not isinstance(payload.get("passed"), bool):

@@ -96,7 +96,7 @@ def run_request_regression(
     python_executable: str, timeout_seconds: int,
 ) -> dict[str, Any]:
     """在候选代码隔离目录发真实请求，进程成功和业务成功分别记录。"""
-    evidence: dict[str, Any] = {"entrypoint": "server_dev.main", "status": "failed", "passed": False}
+    evidence: dict[str, Any] = {"entrypoint": "server_dev.main", "status": "unverified", "passed": False}
     try:
         script, inputs = make_request_script(carrier, record)
         address = dotenv_values(project / ".env").get("proxy_manager_address")
@@ -159,7 +159,9 @@ server_dev.override_config = _regression_override_config
             actual[json.dumps(matched, sort_keys=True, ensure_ascii=False)] += 1
         if actual != expected:
             raise ValueError("业务结果缺少日志请求项")
-        passed = outcome.executed and outcome.succeeded
+        passed = outcome.executed and bool(outcome.items) and all(
+            item.succeeded or item.error_type == "NotFound" for item in outcome.items
+        )
         uncertain = bool(outcome.items) and all(item.error_type in {"Succeed", "WebError", "ServiceError", "TimeoutError"}
                                                for item in outcome.items) and not passed
         timeout_note = (
@@ -168,7 +170,7 @@ server_dev.override_config = _regression_override_config
             if any(item.error_type == "TimeoutError" for item in outcome.items) else ""
         )
         evidence.update(passed=passed, status="verified" if passed else "unverified" if uncertain else "failed",
-                        reason="真实请求全部返回 Succeed 且有结果模型；轨迹条数及业务分类见逐单结果" if passed else
+                        reason="真实请求返回有效业务结果；无单与轨迹条数按逐单实际分类展示，不将无单视为请求执行失败" if passed else
                         "真实请求未通过：" + "; ".join(f"{item.request_number}: {item.error_type} {item.error_msg}"
                                                     for item in outcome.items) + timeout_note)
         business_errors = [error for error in observation.get("errors") or [] if error.get("business_related", True)]

@@ -313,10 +313,8 @@ def _independent_verify(
         comparison=comparison.details,
         parser_configuration_changes=parser_configuration_changes(workspace, baseline_dir, files),
     )
-    passed = comparison.passed and not verification["requires_request_validation"]
+    passed = comparison.passed
     reason = comparison.reason
-    if comparison.passed and not passed:
-        reason += "；本次还修改请求、初始化或收尾逻辑，解析样本无法覆盖这些变更，整体业务修复未验证"
     # 全量原文进入脱敏后的验证产物；步骤投影只负责摘要。
     report: dict[str, Any] = {
         "passed": passed,
@@ -699,6 +697,7 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
                     task_id=str(state.get("task_id") or ""),
                     attempt=int(state.get("attempt") or 1),
                     ai_workspace_path=str(state.get("ai_workspace_path") or ""),
+                    validation_summary=dict(state.get("validation_summary") or {}),
                     repair=RepairView.model_validate(repair_payload) if repair_payload else RepairView(),
                     changed_files=[str(item) for item in (state.get("changed_files") or [])],
                     # 复核/回归需要看到"模型到底改了哪几行"。原先这里只塞了 scope/totals
@@ -758,20 +757,22 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
             )
             final = graph.invoke(graph_input)
             record.duration_ms = round((time.perf_counter() - started) * 1000, 2)
-            refs.append(ArtifactRef(
-                name=f"{spec.name}.json",
-                path=store.write_artifact(
-                    run_id,
-                    f"agents/{spec.name}.json",
-                    {
-                        "agent": spec.name,
-                        "attempt": int(state.get("attempt") or 1),
-                        "result": str(final.get("raw_result") or ""),
-                    },
-                    task_id,
-                ),
-                task_id=task_id,
-            ))
+            from app.infrastructure.records.policy import debug_artifacts
+            if debug_artifacts(store.run_dir(run_id)):
+                refs.append(ArtifactRef(
+                    name=f"{spec.name}.json",
+                    path=store.write_artifact(
+                        run_id,
+                        f"agents/{spec.name}.json",
+                        {
+                            "agent": spec.name,
+                            "attempt": int(state.get("attempt") or 1),
+                            "result": str(final.get("raw_result") or ""),
+                        },
+                        task_id,
+                    ),
+                    task_id=task_id,
+                ))
             # 只取 final 已有的字段构造 view；缺失字段让 model_validate 报错而不是尝试无参实例化（部分模型有必需字段）。
             view = view_model.model_validate({key: final[key] for key in view_model.model_fields if key in final})
 
@@ -793,7 +794,7 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
                 ), task_id=task_id,
             ))
             conclusion = (
-                ("MANUAL" if view.result == "failed" and view.change_plan.get("scope") == "manual"
+                ("MANUAL" if view.result == "failed" and view.change_plan is not None and view.change_plan.scope == "manual"
                  else "FAIL" if view.result == "failed" else None)
                 if kind == "repair"
                 else str(view.status)
@@ -895,22 +896,18 @@ def _agent_node(spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore) 
         if kind == "locate":
             patch["last_result"] = "manual" if failed else "passed"
             patch["scope_escalation_required"] = bool(final.get("scope_escalation_required")) or bool(view.recommended_scope == "project")
-        if kind == "review" and view.change_plan:
-            patch["change_plan"] = dict(view.change_plan)
-            patch["scope_escalation_required"] = str(view.change_plan.get("scope") or "") == "project"
         if kind == "review":
-            # 交付门禁读的是审查结论，不能只留在 review 子字典里。
-            patch["review_decision"] = str(view.verdict or "")
-            if view.contract_error:
-                patch["review_contract_error"] = view.contract_error
-                patch["retry_target"] = ""
+            patch["review_decision"] = str(view.verdict)
+            patch["review_contract_error"] = view.contract_error
+            # 此节点只保存审查意见，交付和恢复由 decide_validation 决定。
+            patch["terminal_status"] = "passed"
         if failed and kind == "repair":
             patch["retry_target"] = "repair_agent"
         elif failed and kind == "review":
             patch["retry_target"] = "validate_changes" if (final.get("_audit") or {}).get("blocked_by") == "stale_evidence" else "repair_agent"
         if kind == "repair":
             repair_files = [str(item) for item in (final.get("changed_files") or [])]
-            change_plan = dict(final.get("change_plan") or {})
+            change_plan = view.change_plan.model_dump(mode="json") if view.change_plan is not None else {}
             locate = dict(state.get("locate") or {})
             patch["repair_changed_files"] = repair_files
             patch["changed_files"] = repair_files
@@ -998,10 +995,6 @@ def build_graph(
         resolved_store.write_artifact(str(state["run_id"]), "workflow/checkpoint.json",
                                       config, str(state["task_id"]))
         snapshot = detached_graph.get_state(config)
-        if not snapshot.values:
-            _seed_legacy_approval(detached_graph, config, resolved_store,
-                                  str(state["run_id"]), str(state["task_id"]))
-            snapshot = detached_graph.get_state(config)
         value = None if snapshot.values else state
         result = invoke_task(detached_graph, value, config)
         return task_result(state, result)
@@ -1021,45 +1014,13 @@ def build_graph(
     return graph
 
 
-def _seed_legacy_approval(
-    graph: CompiledStateGraph, checkpoint_config: dict[str, Any], store: RecordStore,
-    run_id: str, task_id: str,
-) -> bool:
-    """Move a legacy approval wait without rerunning delivery or earlier agents."""
-    approval = store.load(run_id, "request_approval", task_id)
-    delivery = store.load(run_id, "prepare_delivery", task_id)
-    if not approval or approval.status != "waiting" or not delivery or delivery.status != "succeeded":
-        return False
-    from app.application.step_runner import state_from_records
-    from app.workflow.routes import DELIVER
-    from app.workflow.task_execution import invoke_task
-
-    state = state_from_records(store, run_id, task_id)
-    # Approval input is the persisted contract actually shown to the reviewer.
-    # Restore it verbatim so migration cannot change the approval fingerprint.
-    for key in (
-        "changed_files", "baseline_manifest", "baseline_dir", "ai_workspace_path",
-        "manual_confirmation_required", "manual_confirmation_reasons", "repair_branch",
-        "delivery_pushed", "delivery_local_branch", "source_repo_path",
-    ):
-        if key in approval.input:
-            state[key] = approval.input[key]
-    from app.workflow.steps.prepare_delivery import _patch as delivery_patch
-    state.update(delivery_patch(delivery.output))
-    claim = store.load(run_id, "claim_repair_slot", task_id)
-    state["repair_slot_claimed"] = bool(claim and claim.output.get("claimed"))
-    state["decision"] = "PENDING"
-    state["last_result"] = "passed"
-    graph.update_state(checkpoint_config, state, as_node=DELIVER)
-    invoke_task(graph, None, checkpoint_config)
-    return True
-
-
 def resume_task_approval(
     store: RecordStore, run_id: str, task_id: str, payload: dict[str, Any],
     config: RuntimeConfig, services: WorkflowServices,
 ) -> bool:
-    """Resume an independent approval checkpoint, migrating legacy waits as needed."""
+    """恢复当前版本的独立审批检查点。"""
+    from app.workflow.validation import assert_workflow_version
+    assert_workflow_version(store.load_run(run_id))
     from langgraph.types import Command
     from app.workflow.task_execution import invoke_task, task_config
 
@@ -1075,9 +1036,7 @@ def resume_task_approval(
         checkpoint_config = store.read_artifact(run_id, "workflow/checkpoint.json", task_id)
     snapshot = graph.get_state(checkpoint_config)
     if not snapshot.values:
-        if not _seed_legacy_approval(graph, checkpoint_config, store, run_id, task_id):
-            return False
-        snapshot = graph.get_state(checkpoint_config)
+        raise StepFailed("缺少当前版本的审批检查点，禁止从旧记录补造执行状态")
     if not any(task.interrupts for task in snapshot.tasks):
         raise StepFailed("该任务检查点没有待恢复的审批")
     if snapshot.values.get("repair_slot_claimed"):
@@ -1094,6 +1053,8 @@ def continue_task_after_step(
     config: RuntimeConfig, services: WorkflowServices,
 ) -> dict[str, Any]:
     """Continue the selected task through authoritative routers without rerunning the step."""
+    from app.workflow.validation import assert_workflow_version
+    assert_workflow_version(store.load_run(run_id))
     import uuid
     import re
     from app.application.step_runner import state_from_records

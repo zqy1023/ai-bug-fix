@@ -61,6 +61,7 @@ class ReviewState(TypedDict, total=False):
     contract_error: str
     evidence_version: dict[str, Any]
     checks: list[dict[str, str]]
+    validation_summary: dict[str, Any]
     next_action: str
     review_notes: str
     code_verdict: str

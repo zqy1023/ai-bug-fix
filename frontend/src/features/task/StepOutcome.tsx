@@ -4,6 +4,7 @@ import { queryKeys } from '../../lib/queryKeys';
 import type { StepRecord } from '../../lib/types';
 import { JsonViewer } from '../../components/JsonViewer';
 import { ReviewResult } from './ReviewResult';
+import { ValidationResult } from './ValidationResult';
 import { ReplayLogs } from './ReplayLogs';
 import { evidenceWarning, ReplayComparison, TextEvidence } from './ReplayEvidence';
 
@@ -44,6 +45,7 @@ export function outcomeText(step: StepRecord): string {
 }
 
 export function StepOutcome({ step }: { step: StepRecord }) {
+  if (['plan_validation', 'summarize_validation', 'decide_validation'].includes(step.name)) return <ValidationResult step={step} />;
   if (step.name === 'review_agent') return <ReviewResult step={step} />;
   const output = object(step.output);
   const entries = Object.entries(output).filter(([key, value]) => key in labels && value !== '' && value !== null

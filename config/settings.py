@@ -166,12 +166,16 @@ class Settings:
     commit_analysis_chars: int = 800
     # workspace_read_max_bytes：读取 carrier 文本单文件字节上限。
     workspace_read_max_bytes: int = 512 * 1024
-    # workspace_retention_days：终态执行的工作区保留天数，启动时清理更早的目录。
+    # workspace_retention_days：终态执行的工作区保留天数。
     workspace_retention_days: int = 7
     # delivery_workspace_ttl_hours：交付临时克隆的最长保留时间。
     delivery_workspace_ttl_hours: int = 24
-    # workspace_gc_enabled：启动时是否回收过期工作区。
+    # workspace_gc_enabled：是否自动回收过期工作区。
     workspace_gc_enabled: bool = True
+    # workspace_gc_interval_seconds：服务运行期间定时回收间隔。
+    workspace_gc_interval_seconds: int = 3600
+    # artifact_mode：compact 保留必要证据；debug 额外保存完整提示词和事件。
+    artifact_mode: str = "compact"
     # diff_max_lines_per_file：单文件差异保留行数。
     diff_max_lines_per_file: int = 120
     # diff_max_line_chars：单行差异保留字符数。

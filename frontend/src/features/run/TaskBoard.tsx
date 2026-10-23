@@ -13,7 +13,7 @@ import { EmptyState } from '../../components/EmptyState';
 interface TaskBoardProps { runId: string; stages?: WorkflowStage[]; onOpen: (task: BoardTask) => void }
 const FILTERS = [
   ['all', '全部'], ['active', '执行中'], ['approval', '待审批'], ['success', '成功'],
-  ['manual', '需人工'], ['failed', '失败'], ['skipped', '已跳过'], ['cancelled', '已取消'], ['paused', '已暂停'], ['other', '其他'],
+  ['manual', '需人工'], ['blocked', '验证受阻'], ['failed', '失败'], ['skipped', '已跳过'], ['cancelled', '已取消'], ['paused', '已暂停'], ['other', '其他'],
 ];
 const ACTIVE = new Set(['RUNNING', 'RETRYING', 'PENDING', 'QUEUED']);
 

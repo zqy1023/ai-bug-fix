@@ -4,30 +4,41 @@
 """
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 import uvicorn
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from yq_common.fastapi_utils.fastapi_utils import FastAPIUtils
 
 from app.infrastructure.config import load_config
-from app.infrastructure.filesystem.workspace_gc import prune_workspaces
+from app.infrastructure.filesystem.workspace_gc import start_workspace_collector
 from workbench.api import SERVICE_VERSION, router
 
 logger = logging.getLogger(__name__)
 config = load_config()
 
-# 工作区是可重建缓存；启动时回收终态执行和超时临时克隆，避免磁盘无限增长。
-if config.workspace_gc_enabled:
-    try:
-        prune_workspaces(
-            config.runtime_dir / "workspaces",
-            config.runtime_dir / "runs",
-            retention_days=config.workspace_retention_days,
-            delivery_ttl_hours=config.delivery_workspace_ttl_hours,
-        )
-    except Exception:
-        logger.exception("启动时回收过期工作区失败")
+@asynccontextmanager
+async def workspace_lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """接入框架已有 lifespan；启动回收、定时回收及退出停止共用生命周期。"""
+    previous = _original_lifespan(app)
+    async with previous:
+        collector = start_workspace_collector(config) if config.workspace_gc_enabled else None
+        try:
+            yield
+        finally:
+            if collector is not None:
+                stop, thread = collector
+                stop.set()
+                # 删除工作区可能耗时；不在事件循环中等待磁盘操作。
+                import asyncio
+                await asyncio.to_thread(thread.join, 5)
+
+
 app = FastAPIUtils.setup_fastapi_server("py.ai.bug.fixer")
+_original_lifespan = app.router.lifespan_context
+app.router.lifespan_context = workspace_lifespan
 app.title = "AI Repair Workbench API"
 app.version = SERVICE_VERSION
 app.description = "Run/task/step/artifact observability and human approval API."

@@ -3,7 +3,7 @@ export type RunStatus =
   | 'queued' | 'running' | 'waiting_approval' | 'succeeded' | 'partial_failed'
   | 'failed' | 'paused' | 'pause_requested' | 'cancelled' | 'cancel_requested';
 export type BusinessResult =
-  | 'UNVERIFIED'
+  | 'UNVERIFIED' | 'BLOCKED'
   | 'LOCATED' | 'INSUFFICIENT_EVIDENCE' | 'MANUAL' | 'PASS' | 'FAIL' | 'REJECTED'
   | 'SKIPPED' | 'DELIVERED' | 'SUCCESS' | 'FAILED' | null;
 
@@ -41,6 +41,7 @@ export interface RunSummary {
   task_count: number;
   succeeded_tasks: number;
   failed_tasks: number;
+  blocked_tasks: number;
   manual_tasks: number;
   waiting_tasks: number;
   inactive_tasks?: number;

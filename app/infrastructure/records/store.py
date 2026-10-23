@@ -28,6 +28,8 @@ from app.domain.keys import safe_name
 from app.domain.models import utc_now
 from app.application.audit import SCHEMA_VERSION, ArtifactRef, StepError, StepRecord
 from app.infrastructure.records.lifecycle import LifecycleStore
+from app.infrastructure.records.database import RecordDatabase, read_jsonl
+from app.infrastructure.records.policy import artifact_mode
 from app.workflow.spec import RecordView
 from config.settings import settings
 
@@ -176,10 +178,7 @@ class RecordStore:
                 previous = slot.get(record.name)
                 if isinstance(previous, dict) and previous.get("finished_at") and previous != body:
                     identity = hashlib.sha256(json.dumps(previous, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-                    history = self.task_dir(run_id, task_id) / "history" / "steps" / f"{record.name}-{identity}.json"
-                    history.parent.mkdir(parents=True, exist_ok=True)
-                    if not history.exists():
-                        history.write_text(json.dumps(previous, ensure_ascii=False, indent=2), encoding="utf-8")
+                    self.database(run_id).append(task_id, "step_history", previous, identity=identity)
                 slot[record.name] = body
             else:
                 payload[record.name] = body
@@ -244,6 +243,8 @@ class RecordStore:
                 status = "succeeded"
             elif delivery_status in {"MANUAL", "INSUFFICIENT_EVIDENCE", "MANUAL_REVIEW_REQUIRED"}:
                 status = "manual"
+            elif delivery_status == "BLOCKED":
+                status = "blocked"
             elif delivery_status == "CANCELLED":
                 status = "cancelled"
             elif delivery_status == "SKIPPED":
@@ -291,6 +292,14 @@ class RecordStore:
         from app.workflow.steps.finalize_execution.node import refresh_completed_report
         refresh_completed_report(self, run_id, task_id)
         self._update_lifecycle(run_id, task_id, record)
+        if str(record.output.get("delivery_status") or "").upper() == "BLOCKED":
+            LifecycleStore(self.root).update_task(run_id, task_id, workspace_released=False)
+            return
+        LifecycleStore(self.root).update_task(run_id, task_id, workspace_released=True)
+        from app.infrastructure.filesystem.workspace_gc import collect_configured_workspaces
+        from app.infrastructure.config import load_config
+        from dataclasses import replace
+        collect_configured_workspaces(replace(load_config(), runtime_dir=self.root))
 
     def report_progress(self, run_id: str, step: str, message: str, counts: dict[str, int]) -> None:
         """记录不含原始日志的处理进度，供轮询和事件流展示。"""
@@ -355,10 +364,14 @@ class RecordStore:
             previous = target.read_bytes()
             if previous != text.encode("utf-8"):
                 identity = hashlib.sha256(previous).hexdigest()
-                archive = base / "history" / "artifacts" / identity / relative
-                archive.parent.mkdir(parents=True, exist_ok=True)
-                if not archive.exists():
-                    archive.write_bytes(previous)
+                try:
+                    previous_value = json.loads(previous)
+                except (ValueError, UnicodeDecodeError):
+                    previous_value = {"raw": previous.decode("utf-8", errors="replace")}
+                self.database(run_id).append(
+                    task_id, "artifact_history", {"path": relative, "value": previous_value},
+                    identity=f"{relative}:{identity}",
+                )
         # 临时文件与目标同目录：同文件系统才能原子替换，写完整才返回引用。
         temporary = target.with_name(target.name + ".tmp")
         temporary.write_text(text, encoding="utf-8")
@@ -368,6 +381,8 @@ class RecordStore:
     def read_artifact(self, run_id: str, relative: str, task_id: str = "") -> Any:
         """读回已落盘产物。``steps.json`` 里只留引用，全文仍在这里。"""
         base, target = self._target(run_id, relative, task_id)
+        if relative == "metrics/agent.jsonl":
+            return self.read_metrics(run_id, task_id)
         if not target.is_file():
             raise StepFailed(f"产物不存在: {relative}", code="ARTIFACT_NOT_FOUND")
         try:
@@ -391,6 +406,9 @@ class RecordStore:
     def append_artifact(self, run_id: str, relative: str, value: Any, task_id: str = "") -> str:
         """追加 JSONL 运行指标，不覆盖同一任务的历史调用。"""
         base, target = self._target(run_id, relative, task_id)
+        if relative == "metrics/agent.jsonl":
+            self.database(run_id).append(task_id, "agent_metrics", value)
+            return relative
         target.parent.mkdir(parents=True, exist_ok=True)
         if not target.parent.resolve().is_relative_to(base.resolve()):
             raise StepFailed(f"产物目录越界: {relative!r}", code="ARTIFACT_PATH_INVALID")
@@ -398,11 +416,32 @@ class RecordStore:
             file_obj.write(json.dumps(value, ensure_ascii=False, default=str) + "\n")
         return target.relative_to(self._base(run_id, task_id)).as_posix()
 
+    def database(self, run_id: str) -> RecordDatabase:
+        """本轮小记录的集中存储。"""
+        return RecordDatabase(self.run_dir(run_id))
+
+    def read_metrics(self, run_id: str, task_id: str) -> list[dict[str, Any]]:
+        """读取新旧指标，保留已存在的旧任务统计。"""
+        return (read_jsonl(self.task_dir(run_id, task_id) / "metrics/agent.jsonl")
+                + self.database(run_id).rows("agent_metrics", task_id))
+
+    def step_history(self, run_id: str, task_id: str) -> list[dict[str, Any]]:
+        """合并旧历史文件与集中保存的历史步骤。"""
+        rows = self.database(run_id).rows("step_history", task_id)
+        for path in (self.task_dir(run_id, task_id) / "history/steps").glob("*.json"):
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(value, dict):
+                    rows.append(value)
+            except (OSError, ValueError):
+                continue
+        return rows
+
     def create_run(self, run_id: str, payload: dict[str, Any]) -> None:
         """创建不可覆盖的执行元数据，供真实单步重放使用。"""
         directory = self.run_dir(run_id)
         directory.mkdir(parents=True, exist_ok=True)
-        body = {**payload, "updated_at": utc_now()}
+        body = {**payload, "artifact_mode": artifact_mode(), "updated_at": utc_now()}
         path = directory / "run.json"
         with path.open("x", encoding="utf-8") as file_obj:
             json.dump(body, file_obj, ensure_ascii=False, indent=2)

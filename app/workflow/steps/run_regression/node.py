@@ -38,11 +38,17 @@ def run(ctx: StepContext, data: RegressionInput) -> RegressionOutput:
     """在从源仓库克隆的独立 Git 工作区里跑配置里的固定命令。"""
     from app.workflow.evidence_version import evidence_version
     version = evidence_version(data.ai_workspace_path, data.changed_files)
+    from app.workflow.validation import fingerprint
+    input_id = fingerprint(data.normalized_log)
+    previous = data.previous_result
+    if (previous.get("input_id") == input_id and previous.get("passed") is True
+        and previous.get("status") == "verified" and
+        (previous.get("evidence_version") or {}).get("patch_id") == version["patch_id"]):
+        return RegressionOutput.model_validate(previous).model_copy(update={"reused": True})
     request_executor = ctx.services.metadata.get("request_regression")
     if not ctx.services.verify_commands and not callable(request_executor):
         return RegressionOutput(
             passed=False, status="not_configured", evidence_version=version,
-            validation_requirements=data.validation_requirements,
             reason="未配置固定补充回归命令；没有执行行为回归，覆盖是否足够由审查对照实际变更判断",
         )
     if ctx.services.workspaces is None:
@@ -63,7 +69,6 @@ def run(ctx: StepContext, data: RegressionInput) -> RegressionOutput:
             "source_repo_path": str(ctx.services.source_repo),
             "task_id": data.task_id,
             "normalized_log": data.normalized_log,
-            "validation_requirements": data.validation_requirements,
         }
     )
     regression = result.get("regression")
@@ -98,14 +103,6 @@ def run(ctx: StepContext, data: RegressionInput) -> RegressionOutput:
     workspace_changes = (
         regression.get("workspace_changes") if isinstance(regression, dict) else None
     )
-    from app.workflow.validation_requirements import assess
-    requirements = assess(data.validation_requirements, request_result, version)
-    # 已完成的问题验证收据不因请求回归缺少该收据而退回未验证。
-    prior = {str(x.get("id")): x for x in data.validation_requirements}
-    requirements = [prior[str(x["id"])] if x["status"] == "unverified" and
-                    prior.get(str(x["id"]), {}).get("status") in {"passed", "failed"} and
-                    (prior[str(x["id"])].get("evidence_version") or {}).get("patch_id") == version["patch_id"] else x
-                    for x in requirements]
     reason = str(result.get("reason") or "")
     count = len(results)
     syntax_only = bool(results) and all(
@@ -119,7 +116,6 @@ def run(ctx: StepContext, data: RegressionInput) -> RegressionOutput:
             "commands": [_entry(item, full=True) for item in results],
             "request_regression": request_result,
             "supplemental_verification": supplemental,
-            "validation_requirements": requirements,
             "runtime_artifacts": regression.get("runtime_artifacts", []) if isinstance(regression, dict) else [],
         }
         if workspace_changes:
@@ -130,6 +126,7 @@ def run(ctx: StepContext, data: RegressionInput) -> RegressionOutput:
             report,
         )
     output = RegressionOutput(
+        input_id=input_id,
         passed=result.get("passed") is True and bool(results) and (not request_result or request_result.get("passed") is True),
         evidence_version=version,
         status=("syntax_only" if syntax_only else "verified" if results else "not_executed") if result.get("passed") is True else "failed",
@@ -142,10 +139,12 @@ def run(ctx: StepContext, data: RegressionInput) -> RegressionOutput:
         report_path="artifacts/regression_report.json" if results or workspace_changes or request_result else "",
         request_regression={key: value for key, value in request_result.items() if key not in {"commands", "script", "response", "result", "effective_requests"}},
         supplemental_verification=supplemental,
-        validation_requirements=requirements,
     )
     if result.get("passed") is True and request_result.get("status") == "unverified":
         output = output.model_copy(update={"status": "unverified", "reason": str(request_result.get("reason") or "真实请求未完成业务验证")})
+    if result.get("failure_kind") == "execution" or workspace_changes:
+        output = output.model_copy(update={"passed": False, "status": "unverified",
+                                          "failure_kind": "policy" if workspace_changes else "execution"})
     if evidence_version(data.ai_workspace_path, data.changed_files) != version:
         raise StepFailed("回归期间源码发生变化，结果已失效，请重新执行检查")
     if output.status == "failed":

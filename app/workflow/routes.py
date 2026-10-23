@@ -72,7 +72,8 @@ def after_validate_changes(state: WorkflowState) -> str:
         return FINALIZE
     if _result(state) != "passed":
         return _retry_or_finalize(state)
-    return REGRESSION
+    from app.workflow.validation import PLAN
+    return PLAN
 
 
 def after_identify(state: WorkflowState) -> str:
@@ -112,7 +113,7 @@ def after_retry(state: WorkflowState) -> str:
     target = str(state.get("retry_target") or "")
     if target == "__retry_reset_failed__":
         return FINALIZE
-    if target in {PREPARE_CONTEXT, CLAIM, LOCATE, REPAIR, VALIDATE, REGRESSION, REVIEW, DELIVER}:
+    if target in {PREPARE_CONTEXT, CLAIM, LOCATE, REPAIR, VALIDATE, VERIFY, REGRESSION, REVIEW, DELIVER}:
         return target
     return FINALIZE
 
@@ -167,51 +168,13 @@ def after_repair(state: WorkflowState) -> str:
 
 
 def after_regression(state: WorkflowState) -> str:
-    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
-        return FINALIZE
-    if legacy_analysis_required(state):
-        return FINALIZE
-    if _result(state) != "passed":
-        return _retry_or_finalize(state)
-    # human 模式跳过 AI 审查，但仍要产出修复分支：交付后由人工在审批节点审查分支。
-    if str(state.get("review_mode") or settings.default_review_mode).lower() == "human":
-        return DELIVER
-    return REVIEW
+    from app.workflow.validation import SUMMARY
+    return FINALIZE if str(state.get("terminal_status") or "").upper() == "CANCELLED" else SUMMARY
 
 
 def after_review(state: WorkflowState) -> str:
-    """AI 审查后先完成分支交付；只有分支成功落地后才进入最终人工审批。
-
-    PASS：交付分支后进入最终审批。
-    MANUAL：AI 无法自动给出确定结论，但它不是“转分析报告”；仍交付候选修复分支，
-    由最终人工审批检查真实 diff 并决定保留或拒绝。
-    FAIL：在上限内回修，超过上限后由 finalize 记录失败。
-    """
-    if (state.get("review") or {}).get("contract_error"):
-        return FINALIZE
-    if str(state.get("terminal_status") or "").upper() == "CANCELLED" or _result(state) == "cancelled":
-        return FINALIZE
-    if _result(state) == "failed":
-        return _retry_or_finalize(state)
-
-    review = state.get("review") or {}
-    result = str(review.get("verdict") or review.get("result") or "").upper()
-
-    if legacy_analysis_required(state):
-        return FINALIZE
-
-    if result == "FAIL":
-        return _retry_or_finalize(state)
-
-    if review.get("delivery_eligible") is not True:
-        return FINALIZE
-
-    # MANUAL 不代表进入审批态。此时分支还未提交，必须先完成交付。
-    if result in {"PASS", "MANUAL"}:
-        return DELIVER
-
-    # 缺失或未知审查结论属于工作流契约异常，不能擅自放行。
-    return FINALIZE
+    from app.workflow.validation import DECIDE
+    return FINALIZE if str(state.get("terminal_status") or "").upper() == "CANCELLED" else DECIDE
 
 
 def after_approval(state: WorkflowState) -> str:

@@ -137,7 +137,7 @@ def build_task_graph(
                 manager = workspace_manager
                 # 验证/回归/审查/交付重试要继续使用当前改动；准备阶段重试则必须
                 # 归档旧基线和工作区，否则 prepare_source_snapshot / prepare_workspace 会撞目录。
-                preserve_workspace_targets = {CLAIM, VALIDATE, REGRESSION, REVIEW, DELIVER}
+                preserve_workspace_targets = {CLAIM, VALIDATE, VERIFY, REGRESSION, REVIEW, DELIVER}
                 preserve_workspace = target in preserve_workspace_targets
                 if target == PREPARE_CONTEXT:
                     if manager is None:
@@ -244,7 +244,10 @@ def build_task_graph(
                 patch: dict[str, Any] = {
                     "retry_context": retry_context,
                     "attempt": int(state.get("attempt") or 1) + 1,
-                    "automatic_attempt": int(state.get("automatic_attempt") or state.get("attempt") or 1) + 1,
+                    "automatic_attempt": int(state.get("automatic_attempt") or 1) + (0 if target in {VALIDATE, VERIFY, REGRESSION, REVIEW} else 1),
+                    "validation_recovery_counts": {**dict(state.get("validation_recovery_counts") or {}), target: int((state.get("validation_recovery_counts") or {}).get(target, 0)) + 1},
+                    "validation_decision": {},
+                    "terminal_status": "passed",
                     "decision": "PENDING",
                     "approval_granted": False,
                     "review_decision": str(state.get("review_decision") or "") if target == DELIVER else "",
@@ -260,13 +263,14 @@ def build_task_graph(
                     "repair_slot_claimed": kept_repair_slot(state),
                     "last_result": "passed",
                 }
-                if target not in {VALIDATE, REGRESSION, REVIEW, DELIVER}:
+                if target not in {VALIDATE, VERIFY, REGRESSION, REVIEW, DELIVER}:
                     # 定位/修复重跑从干净基线开始，避免在上次半成品上叠加修改。
                     patch.update({
                         "repair": {},
                         "changed_files": [],
                         "repair_changed_files": [],
                         "change_plan": {},
+                        "validation_plan": {}, "validation_summary": {},
                         "scope_escalation_required": False,
                         "check_passed": False,
                         "syntax_passed": False,
@@ -289,6 +293,8 @@ def build_task_graph(
                         "verify_result": {},
                         "regression_result": {},
                     })
+                elif target == VERIFY:
+                    patch.update({"verify_passed": False, "verify_result": {}})
                 elif target == REGRESSION:
                     # 只重跑回归时保留已有门禁与问题验证结论。
                     patch.update({
@@ -352,6 +358,7 @@ def dispatch(state: RunState) -> dict[str, Any]:
         "task_summary": {},
         "attempt": task_attempt,
         "automatic_attempt": 1,
+        "workflow_version": 5,
         "retry_reason": "",
         "last_result": "passed",
     }

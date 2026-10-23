@@ -132,9 +132,9 @@ class RegressionRunner:
             reason = public_exception(error, prefix="回归环境建立失败")
             if "可能有残留回归工作区需手工清理" in str(error):
                 reason += "；可能有残留回归工作区需手工清理"
-            failure = {"passed": False, "mode": "regression", "reason": reason}
+            failure = {"passed": False, "mode": "regression", "failure_kind": "execution", "reason": reason}
         except Exception as error:
-            failure = {"passed": False, "mode": "regression", "reason": public_exception(error, prefix="回归环境执行失败")}
+            failure = {"passed": False, "mode": "regression", "failure_kind": "execution", "reason": public_exception(error, prefix="回归环境执行失败")}
         finally:
             if repo is not None:
                 try:

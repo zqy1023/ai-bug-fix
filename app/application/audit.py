@@ -26,6 +26,7 @@ StepPhase = Literal["pending", "running", "succeeded", "failed", "waiting", "ski
 # 业务结论。按需增补，不预先铺满：没有消费者之前不添加取值。
 StepResultValue = Literal[
     "UNVERIFIED",
+    "BLOCKED",
     "LOCATED",
     "INSUFFICIENT_EVIDENCE",
     "MANUAL",

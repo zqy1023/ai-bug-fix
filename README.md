@@ -32,7 +32,9 @@ sync_source_repo（同步源仓库）
      -> locate_agent
      -> claim_repair_slot
      -> repair_agent
-     -> validate_changes（check_changes -> syntax_regression -> verify_issue）
+     -> validate_changes（check_changes -> syntax_regression）
+     -> plan_validation -> verify_issue -> run_regression
+     -> summarize_validation -> review_agent -> decide_validation
      -> run_regression
      -> review_agent
      -> prepare_delivery
@@ -82,9 +84,9 @@ app/
 | `locate_agent` | 只读定位；仅证据支持的 `LOCATED` 可继续 | `claim_repair_slot` |
 | `claim_repair_slot` | 原子领取本轮修复资格 | `repair_agent` |
 | `repair_agent` | 仅修改授权范围内的目标 carrier | `validate_changes` |
-| `validate_changes` | `check_changes → syntax_regression → verify_issue`，任一步失败即停止 | `run_regression` |
-| `run_regression` | 在本地准生产 Git 环境执行回归，不提交 | `review_agent`（agent 模式）或直接交付分支（human 模式，跳过 AI 审查） |
-| `review_agent` | 只读审查真实 Diff、门禁、验证和回归报告 | 交付、回修或人工处理 |
+| `validate_changes` | 范围与语法检查 | `plan_validation` |
+| `run_regression` | 真实请求经 server_dev.main 执行，保留原参数和代理 | `summarize_validation` |
+| `review_agent` | 只读审查实际代码与统一验证事实 | `decide_validation` |
 | `prepare_delivery` | 创建修复分支并按配置提交/推送；明确转分析报告的任务交付报告分支 | 源码交付后进入 `request_approval`；分析报告交付后结束 |
 | `request_approval` | 已交付源码分支的人工决策；拒绝进入有上限的回修循环 | `finalize_execution` 或回修 |
 | `finalize_execution` | 生成终态报告并收尾 | 结束 |
@@ -107,7 +109,7 @@ app/
 | `check_changes` | task | 校验路径、范围、AST、敏感信息并保存完整 Diff |
 | `syntax_regression` | task | 独立编译变更的 Python 文件，使用临时 pycache，不代替业务验证 |
 | `verify_issue` | task | 验证原始问题是否修复 |
-| `run_regression` | task | 执行配置的准生产回归 |
+| `run_regression` | 真实请求经 server_dev.main 执行，保留原参数和代理 | `summarize_validation` |
 | `request_approval` | task | 保存人工决策 |
 | `prepare_delivery` | task | 生成修复分支与交付结果 |
 | `finalize_execution` | task | 汇总该任务的步骤记录、状态和产物 |
@@ -122,7 +124,7 @@ Locate、Repair、Review Agent 仍分别是独立 Agent 子图，不与确定性
 
 ### 终态语义
 
-`status` 记录节点执行状态，`result` 记录业务结论。定位/审查返回 `MANUAL` 或证据不足时，`finalize_execution` 必须将最终报告写为 `MANUAL`，不能因节点自身 succeeded 而误记为 FAILED 或 SUCCESS。人工介入不等于审批；审批只处理存在明确方案且处于 interrupt 的任务。
+`status` 记录执行状态，原异常效果、真实请求结果、代码审查分别记录。`decide_validation` 统一决定交付、回修、有界恢复或 BLOCKED。BLOCKED 表示验证受阻，保留补丁和有效证据，不自动进入审批。
 
 human 模式（人工审查）与 agent 模式的差异只在审查环节：回归通过后同样交付修复分支并进入交付审批，由人工审查分支内容。终态按真实交付记录推导——没有真实提交（远端分支或源仓库本地分支可查）时不会记为 `SUCCESS`。
 
@@ -253,7 +255,13 @@ npm run build
 
 运行记录目录通过 `AI_REPAIR_RUNTIME_DIR` 配置，未设置时默认是项目根目录 `runtime/`；Docker 部署把持久化卷挂载到 `/app/runtime`，运行记录目录也使用 `/app/runtime`。
 
-`runtime/workspaces` 是可重建缓存：`shared/<run>` 是本轮只读共享树，`ai/<run>-<task>` 是任务隔离区，`delivery/<branch>` 与 `regression/<task>` 是临时 Git 克隆。服务启动时会按 `AI_REPAIR_WORKSPACE_RETENTION_DAYS`（默认 7 天，仅清理已写终态报告的执行）回收 `shared`/`ai`，按 `AI_REPAIR_DELIVERY_WORKSPACE_TTL_HOURS`（默认 24 小时）回收 `delivery`/`regression`；设置 `AI_REPAIR_WORKSPACE_GC_ENABLED=false` 可关闭。审计事实保存在 `runtime/runs`，不参与回收。
+`runtime/workspaces` 是可重建缓存：`shared/cache-<key>` 按 Git commit、业务子目录和过滤规则指纹复用只读源码基线，`shared/refs/<run>.json` 固定每轮使用的版本；同一提交的多轮执行共用一棵树。`ai/<run>-<task>` 只保存任务可修改的运输商代码，`delivery/<branch>` 与 `regression/<task>` 是临时 Git 克隆。旧 `shared/<run>` 目录继续兼容，不自动迁移历史 checkpoint。
+
+工作区在任务收尾、执行退出、服务启动及运行期间定时回收。`AI_REPAIR_WORKSPACE_GC_INTERVAL_SECONDS` 默认 3600 秒；`AI_REPAIR_WORKSPACE_RETENTION_DAYS` 默认 7 天，从生命周期结束时间计算，0 表示终态后可立即回收。暂停、待审批和活动任务的基线引用保留；只有所有引用均过期后才删除共享基线。已结束任务的 AI 工作区按任务自身保留期清理。临时交付／回归克隆按 `AI_REPAIR_DELIVERY_WORKSPACE_TTL_HOURS`（默认 24 小时）清理，存在活动 worker 时保守保留。`AI_REPAIR_WORKSPACE_GC_ENABLED=false` 关闭自动回收。审计记录、源码快照和恢复指针保存在 `runtime/runs`，不参与工作区回收；过期工作区被清理后，重新修改源码应发起新任务。
+
+每轮使用一个 `records.sqlite` 集中保存 run/task 生命周期、模型调用元数据、Agent 指标和步骤／产物历史；`steps.json`、报告、Diff、验证证据及恢复数据保持原有独立文件。读取兼容旧 `lifecycle.json`、`model_calls.jsonl`、指标 JSONL 和历史目录，历史数据不批量迁移。
+
+`AI_REPAIR_ARTIFACT_MODE=compact`（默认）保留完整校验后 Agent 结论、调用摘要和统计，不归档完整提示词、公开事件及重复的原始模型输出。设为 `debug` 后额外保存这些调试产物（提示词快照仍受 `workbench_prompt_snapshot` 控制）。工作台在精简模式下仍可查看调用统计与结论，提示词快照和事件显示为未保存。模式在创建运行时记入 `run.json`，后续恢复沿用该轮模式，配置变更只影响新运行。
 
 ### 源仓库模式
 
@@ -304,3 +312,11 @@ docker compose logs -f api frontend
 新建执行默认 `log_limit=0`，表示窗口内全量拉取，没有 1,000 / 10,000 条的隐藏截断，
 也没有扫描总时长截断；单次 ES 请求仍保留网络超时。
 前端不再显示日志条数限制输入，读取阶段会展示已扫描、可解析和独立问题计数。
+
+### 当前验证契约（workflow_version=5）
+
+范围/语法检查 → 确定验证计划 → 原始正文双侧重放 → 真实请求回归 → 汇总验证事实 → 代码审查 → 统一决策。
+
+修复 Agent 的建议不直接成为硬门禁；不执行模型构造的响应样本。原异常验证仅采用原始录制正文，真实请求仅通过 server_dev.main。验证恢复与代码回修分别计数，默认每个故障阶段最多自动恢复两次；已成功且输入与补丁一致的真实请求结果可以复用。
+
+旧版本执行不支持恢复、单步重跑和审批，不做检查点迁移；请新建当前版本任务。历史记录保留供查看。新增节点 plan_validation、summarize_validation、decide_validation 独立记录计划、事实和后续动作。工作流不会自动合并分支。
