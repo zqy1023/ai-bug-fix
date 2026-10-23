@@ -249,6 +249,7 @@ def summarize(state: dict[str, Any]) -> dict[str, Any]:
                     "supplemental_verification": report.get("supplemental_verification") or {},
                 },
                 "status": result_status if result_status in {"passed", "failed", "unverified"} else "unverified",
+                "retryable": bool((fact or {}).get("retryable")),
                 "reason": str((fact or {}).get("reason") or "没有匹配的业务验证结果"),
                 "evidence_refs": evidence_refs,
                 "evidence_version": report_version,
@@ -290,7 +291,8 @@ def decide(state: dict[str, Any]) -> dict[str, Any]:
     elif any(item.get("status") != "passed" for item in summary.get("acceptance_results") or []):
         pending_acceptance = next(item for item in summary.get("acceptance_results") or [] if item.get("status") != "passed")
         method = pending_acceptance.get("verification_method")
-        target = "verify_issue" if method == "original_response_replay" else "run_regression" if method == "request_regression" else ""
+        retry_target = "verify_issue" if method == "original_response_replay" else "run_regression" if method == "request_regression" else ""
+        target = retry_target if pending_acceptance.get("retryable") else ""
         reason = f"验收项 {pending_acceptance.get('assertion_id')} 缺少同版本的有效业务证据"
     else:
         pending = [(key, item) for key, item in dimensions.items() if item.get("status") != "passed"]
