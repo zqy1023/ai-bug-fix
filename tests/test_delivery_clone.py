@@ -63,3 +63,26 @@ def test_clone_failure_reports_both_attempts(monkeypatch, tmp_path: Path) -> Non
     assert exc.value.status == "GIT_CLONE_FAILED"
     assert "hardlink failed" in str(exc.value)
     assert "checkout failed" in str(exc.value)
+
+
+
+def test_delivery_workspace_preserves_clone_failure_reason(monkeypatch, tmp_path: Path) -> None:
+    class _FakeWorkspaces:
+        def allocate(self, kind: str, name: str, readable: bool = True) -> Path:
+            return tmp_path / "delivery-workspace"
+
+    def fail_clone(git_root: Path, target: Path):
+        raise DeliveryError(
+            "Git 克隆失败；local=[UnsafeOptionError: invalid clone option]",
+            status="GIT_CLONE_FAILED",
+        )
+
+    monkeypatch.setattr(delivery, "_clone_repo", fail_clone)
+    adapter = delivery.GitBranchDelivery(delivery.GitDeliveryConfig(workspace_manager=_FakeWorkspaces()))
+
+    with pytest.raises(DeliveryError) as exc:
+        adapter._delivery_workspace(tmp_path / "source-repo", "fix/example")
+
+    assert exc.value.status == "GIT_CLONE_FAILED"
+    assert "UnsafeOptionError" in str(exc.value)
+    assert "source-repo" in str(exc.value)
