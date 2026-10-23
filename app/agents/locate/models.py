@@ -64,8 +64,30 @@ class SourceEvidence(FrozenModel):
     snippet: str = ""
 
 
+class AcceptanceContract(FrozenModel):
+    """根因 Agent 在修改前提出的可执行验收方案；工作流随后冻结其版本。"""
+
+    business_goal: str = Field(min_length=8)
+    reproduction: list[str] = Field(min_length=1)
+    required_assertions: list[str] = Field(min_length=1)
+    regression_cases: list[str] = Field(min_length=1)
+    verification_methods: list[str] = Field(min_length=1)
+    assumptions: list[str] = Field(default_factory=list)
+    known_limitations: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_actionable_items(self) -> AcceptanceContract:
+        for field_name in ("reproduction", "required_assertions", "regression_cases", "verification_methods"):
+            values = getattr(self, field_name)
+            if not values or any(not isinstance(value, str) or not value.strip() for value in values):
+                raise ValueError(f"验收方案 {field_name} 必须包含非空、可执行的条目")
+        if not self.business_goal.strip():
+            raise ValueError("验收方案 business_goal 不能为空")
+        return self
+
+
 class LocateOutput(FrozenModel):
-    """模型协议的严格输出；非 LOCATED 结论不会进入修复阶段。"""
+    """模型协议的严格输出；根因与验收方案一并产出，非 LOCATED 结论不会进入修复阶段。"""
 
     # status：字段说明见该模型文档与工作流契约。
     status: Literal["LOCATED", "INSUFFICIENT_EVIDENCE", "MANUAL"] = "MANUAL"
@@ -94,6 +116,8 @@ class LocateOutput(FrozenModel):
     recommended_scope: Literal["carrier", "project", "manual"] = "manual"
     # summary：字段说明见该模型文档与工作流契约。
     summary: str = ""
+    # acceptance_contract：根因分析同时给出的修改前验收方案。
+    acceptance_contract: AcceptanceContract | None = None
     # passed：字段说明见该模型文档与工作流契约。
     passed: bool = False
 
@@ -107,6 +131,8 @@ class LocateOutput(FrozenModel):
                 missing.append("源码证据")
             if not self.candidate_files:
                 missing.append("候选文件")
+            if self.acceptance_contract is None:
+                missing.append("修改前验收方案")
             if missing:
                 # 契约不满足时安全降级，而不是抛弃整个模型输出。
                 # facts、源码证据、候选文件和根因仍保留给人工排查。
@@ -126,4 +152,4 @@ class LocateOutput(FrozenModel):
         return self
 
 
-__all__ = ["LocateInput", "LocateOutput", "SourceEvidence"]
+__all__ = ["AcceptanceContract", "LocateInput", "LocateOutput", "SourceEvidence"]
