@@ -21,6 +21,8 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, 
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
+from app.application.observability import project_step
+
 from app.infrastructure.config import load_config
 from app.infrastructure.records.store import RecordStore
 from app.infrastructure.records.lifecycle import LifecycleStore
@@ -1269,8 +1271,7 @@ def _settle_task_lifecycles_after_run_failure(
     reason: str,
     next_action: str,
 ) -> None:
-    from app.application.observability import project_step
-from app.application.audit import StepError
+    from app.application.audit import StepError
 
     lifecycle = LifecycleStore(store.root)
     payload = _read_json(store.steps_path(run_id), {})
