@@ -70,7 +70,7 @@ export function StepDetail({ runId, taskId, step, detail, runActive, approvalPen
           <StatusBadge kind={step.result && ['UNVERIFIED', 'MANUAL', 'INSUFFICIENT_EVIDENCE', 'FAIL', 'FAILED'].includes(String(step.result).toUpperCase()) ? 'task' : 'step'} value={step.result && ['UNVERIFIED', 'MANUAL', 'INSUFFICIENT_EVIDENCE', 'FAIL', 'FAILED'].includes(String(step.result).toUpperCase()) ? String(step.result) : step.status} stepName={step.name} />
           <span>{step.status === 'running' ? '执行中…' : formatDuration(step.duration_ms)}</span>
           {step.attempt ? <span>第 {step.attempt} 次执行</span> : null}
-          {detail?.model_call_ids.length ? <span>{detail.model_call_ids.length} 次模型调用</span> : null}
+          {(detail?.model_call_count ?? detail?.model_call_ids.length ?? 0) > 0 ? <span>{detail?.model_call_count ?? detail?.model_call_ids.length} 次模型调用</span> : null}
         </div>
       </div>
     </header>
@@ -83,7 +83,7 @@ export function StepDetail({ runId, taskId, step, detail, runActive, approvalPen
     </section>
 
     <section className="step-detail-section">
-      <header><h4>关联产物</h4><span>{artifacts.length} 项</span></header>
+      <header><h4>关联产物</h4><span>{detail?.artifact_count ?? artifacts.length} 项</span></header>
       <ArtifactsPanel runId={runId} taskId={taskId} artifacts={artifacts} />
     </section>
 
