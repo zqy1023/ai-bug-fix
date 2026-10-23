@@ -2429,7 +2429,9 @@ def v1_get_step(
         "task_id": task_id,
         "step": project_step(record, include_raw=include_raw),
         "artifacts": [ref.model_dump(mode="json") for ref in record.artifacts[:8]],
+        "artifact_count": len(record.artifacts),
         "model_call_ids": [str(item.get("model_call_id") or "") for item in calls[:20]],
+        "model_call_count": len(calls),
     }
 
 
