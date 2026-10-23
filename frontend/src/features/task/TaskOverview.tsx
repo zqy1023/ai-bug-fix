@@ -66,11 +66,12 @@ export function TaskOverview({ detail, onOpenStep }: { detail: TaskDetailRespons
     || (active ? '' : [...steps].reverse().find((step) => step.status === 'failed')?.error?.message || '');
   const nextAction = pick(lifecycle, 'next_action') || pick(report, 'next_action');
   const rootCause = pick(locateOut, 'root_cause', 'analysis', 'summary') || locate?.summary || '';
-  const changedFiles = list(repairOut.changed_files);
   const claim = dict(checkOut.claim);
   const actualClaim = list(claim.actual);
+  const changedFiles = Array.isArray(claim.actual) ? actualClaim : list(repairOut.changed_files);
   const actualClaimCount = Number(claim.actual_count ?? actualClaim.length) || 0;
   const changedFilesCount = Number(repairOut.changed_files_count ?? changedFiles.length) || 0;
+  const displayChangedCount = claim.actual_count !== undefined ? actualClaimCount : changedFilesCount;
   const totals = dict(checkOut.totals);
   const branch = pick(deliveryOut, 'repair_branch');
   const commit = pick(deliveryOut, 'commit');
@@ -129,7 +130,7 @@ export function TaskOverview({ detail, onOpenStep }: { detail: TaskDetailRespons
       </section>
       <section className="overview-card">
         <header className="overview-card-head"><h3>代码变更与交付</h3>{delivery?.status === 'succeeded' ? <Tag color="success">已交付</Tag> : <Tag>{statusText(delivery)}</Tag>}</header>
-        <div className="overview-kv"><span>实际变更文件</span><strong>{actualClaimCount || changedFilesCount}</strong></div>
+        <div className="overview-kv"><span>实际变更文件</span><strong>{displayChangedCount}</strong></div>
         {branch && <div className="overview-kv"><span>分支</span><strong className="is-mono" title={branch}>{branch}</strong></div>}
         {commit && <div className="overview-kv"><span>Commit</span><strong className="is-mono" title={commit}>{commit.slice(0, 12)}</strong></div>}
         {Object.keys(totals).length > 0 && <div className="overview-kv"><span>代码增删</span><strong>+{String(totals.added ?? 0)} / −{String(totals.removed ?? 0)}</strong></div>}
