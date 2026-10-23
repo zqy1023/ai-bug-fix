@@ -46,6 +46,8 @@ def _project_output(name: str, output: Any) -> dict[str, Any]:
     # Deterministic StepSpec wrappers store their business result under payload.
     if isinstance(raw_output.get("payload"), dict) and name in {"plan_validation", "summarize_validation", "decide_validation"}:
         raw_output = raw_output["payload"]
+    if name == "decide_validation" and isinstance(raw_output.get("validation_decision"), dict):
+        raw_output = raw_output["validation_decision"]
     selected = _pick(raw_output, fields.get(name, common))
     if name == "repair_agent" and isinstance(raw_output.get("changed_files"), list):
         selected["changed_files_count"] = len(raw_output["changed_files"])
