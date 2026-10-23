@@ -302,7 +302,7 @@ def build_task_graph(
                         "regression_result": {},
                     })
                 if target == PREPARE_CONTEXT:
-                    # 重新准备必须丢弃上一轮可能不完整的基线、证据和工作区指针。
+                    # 重新准备必须丢弃上一轮可能不完整的基线、证据、工作区和验收契约。
                     patch.update({
                         "baseline_manifest": {},
                         "baseline_dir": "",
@@ -311,11 +311,18 @@ def build_task_graph(
                         "evidence": {},
                         "framework": "",
                         "locate": {},
+                        "acceptance_contract": {},
+                        "acceptance_contract_id": "",
+                        "acceptance_contract_meta": {},
                     })
                 if target == LOCATE:
-                    # 重试定位要清掉旧结论；重试修复必须保留 LOCATED 结论和
-                    # 确定性 evidence，否则 repair_agent 输入校验会直接失败。
-                    patch["locate"] = {}
+                    # 重新定位必须重建根因与验收契约；修复重试则保留已冻结契约。
+                    patch.update({
+                        "locate": {},
+                        "acceptance_contract": {},
+                        "acceptance_contract_id": "",
+                        "acceptance_contract_meta": {},
+                    })
                 return patch
             graph.add_node(name, retry_node)
         else:
@@ -358,7 +365,7 @@ def dispatch(state: RunState) -> dict[str, Any]:
         "task_summary": {},
         "attempt": task_attempt,
         "automatic_attempt": 1,
-        "workflow_version": 5,
+        "workflow_version": 6,
         "retry_reason": "",
         "last_result": "passed",
     }
