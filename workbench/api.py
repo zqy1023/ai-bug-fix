@@ -925,6 +925,8 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
     tasks, artifacts = [], []
     for step in steps:
         for ref in step.get("artifacts") or []:
+            if len(artifacts) >= 40:
+                break
             artifacts.append({
                 "name": ref.get("name") or "artifact", "path": ref.get("path") or "",
                 "media_type": ref.get("media_type") or "application/json",
@@ -2447,9 +2449,8 @@ def v1_get_step(
         "run_id": run_id,
         "task_id": task_id,
         "step": project_step(record, include_raw=include_raw),
-        "artifacts": [ref.model_dump(mode="json") for ref in record.artifacts],
-        "model_call_ids": [str(item.get("model_call_id") or "") for item in calls],
-        "context": _step_context(record),
+        "artifacts": [ref.model_dump(mode="json") for ref in record.artifacts[:8]],
+        "model_call_ids": [str(item.get("model_call_id") or "") for item in calls[:20]],
     }
 
 
