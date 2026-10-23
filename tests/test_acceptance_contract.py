@@ -4,7 +4,8 @@ from copy import deepcopy
 
 import pytest
 
-from app.agents.locate.models import LocateOutput
+from app.agents.locate.models import AcceptanceContract, LocateOutput
+from app.workflow.validation import decide
 from app.workflow.validation import (
     acceptance_contract_is_current,
     freeze_acceptance_contract,
@@ -103,3 +104,58 @@ def test_freezing_requires_original_problem_and_baseline() -> None:
             {"problem": {}, "baseline_manifest": {"carrier.py": "sha"}},
             {"status": "LOCATED", "root_cause": "根因", "acceptance_contract": _contract()},
         )
+
+
+
+def test_acceptance_items_require_unique_ids_and_supported_evidence_methods() -> None:
+    contract = AcceptanceContract.model_validate(_contract())
+    assert contract.required_assertions[0].assertion_id == "business_result_1"
+
+    invalid = _contract()
+    invalid["regression_cases"][0]["assertion_id"] = "business_result_1"
+    with pytest.raises(ValueError, match="全局唯一"):
+        AcceptanceContract.model_validate(invalid)
+
+    invalid = _contract()
+    invalid["required_assertions"][0]["verification_method"] = "syntax_check"
+    with pytest.raises(ValueError):
+        AcceptanceContract.model_validate(invalid)
+
+
+def test_unverified_required_acceptance_item_cannot_deliver() -> None:
+    summary = {
+        "workflow_version": 6,
+        "plan_id": "plan",
+        "acceptance_contract_id": "contract",
+        "acceptance_contract": _contract(),
+        "evidence_version": {"patch_id": "patch-1"},
+        "stale": False,
+        "dimensions": {
+            "issue": {"status": "passed", "reason": "回放通过", "retryable": False, "report_path": "artifacts/verification_report.json"},
+            "request": {"status": "passed", "reason": "请求通过", "retryable": False, "report_path": "artifacts/regression_report.json"},
+        },
+        "changed_symbols": [],
+        "acceptance_results": [{
+            "assertion_id": "business_result_1",
+            "verification_method": "original_response_replay",
+            "status": "unverified",
+            "retryable": True,
+        }],
+    }
+    decision = decide({
+        "validation_summary": summary,
+        "review": {
+            "verdict": "PASS",
+            "code_verdict": "PASS",
+            "review_contract_version": 5,
+            "evidence_version": {"patch_id": "patch-1"},
+        },
+        "review_mode": "agent",
+        "automatic_attempt": 1,
+        "max_attempts": 3,
+        "validation_recovery_counts": {},
+    })
+
+    assert decision["action"] == "retry"
+    assert decision["target"] == "verify_issue"
+    assert decision["delivery_eligible"] is False
