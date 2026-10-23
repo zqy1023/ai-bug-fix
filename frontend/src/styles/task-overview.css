@@ -514,3 +514,52 @@
   cursor: not-allowed;
   opacity: .6;
 }
+
+
+/* Compact observability workspace: controls and diagnostic payloads stay out of the default view. */
+.task-overview-compact .overview-stage {
+  width: 100%; border: 0; border-right: 1px solid var(--wb-line-soft);
+  background: transparent; color: inherit; text-align: left; font: inherit;
+  cursor: pointer; align-items: flex-start;
+}
+.task-overview-compact .overview-stage:disabled { cursor: default; opacity: .75; }
+.task-overview-compact .overview-stage-link { margin-left: auto; color: var(--wb-primary); font-size: 10px; white-space: nowrap; }
+.task-overview-compact .task-outcome-grid-compact { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.task-overview-compact .overview-card > p { color: var(--wb-ink-muted); font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.task-overview-compact .overview-kv { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+.task-overview-compact .overview-kv > span { color: var(--wb-ink-faint); font-size: 11px; flex-shrink: 0; }
+.task-overview-compact .overview-kv > strong { color: var(--wb-ink); font-size: 11.5px; text-align: right; overflow-wrap: anywhere; }
+.task-overview-compact .overview-inline-details pre { max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
+.step-detail-compact { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.step-detail-compact .step-detail-head { padding: 14px 16px; border: 1px solid var(--wb-line); border-radius: 10px; background: var(--wb-surface); }
+.step-detail-compact .step-detail-title h3 { margin: 4px 0 8px; font-size: 16px; font-weight: 650; }
+.step-meta-line { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; color: var(--wb-ink-muted); font-size: 11px; }
+.step-summary-card, .step-detail-section, .step-advanced-diagnostics {
+  min-width: 0; padding: 13px 15px; border: 1px solid var(--wb-line); border-radius: 10px; background: var(--wb-surface);
+}
+.step-summary-label { margin-bottom: 6px; color: var(--wb-ink-faint); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+.step-summary-card > p { color: var(--wb-ink); font-size: 12.5px; line-height: 1.7; overflow-wrap: anywhere; }
+.step-retry-hint { display: inline-block; margin-top: 6px; color: var(--wb-ink-faint); font-size: 10.5px; }
+.step-key-fields { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--wb-line-soft); }
+.step-key-fields .overview-kv { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+.step-key-fields .overview-kv > span { color: var(--wb-ink-faint); font-size: 10.5px; }
+.step-key-fields .overview-kv > strong { color: var(--wb-ink); font-size: 11px; overflow-wrap: anywhere; }
+.step-detail-section > header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.step-detail-section h4 { font-size: 12px; font-weight: 650; }
+.step-detail-section > header > span { color: var(--wb-ink-faint); font-size: 10.5px; }
+.step-advanced-diagnostics > summary { cursor: pointer; color: var(--wb-ink-muted); font-size: 11.5px; font-weight: 550; }
+.step-advanced-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.step-raw-data { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.step-raw-data h5 { margin-top: 8px; font-size: 11px; font-weight: 650; }
+.step-advanced-diagnostics > .agent-trace { margin-top: 10px; }
+
+@media (max-width: 1120px) {
+  .task-overview-compact .task-outcome-grid-compact { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .task-overview-compact .task-outcome-grid-compact { grid-template-columns: minmax(0, 1fr); }
+  .task-overview-compact .task-outcome-hero { grid-template-columns: minmax(0, 1fr); }
+  .task-overview-compact .outcome-hero-facts { border-left: 0; border-top: 1px solid var(--wb-line-soft); }
+  .task-overview-compact .overview-stage-grid { grid-template-columns: minmax(0, 1fr); }
+  .task-overview-compact .overview-stage { border-right: 0; border-bottom: 1px solid var(--wb-line-soft); padding: 8px 2px; }
+}
