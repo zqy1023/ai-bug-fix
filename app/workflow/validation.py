@@ -52,6 +52,7 @@ class ValidationSummary(FrozenModel):
     stale: bool
     dimensions: dict[str, VerificationFact]
     changed_symbols: list[str]
+    acceptance_results: list[dict[str, Any]]
 
 
 class ValidationDecision(FrozenModel):
@@ -173,7 +174,7 @@ def make_plan(state: dict[str, Any]) -> dict[str, Any]:
         "issue_required": True,
         "request_required": True,
         "sample_policy": "original_recording_and_actual_request",
-        "acceptance": [str(item) for item in contract["required_assertions"]],
+        "acceptance": [str(item["expected"]) for item in contract["required_assertions"]],
         "review_mode": state.get("review_mode", "agent"),
     }
     plan["plan_id"] = fingerprint(plan)
@@ -221,11 +222,36 @@ def summarize(state: dict[str, Any]) -> dict[str, Any]:
         dimensions[name] = {"status": status, "reason": str(report.get("reason") or "未取得有效执行结果"),
                             "retryable": status == "unverified" and not unavailable,
                             "report_path": report.get("report_path", "")}
+    acceptance_results: list[dict[str, Any]] = []
+    contract = plan["acceptance_contract"]
+    for group_name, items in (("required_assertions", contract.get("required_assertions") or []),
+                              ("regression_cases", contract.get("regression_cases") or [])):
+        for item in items:
+            method = str(item.get("verification_method") or "")
+            dimension_name = "issue" if method == "original_response_replay" else "request" if method == "request_regression" else ""
+            fact = dimensions.get(dimension_name) if dimension_name else None
+            report = (state.get("verify_result") or {}) if dimension_name == "issue" else (state.get("regression_result") or {})
+            result_status = str((fact or {}).get("status") or "unverified")
+            acceptance_results.append({
+                "assertion_id": str(item.get("assertion_id") or ""),
+                "group": group_name,
+                "expected": str(item.get("expected") or ""),
+                "verification_method": method,
+                "actual": str((fact or {}).get("reason") or "没有匹配的业务验证结果"),
+                "status": result_status if result_status in {"passed", "failed", "unverified"} else "unverified",
+                "reason": str((fact or {}).get("reason") or "没有匹配的业务验证结果"),
+                "evidence_refs": [str((fact or {}).get("report_path") or report.get("report_path") or "")] if ((fact or {}).get("report_path") or report.get("report_path")) else [],
+                "evidence_version": report.get("evidence_version") or {},
+                "required": True,
+            })
+    if not acceptance_results or any(not item["assertion_id"] or not item["expected"] or not item["evidence_refs"]
+                                     for item in acceptance_results):
+        stale = True
     return ValidationSummary.model_validate({"workflow_version": WORKFLOW_VERSION, "plan_id": plan["plan_id"],
             "acceptance_contract_id": plan["acceptance_contract_id"],
             "acceptance_contract": plan["acceptance_contract"],
             "evidence_version": version, "stale": stale, "dimensions": dimensions,
-            "changed_symbols": plan["changed_symbols"]}).model_dump(mode="json")
+            "changed_symbols": plan["changed_symbols"], "acceptance_results": acceptance_results}).model_dump(mode="json")
 
 
 def _review_contract_version() -> int:
@@ -247,8 +273,15 @@ def decide(state: dict[str, Any]) -> dict[str, Any]:
     if (summary.get("workflow_version") != WORKFLOW_VERSION or summary.get("stale")
         or set(dimensions) != {"issue", "request"}):
         target, reason = "validate_changes", "源码或验证输入已变化，重新检查并建立验证计划"
-    elif any(item.get("status") == "failed" for item in dimensions.values()):
-        action, target, reason = "repair", "repair_agent", "实际业务验证发现失败，回修代码"
+    elif any(item.get("status") == "failed" for item in dimensions.values()) or any(
+        item.get("status") == "failed" for item in summary.get("acceptance_results") or []
+    ):
+        action, target, reason = "repair", "repair_agent", "业务验证或逐项验收失败，回修代码"
+    elif any(item.get("status") != "passed" for item in summary.get("acceptance_results") or []):
+        pending_acceptance = next(item for item in summary.get("acceptance_results") or [] if item.get("status") != "passed")
+        method = pending_acceptance.get("verification_method")
+        target = "verify_issue" if method == "original_response_replay" else "run_regression" if method == "request_regression" else ""
+        reason = f"验收项 {pending_acceptance.get('assertion_id')} 缺少同版本的有效业务证据"
     else:
         pending = [(key, item) for key, item in dimensions.items() if item.get("status") != "passed"]
         if pending:
