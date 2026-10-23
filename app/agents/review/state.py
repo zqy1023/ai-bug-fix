@@ -72,6 +72,8 @@ class ReviewState(TypedDict, total=False):
     findings: list[str]
     # required_changes：该模型字段用于承载对应契约中的结构化数据。
     required_changes: list[str]
+    # 每条验收项的实际观察、证据引用与 patch 版本。
+    acceptance_results: list[dict[str, Any]]
     # 结构化回修方案必须声明，否则会被子图静默丢弃（与 RepairState.passed 同一陷阱）。
     change_plan: dict[str, Any]
     # raw_result：该模型字段用于承载对应契约中的结构化数据。
