@@ -34,13 +34,19 @@ def _project_output(name: str, output: Any) -> dict[str, Any]:
         "syntax_regression": common + ("mode", "checked_files", "failures"),
         "verify_issue": common + ("mode", "replay_verdict", "verification", "limitations"),
         "run_regression": common + ("command_count", "request_regression", "supplemental_verification"),
-        "review_agent": common + ("verdict", "code_verdict", "findings", "required_changes", "coverage"),
+        "review_agent": common + ("verdict", "code_verdict", "findings", "required_changes", "coverage", "acceptance_results"),
+        "plan_validation": common + ("workflow_version", "acceptance_contract_id", "acceptance_contract", "evidence_version", "changed_files", "changed_symbols", "acceptance"),
+        "summarize_validation": common + ("workflow_version", "acceptance_contract_id", "stale", "dimensions", "evidence_version", "acceptance_results"),
+        "decide_validation": common + ("workflow_version", "action", "target", "reason", "manual_required", "delivery_eligible", "repair_attempt", "recovery_counts"),
         "prepare_delivery": common + ("delivery_status", "repair_branch", "local_branch", "pushed", "commit", "changed_files"),
         "request_approval": common + ("decision", "approval_pending"),
         "finalize_execution": common + ("result", "terminal_step"),
     }
-    selected = _pick(output, fields.get(name, common))
     raw_output = output if isinstance(output, dict) else {}
+    # Deterministic StepSpec wrappers store their business result under payload.
+    if isinstance(raw_output.get("payload"), dict) and name in {"plan_validation", "summarize_validation", "decide_validation"}:
+        raw_output = raw_output["payload"]
+    selected = _pick(raw_output, fields.get(name, common))
     if name == "repair_agent" and isinstance(raw_output.get("changed_files"), list):
         selected["changed_files_count"] = len(raw_output["changed_files"])
     if name == "locate_agent":
@@ -97,6 +103,32 @@ def _project_output(name: str, output: Any) -> dict[str, Any]:
         coverage = selected.get("coverage")
         if isinstance(coverage, dict):
             selected["coverage"] = _pick(coverage, ("decision", "reason", "missing_checks"))
+    if name in {"review_agent", "summarize_validation"}:
+        results = selected.get("acceptance_results")
+        if isinstance(results, list):
+            compact = []
+            for item in results[:10]:
+                if not isinstance(item, dict):
+                    continue
+                row = _pick(item, ("assertion_id", "group", "expected", "verification_method", "status", "retryable", "reason", "evidence_refs", "evidence_version", "actual"))
+                if isinstance(row.get("evidence_version"), dict):
+                    row["evidence_version"] = _pick(row["evidence_version"], ("patch_id", "baseline_id", "policy_id"))
+                actual = row.get("actual")
+                if isinstance(actual, dict):
+                    row["actual"] = _pick(actual, ("status", "reason", "actual", "result"))
+                compact.append(row)
+            selected["acceptance_results"] = compact
+    if name == "summarize_validation":
+        dimensions = selected.get("dimensions")
+        if isinstance(dimensions, dict):
+            selected["dimensions"] = {key: _pick(value, ("status", "reason", "retryable", "report_path")) for key, value in list(dimensions.items())[:4] if isinstance(value, dict)}
+    if name == "plan_validation":
+        contract = selected.get("acceptance_contract")
+        if isinstance(contract, dict):
+            selected["acceptance_contract"] = _pick(contract, ("business_goal", "reproduction", "verification_methods", "assumptions", "known_limitations"))
+        version = selected.get("evidence_version")
+        if isinstance(version, dict):
+            selected["evidence_version"] = _pick(version, ("patch_id", "baseline_id", "policy_id"))
     return selected
 
 
