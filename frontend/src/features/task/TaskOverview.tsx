@@ -77,7 +77,7 @@ export function TaskOverview({ detail, onOpenStep }: { detail: TaskDetailRespons
   const verificationStatus = verify ? statusText(verify) : '未开始';
   const regressionStatus = regression ? statusText(regression) : '未开始';
   const reviewStatus = pick(reviewOut, 'verdict') || statusText(review);
-  const rawError = pick(problem, 'error', 'raw_error');
+  const rawError = pick(problem, 'error', 'error_msg', 'raw_error', 'message');
   const duration = Number(report.elapsed_ms ?? task.duration_ms) || undefined;
   const stopStep = active ? pick(lifecycle, 'current_step') || task.current_step || '' : pick(lifecycle, 'terminal_step') || pick(report, 'terminal_step') || pick(final?.output ?? {}, 'terminal_step');
   const taskTitle = active ? '任务执行中' : task.approval_pending || approval?.status === 'waiting' || result === 'WAITING_APPROVAL'
