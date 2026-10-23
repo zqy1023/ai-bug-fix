@@ -253,8 +253,8 @@
   "acceptance_contract": {
     "business_goal": "基于根因与证据描述修复后应实现的业务结果",
     "reproduction": ["基线复现步骤或可复核的原始失败证据"],
-    "required_assertions": ["修复后必须满足的可观察业务断言"],
-    "regression_cases": ["需要保护的正常/边界/相关行为"],
+    "required_assertions": [{"assertion_id": "business_result_1", "expected": "修复后必须满足的可观察业务结果", "verification_method": "original_response_replay"}],
+    "regression_cases": [{"assertion_id": "regression_normal_1", "expected": "需要保护的正常/边界行为", "verification_method": "request_regression"}],
     "verification_methods": ["可执行的验证方法及目标结果"],
     "assumptions": [],
     "known_limitations": []
