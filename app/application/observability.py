@@ -141,8 +141,8 @@ def project_step(record: Any, *, include_raw: bool = False) -> dict[str, Any]:
 
 def project_problem(problem: Any) -> dict[str, Any]:
     """Return only the incident fields needed in the task header and root-cause card."""
-    fields = ("service_name", "carrier", "biztype", "error_type", "error", "raw_error",
-              "request_number", "timestamp", "log_excerpt")
+    fields = ("service_name", "carrier", "biztype", "error_type", "error", "error_msg", "raw_error",
+              "message", "exception", "request_number", "timestamp", "log_excerpt")
     return _pick(problem, fields)
 
 
