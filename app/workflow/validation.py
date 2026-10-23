@@ -270,6 +270,31 @@ def _review_contract_version() -> int:
     return REVIEW_CONTRACT_VERSION
 
 
+def _review_acceptance_complete(summary: dict[str, Any], review: dict[str, Any]) -> bool:
+    """只有审查逐项覆盖全部验收 ID，且引用当前 patch 证据，才算闭环。"""
+    contract = summary.get("acceptance_contract") or {}
+    expected_items = [
+        *list(contract.get("required_assertions") or []),
+        *list(contract.get("regression_cases") or []),
+    ]
+    expected_ids = [str(item.get("assertion_id") or "") for item in expected_items]
+    results = review.get("acceptance_results")
+    if not expected_ids or any(not item for item in expected_ids) or not isinstance(results, list):
+        return False
+    result_ids = [str(item.get("assertion_id") or "") for item in results if isinstance(item, dict)]
+    if len(result_ids) != len(expected_ids) or len(set(result_ids)) != len(result_ids) or set(result_ids) != set(expected_ids):
+        return False
+    patch_id = (summary.get("evidence_version") or {}).get("patch_id")
+    for item in results:
+        if not isinstance(item, dict):
+            return False
+        if item.get("status") != "passed" or not str(item.get("actual") or "").strip():
+            return False
+        if not item.get("evidence_refs") or (item.get("evidence_version") or {}).get("patch_id") != patch_id:
+            return False
+    return True
+
+
 def decide(state: dict[str, Any]) -> dict[str, Any]:
     summary = state.get("validation_summary") or {}
     if state.get("validation_plan"):
@@ -300,11 +325,15 @@ def decide(state: dict[str, Any]) -> dict[str, Any]:
             key, item = pending[0]
             target = ("verify_issue" if key == "issue" else "run_regression") if item.get("retryable") else ""
             reason = item["reason"]
+        elif not human and review.get("code_verdict") == "FAIL":
+            action, target, reason = "repair", "repair_agent", str(review.get("summary") or "代码审查发现缺陷")
+        elif not human and any(item.get("status") == "failed" for item in review.get("acceptance_results") or [] if isinstance(item, dict)):
+            action, target, reason = "repair", "repair_agent", "审查发现具体验收项不符合预期，回修代码"
+        elif not human and not _review_acceptance_complete(summary, review):
+            target, reason = "review_agent", "审查未逐项核对全部验收项，或证据未绑定当前补丁版本"
         elif not human and (review.get("contract_error") or review.get("code_verdict") == "UNKNOWN" or not review
                             or review.get("review_contract_version") != _review_contract_version()):
             target, reason = "review_agent", str(review.get("contract_error") or "审查未取得明确的代码结论")
-        elif not human and review.get("code_verdict") == "FAIL":
-            action, target, reason = "repair", "repair_agent", str(review.get("summary") or "代码审查发现缺陷")
         elif human or (review.get("verdict") == "PASS" and review.get("code_verdict") == "PASS"
                        and (review.get("evidence_version") or {}).get("patch_id") ==
                        (summary.get("evidence_version") or {}).get("patch_id")):
