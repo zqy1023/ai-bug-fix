@@ -135,7 +135,7 @@ def run_workflow(
                 "log_excluded_biztypes": list(config.excluded_biztypes),
                 "log_hours": config.log_hours,
                 "log_limit": config.limit,
-                "workflow_version": 5,
+                "workflow_version": 6,
                 "attempt": 1,
                 "max_attempts": config.max_attempts,
                 "review_mode": config.review_mode,
