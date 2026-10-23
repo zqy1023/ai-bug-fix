@@ -83,11 +83,16 @@ def freeze_acceptance_contract(state: dict[str, Any], locate: dict[str, Any]) ->
         raise ValueError("缺少修复前基线 manifest，不能冻结验收契约")
     problem_id = fingerprint(problem)
     baseline_id = fingerprint(baseline_manifest)
+    root_cause_id = fingerprint({
+        key: locate.get(key)
+        for key in ("status", "root_cause", "category", "source_evidence", "candidate_files", "recommended_scope")
+    })
     contract_id = fingerprint({
         "version": 1,
         "contract": contract,
         "problem_id": problem_id,
         "baseline_id": baseline_id,
+        "root_cause_id": root_cause_id,
     })
     return {
         "acceptance_contract": contract,
@@ -97,6 +102,7 @@ def freeze_acceptance_contract(state: dict[str, Any], locate: dict[str, Any]) ->
             "stage": "before_repair",
             "problem_id": problem_id,
             "baseline_id": baseline_id,
+            "root_cause_id": root_cause_id,
             "contract_id": contract_id,
         },
     }
@@ -113,13 +119,20 @@ def acceptance_contract_is_current(state: dict[str, Any]) -> bool:
         return False
     problem_id = fingerprint(state.get("problem") or {})
     baseline_id = fingerprint(state.get("baseline_manifest") or {})
-    if meta.get("problem_id") != problem_id or meta.get("baseline_id") != baseline_id:
+    locate = state.get("locate") or {}
+    root_cause_id = fingerprint({
+        key: locate.get(key)
+        for key in ("status", "root_cause", "category", "source_evidence", "candidate_files", "recommended_scope")
+    })
+    if (meta.get("problem_id") != problem_id or meta.get("baseline_id") != baseline_id
+            or meta.get("root_cause_id") != root_cause_id):
         return False
     expected = fingerprint({
         "version": 1,
         "contract": contract,
         "problem_id": problem_id,
         "baseline_id": baseline_id,
+        "root_cause_id": root_cause_id,
     })
     return expected == contract_id == str(meta.get("contract_id") or "")
 
