@@ -7,7 +7,6 @@ import { queryKeys } from '../../lib/queryKeys';
 import { TaskHeader } from './TaskHeader';
 import { ExecutionNav } from './ExecutionNav';
 import { StepDetail } from './StepDetail';
-import { ContextInspector } from './ContextInspector';
 import { TaskOverview } from './TaskOverview';
 import { defaultStep, stepRecord } from './stages';
 import { TaskOperations } from './TaskOperations';
@@ -91,7 +90,7 @@ export function TaskWorkspace() {
       />
       {tab === 'overview' && <TaskOverview detail={task.data} onOpenStep={selectStep} />}
       {executionOpen && <section className="execution-section">
-        <header className="execution-toolbar"><div><strong>执行记录</strong><span>选择节点查看结果、证据与调用记录</span></div><span>{steps.filter((item) => item.status === 'failed').length} 个执行异常 · {steps.length} 个节点</span></header>
+        <header className="execution-toolbar"><div><strong>执行记录</strong><span>默认显示状态、结论、耗时与关键产物；原始数据按需加载</span></div><span>{steps.filter((item) => item.status === 'failed').length} 个失败 · {steps.length} 个节点</span></header>
         {approvalRecoveryFailed && <Alert type="error" showIcon message="审批恢复失败" description={task.data.run_error?.message || '请在交付审批页重新提交决策'} />}
 
         {executionOpen && (
@@ -121,7 +120,6 @@ export function TaskWorkspace() {
                     description="执行推进后会生成步骤输入、输出和审计信息。"
                   />
                 )}
-                <ContextInspector context={detail.data?.context} />
               </div>
             </div>
           ) : (
