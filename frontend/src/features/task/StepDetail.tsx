@@ -97,6 +97,7 @@ export function StepDetail({ runId, taskId, step, detail, runActive, approvalPen
         {raw.isLoading && <Skeleton active paragraph={{ rows: 4 }} />}
         {raw.isError && <EmptyState title="原始数据加载失败" description="请重试加载。" compact />}
         {raw.data && <>
+          <h5>完整错误详情</h5><JsonViewer value={raw.data.step.error ?? {}} defaultExpandDepth={1} />
           <h5>原始输入</h5><JsonViewer value={raw.data.step.input ?? {}} defaultExpandDepth={1} />
           <h5>原始输出</h5><JsonViewer value={raw.data.step.output ?? {}} defaultExpandDepth={1} />
         </>}
