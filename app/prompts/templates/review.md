@@ -28,5 +28,5 @@
 - coverage：decision=sufficient/insufficient/unknown；reason 说明实际修改的覆盖依据；reviewed_symbols 原样列出已核对的 validation_summary.changed_symbols（含模块配置）；missing_checks 只列与实际改动关联且确有必要的缺口。sufficient 时 missing_checks 必须为空。
 - findings：只写已确认缺陷，没有则为空数组。每项写明路径/符号与错误影响。
 - required_changes：只写针对上述缺陷的改法或明确待判断事项，不把平台可恢复的执行异常变成代码修改要求。
-- change_plan：没有代码回修需求时为空对象。审查不执行方案，不新增验证脚本和虚构样本。\n- acceptance_results：必须覆盖 validation_summary.acceptance_results 中的全部 assertion_id，不能新增无依据的验收项。
+- change_plan：没有代码回修需求时为空对象。审查不执行方案，不新增验证脚本和虚构样本。\n- acceptance_results：必须覆盖 validation_summary.acceptance_results 中的全部 assertion_id，不能新增无依据的验收项。每项格式为 {"assertion_id":"原 ID","status":"passed|failed|unverified","actual":"当前补丁的实际观察结果","evidence_refs":["报告路径"],"evidence_version":{"patch_id":"当前补丁 ID"},"reason":"判断依据"}。缺少 evidence_refs、actual 或当前 patch_id 不匹配时不得标 passed。
 - summary：简述代码结论、覆盖范围和实际限制，不声称未执行的分支已通过，不声称生产服务已经恢复。
