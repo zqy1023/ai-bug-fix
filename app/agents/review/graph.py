@@ -406,6 +406,7 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
         findings=findings,
         required_changes=required,
         change_plan=plan.model_dump(mode="json") if plan is not None else {},
+        acceptance_results=list(slim.get("acceptance_results") or []),
     )
     return {
         **view.model_dump(),
