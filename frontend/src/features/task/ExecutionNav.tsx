@@ -10,15 +10,17 @@ export function ExecutionNav({ steps, selected, onSelect, stages = TASK_STAGES }
   steps: StepRecord[]; selected: string; onSelect: (name: string) => void; stages?: WorkflowStage[];
 }) {
   const [search, setSearch] = useState('');
-  const [filter, setFilter] = useState('all');
+  const [filter, setFilter] = useState('key');
+  const keySteps = new Set(['locate_agent', 'repair_agent', 'check_changes', 'verify_issue', 'run_regression', 'review_agent', 'prepare_delivery', 'request_approval', 'finalize_execution']);
   const abnormal = (item: StepRecord) => item.status === 'failed' || item.status === 'waiting'
     || FAILED_RESULTS.has(String(item.result || '').toUpperCase());
-  const visible = steps.filter((item) => (filter === 'all' || abnormal(item))
-    && `${item.title} ${item.name}`.toLowerCase().includes(search.trim().toLowerCase()));
+  const visible = steps.filter((item) => (
+    filter === 'all' || (filter === 'issues' ? abnormal(item) : keySteps.has(item.name) || abnormal(item) || item.name === selected)
+  ) && `${item.title} ${item.name}`.toLowerCase().includes(search.trim().toLowerCase()));
   return <nav className="execution-nav" aria-label="执行节点">
     <div className="execution-nav-tools">
       <Input size="small" prefix={<SearchOutlined />} allowClear placeholder="搜索节点" aria-label="搜索执行节点" value={search} onChange={(event) => setSearch(event.target.value)} />
-      <Segmented block size="small" value={filter} onChange={setFilter} options={[{ value: 'all', label: `全部 ${steps.length}` }, { value: 'issues', label: `需关注 ${steps.filter(abnormal).length}` }]} />
+      <Segmented block size="small" value={filter} onChange={setFilter} options={[{ value: 'key', label: `关键节点 ${steps.filter((item) => keySteps.has(item.name) || abnormal(item) || item.name === selected).length}` }, { value: 'all', label: `全部 ${steps.length}` }, { value: 'issues', label: `需关注 ${steps.filter(abnormal).length}` }]} />
     </div>
     <ol className="execution-node-list">
       {visible.map((item) => <li key={item.name}>
