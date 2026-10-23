@@ -97,26 +97,39 @@ def _cleanup_quietly(path: Path) -> None:
 
 
 def _clone_repo(git_root: Path, target: Path) -> Repo:
-    """克隆源仓库。优先硬链接，跨盘或权限不足时退回普通复制。
+    """克隆源仓库；硬链接失败时回退普通克隆，并保留两次失败诊断。
 
-    ``local=True`` 在同盘能省一次对象复制，但 Windows 上硬链接失败会直接
-    中断整个克隆（``failed to create link: Improper link``）。
+    不要把 `--config=...` 放进 GitPython 的 `multi_options`：GitPython 会把
+    该参数按 clone 选项校验，部分版本抛 UnsafeOptionError，导致两种克隆方式
+    都在真正执行 Git 前失败。通过 Git 支持的 GIT_CONFIG_COUNT 环境变量启用
+    Windows 长路径，再在克隆完成后持久化仓库级配置。
     """
+    git_env = {
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "core.longpaths",
+        "GIT_CONFIG_VALUE_0": "true",
+    }
     try:
-        return Repo.clone_from(
-            str(git_root), str(target), local=True,
-            multi_options=["--config=core.longpaths=true"],
-        )
+        repo = Repo.clone_from(str(git_root), str(target), local=True, env=git_env)
+        repo.git.config("core.longpaths", "true")
+        return repo
     except Exception as local_error:
         if target.exists():
             _cleanup_quietly(target)
         try:
-            return Repo.clone_from(
-                str(git_root), str(target),
-                multi_options=["--config=core.longpaths=true"],
-            )
-        except Exception:
-            raise local_error from None
+            repo = Repo.clone_from(str(git_root), str(target), env=git_env)
+            repo.git.config("core.longpaths", "true")
+            return repo
+        except Exception as clone_error:
+            if target.exists():
+                _cleanup_quietly(target)
+            local_detail = redact_output(f"{type(local_error).__name__}: {local_error}")[:500]
+            clone_detail = redact_output(f"{type(clone_error).__name__}: {clone_error}")[:500]
+            raise DeliveryError(
+                "Git 克隆本地模式和普通模式均失败；"
+                f"local=[{local_detail}] fallback=[{clone_detail}]",
+                status="GIT_CLONE_FAILED",
+            ) from clone_error
 
 
 def _is_ref_rejected(error: Exception) -> bool:
