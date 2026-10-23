@@ -78,11 +78,25 @@ def run_stage(
         if pause_requested(store.root, run_id) and not state.get("_single_step"):
             interrupt({"control": "pause", "run_id": run_id, "step": spec.name})
         if spec.name != "finalize_execution" and cancellation_requested(store.root, run_id):
-            raise StepFailed(
-                "收到取消请求，已在安全节点边界停止后续执行",
-                result="manual",
-                code="RUN_CANCEL_REQUESTED",
-                output={"control_cancelled": True},
+            # Cancellation is a control-flow outcome, not a step exception. Persist it as
+            # skipped and route straight to finalization instead of _save_fail().
+            output_payload = {"control_cancelled": True, "reason": "收到取消请求，已在安全节点边界停止后续执行"}
+            record.status = "skipped"
+            record.result = "SKIPPED"
+            record.summary = output_payload["reason"]
+            record.output = output_payload
+            record.finished_at = utc_now()
+            record.duration_ms = round((time.perf_counter() - started) * 1000, 2)
+            store.save(run_id, record, task_id, **_views(spec))
+            return StepResult(
+                status="skipped",
+                output=output_payload,
+                next_action="finalize_execution",
+                audit=StepAudit(
+                    input_summary=brief_value(record.input),
+                    output_summary=brief_value(output_payload),
+                    elapsed_ms=record.duration_ms,
+                ),
             )
         parsed = parse_input(spec.name, spec.input_builder(state))
         record.input = dump_model(parsed)
@@ -239,6 +253,15 @@ def bind(
             state = {**state, "terminal_status": "CANCELLED"}
         result = run_stage(spec, store, services, state)
         cancelled = spec.name != "finalize_execution" and cancellation_requested(store.root, run_id)
+        if result.output.get("control_cancelled"):
+            # Do not run the step-specific patcher for a control signal: its payload is
+            # intentionally not the step's business output model.
+            return {
+                "last_result": "cancelled",
+                "terminal_status": "CANCELLED",
+                "next_step": "finalize_execution",
+                "step_result": result.model_dump(mode="json"),
+            }
         action = result.next_action if next_step is None else next_step
         if cancelled:
             action = "finalize_execution"
