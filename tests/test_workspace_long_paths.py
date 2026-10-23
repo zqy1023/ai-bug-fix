@@ -28,7 +28,11 @@ def test_clone_repo_passes_long_path_config_to_initial_checkout(tmp_path: Path) 
     kwargs = clone.call_args.kwargs
     assert kwargs["env"]["GIT_CONFIG_KEY_0"] == "core.longpaths"
     assert kwargs["env"]["GIT_CONFIG_VALUE_0"] == "true"
-    assert "--config=core.longpaths=true" in kwargs["multi_options"]
+    assert "--config=core.longpaths=true" not in kwargs["multi_options"]
+    fake_repo.config_writer.assert_called_once()
+    fake_repo.config_writer.return_value.__enter__.return_value.set_value.assert_called_once_with(
+        "core", "longpaths", "true"
+    )
     # Sparse checkout is invoked after clone; longpaths config must persist in the
     # repository as well as being active for the clone's first checkout.
     fake_repo.git.sparse_checkout.assert_called_once_with(
