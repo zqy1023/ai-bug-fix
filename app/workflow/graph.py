@@ -323,6 +323,7 @@ def build_task_graph(
                         "acceptance_contract": {},
                         "acceptance_contract_id": "",
                         "acceptance_contract_meta": {},
+                        "acceptance_contract_artifact": "",
                     })
                 return patch
             graph.add_node(name, retry_node)
