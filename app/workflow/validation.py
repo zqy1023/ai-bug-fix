@@ -47,6 +47,7 @@ class ValidationSummary(FrozenModel):
     workflow_version: Literal[6]
     plan_id: str
     acceptance_contract_id: str
+    acceptance_contract: dict[str, Any]
     evidence_version: dict[str, Any]
     stale: bool
     dimensions: dict[str, VerificationFact]
@@ -209,8 +210,14 @@ def summarize(state: dict[str, Any]) -> dict[str, Any]:
                             "report_path": report.get("report_path", "")}
     return ValidationSummary.model_validate({"workflow_version": WORKFLOW_VERSION, "plan_id": plan["plan_id"],
             "acceptance_contract_id": plan["acceptance_contract_id"],
+            "acceptance_contract": plan["acceptance_contract"],
             "evidence_version": version, "stale": stale, "dimensions": dimensions,
             "changed_symbols": plan["changed_symbols"]}).model_dump(mode="json")
+
+
+def _review_contract_version() -> int:
+    from app.agents.review.contract import REVIEW_CONTRACT_VERSION
+    return REVIEW_CONTRACT_VERSION
 
 
 def decide(state: dict[str, Any]) -> dict[str, Any]:
@@ -236,7 +243,7 @@ def decide(state: dict[str, Any]) -> dict[str, Any]:
             target = ("verify_issue" if key == "issue" else "run_regression") if item.get("retryable") else ""
             reason = item["reason"]
         elif not human and (review.get("contract_error") or review.get("code_verdict") == "UNKNOWN" or not review
-                            or review.get("review_contract_version") != WORKFLOW_VERSION):
+                            or review.get("review_contract_version") != _review_contract_version()):
             target, reason = "review_agent", str(review.get("contract_error") or "审查未取得明确的代码结论")
         elif not human and review.get("code_verdict") == "FAIL":
             action, target, reason = "repair", "repair_agent", str(review.get("summary") or "代码审查发现缺陷")
