@@ -314,6 +314,7 @@ def build_task_graph(
                         "acceptance_contract": {},
                         "acceptance_contract_id": "",
                         "acceptance_contract_meta": {},
+                        "acceptance_contract_artifact": "",
                     })
                 if target == LOCATE:
                     # 重新定位必须重建根因与验收契约；修复重试则保留已冻结契约。
