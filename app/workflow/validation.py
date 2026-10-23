@@ -201,7 +201,7 @@ def summarize(state: dict[str, Any]) -> dict[str, Any]:
     dimensions = {}
     for name, key in (("issue", "verify_result"), ("request", "regression_result")):
         report = state.get(key) or {}
-        if (report.get("evidence_version") or {}).get("patch_id") != version["patch_id"]:
+        if report and (report.get("evidence_version") or {}).get("patch_id") != version["patch_id"]:
             stale = True
         if report.get("status") == "verified" and report.get("input_id") != plan["input_id"]:
             stale = True
