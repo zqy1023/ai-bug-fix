@@ -52,6 +52,8 @@ class LocateState(TypedDict, total=False):
     recommended_scope: str
     # summary：该模型字段用于承载对应契约中的结构化数据。
     summary: str
+    # acceptance_contract：根因 Agent 在修改前提出的验收方案。
+    acceptance_contract: dict[str, Any] | None
     # passed：该模型字段用于承载对应契约中的结构化数据。
     passed: bool
     # raw_result：该模型字段用于承载对应契约中的结构化数据。
