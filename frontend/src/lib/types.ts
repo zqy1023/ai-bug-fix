@@ -344,22 +344,10 @@ export interface RunBoard {
   total: number;
 }
 
-export interface StepContext {
-  attempt: number;
-  status: StepStatus;
-  result: BusinessResult;
-  changed_files: string[];
-  change_plan_scope: string;
-  delivery_status: string;
-  counts: Record<string, number>;
-  flags: Record<string, boolean>;
-}
-
 export interface StepDetailResponse {
   run_id: string;
   task_id: string;
   step: StepRecord;
   artifacts: ArtifactRef[];
   model_call_ids: string[];
-  context: StepContext;
 }
