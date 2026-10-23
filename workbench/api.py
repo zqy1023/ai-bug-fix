@@ -2092,27 +2092,6 @@ def _load_model_calls(run_id: str, task_id: str | None = None) -> list[dict[str,
     return model_calls(_store().run_dir(run_id), task_id)
 
 
-def _step_context(record: Any) -> dict[str, Any]:
-    """步骤上下文白名单投影；不返回工作区绝对路径与完整输入输出。"""
-    output = record.output if isinstance(record.output, dict) else {}
-    plan = output.get("change_plan") if isinstance(output.get("change_plan"), dict) else {}
-    files = output.get("changed_files") if isinstance(output.get("changed_files"), list) else []
-    return {
-        "attempt": record.attempt,
-        "status": record.status,
-        "result": record.result,
-        "changed_files": [str(item) for item in files if str(item)][:50],
-        "change_plan_scope": str(plan.get("scope") or ""),
-        "delivery_status": str(output.get("delivery_status") or ""),
-        "counts": {str(key): len(value) for key, value in output.items() if isinstance(value, list)},
-        "flags": {
-            key: bool(output[key])
-            for key in ("legacy_only", "scope_escalation_required", "approval_pending")
-            if key in output
-        },
-    }
-
-
 @router.get("/api/v1/runs/{run_id}/board")
 def v1_run_board(run_id: str, _: None = Depends(_authorize),
                  page: int = Query(default=1, ge=1),
