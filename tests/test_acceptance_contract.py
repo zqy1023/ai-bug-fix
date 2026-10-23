@@ -15,8 +15,8 @@ def _contract() -> dict:
     return {
         "business_goal": "原始时间格式异常得到正确处理并返回有效轨迹",
         "reproduction": ["使用基线源码和原始异常输入复现时间解析失败"],
-        "required_assertions": ["修复后解析结果符合承运商轨迹协议，时间字段可被规范化"],
-        "regression_cases": ["已有正常时间格式仍能解析", "无效时间格式仍被明确拒绝"],
+        "required_assertions": [{"assertion_id": "business_result_1", "expected": "修复后解析结果符合承运商轨迹协议，时间字段可被规范化", "verification_method": "original_response_replay"}],
+        "regression_cases": [{"assertion_id": "regression_normal_1", "expected": "已有正常时间格式仍能解析", "verification_method": "request_regression"}, {"assertion_id": "regression_invalid_1", "expected": "无效时间格式仍被明确拒绝", "verification_method": "request_regression"}],
         "verification_methods": ["对原始响应进行受控回放并检查结构化结果"],
         "assumptions": ["原始响应代表该任务的真实失败输入"],
         "known_limitations": [],
