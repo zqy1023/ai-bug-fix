@@ -232,6 +232,10 @@ def summarize(state: dict[str, Any]) -> dict[str, Any]:
             fact = dimensions.get(dimension_name) if dimension_name else None
             report = (state.get("verify_result") or {}) if dimension_name == "issue" else (state.get("regression_result") or {})
             result_status = str((fact or {}).get("status") or "unverified")
+            evidence_refs = [str((fact or {}).get("report_path") or report.get("report_path") or "")] if ((fact or {}).get("report_path") or report.get("report_path")) else []
+            report_version = report.get("evidence_version") or {}
+            if not evidence_refs or report_version.get("patch_id") != version.get("patch_id"):
+                result_status = "unverified"
             acceptance_results.append({
                 "assertion_id": str(item.get("assertion_id") or ""),
                 "group": group_name,
@@ -246,11 +250,11 @@ def summarize(state: dict[str, Any]) -> dict[str, Any]:
                 },
                 "status": result_status if result_status in {"passed", "failed", "unverified"} else "unverified",
                 "reason": str((fact or {}).get("reason") or "没有匹配的业务验证结果"),
-                "evidence_refs": [str((fact or {}).get("report_path") or report.get("report_path") or "")] if ((fact or {}).get("report_path") or report.get("report_path")) else [],
-                "evidence_version": report.get("evidence_version") or {},
+                "evidence_refs": evidence_refs,
+                "evidence_version": report_version,
                 "required": True,
             })
-    if not acceptance_results or any(not item["assertion_id"] or not item["expected"] or not item["evidence_refs"]
+    if not acceptance_results or any(not item["assertion_id"] or not item["expected"]
                                      for item in acceptance_results):
         stale = True
     return ValidationSummary.model_validate({"workflow_version": WORKFLOW_VERSION, "plan_id": plan["plan_id"],
