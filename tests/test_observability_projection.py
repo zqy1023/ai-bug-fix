@@ -105,3 +105,52 @@ def test_verified_change_count_is_exact_while_file_list_is_bounded() -> None:
     assert projected["output"]["claim"]["actual_count"] == 25
     assert len(projected["output"]["claim"]["actual"]) == 8
     assert len(projected["output"]["files"]) <= 20
+
+
+
+def test_validation_step_payload_is_unwrapped_and_acceptance_results_are_compact() -> None:
+    record = {
+        "name": "summarize_validation",
+        "status": "succeeded",
+        "output": {"payload": {
+            "workflow_version": 6,
+            "stale": False,
+            "dimensions": {
+                "issue": {"status": "passed", "reason": "verified", "retryable": False, "report_path": "reports/verify.json", "huge": "x" * 10000},
+                "request": {"status": "unverified", "reason": "not run", "retryable": True, "report_path": "reports/regression.json"},
+            },
+            "acceptance_results": [{
+                "assertion_id": "business_result_1", "expected": "响应必须返回可解析的轨迹状态",
+                "verification_method": "original_response_replay", "status": "passed", "retryable": False,
+                "reason": "confirmed", "evidence_refs": ["reports/verify.json"],
+                "evidence_version": {"patch_id": "patch-1", "baseline_id": "base-1", "policy_id": "policy-1", "huge": "x" * 10000},
+                "actual": {"status": "verified", "reason": "observed", "request_body": "y" * 10000},
+            }],
+        }},
+    }
+
+    projected = project_step(record)
+    output = projected["output"]
+
+    assert output["workflow_version"] == 6
+    assert output["stale"] is False
+    assert output["acceptance_results"][0]["assertion_id"] == "business_result_1"
+    assert output["acceptance_results"][0]["evidence_version"] == {"patch_id": "patch-1", "baseline_id": "base-1", "policy_id": "policy-1"}
+    assert "huge" not in output["dimensions"]["issue"]
+    assert "request_body" not in output["acceptance_results"][0]["actual"]
+
+
+def test_decision_step_payload_is_visible_in_compact_projection() -> None:
+    projected = project_step({
+        "name": "decide_validation",
+        "status": "succeeded",
+        "output": {"payload": {
+            "validation_decision": {"action": "retry", "target": "verify_issue", "reason": "evidence missing"},
+            "retry_target": "verify_issue",
+            "retry_reason": "evidence missing",
+            "blocked_reason": "",
+        }},
+    })
+
+    assert projected["output"].get("action") == "retry"
+    assert projected["output"].get("target") == "verify_issue"
