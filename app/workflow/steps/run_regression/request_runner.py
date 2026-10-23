@@ -162,7 +162,7 @@ server_dev.override_config = _regression_override_config
         passed = outcome.executed and bool(outcome.items) and all(
             item.succeeded or item.error_type == "NotFound" for item in outcome.items
         )
-        uncertain = bool(outcome.items) and all(item.error_type in {"Succeed", "WebError", "ServiceError", "TimeoutError"}
+        uncertain = bool(outcome.items) and all(item.error_type in {"Succeed", "NotFound", "WebError", "ServiceError", "TimeoutError"}
                                                for item in outcome.items) and not passed
         timeout_note = (
             f"；业务配置时限 {inputs['track_config']['timeout']}ms，框架记录耗时 {result.get('cost', '未记录')}ms；"

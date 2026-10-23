@@ -27,7 +27,7 @@ TASK_PHASES = {
     VALIDATE: PHASE_COMPOSITIONS[VALIDATE],
 }
 
-# 10 个业务主节点；retry_prepare 是仅供有界回修使用的内部控制节点。
+# 业务编排节点；retry_prepare 是仅供有界回修使用的内部控制节点。
 TASK_NODE_NAMES = (
     PREPARE_CONTEXT, LOCATE, CLAIM, REPAIR, VALIDATE,
     PLAN, VERIFY, REGRESSION, SUMMARY, REVIEW, DECIDE, DELIVER, APPROVE, FINALIZE, RETRY,
@@ -46,7 +46,7 @@ TASK_CONDITIONAL_TRANSITIONS = (
     (VALIDATE, after_validate_changes, (PLAN, RETRY, FINALIZE)),
     (PLAN, lambda state: FINALIZE if state.get("last_result") != "passed" or str(state.get("terminal_status", "")).upper() == "CANCELLED" else VERIFY, (VERIFY, FINALIZE)),
     (VERIFY, lambda state: FINALIZE if str(state.get("terminal_status", "")).upper() == "CANCELLED" else REGRESSION, (REGRESSION, FINALIZE)),
-    # human 模式跳过 AI 审查直接交付分支，因此 REGRESSION 也可以直达 DELIVER。
+    # 请求回归先汇总验证事实，human 模式也必须经过统一决策。
     (REGRESSION, after_regression, (SUMMARY, FINALIZE)),
     (SUMMARY, lambda state: DECIDE if state.get("review_mode") == "human" else REVIEW, (REVIEW, DECIDE)),
     (REVIEW, after_review, (DECIDE, FINALIZE)),

@@ -103,12 +103,18 @@ def _clone_repo(git_root: Path, target: Path) -> Repo:
     中断整个克隆（``failed to create link: Improper link``）。
     """
     try:
-        return Repo.clone_from(str(git_root), str(target), local=True)
+        return Repo.clone_from(
+            str(git_root), str(target), local=True,
+            multi_options=["--config=core.longpaths=true"],
+        )
     except Exception as local_error:
         if target.exists():
             _cleanup_quietly(target)
         try:
-            return Repo.clone_from(str(git_root), str(target))
+            return Repo.clone_from(
+                str(git_root), str(target),
+                multi_options=["--config=core.longpaths=true"],
+            )
         except Exception:
             raise local_error from None
 

@@ -138,7 +138,7 @@ class ManualProvider(ReviewProvider):
             "passed": False,
             "code_verdict": "UNKNOWN",
             "coverage": {"decision": "unknown", "reason": "人工审查模式，尚未评估本次变更覆盖",
-                         "reviewed_functions": [], "missing_checks": ["人工核对源码及验证证据"]},
+                         "reviewed_symbols": [], "missing_checks": ["人工核对源码及验证证据"]},
             "mode": "MANUAL_REVIEW_REQUIRED",
             "summary": self._REASON,
             "findings": [],

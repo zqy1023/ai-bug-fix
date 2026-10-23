@@ -43,7 +43,11 @@ def _clone_repo(git_root: Path, target: Path, *, sparse: str = "") -> Repo:
     这样共享源码树不必先物化整仓库再删掉。回归和交付工作区需要完整树，
     不传该参数。
     """
-    options = ["--sparse"] if sparse else []
+    # clone 的配置必须在首次检出前生效，并保存在新仓库中供后续 checkout 使用。
+    # 共享缓存的哈希名和临时后缀会使合法的业务路径超过 Windows 的 MAX_PATH。
+    options = ["--config=core.longpaths=true"]
+    if sparse:
+        options.append("--sparse")
     try:
         repo = Repo.clone_from(str(git_root), str(target), local=True, multi_options=options)
     except Exception as local_error:

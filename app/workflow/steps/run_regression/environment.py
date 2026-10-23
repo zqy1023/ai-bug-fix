@@ -1,10 +1,10 @@
 """隔离 Git 回归环境的本地代理配置。"""
-
+import os
 from pathlib import Path
 
 from dotenv import dotenv_values
 
-PROXY_MANAGER_ADDRESS = "192.168.25.201:31656"
+PROXY_MANAGER_ADDRESS = os.getenv('PROXY_MANAGER_ADDRESS')
 
 
 def prepare_regression_environment(project: Path) -> dict[str, str]:

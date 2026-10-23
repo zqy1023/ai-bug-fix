@@ -200,7 +200,7 @@ def _clone(
     temporary = mirror.with_name(f".{mirror.name}.tmp-{uuid.uuid4().hex}")
     cone = project_cone(config)
     try:
-        command = ["clone", "--origin", remote]
+        command = ["clone", "--config=core.longpaths=true", "--origin", remote]
         if cone:
             command.append("--sparse")
         command.extend([config.source_url, str(temporary)])
@@ -269,7 +269,8 @@ def _run_git(
     cancel_requested: Callable[[], bool] | None = None,
 ) -> str:
     """执行 Git 命令，失败信息保留原值。"""
-    command = ["git", *args]
+    # 同时覆盖已有镜像的 checkout 和新镜像的首次检出，不依赖宿主机全局配置。
+    command = ["git", "-c", "core.longpaths=true", *args]
     process: subprocess.Popen[str] | None = None
     try:
         process = subprocess.Popen(

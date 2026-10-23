@@ -119,9 +119,11 @@ def validate_shape(payload: dict[str, Any]) -> tuple[bool, str]:
         return False, "coverage 必须明确声明 sufficient/insufficient/unknown"
     if not isinstance(coverage.get("reason"), str) or not coverage["reason"].strip():
         return False, "coverage 必须说明针对本次变更的覆盖依据或证据缺口"
-    for field in ("reviewed_functions", "missing_checks"):
+    for field in ("reviewed_symbols", "missing_checks"):
         if not isinstance(coverage.get(field), list) or any(not isinstance(item, str) for item in coverage[field]):
             return False, f"coverage.{field} 必须是字符串数组"
+    if value == "PASS" and coverage["decision"] != "sufficient":
+        return False, "代码审查通过必须明确实际变更覆盖充分"
     if coverage["decision"] == "sufficient" and coverage["missing_checks"]:
         return False, "覆盖仍有必需检查缺口时不能声明 sufficient"
     if payload.get("change_plan"):

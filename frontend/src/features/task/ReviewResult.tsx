@@ -10,7 +10,7 @@ export function ReviewResult({ step }: { step: StepRecord }) {
   const findings = Array.isArray(output.findings) ? output.findings.map(String) : [];
   const changes = Array.isArray(output.required_changes) ? output.required_changes.map(String) : [];
   const contractError = String(output.contract_error || '');
-  const title = contractError ? '审查输出异常' : ({ PASS: '审查通过', FAIL: '审查未通过', MANUAL: '代码审查存在待判断事项' }[verdict] || '尚无审查结论');
+  const title = contractError ? '审查输出异常' : ({ PASS: '代码审查通过', FAIL: '代码审查未通过', MANUAL: '代码审查存在待判断事项' }[verdict] || '尚无审查结论');
   const patch = (output.evidence_version || {}) as Record<string, string>;
   return <div className="review-result">
     <header className={`review-verdict is-${verdict.toLowerCase()}`}>

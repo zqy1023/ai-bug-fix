@@ -1,6 +1,6 @@
 # AI 异常日志自动修复工作流
 
-项目按 `domain / application / workflow / agents / infrastructure / prompts` 分层。每个工作步骤是独立插件，输入、输出、执行函数和真实数据单步入口同目录维护。前端位于 `frontend/`，后端 API 位于 `workbench/api.py`，服务入口为根目录 `server.py`。
+项目按 `domain / application / workflow / agents / infrastructure / prompts` 分层。当前工作流版本为 **v5**，由确定性步骤插件、三个 Agent 和 LangGraph 编排组成。前端位于 `frontend/`，后端 API 位于 `workbench/api.py`，服务入口为根目录 `server.py`。
 
 仓库文档统一收敛在本文件；`app/`、`app/agents/`、`app/workflow/steps/`、`frontend/`、`workbench/` 不再单独维护 README。
 
@@ -9,6 +9,7 @@
 - [主流程](#主流程)
 - [代码结构](#代码结构)
 - [工作步骤](#工作步骤)
+- [验证与统一决策](#验证与统一决策)
 - [Agent 子图](#agent-子图)
 - [工作台后端](#工作台后端)
 - [前端](#前端)
@@ -35,17 +36,18 @@ sync_source_repo（同步源仓库）
      -> validate_changes（check_changes -> syntax_regression）
      -> plan_validation -> verify_issue -> run_regression
      -> summarize_validation -> review_agent -> decide_validation
-     -> run_regression
-     -> review_agent
-     -> prepare_delivery
-     -> request_approval
-     -> finalize_execution
+        ├─ retry：经 retry_prepare 恢复对应验证或审查阶段
+        ├─ repair：经 retry_prepare 返回 repair_agent
+        ├─ blocked：finalize_execution，记录验证受阻
+        └─ deliver：prepare_delivery -> request_approval -> finalize_execution
   -> task_collect（记下结论，推进游标）-> 回到 task_dispatch
 ```
 
 任务之间严格串行：前一个任务走到 `finalize_execution` 并记完汇总后，游标才推进到下一个。任务子图持有自己的状态（`WorkflowState`），父图只保留 run 级字段与结果汇总（`RunState`），所以 `changed_files`、`repair`、`locate` 这类任务局部通道不会跨任务累积。
 
 框架预检优先识别 `gathers/<Carrier>/main.py`，缺少新框架入口但存在 `spiders/<Carrier>/` 时保留旧框架证据标签；定位 Agent 继续只读分析，后续按根因范围和定位结论路由。旧框架或依赖旧实现的标签本身不会在预检阶段直接终止任务。缺少两类实现时步骤明确失败。
+
+上图是正常修复路径，定位结论、取消和交付失败等分支由 `definitions.py` 与 `routes.py` 决定。`review_mode=human` 只跳过 AI 审查：`summarize_validation → decide_validation`，仍要求完成两项业务验证后才能交付。
 
 ## 代码结构
 
@@ -60,18 +62,21 @@ app/
 │   ├── state.py             RunState（父图）与 WorkflowState（任务子图）
 │   ├── registry.py          步骤与 Agent 注册
 │   ├── runner.py            单步骤记录执行器
-│   └── steps/<step>/        SPEC（__init__.py）、models、node、__main__
+│   ├── validation.py        v5 验证计划、事实汇总与统一决策契约
+│   └── steps/<step>/        19 个确定性步骤插件；__init__.py 导出 SPEC
 ├── agents/                  common.py, policy.py, locate/, repair/, review/
 ├── infrastructure/          es/, git/, filesystem/, claude/, commands/, records/
 ├── prompts/                 templates/{common,locate,repair,review}.md, loader.py, renderer.py
 └── entrypoint.py            整图入口
 ```
 
-每个 `workflow/steps/<step>/` 只包含该步骤的契约、执行器和 CLI。运行图按 `definitions.py` 显式组合业务阶段，阶段内部调用独立插件并分别写入记录。单步 CLI 只接受真实 `run_id`，任务级步骤还需 `task_id`；输入只从已通过的前置记录和运行 artifact 重建，不存在 fixture、stub 或伪造调试 ID。
+步骤包按复杂度拆分契约与执行器；小型平台步骤可以直接在 `__init__.py` 内定义，不要求每个目录都有 `models.py`、`node.py` 或 `__main__.py`。`plugin_loader.py` 显式注册步骤和 Agent，`definitions.py` 定义阶段组合与转移，阶段内部调用插件并分别写入记录。
+
+提供 `__main__.py` 的步骤可以通过模块 CLI 调试；所有单步执行均使用真实运行记录重建输入。`__init__.py` 是 Python 包入口，`__pycache__/` 是运行时字节码缓存，都不是额外步骤。
 
 ## 工作步骤
 
-目录名、`SPEC.name`、步骤记录名与调试模块名必须一致。原子步骤继续独立注册、独立记录、独立调试；LangGraph 图只调度业务阶段，组合阶段内部按顺序调用原子步骤，失败、跳过、人工介入或取消后立即停止后续子步骤。
+目录名、`SPEC.name` 与步骤记录名保持一致。组合阶段内部按顺序调用插件；阶段之间按路由推进。原始问题验证、真实请求回归即使未通过，也要把实际结果送入汇总与统一决策，不能在中间直接认定修复成功或转人工。
 
 ### 工作流主节点
 
@@ -85,15 +90,21 @@ app/
 | `claim_repair_slot` | 原子领取本轮修复资格 | `repair_agent` |
 | `repair_agent` | 仅修改授权范围内的目标 carrier | `validate_changes` |
 | `validate_changes` | 范围与语法检查 | `plan_validation` |
+| `plan_validation` | 绑定补丁、基线、原始输入和检查策略，确定验收条件 | `verify_issue` |
+| `verify_issue` | 用原始录制正文比较修复前后行为 | `run_regression` |
 | `run_regression` | 真实请求经 server_dev.main 执行，保留原参数和代理 | `summarize_validation` |
+| `summarize_validation` | 汇总验证事实，检查证据是否过期 | `review_agent`；human 模式到 `decide_validation` |
 | `review_agent` | 只读审查实际代码与统一验证事实 | `decide_validation` |
+| `decide_validation` | 决定补证重试、代码回修、交付或验证受阻 | 对应恢复阶段、交付或收尾 |
 | `prepare_delivery` | 创建修复分支并按配置提交/推送；明确转分析报告的任务交付报告分支 | 源码交付后进入 `request_approval`；分析报告交付后结束 |
 | `request_approval` | 已交付源码分支的人工决策；拒绝进入有上限的回修循环 | `finalize_execution` 或回修 |
 | `finalize_execution` | 生成终态报告并收尾 | 结束 |
 
-任务子图保留 10 个业务主节点；`retry_prepare` 是内部控制节点，不计入节点数。run 级主图包含源码同步、日志准备、运输商识别，以及串行任务分发、执行和汇总节点。10 个任务主节点保留了 Agent、安全隔离、资格占用、回归、审批、交付等必须独立审计的边界。
+`TASK_NODE_NAMES` 定义 15 个任务编排节点（含内部控制节点 `retry_prepare`）。这与插件目录数量不同：组合阶段会执行多个插件，三个 Agent 有各自的子图，部分步骤只在 run 级执行。run 级还包含源码同步、任务分发和汇总等编排节点。
 
 ### 原子步骤
+
+`app/workflow/steps/` 共 **19 个正式步骤目录**：原有 16 个，加上 v5 的 `plan_validation`、`summarize_validation`、`decide_validation`。之前的“五个改造阶段”是实施顺序，不是运行时节点数。以下清单与 `plugin_loader.BUILTIN_STEPS` 对应。
 
 | 原子步骤 | 层级 | 输出责任 |
 |---|---|---|
@@ -108,25 +119,99 @@ app/
 | `prepare_workspace` | task | 共享本轮 Git 干净树，只复制目标 carrier 的新旧框架目录 |
 | `check_changes` | task | 校验路径、范围、AST、敏感信息并保存完整 Diff |
 | `syntax_regression` | task | 独立编译变更的 Python 文件，使用临时 pycache，不代替业务验证 |
-| `verify_issue` | task | 验证原始问题是否修复 |
-| `run_regression` | 真实请求经 server_dev.main 执行，保留原参数和代理 | `summarize_validation` |
+| `plan_validation` | task | 确定验收条件并绑定当前证据版本 |
+| `verify_issue` | task | 比较原始异常在基线与补丁代码中的行为 |
+| `run_regression` | task | 经 `server_dev.main` 发起真实请求并逐项核对业务结果 |
+| `summarize_validation` | task | 汇总独立验证事实与证据有效性 |
+| `decide_validation` | task | 根据事实、审查结论和次数上限决定下一步 |
 | `request_approval` | task | 保存人工决策 |
 | `prepare_delivery` | task | 生成修复分支与交付结果 |
 | `finalize_execution` | task | 汇总该任务的步骤记录、状态和产物 |
 
 Locate、Repair、Review Agent 仍分别是独立 Agent 子图，不与确定性步骤合并。
 
-请求重放在两个独立文件副本中运行修复前、修复后的代码，并按单号核对全部返回结果。有录制响应时使用同一响应比较；没有录制响应时允许实时请求，但两次上游响应未固定，业务结论标为 `unverified`，需要人工确认。
-
-两侧均出现明确的代理连接或认证失败证据时，报告标记 `environment / unverified`，说明本地代理受限。普通 `WebError`、`TimeoutError` 不直接归为环境问题；在录制响应模式下，基线成功而修复后失败会阻止验证通过。重放源目录不可用时停止重放并标为未验证，不回写 AI 工作区。
-
-单步入口：`python -m app.workflow.steps.<step> --run-id <real-run-id> [--task-id <task-id>]`。只读取真实记录和 artifact；不存在样例输入或替代数据路径。
-
 ### 终态语义
 
 `status` 记录执行状态，原异常效果、真实请求结果、代码审查分别记录。`decide_validation` 统一决定交付、回修、有界恢复或 BLOCKED。BLOCKED 表示验证受阻，保留补丁和有效证据，不自动进入审批。
 
 human 模式（人工审查）与 agent 模式的差异只在审查环节：回归通过后同样交付修复分支并进入交付审批，由人工审查分支内容。终态按真实交付记录推导——没有真实提交（远端分支或源仓库本地分支可查）时不会记为 `SUCCESS`。
+
+## 验证与统一决策
+
+### 计划、事实与动作
+
+| 节点 | 保存什么 | 用户需要核对什么 |
+|---|---|---|
+| `plan_validation` | `ValidationPlan`：补丁/基线哈希、输入指纹、检查策略版本、变更符号和验收条件 | 本次验证针对哪个问题、哪个补丁，需要证明什么 |
+| `summarize_validation` | `ValidationSummary`：原异常与真实请求分别为 `passed / failed / unverified`，附原因和报告路径 | 原问题是否复现并修复、实际请求是否完成、是否仍有证据缺口 |
+| `decide_validation` | `ValidationDecision`：下一动作、目标阶段、原因、恢复次数和代码回修次数 | 为什么继续、回修、交付或停止 |
+
+这三个节点不调用模型。修复 Agent 的 `validation_notes` 是建议，不直接成为硬性验收门槛；不执行模型构造的响应样本来证明业务修复。
+
+### 原始问题验证与真实请求回归
+
+`verify_issue` 在隔离的修复前、修复后代码副本中重放**同一份原始录制正文**。通过必须证明基线复现原异常，且补丁代码满足修复后的协议要求。没有原始正文或异常证据时记录未验证，不能拿后来请求得到的新正文替代原始问题证据。
+
+`run_regression` 在独立 Git 回归克隆内运行真实业务入口，不注入录制响应。生成脚本保留日志中的原始单号和请求字段，从异常上下文提取 `track_config`，包括 `proxy_channel_model`；不会把单号替换为 `***`。调用形式为：
+
+```python
+from server_dev import main
+from framework.models import (
+    TrackModel, TrackRequestItemModel, TrackRequestConfigModel, ProxyChannelModel,
+)
+
+reqs = [TrackRequestItemModel(number="CPBPQKZ0518229001")]
+res = main(TrackModel(
+    carrier="CouriersPlease",
+    requests=reqs,
+    track_config=TrackRequestConfigModel(
+        timeout=12000000,
+        proxy_channel_model=ProxyChannelModel(**{
+            "biz_ident": "packet_CouriersPlease",
+            "provider": "proxy_scrape",
+            "proxy_type": "datacenter",
+        }),
+    ),
+))
+```
+
+示例只说明调用形式，实际参数来自该任务日志；已有 `timeout` 保留，缺省时补 `12000000`。业务超时参数与执行器的进程超时是两层限制。
+
+当前代理地址读取工作流服务进程环境变量 `PROXY_MANAGER_ADDRESS`。启动后端前设置：
+
+```powershell
+$env:PROXY_MANAGER_ADDRESS = "192.168.25.201:31656"
+python server.py
+```
+
+回归环境准备阶段把该值写入隔离克隆的 `.env`：`proxy_manager_address="192.168.25.201:31656"`；真实请求还校验实际代理配置已生效。不要只配置开发机业务仓库的 `.env`，却遗漏运行工作流服务的进程环境。业务仓库的运输商脚本不为此改写。
+
+`server_dev.main` 可能只打印 `result:` 而返回 `None`，因此以实际业务结果和逐单匹配为准，不以 `res is None` 或进程退出码 0 判断成功。完整执行脚本、请求参数、stdout/stderr、业务结果和证据报告分别归档。
+
+| 结果 | 如何处理 |
+|---|---|
+| 有效 `Succeed` 或 `NotFound`，请求项完整匹配 | 请求验证通过；无轨迹不等于请求失败 |
+| 实际 `ProcessError` 或已捕获的业务处理错误 | 业务验证失败，进入代码回修判断 |
+| `WebError / ServiceError / TimeoutError` | 未验证；保留实际分类，不据此断言原异常修复无效或一定是代理故障 |
+| 进程超时、环境启动失败、结果缺失或无法解析 | 未验证，不伪造业务返回类型 |
+| 仅语法通过、未配置执行器或未执行真实请求 | 不能算业务验证通过 |
+
+### 恢复、回修与审批
+
+| 情况 | 统一决策 |
+|---|---|
+| 补丁、输入或检查策略变化，已有证据失效 | 重新检查并建立验证计划 |
+| 可恢复的执行故障或审查协议错误 | 只恢复对应验证/审查阶段 |
+| 业务验证确认失败或代码审查确认缺陷 | 返回修复 Agent |
+| 两项业务验证通过，AI 代码审查通过 | 进入交付及最终审批 |
+| 两项业务验证通过，用户明确选择 human 模式 | 交付分支，交由人工代码审查 |
+| 必需证据不可得、存在未解决判断或次数耗尽 | `BLOCKED`，显示“验证受阻”，保留补丁和有效证据 |
+
+恢复次数按目标阶段分别记录，与代码回修次数分开。`max_attempts` 默认 3，即每个恢复阶段最多追加 2 次自动恢复；代码修复最多 3 次尝试。已通过且输入、补丁一致的真实请求结果可复用，解析补证不必重复发请求。
+
+AI 审查协议为 v5：`verdict` 仅允许 `PASS / FAIL / MANUAL`，不接受旧 `result` 别名；另行记录 `code_verdict` 与 `coverage.reviewed_symbols`。AI 输出 PASS 只代表代码审查结论，交付资格由 `decide_validation` 产生。证据不足或 MANUAL 不会自动进入交付审批。
+
+v5 不恢复旧版执行：旧任务的续跑、单步重跑和审批被拒绝，不迁移检查点；历史记录保留可读，需要执行时新建当前版本任务。更新代码后需重启后端加载新逻辑，工作流不自动合并分支。
 
 ## Agent 子图
 
@@ -138,7 +223,7 @@ human 模式（人工审查）与 agent 模式的差异只在审查环节：回�
 | `repair` | `repair_agent` | 可写，`write_root` 仅限目标 carrier |
 | `review` | `review_agent` | 只读审查真实 diff、门禁和回归结果 |
 
-修复对外只留 `passed` / `result` / `analysis` / `summary` / `change_plan` / `blocked_reason` / `scope_escalation_required`。审查对外只留 `verdict` / `passed` / `summary` / `findings` / `required_changes` / `change_plan`。
+修复输出包括 `passed`、`result`、`analysis`、`summary`、`change_plan`、`blocked_reason` 与 `scope_escalation_required`。审查输出包括 `verdict`、`passed`、`code_verdict`、`coverage`、`summary`、`findings`、`required_changes` 与 `change_plan`，并绑定当前证据版本。
 
 `change_plan` 是两者的正式分析通道：根因确实不在目标 carrier 时给出方案，`scope=project` 的方案需要人工确认；`scope=carrier` 且已就地改完时 `edits` 为空。
 
@@ -171,7 +256,7 @@ Agent 子图的 `State` 使用 TypedDict：**新增字段必须显式声明**，
 
 模型调用审计文件写入 `<运行时目录>/runs/<run_id>/model_calls.jsonl`。历史运行不会补造缺失的模型调用记录。Token 等用量字段以 Provider 实际返回为准。
 
-提示词快照写入 `tasks/<task_id>/audit/prompts/<model_call_id>.json`，包含公共规则、角色提示词、实际发送的任务上下文和压缩前完整任务证据。快照由 `workbench_prompt_snapshot` 开关控制（默认开启）；新记录保留原始字段和值，不脱敏、不裁剪完整归档。模型上下文按预算引用完整证据，页面提供按需展开。历史已脱敏或截断的记录保留原标记。
+提示词快照写入 `tasks/<task_id>/audit/prompts/<model_call_id>.json`，包含公共规则、角色提示词、实际发送的任务上下文和压缩前完整任务证据。快照由 `workbench_prompt_snapshot` 开关控制（默认开启）；启用快照归档时保留原始字段和值，不脱敏、不裁剪完整归档；是否归档还取决于后文的 AI_REPAIR_ARTIFACT_MODE。模型上下文按预算引用完整证据，页面提供按需展开。历史已脱敏或截断的记录保留原标记。
 
 运行与安全边界：
 
@@ -257,7 +342,7 @@ npm run build
 
 `runtime/workspaces` 是可重建缓存：`shared/cache-<key>` 按 Git commit、业务子目录和过滤规则指纹复用只读源码基线，`shared/refs/<run>.json` 固定每轮使用的版本；同一提交的多轮执行共用一棵树。`ai/<run>-<task>` 只保存任务可修改的运输商代码，`delivery/<branch>` 与 `regression/<task>` 是临时 Git 克隆。旧 `shared/<run>` 目录继续兼容，不自动迁移历史 checkpoint。
 
-工作区在任务收尾、执行退出、服务启动及运行期间定时回收。`AI_REPAIR_WORKSPACE_GC_INTERVAL_SECONDS` 默认 3600 秒；`AI_REPAIR_WORKSPACE_RETENTION_DAYS` 默认 7 天，从生命周期结束时间计算，0 表示终态后可立即回收。暂停、待审批和活动任务的基线引用保留；只有所有引用均过期后才删除共享基线。已结束任务的 AI 工作区按任务自身保留期清理。临时交付／回归克隆按 `AI_REPAIR_DELIVERY_WORKSPACE_TTL_HOURS`（默认 24 小时）清理，存在活动 worker 时保守保留。`AI_REPAIR_WORKSPACE_GC_ENABLED=false` 关闭自动回收。审计记录、源码快照和恢复指针保存在 `runtime/runs`，不参与工作区回收；过期工作区被清理后，重新修改源码应发起新任务。
+工作区在任务收尾、执行退出、服务启动及运行期间定时回收。`AI_REPAIR_WORKSPACE_GC_INTERVAL_SECONDS` 默认 3600 秒；`AI_REPAIR_WORKSPACE_RETENTION_DAYS` 默认 7 天，从生命周期结束时间计算，0 表示终态后可立即回收。暂停、待审批、验证受阻（BLOCKED）和活动任务的基线引用保留；只有所有引用均过期后才删除共享基线。验证受阻任务保留 AI 工作区供后续排查；其他已结束任务的 AI 工作区按任务自身保留期清理。临时交付／回归克隆按 `AI_REPAIR_DELIVERY_WORKSPACE_TTL_HOURS`（默认 24 小时）清理，存在活动 worker 时保守保留。`AI_REPAIR_WORKSPACE_GC_ENABLED=false` 关闭自动回收。审计记录、源码快照和恢复指针保存在 `runtime/runs`，不参与工作区回收；过期工作区被清理后，重新修改源码应发起新任务。
 
 每轮使用一个 `records.sqlite` 集中保存 run/task 生命周期、模型调用元数据、Agent 指标和步骤／产物历史；`steps.json`、报告、Diff、验证证据及恢复数据保持原有独立文件。读取兼容旧 `lifecycle.json`、`model_calls.jsonl`、指标 JSONL 和历史目录，历史数据不批量迁移。
 
@@ -298,7 +383,7 @@ docker compose logs -f api frontend
 
 测试脚本、诊断产物、历史审计文档、开发工具配置及缓存已移出项目。业务回归执行器、Agent 提示词和真实运行记录属于生产功能，不按测试文件清理。运行数据由 `AI_REPAIR_RUNTIME_DIR` 管理，不作为发布源码。
 
-准生产检查使用后端 `/api/health` 和前端构建；健康接口应报告 `review_contract_version=3`、`log_redaction_enabled=false`。修改后需重启后端才能加载新代码。
+准生产检查使用后端 `/api/health` 和前端构建；健康接口应报告 `review_contract_version=5`、`log_redaction_enabled=false`。修改后需重启后端才能加载新代码。
 
 ## 日志查询范围
 
@@ -312,11 +397,3 @@ docker compose logs -f api frontend
 新建执行默认 `log_limit=0`，表示窗口内全量拉取，没有 1,000 / 10,000 条的隐藏截断，
 也没有扫描总时长截断；单次 ES 请求仍保留网络超时。
 前端不再显示日志条数限制输入，读取阶段会展示已扫描、可解析和独立问题计数。
-
-### 当前验证契约（workflow_version=5）
-
-范围/语法检查 → 确定验证计划 → 原始正文双侧重放 → 真实请求回归 → 汇总验证事实 → 代码审查 → 统一决策。
-
-修复 Agent 的建议不直接成为硬门禁；不执行模型构造的响应样本。原异常验证仅采用原始录制正文，真实请求仅通过 server_dev.main。验证恢复与代码回修分别计数，默认每个故障阶段最多自动恢复两次；已成功且输入与补丁一致的真实请求结果可以复用。
-
-旧版本执行不支持恢复、单步重跑和审批，不做检查点迁移；请新建当前版本任务。历史记录保留供查看。新增节点 plan_validation、summarize_validation、decide_validation 独立记录计划、事实和后续动作。工作流不会自动合并分支。

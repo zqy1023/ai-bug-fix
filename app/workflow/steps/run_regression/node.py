@@ -49,7 +49,7 @@ def run(ctx: StepContext, data: RegressionInput) -> RegressionOutput:
     if not ctx.services.verify_commands and not callable(request_executor):
         return RegressionOutput(
             passed=False, status="not_configured", evidence_version=version,
-            reason="未配置固定补充回归命令；没有执行行为回归，覆盖是否足够由审查对照实际变更判断",
+            reason="未配置真实请求执行器和补充命令，未取得 server_dev.main 的业务结果",
         )
     if ctx.services.workspaces is None:
         raise StepFailed("隔离工作区未配置，无法执行准生产回归")

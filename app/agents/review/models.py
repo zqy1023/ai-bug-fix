@@ -56,7 +56,7 @@ class CoverageAssessment(FrozenModel):
 
     decision: Literal["sufficient", "insufficient", "unknown"] = "unknown"
     reason: str = ""
-    reviewed_functions: list[str] = Field(default_factory=list)
+    reviewed_symbols: list[str] = Field(default_factory=list)
     missing_checks: list[str] = Field(default_factory=list)
 
 
