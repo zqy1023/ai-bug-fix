@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from app.infrastructure.filesystem import workspace
 
@@ -18,7 +18,7 @@ def test_clone_repo_passes_long_path_config_to_initial_checkout(tmp_path: Path) 
     source = tmp_path / "source"
     target = tmp_path / "target"
     source.mkdir()
-    fake_repo = object()
+    fake_repo = Mock()
 
     with patch.object(workspace.Repo, "clone_from", return_value=fake_repo) as clone:
         result = workspace._clone_repo(source, target, sparse="Src/gather_spider_track")
