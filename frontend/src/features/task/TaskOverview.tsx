@@ -85,7 +85,7 @@ export function TaskOverview({ detail, onOpenStep }: { detail: TaskDetailRespons
       : ['MANUAL', 'INSUFFICIENT_EVIDENCE', 'BLOCKED'].includes(result) ? '需要人工处理' : result === 'REJECTED' ? '变更已拒绝' : '任务已结束';
 
   return <div className="task-overview task-overview-compact">
-    <section className="task-outcome-hero">
+    <section className={`task-outcome-hero ${['FAILED', 'FAIL'].includes(result) ? 'is-danger' : ['MANUAL', 'INSUFFICIENT_EVIDENCE', 'BLOCKED'].includes(result) ? 'is-manual' : task.approval_pending ? 'is-waiting' : 'is-delivered'}`}>
       <div className="outcome-hero-main">
         <div className="outcome-eyebrow">任务结果</div>
         <div className="outcome-title-row"><h2>{taskTitle}</h2><StatusBadge kind="task" value={task.approval_pending ? 'WAITING_APPROVAL' : task.result} /></div>
