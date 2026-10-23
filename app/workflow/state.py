@@ -41,6 +41,9 @@ def _union(current: list[str] | None, update: list[str] | None) -> list[str]:
 class WorkflowState(TypedDict, total=False):
     workflow_version: int
     validation_plan: dict[str, Any]
+    acceptance_contract: dict[str, Any]
+    acceptance_contract_id: str
+    acceptance_contract_meta: dict[str, Any]
     validation_summary: dict[str, Any]
     validation_decision: dict[str, Any]
     validation_recovery_counts: dict[str, int]
