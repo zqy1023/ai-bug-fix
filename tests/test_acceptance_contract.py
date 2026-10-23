@@ -34,7 +34,16 @@ def _frozen_state() -> dict:
         },
         "baseline_manifest": {"gathers/Mothership/main.py": "baseline-sha256"},
     }
-    locate = {"status": "LOCATED", "acceptance_contract": _contract()}
+    locate = {
+        "status": "LOCATED",
+        "root_cause": "原始时间输入未被解析器支持",
+        "category": "carrier",
+        "source_evidence": [{"path": "gathers/Mothership/main.py", "symbol": "parse_time"}],
+        "candidate_files": ["gathers/Mothership/main.py"],
+        "recommended_scope": "carrier",
+        "acceptance_contract": _contract(),
+    }
+    state["locate"] = locate
     state.update(freeze_acceptance_contract(state, locate))
     return state
 
@@ -56,8 +65,11 @@ def test_acceptance_contract_is_frozen_against_problem_and_baseline() -> None:
 def test_acceptance_contract_cannot_be_silently_rewritten() -> None:
     state = _frozen_state()
     state["acceptance_contract"]["required_assertions"][0] = "只要日志不再报错就算通过"
-
     assert acceptance_contract_is_current(state) is False
+
+    changed_root_cause = deepcopy(_frozen_state())
+    changed_root_cause["locate"]["root_cause"] = "另一条根因假设"
+    assert acceptance_contract_is_current(changed_root_cause) is False
 
 
 def test_located_result_without_acceptance_contract_is_downgraded_to_manual() -> None:
@@ -89,5 +101,5 @@ def test_freezing_requires_original_problem_and_baseline() -> None:
     with pytest.raises(ValueError, match="原始异常"):
         freeze_acceptance_contract(
             {"problem": {}, "baseline_manifest": {"carrier.py": "sha"}},
-            {"status": "LOCATED", "acceptance_contract": _contract()},
+            {"status": "LOCATED", "root_cause": "根因", "acceptance_contract": _contract()},
         )
