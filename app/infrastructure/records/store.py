@@ -3,9 +3,9 @@
 一次执行一份 ``steps.json``：run 级步骤是顶层 key，任务步骤挂在
 ``tasks.<task_id>`` 下。大体量业务数据走 ``artifacts/``，记录里只留引用。
 
-**单写者不变量**：``graph.py`` 的任务分发严格串行，一次执行同时只有一个节点在
-写，所以 ``save`` 的"读-改-写"放在进程内的锁里就够了。跨进程并发写同一个 run
-不被支持——光靠临时文件加替换防不住丢更新，这里不假装能防。
+**写入安全**：同一 run 的读-改-写使用共享的进程内锁，并用文件锁协调不同进程。
+每次写入使用独立临时文件，避免并发写入者互相覆盖临时文件；替换遇到 Windows
+短暂文件占用时进行有界退避重试。
 
 **旧记录兼容**：读取边界把没有 ``schema_version`` 的记录按 v0 转换成当前格式，
 写入一律只写当前格式。历史 run 不需要批量迁移。
@@ -35,6 +35,20 @@ from config.settings import settings
 
 # 单条记录的硬上限：大字段移出后不该再接近 MB，撞上就是"漏了搬字段"。
 _JSON_MAX_BYTES = settings.record_json_max_bytes
+
+# RecordStore 实例可能在同一进程中重复创建；锁必须按 run 共享，不能仅放在实例上。
+_RUN_LOCKS_GUARD = threading.Lock()
+_RUN_LOCKS: dict[str, threading.RLock] = {}
+
+
+def _run_thread_lock(path: Path) -> threading.RLock:
+    key = str(path.resolve())
+    with _RUN_LOCKS_GUARD:
+        lock = _RUN_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _RUN_LOCKS[key] = lock
+        return lock
 
 # v0 → v1 的字段改名与取值映射。
 _V0_STATUS = {"passed": "succeeded"}
@@ -109,19 +123,35 @@ class RecordStore:
         path = self.steps_path(run_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         text = json.dumps(payload, ensure_ascii=False, indent=2)
-        temporary = path.with_suffix(".tmp")
-        with temporary.open("w", encoding="utf-8") as file_obj:
-            file_obj.write(text)
-            file_obj.flush()
-            os.fsync(file_obj.fileno())
-        for attempt in range(3):
+        # Never share a fixed steps.tmp between writers. A unique same-directory temp
+        # keeps the final replace atomic and prevents one writer truncating another's file.
+        import tempfile
+
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as file_obj:
+                file_obj.write(text)
+                file_obj.flush()
+                os.fsync(file_obj.fileno())
+            # Windows scanners/readers can briefly deny replacement of the destination.
+            # Retry only that transient OS error, with a bounded backoff, while preserving
+            # the old steps.json until a complete replacement succeeds.
+            for attempt in range(8):
+                try:
+                    os.replace(temporary, path)
+                    return
+                except PermissionError:
+                    if attempt == 7:
+                        raise
+                    time.sleep(min(0.05 * (2 ** attempt), 0.4))
+        finally:
             try:
-                temporary.replace(path)
-                break
-            except PermissionError:
-                if attempt == 2:
-                    raise
-                time.sleep(0.05)
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def save(
         self,
@@ -140,7 +170,8 @@ class RecordStore:
                 f"步骤记录 {record.name} 达 {size} 字节，超过 {_JSON_MAX_BYTES} 字节上限，大字段必须先落 artifact",
                 code="ARTIFACT_INVALID_FORMAT",
             )
-        with self._lock, _process_lock(self.run_dir(run_id) / ".steps.lock"):
+        lock_path = self.run_dir(run_id) / ".steps.lock"
+        with _run_thread_lock(lock_path), _process_lock(lock_path):
             payload = self._read_steps(run_id)
             if task_id:
                 tasks = payload.setdefault("tasks", [])
