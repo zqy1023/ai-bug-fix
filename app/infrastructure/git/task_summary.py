@@ -36,15 +36,15 @@ def render_task_summary(report: Mapping[str, Any]) -> str:
         "## 本轮修改", "", text(report.get("change_summary")), "",
     ]
     if report.get("repair_branch"):
-        lines[8:8] = [f"- 交付分支：`{report['repair_branch']}`"]
+        lines[8:8] = [f"- 交付分支：`{text(report['repair_branch'])}`"]
     lines[9:9] = ["", "此文档按交付前的执行记录生成；最终交付结果、提交号和总耗时以工作台终态记录为准。", ""]
     changed = report.get("changed_files") or []
-    lines.extend(f"- `{path}`" for path in changed)
+    lines.extend(f"- `{text(path)}`" for path in changed)
     if not changed:
         lines.append("本轮没有业务源码修改。")
     lines.extend(["", "## 已执行步骤", ""])
     steps = report.get("completed_steps") or []
-    lines.extend(f"- `{name}`" for name in steps)
+    lines.extend(f"- `{text(name)}`" for name in steps)
     if not steps:
         lines.append("未记录已完成的步骤。")
     lines.extend(["", "## 验证结果", ""])
@@ -58,13 +58,13 @@ def render_task_summary(report: Mapping[str, Any]) -> str:
                 status = "PASS" if result.get("passed") is True else "FAIL" if result.get("passed") is False else "未记录结果"
             detail = result.get("reason") or result.get("summary")
             lines.append(f"- `{name}`：{labels.get(str(status), str(status))}"
-                         + (f"。{detail}" if detail else ""))
+                         + (f"。{text(detail)}" if detail else ""))
     else:
         lines.append("未记录验证结果，不能据此认定修复已验证通过。")
     if report.get("review_summary"):
         lines.extend(["", "审查结论：" + text(report["review_summary"])])
     lines.extend(["", "## 待确认事项与下一步", "", text(report.get("terminal_reason")), ""])
     for item in [*(report.get("evidence_gaps") or []), *(report.get("manual_confirmation_reasons") or [])]:
-        lines.append(f"- {item}")
+        lines.append(f"- {text(item)}")
     lines.extend(["", text(report.get("next_action")), ""])
     return "\n".join(lines)

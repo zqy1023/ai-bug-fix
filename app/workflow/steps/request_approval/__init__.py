@@ -76,7 +76,10 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _patch(output: dict[str, Any]) -> dict[str, Any]:
-    decision = str(output["decision"]).upper()
+    # 步骤没有产出审批决定（被取消或执行失败）：不回写任何状态。
+    if "decision" not in output:
+        return {}
+    decision = str(output.get("decision") or "").upper()
     return {
         "decision": decision,
         "approval_result": dict(output),

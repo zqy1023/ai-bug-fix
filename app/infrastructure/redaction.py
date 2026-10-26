@@ -34,17 +34,19 @@ _DELIVERY_URL_USERINFO = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)[^/@
 
 # 鉴权头：Authorization / Proxy-Authorization 的值整段掩掉（含 Bearer/Basic/Token 前缀）。
 _DELIVERY_AUTH_HEADER = re.compile(
-    r"(?i)\b(?P<header>authorization|proxy-authorization)\s*:\s*"
-    r"(?:(?P<scheme>bearer|basic|token|digest)\s*)?[^\s\"']+"
+    r"(?i)(?P<pre>\b(?P<header>authorization|proxy-authorization)[\"']?\s*:\s*)"
+    r"(?P<q>[\"']?)(?:(?P<scheme>bearer|basic|token|digest)\s*)?(?P<value>[^\s\"',}]+)"
 )
 
 # Cookie 头的值整段掩掉（同样命中 set-cookie 的值部分）。
-_DELIVERY_COOKIE_HEADER = re.compile(r"(?i)\b(?P<header>cookie)\s*:\s*[^\r\n]+")
+_DELIVERY_COOKIE_HEADER = re.compile(
+    r"(?i)(?P<pre>\b(?P<header>cookie)[\"']?\s*:\s*)(?P<q>[\"']?)(?P<value>[^\r\n\"']+)"
+)
 
 # 查询参数：access_token=... / token=... 等令牌参数的值。
 _DELIVERY_QUERY_TOKEN = re.compile(
     r"(?i)(?P<lead>[?&#])(?P<name>access_token|auth_token|id_token|refresh_token|api_key|apikey|token)"
-    r"=(?P<value>[^&\s\"']+)"
+    r"[\"']?(?P<sep>[:=])(?P<sp>\s*)(?P<q>[\"']?)(?P<value>[^&\s\"',}]+)"
 )
 
 # AWS 风格长密钥：仅在明确的 key 名前缀后掩 20+ 位 base64/hex 连续串。
@@ -54,22 +56,77 @@ _DELIVERY_LONG_KEY = re.compile(
     r"(?P<value>[A-Za-z0-9/+]{20,})"
 )
 
+# 强凭据赋值：password=... / client_secret: ... 等。键名几乎不会出现在交付正文里，
+# 因此只要有值就整段掩掉（同时覆盖 JSON 形态 "password": "..."）。
+_DELIVERY_CREDENTIAL_ASSIGN = re.compile(
+    r"(?i)(?<![A-Za-z0-9_.-])(?P<name>password|passwd|pwd|passphrase|client[_-]?secret"
+    r"|app[_-]?secret|consumer[_-]?secret|private[_-]?key|secret[_-]?key|api[_-]?key"
+    r"|api[_-]?secret)(?P<kq>[\"']?)(?P<sep>[=:])(?P<sp>\s*)(?P<q>[\"']?)(?P<value>[^\s\"'`,;&)\]}]+)"
+)
+
+# 弱凭据赋值：secret / token 也可能是正文用语，只掩足够长、且像凭据的值，
+# 避免把 "secret: 已轮换" 这类说明文字抹掉。
+_DELIVERY_WEAK_SECRET_ASSIGN = re.compile(
+    r"(?i)(?<![A-Za-z0-9_.-])(?P<name>secret|token)(?P<kq>[\"']?)(?P<sep>[=:])(?P<sp>\s*)"
+    r"(?P<q>[\"']?)(?P<value>[A-Za-z0-9!#$%&'*+\-./:;<=>?@^_`|~]{6,})"
+)
+
+# 裸 AWS Access Key ID（AKIA/ASIA…）：长度与字符集固定，误报概率极低。
+_DELIVERY_AWS_KEY_ID = re.compile(
+    r"\b(?P<id>(?:AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA)[0-9A-Z]{16})\b"
+)
+
+# PEM 私钥块：整块掩掉（公钥不处理）。
+_DELIVERY_PEM = re.compile(
+    r"-----BEGIN[A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----"
+    r".*?"
+    r"-----END[A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----",
+    re.DOTALL,
+)
+
 
 def redact_for_delivery(text: str) -> str:
     """掩掉交付面上几乎必然是凭据的片段；其余文本原样保留。
 
-    与内部审计的 ``redact_output``（原文保留）不同，本函数只用于离开本系统的
+    内部审计保留原文，本函数只用于离开本系统的
     交付面。覆盖：URL userinfo、Bearer/Token 鉴权头、Cookie 头、令牌型查询参数、
-    明确 key 名前缀后的 AWS 风格长密钥。掩码统一为 ``***``。
+    明确 key 名前缀后的 AWS 风格长密钥、password/secret 类赋值、PEM 私钥块、
+    裸 AWS Access Key ID。掩码统一为 ``***``。
     """
     raw = str(text or "")
     if not raw:
         return raw
     raw = _DELIVERY_URL_USERINFO.sub(r"\g<scheme>***@", raw)
-    raw = _DELIVERY_AUTH_HEADER.sub(lambda m: f"{m.group('header')}: {_DELIVERY_MASK}", raw)
-    raw = _DELIVERY_COOKIE_HEADER.sub(lambda m: f"{m.group('header')}: {_DELIVERY_MASK}", raw)
-    raw = _DELIVERY_QUERY_TOKEN.sub(lambda m: f"{m.group('lead')}{m.group('name')}={_DELIVERY_MASK}", raw)
+    raw = _DELIVERY_AUTH_HEADER.sub(
+        lambda m: f"{m.group('pre')}{m.group('q')}{_DELIVERY_MASK}", raw
+    )
+    raw = _DELIVERY_COOKIE_HEADER.sub(
+        lambda m: f"{m.group('pre')}{m.group('q')}{_DELIVERY_MASK}", raw
+    )
+    raw = _DELIVERY_QUERY_TOKEN.sub(
+        lambda m: (
+            f"{m.group('lead')}{m.group('name')}{m.group('sep')}"
+            f"{m.group('sp')}{m.group('q')}{_DELIVERY_MASK}"
+        ),
+        raw,
+    )
     raw = _DELIVERY_LONG_KEY.sub(lambda m: f"{m.group('name')}={_DELIVERY_MASK}", raw)
+    raw = _DELIVERY_CREDENTIAL_ASSIGN.sub(
+        lambda m: (
+            f"{m.group('name')}{m.group('kq')}{m.group('sep')}{m.group('sp')}"
+            f"{m.group('q')}{_DELIVERY_MASK}"
+        ),
+        raw,
+    )
+    raw = _DELIVERY_WEAK_SECRET_ASSIGN.sub(
+        lambda m: (
+            f"{m.group('name')}{m.group('kq')}{m.group('sep')}{m.group('sp')}"
+            f"{m.group('q')}{_DELIVERY_MASK}"
+        ),
+        raw,
+    )
+    raw = _DELIVERY_PEM.sub(_DELIVERY_MASK, raw)
+    raw = _DELIVERY_AWS_KEY_ID.sub(_DELIVERY_MASK, raw)
     return raw
 
 
@@ -147,4 +204,4 @@ def _validation_detail(error: BaseException) -> str:
     return "；".join(parts)
 
 
-__all__ = ["mask_secrets", "public_exception", "redact_for_delivery", "redact_output"]
+__all__ = ["public_exception", "redact_for_delivery", "redact_value"]

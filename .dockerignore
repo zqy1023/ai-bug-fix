@@ -6,7 +6,12 @@ codes
 .claude
 .vscode
 __pycache__
+# 运行日志目录：`**/log/` 只匹配名为 log 的目录，logs/ 与嵌套的 *.log
+# 会进构建上下文，把业务日志上传到构建服务器。
+logs/
+**/logs/
 *.log
+**/*.log
 # Secrets and local-only state
 .git
 .env

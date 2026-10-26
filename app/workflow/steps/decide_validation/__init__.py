@@ -10,17 +10,23 @@ def run(ctx, data: ValidationContext) -> ValidationDecision:
 
 
 def patch(output):
+    # 步骤没有产出决策（被取消或执行失败）：不伪造终态，交由路由按未完成处理。
+    if "action" not in output:
+        return {}
+    action = str(output.get("action") or "")
+    reason = str(output.get("reason") or "")
+    manual_required = bool(output.get("manual_required"))
     return {
         "validation_decision": output,
-        "retry_target": output["target"],
-        "retry_reason": output["reason"],
-        "blocked_reason": output["reason"] if output["action"] == "blocked" else "",
-        "manual_confirmation_required": output["manual_required"],
+        "retry_target": str(output.get("target") or ""),
+        "retry_reason": reason,
+        "blocked_reason": reason if action == "blocked" else "",
+        "manual_confirmation_required": manual_required,
         "manual_confirmation_reasons": ["用户选择人工代码审查"]
-        if output["manual_required"]
+        if manual_required
         else [],
-        "terminal_status": "BLOCKED" if output["action"] == "blocked" else "passed",
-        "last_result": "passed",
+        "terminal_status": "BLOCKED" if action == "blocked" else "passed",
+        "last_result": "failed" if action == "blocked" else "passed",
     }
 
 

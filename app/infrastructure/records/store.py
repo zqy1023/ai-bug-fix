@@ -16,6 +16,7 @@ import json
 import hashlib
 import os
 import shutil
+import tempfile
 import time
 import threading
 from contextlib import contextmanager
@@ -284,7 +285,11 @@ class RecordStore:
         return _validated(body, run_id, step_name)
 
     def list_steps(self, run_id: str, task_id: str = "") -> list[StepRecord]:
-        """返回已落盘的步骤记录。任务级只返回该任务，run 级不含 tasks。"""
+        """返回已落盘的步骤记录。任务级只返回该任务，run 级不含 tasks。
+
+        审查 Agent 的内部工具记录不进这里：它们是单个 Agent 的内部证据，
+        由 list_review_substeps() 单独按需读取。
+        """
         with self._lock:
             payload = self._read_steps(run_id)
         if task_id:
@@ -300,6 +305,45 @@ class RecordStore:
         for value in source.values():
             if isinstance(value, dict) and isinstance(value.get("name"), str):
                 records.append(_validated(value, run_id, str(value.get("name") or "")))
+        return records
+
+    def list_review_substeps(self, run_id: str, task_id: str) -> list[StepRecord]:
+        """审查 Agent 内部工具的记录（来自 artifacts/review_agent/steps/）。
+
+        这些工具是 review_agent 的内部步骤，刻意不进 steps.json 主表；
+        工作台要展示它们的执行证据时用这个方法，并按各工具自己声明的
+        RecordView 投影后再返回，避免把过程量原样送到前端。
+        """
+        from app.agents.review.tools.registry import resolve_tool
+        from app.workflow.definitions import REVIEW_EVIDENCE_STEPS
+
+        if not task_id:
+            return []
+        records: list[StepRecord] = []
+        for name in REVIEW_EVIDENCE_STEPS:
+            relative = f"artifacts/review_agent/steps/{name}.json"
+            if not (self.task_dir(run_id, task_id) / relative).is_file():
+                continue
+            try:
+                body = self.read_artifact(run_id, relative, task_id)
+            except Exception:
+                continue
+            if not isinstance(body, dict):
+                continue
+            try:
+                record = _validated(body, run_id, name)
+            except ValueError:
+                continue
+            try:
+                spec = resolve_tool(name)
+            except Exception:
+                records.append(record)
+                continue
+            projected = record.public(spec.input_record, spec.output_record)
+            try:
+                records.append(StepRecord.model_validate(projected))
+            except Exception:
+                records.append(record)
         return records
 
     def _base(self, run_id: str, task_id: str) -> Path:
@@ -326,7 +370,9 @@ class RecordStore:
         if not target.parent.resolve().is_relative_to(base.resolve()):
             raise StepFailed(f"产物目录越界: {relative!r}", code="ARTIFACT_PATH_INVALID")
         text = json.dumps(value, ensure_ascii=False, indent=2, default=str)
-        if task_id and target.is_file() and relative.startswith(("agents/", "artifacts/", "reports/")):
+        if task_id and target.is_file() and relative.startswith(
+            ("agents/", "artifacts/", "reports/", "delivery/")
+        ):
             previous = target.read_bytes()
             if previous != text.encode("utf-8"):
                 identity = hashlib.sha256(previous).hexdigest()
@@ -339,9 +385,28 @@ class RecordStore:
                     identity=f"{relative}:{identity}",
                 )
         # 临时文件与目标同目录：同文件系统才能原子替换，写完整才返回引用。
-        temporary = target.with_name(target.name + ".tmp")
-        temporary.write_text(text, encoding="utf-8")
-        temporary.replace(target)
+        # 临时名必须唯一：固定的 "<name>.tmp" 会让两个写者共用一个文件互相截断，
+        # 最终内容不可预期。落盘后 fsync 并对瞬时占用做退避重试——Windows 上
+        # 杀毒扫描或索引器会短暂占住目标文件，一次失败就让整次交付泡汤。
+        handle, temporary_name = tempfile.mkstemp(
+            dir=str(target.parent), prefix=f"{target.name}.", suffix=".tmp"
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as file_obj:
+                file_obj.write(text)
+                file_obj.flush()
+                os.fsync(file_obj.fileno())
+            for attempt in range(3):
+                try:
+                    temporary.replace(target)
+                    break
+                except PermissionError:
+                    if attempt == 2:
+                        raise
+                    time.sleep(0.05)
+        finally:
+            temporary.unlink(missing_ok=True)
         return target.relative_to(self._base(run_id, task_id)).as_posix()
 
     def read_artifact(self, run_id: str, relative: str, task_id: str = "") -> Any:

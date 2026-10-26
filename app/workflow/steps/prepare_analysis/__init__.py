@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+from app.domain.errors import StepFailed
 from app.workflow.spec import FrozenModel, StepSpec
 from app.workflow.steps.finalize_execution import _input
 from app.workflow.steps.finalize_execution.models import FinalizeInput
@@ -23,11 +24,12 @@ def run(ctx, data: FinalizeInput) -> Output:
         finished_at=None,
     )
     if not data.report_destination:
-        raise ValueError("缺少分析报告交付路径")
+        raise StepFailed("缺少分析报告交付路径", code="ARTIFACT_PATH_INVALID")
     root = Path(data.ai_workspace_path).resolve()
     destination = (root / data.report_destination).resolve()
     if not destination.is_relative_to(root):
-        raise ValueError("分析报告路径越界")
+        # 路径越界是安全信号，必须带码落进记录，不能折叠成通用执行失败。
+        raise StepFailed("分析报告路径越界", code="ARTIFACT_PATH_INVALID")
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"

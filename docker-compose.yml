@@ -25,6 +25,9 @@ services:
     expose:
       - "8000"
     restart: unless-stopped
+    # python 是 PID 1 时不回收子进程，也不转发 SIGTERM：容器停止会等超时才
+    # 被强杀，正在写的运行记录可能被截断。init 挂 tini 解决这两件事。
+    init: true
     healthcheck:
       test:
         - CMD
@@ -41,6 +44,11 @@ services:
       - ALL
     tmpfs:
       - /tmp:size=128m,noexec,nosuid
+    # 工作流在 API 进程内执行（一次整仓复制或重放就可能吃满内存），
+    # 没有上限时单次重活会 OOMKill 到同宿主的所有服务。
+    mem_limit: 4g
+    cpus: "2.0"
+    pids_limit: 1024
 
   frontend:
     build:
@@ -68,3 +76,10 @@ services:
       - /var/cache/nginx:size=16m
       - /var/run:size=2m
       - /tmp:size=8m
+    # 基础镜像的主 nginx.conf 带 `user nginx;`，主进程需要 SETUID/SETGID 才能
+    # 切 worker 用户；这里 cap_drop: ALL 已经把这两个能力摘掉。直接以 nginx
+    # 自己的 uid 运行，主进程不再需要提权，指令也会被 nginx 自动忽略。
+    user: "101:101"
+    mem_limit: 256m
+    cpus: "1.0"
+    pids_limit: 128

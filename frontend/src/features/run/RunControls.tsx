@@ -25,7 +25,14 @@ export function RunControls({ run, refresh }: { run: RunDetail; refresh: () => v
     onError: (error) => message.error(error instanceof Error ? error.message : '操作失败'),
   });
   return <div className={styles.actions}>
-    {run.actions?.retry.enabled && <Button type="primary" icon={<ReloadOutlined />} loading={control.isPending} onClick={() => control.mutate('retry')}>重试执行</Button>}
+    {run.actions?.retry.enabled
+      ? <Button type="primary" icon={<ReloadOutlined />} loading={control.isPending} onClick={() => control.mutate('retry')}>重试执行</Button>
+      // 当前状态不支持重试时保留禁用入口并给出原因，避免点出必然失败的操作。
+      : run.actions?.retry.reason
+        ? <Tooltip title={run.actions.retry.reason}>
+          <span className={styles.disabledAction}><Button disabled>暂不可重试</Button></span>
+        </Tooltip>
+        : null}
     {run.actions?.resume.enabled && <Button type="primary" icon={<CaretRightOutlined />} loading={control.isPending} onClick={() => control.mutate('resume')}>恢复执行</Button>}
     {run.actions?.pause.enabled && <Button icon={<PauseOutlined />} loading={control.isPending} onClick={() => control.mutate('pause')}>暂停</Button>}
     {run.actions?.cancel.enabled && <Button danger icon={<StopOutlined />} onClick={() => modal.confirm({

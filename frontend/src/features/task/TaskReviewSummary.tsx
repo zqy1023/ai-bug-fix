@@ -4,7 +4,6 @@ import type { TaskDetailResponse } from '../../lib/types';
 import { Panel } from '../../components/ui';
 import { VerificationChecklist } from '../../components/VerificationChecklist';
 import { ReplayComparison, object } from './ReplayEvidence';
-import { ValidationResult } from './ValidationResult';
 import { useTaskVerification } from '../../hooks/useTaskVerification';
 import styles from './TaskReviewSummary.module.css';
 
@@ -19,13 +18,23 @@ export function TaskReviewSummary({ detail, onOpenStep }: TaskReviewSummaryProps
   const locate = latest('locate_agent');
   const locateOutput = object(locate?.output?.payload || locate?.output);
   const verification = useTaskVerification(detail);
-  const validation = latest('summarize_validation');
   const summary = task.report?.change_summary || locateOutput.summary || locateOutput.root_cause || locate?.summary || task.lifecycle?.terminal_reason || task.report?.terminal_reason;
   const result = String(task.result || '').toUpperCase();
-  const stopped = ['MANUAL','INSUFFICIENT_EVIDENCE','SKIPPED','FAILED','FAIL','BLOCKED'].includes(result);
-  const heading = ({MANUAL:'需要人工处理，尚未确认修复完成',INSUFFICIENT_EVIDENCE:'证据不足，需要补充信息',SKIPPED:'本任务已跳过，未执行修复',FAILED:'本次修复未完成',FAIL:'本次修复未完成',BLOCKED:'验证受阻，需要处理阻断原因'} as Record<string,string>)[result];
+  const stopped = ['MANUAL','INSUFFICIENT_EVIDENCE','SKIPPED','CANCELLED','FAILED','FAIL','BLOCKED'].includes(result);
+  const heading = ({MANUAL:'需要人工处理，尚未确认修复完成',INSUFFICIENT_EVIDENCE:'证据不足，需要补充信息',SKIPPED:'本任务已跳过，未执行修复',CANCELLED:'本任务已取消，未执行修复',FAILED:'本次修复未完成',FAIL:'本次修复未完成',BLOCKED:'验证受阻，需要处理阻断原因'} as Record<string,string>)[result];
   const hasReview = task.steps.some(step => step.name === 'review_agent');
   const original = String(task.problem?.error || task.problem?.raw_error || '');
+  // 重放证据为什么可能不存在，要按审查的真实停点说明，不能统一写成“尚无证据”。
+  const replayEmpty = ({
+    not_executed: { title: '审查步骤未执行', body: '本任务没有进入修复后审查，因此没有重放证据；这不是验证失败结论。' },
+    cancelled: { title: '审查已取消', body: '审查被取消，重放证据不会再产生；已产出的记录保留。' },
+    skipped: { title: '审查已跳过', body: '审查步骤被跳过，本任务不会产生重放证据。' },
+    manual: { title: '审查结论需人工判断', body: '审查结论为人工处理，没有产出完整的双侧重放证据。' },
+    failed: { title: '审查未通过', body: '审查未通过，重放证据不完整；请查看审查结论与失败节点。' },
+    running: { title: '审查进行中', body: '审查尚未结束，完整重放证据稍后才会出现。' },
+    waiting: { title: '审查等待中', body: '审查在等待输入，重放证据尚未产生。' },
+  } as Record<string, { title: string; body: string }>)[verification.stopKind]
+    ?? { title: '尚无双侧重放证据', body: '取得同一原始响应的修复前后验证记录后，将在这里展示对照结果。' };
   return <div className={styles.root}>
     <section className={styles.summary} aria-label="修复概览">
       <div className={styles.kicker}><FileSearchOutlined /> 修复概览</div>
@@ -36,10 +45,9 @@ export function TaskReviewSummary({ detail, onOpenStep }: TaskReviewSummaryProps
     </section>
     {(!stopped || hasReview) && <div className={styles.checks}><Panel title="修复后代码审查" flush><VerificationChecklist layout="ribbon" steps={task.steps} onOpenStep={onOpenStep} /></Panel></div>}
     <details className={styles.evidence}>
-      <summary><strong>修复前后重放对比</strong><span>{verification.isLoading ? '证据读取中' : verification.hasComparison ? '已归档 · 展开查看' : '尚无双侧证据'}</span></summary>
-      <div>{verification.isLoading ? <Skeleton active paragraph={{ rows: 4 }} /> : verification.error ? <Alert type="warning" message="完整验证产物读取失败，请从执行记录重试" /> : verification.hasComparison ? <ReplayComparison replay={verification.replay} full /> : <div className={styles.empty}><strong>尚无双侧重放证据</strong><p>取得同一原始响应的修复前后验证记录后，将在这里展示对照结果。</p></div>}
+      <summary><strong>修复前后重放对比</strong><span>{verification.isLoading ? '证据读取中' : verification.hasComparison ? '已归档 · 展开查看' : replayEmpty.title}</span></summary>
+      <div>{verification.isLoading ? <Skeleton active paragraph={{ rows: 4 }} /> : verification.error ? <Alert type="warning" message="完整验证产物读取失败，请从执行记录重试" /> : verification.hasComparison ? <ReplayComparison replay={verification.replay} full /> : <div className={styles.empty}><strong>{replayEmpty.title}</strong><p>{replayEmpty.body}</p></div>}
       {verification.step && <Button type="link" onClick={() => onOpenStep(verification.step!.name)}>打开完整重放记录 →</Button>}</div>
     </details>
-    {validation && <details className={styles.evidence}><summary><strong>验收断言与详细结论</strong><span>展开查看</span></summary><div><ValidationResult step={validation} /></div></details>}
   </div>;
 }

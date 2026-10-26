@@ -50,6 +50,18 @@ StepErrorCode = Literal[
     "ARTIFACT_INVALID_FORMAT",
     "OUTPUT_REHYDRATION_FAILED",
     "REPORT_WRITE_FAILED",
+    # 步骤自己声明的失败类别。这些码在代码里本来就在用，但不在词汇表内，
+    # error_code_of 会把它们一律折叠成 STEP_EXECUTION_FAILED：记录里只剩
+    # "执行失败"，运维分不清是上下文缺失、语法不合法还是环境没配。
+    "ACCEPTANCE_CONTEXT_MISSING",
+    "APPROVAL_CONTEXT_MISSING",
+    "REPRODUCE_CONTEXT_MISSING",
+    "DELIVERY_EXECUTION_ERROR",
+    "LOG_QUERY_ARGS_INVALID",
+    "PROXY_MANAGER_ADDRESS_MISSING",
+    "RUN_CANCEL_REQUESTED",
+    "STEP_RECORD_CORRUPTED",
+    "SYNTAX_INVALID",
 ]
 
 # 落盘裁剪阈值。单条记录要能一眼看完，所以按"关键结论不丢、长内容折叠"来定。
@@ -342,8 +354,13 @@ def _model_for(step_name: str, attribute: str) -> type[BaseModel]:
 
 
 def dump_model(model: BaseModel) -> dict[str, Any]:
-    """把步骤模型导出成可写入 ``steps.json`` 的字典。"""
-    return model.model_dump()
+    """把步骤模型导出成可写入 ``steps.json`` 的字典。
+
+    必须走 JSON 模式：python 模式会把 ``Path`` 留在字典里，步骤记录落盘时
+    ``json.dumps`` 直接崩（产物写入反而是宽松的，同一份数据当产物能写成功、
+    当步骤记录写不进去）。JSON 模式同时把 Path/set/tuple 归一化成可序列化值。
+    """
+    return model.model_dump(mode="json")
 
 
 def parse_input(step_name: str, payload: dict[str, Any]) -> BaseModel:

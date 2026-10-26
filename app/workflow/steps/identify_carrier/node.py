@@ -20,20 +20,13 @@ _COUNT_KEYS = ("record_count", "ignored_count", "duplicate_count", "unique_count
 
 
 def records_of(ctx: StepContext) -> list[dict[str, Any]]:
-    """取 normalize_error 的去重代表问题。
-
-    新记录按产物引用读；旧记录读内联的 ``output["records"]``。两者同时存在时
-    **以产物为准**，计数对不上就报错——两个数据源不许悄悄分叉。
-    """
+    """从当前规范化产物读取代表问题，并核对计数。"""
     record = ctx.store.load(ctx.run.run_id, "normalize_error")
     if record is None or record.status != "succeeded":
         raise StepFailed("缺少已通过的 normalize_error")
-    inline = record.output.get("records")
     refs = [ref for ref in record.artifacts if ref.name == "normalized_records"]
     if not refs:
-        if not isinstance(inline, list):
-            raise StepFailed("normalize_error 记录既没有 records 数组也没有产物引用")
-        return inline
+        raise StepFailed("normalize_error 缺少正式 normalized_records 产物引用")
     payload = ctx.load_artifact(refs[0])
     if not isinstance(payload, dict) or not isinstance(payload.get("records"), list):
         raise StepFailed("normalized_records 产物必须包含 records 数组")
@@ -42,8 +35,6 @@ def records_of(ctx: StepContext) -> list[dict[str, Any]]:
             raise StepFailed(
                 f"normalize_error 的 {key} 与 normalized_records 产物不一致"
             )
-    if isinstance(inline, list) and len(inline) != len(payload["records"]):
-        raise StepFailed("normalize_error 的内联 records 与产物条数不一致")
     return payload["records"]
 
 

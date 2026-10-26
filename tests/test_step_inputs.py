@@ -181,12 +181,12 @@ class IdentifyCarrierDefenseTests(unittest.TestCase):
         bad = {"service_name": "gather.py.track", "biztype": "gather", "carrier": "Test"}
         normalize_record = SimpleNamespace(
             status="succeeded",
-            output={"records": [good, bad]},
-            artifacts=[],
+            output={"record_count": 2, "ignored_count": 0, "duplicate_count": 0, "unique_count": 2},
+            artifacts=[SimpleNamespace(name="normalized_records")],
         )
         ctx = SimpleNamespace(
             store=SimpleNamespace(load=lambda *args: normalize_record),
-            load_artifact=lambda ref: {},
+            load_artifact=lambda ref: {"records": [good, bad], **normalize_record.output},
             run=SimpleNamespace(run_id="run-1"),
         )
         output = module.run(ctx, module.IdentifyCarrierInput(run_id="run-1"))

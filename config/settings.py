@@ -15,9 +15,28 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def _env_bool(name: str, default: bool = False) -> bool:
-    """读取布尔环境变量；兼容 1/true/yes/on 写法，默认关闭。"""
-    return os.getenv(name, str(default).lower()).strip().lower() in {"1", "true", "yes", "on"}
+def parse_bool(value: str | None, default: bool = False) -> bool:
+    """按统一口径解析布尔取值。
+
+    ``1/true/yes/on`` 视为真，空值与其它写法视为假。各处各写一套解析时，
+    写成 ``1`` 会被静默当成关闭（工作区回收、自动推送的方向都与意图相反
+    且无任何提示）。空字符串返回 ``default``，让"未设置"与"设置为假"可区分。
+    """
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if not text:
+        return default
+    return text in {"1", "true", "yes", "on"}
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    """读取布尔环境变量；兼容 1/true/yes/on 写法，默认关闭。
+
+    运行配置里所有布尔开关都走这一个口径：各写各的解析时，写成 ``1`` 会被
+    静默当成关闭（工作区回收、自动推送的方向都与意图相反且无任何提示）。
+    """
+    return parse_bool(os.getenv(name), default)
 
 
 @dataclass(frozen=True)
@@ -64,7 +83,7 @@ class Settings:
     # workbench_allow_insecure：未配置 WORKBENCH_API_TOKEN 时是否允许绑定非回环地址。
     # 读取环境变量 WORKBENCH_ALLOW_INSECURE（1/true 视为开启），默认 False；
     # 未豁免时 server.py 启动会把监听地址回落为 127.0.0.1。
-    workbench_allow_insecure: bool = _env_bool("WORKBENCH_ALLOW_INSECURE")
+    workbench_allow_insecure: bool = env_bool("WORKBENCH_ALLOW_INSECURE")
     # workbench_api_port：工作台服务监听端口。
     workbench_api_port: int = 8000
     # workbench_cors_origins：允许跨域访问的来源。
@@ -90,8 +109,6 @@ class Settings:
     workbench_max_log_hours: int = 720
     # workbench_prompt_snapshot：是否把完整提示词快照写入任务审计目录。
     workbench_prompt_snapshot: bool = True
-    # workbench_prompt_max_chars：保留旧配置兼容；完整审计快照不再按此值截断。
-    workbench_prompt_max_chars: int = 120000
     # dashboard_recent_hours：工作台“最近”统计窗口小时数。
     dashboard_recent_hours: int = 24
     # dashboard_trend_days：工作台趋势统计天数。

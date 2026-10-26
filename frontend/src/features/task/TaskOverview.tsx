@@ -1,7 +1,7 @@
 import { WorkbenchDrawer } from '../../components/ui/WorkbenchDrawer';
-import { toneForStep, type StepTone as Tone } from '../../lib/stepPresentation';
+import { STOP_KIND_LABELS, stepStopKind, toneForStep, type StepTone as Tone } from '../../lib/stepPresentation';
 import { useMemo, useState } from 'react';
-import { App, Button,  Empty, Skeleton, Tag } from 'antd';
+import { App, Button,  Empty, Skeleton, Tag, Tooltip } from 'antd';
 import {
   ArrowRightOutlined, CopyOutlined, DiffOutlined, GitlabOutlined, WarningOutlined,
 } from '@ant-design/icons';
@@ -14,46 +14,27 @@ import { StatusBadge } from '../../components/StatusBadge';
 import { Banner, KeyValueList, Panel } from '../../components/ui';
 import { CodeDiffViewer } from '../../components/CodeDiffViewer';
 import { taskIsActive } from '../../lib/lifecycle';
+import { STEP_LABELS } from './stages';
+import {
+  EVIDENCE_STATE_LABELS, REVIEW_TOOL_NAMES, evidenceState, reviewSubsteps, substepToRecord, toStepRecord,
+  type EvidenceState, type ReviewToolName,
+} from './reviewEvidence';
 import styles from './TaskOverview.module.css';
 
 type Dict = Record<string, unknown>;
 
-const STEP_LABELS: Record<string, string> = {
-  discover_logs: '拉取异常日志',
-  normalize_error: '规范化异常',
-  deduplicate_error: '异常去重',
-  identify_carrier: '识别承运商',
-  prepare_source_snapshot: '源码快照',
-  repair_branch_preflight: '检查已有分支',
-  prepare_workspace: '准备隔离工作区',
-  prepare_evidence: '准备定位证据',
-  locate_agent: '根因定位',
-  claim_repair_slot: '领取修复资格',
-  repair_agent: '代码修复',
-  check_changes: '变更门禁',
-  syntax_regression: '语法回归',
-  verify_issue: '问题验证',
-  run_regression: '回归验证',
-  review_agent: 'AI 审查',
-  prepare_delivery: '本地候选', publish_delivery: '正式交付',
-  request_approval: '最终审批',
-  finalize_execution: '终态报告',
-};
-
-/** 9 档业务阶段:页头下的横向阶段导航;成员覆盖全部原子节点。 */
-const NINE_STAGES: Array<{ key: string; label: string; members: string[] }> = [
+/** 当前业务阶段；审查内部工具不作为独立阶段。 */
+const TASK_PHASE_GROUPS: Array<{ key: string; label: string; members: string[] }> = [
   { key: 'prepare', label: '准备', members: ['repair_branch_preflight', 'prepare_source_snapshot', 'prepare_workspace', 'prepare_evidence'] },
   { key: 'locate', label: '定位', members: ['locate_agent'] },
   { key: 'claim', label: '领取', members: ['claim_repair_slot', 'define_acceptance', 'reproduce_baseline'] },
   { key: 'repair', label: '修复', members: ['repair_agent'] },
-  { key: 'gate', label: '门禁', members: ['check_changes', 'validate_changes'] },
-  { key: 'verify', label: '验证', members: ['syntax_regression', 'verify_issue'] },
-  { key: 'regression', label: '回归', members: ['run_regression'] },
   { key: 'review', label: '审查', members: ['review_agent'] },
+  { key: 'decide', label: '决策', members: ['decide_validation'] },
   { key: 'deliver', label: '交付', members: ['prepare_analysis', 'prepare_delivery', 'publish_delivery', 'request_approval', 'finalize_execution'] },
 ];
 
-type StageState = 'done' | 'current' | 'failed' | 'future';
+type StageState = 'done' | 'current' | 'failed' | 'future' | 'stopped';
 
 function stageStateOf(stage: { members: string[] }, steps: StepRecord[], activeStep: string, taskActive: boolean): StageState {
   const present = stage.members
@@ -61,13 +42,21 @@ function stageStateOf(stage: { members: string[] }, steps: StepRecord[], activeS
     .filter((step): step is StepRecord => Boolean(step));
   if (!present.length) return 'future';
   if (present.some((step) => toneForStep(step) === 'danger')) return 'failed';
+  // 取消与跳过都不是完成，也不是失败，单列一档以免被读成“已通过”。
+  if (present.some((step) => toneForStep(step) === 'cancelled')) return 'stopped';
   if (present.some((step) => step.status === 'running' || step.status === 'waiting')) return 'current';
+  if (present.every((step) => toneForStep(step) === 'skipped')) return 'stopped';
   if (taskActive && stage.members.includes(activeStep)) return 'current';
   return 'done';
 }
 
 const STAGE_CLASS: Record<StageState, string> = {
-  done: 'stageDone', current: 'stageCurrent', failed: 'stageFailed', future: 'stage',
+  done: 'stageDone', current: 'stageCurrent', failed: 'stageFailed', future: 'stage', stopped: 'stageStopped',
+};
+
+/** 阶段导航 tooltip 用：说明当前这一档到底是没跑、停了还是跑完了。 */
+const STAGE_STATE_HINTS: Record<StageState, string> = {
+  done: '已完成', current: '进行中', failed: '未通过', future: '未开始', stopped: '已停止或已跳过',
 };
 
 const MARK_CLASS: Record<Tone, string> = {
@@ -79,6 +68,7 @@ const MARK_CLASS: Record<Tone, string> = {
   neutral: '',
   pending: 'markPending',
   skipped: 'markSkipped',
+  cancelled: 'markCancelled',
 };
 
 function dict(value: unknown): Dict {
@@ -130,8 +120,9 @@ function toneText(tone: Tone): string {
     waiting: '等待处理',
     manual: '需人工处理',
     skipped: '已跳过',
+    cancelled: '已取消',
     neutral: '已记录，未作业务判定',
-    pending: '未开始',
+    pending: '未执行',
   })[tone];
 }
 
@@ -139,6 +130,14 @@ function stepSummary(step?: StepRecord): string {
   if (!step) return '';
   const output = dict(step.output);
   return getText(output, 'summary', 'reason', 'root_cause', 'terminal_reason') || text(step.summary) || text(step.error?.message);
+}
+
+/** 证据结论：未执行与未回传必须显式区分，缺失不得被读成“通过”。 */
+function evidenceVerdict(state: EvidenceState, passed: boolean, unverified: boolean): { text: string; tone: 'good' | 'bad' | 'muted' } {
+  if (state !== 'available') return { text: EVIDENCE_STATE_LABELS[state], tone: 'muted' };
+  if (passed) return { text: '通过', tone: 'good' };
+  if (unverified) return { text: '未验证', tone: 'muted' };
+  return { text: '未通过', tone: 'bad' };
 }
 
 function terminalLabel(step: string): string {
@@ -185,12 +184,33 @@ function ChangedFileRow({ file, canOpenDiff, onOpen }: { file: Dict; canOpenDiff
   );
 }
 
+/** 指向某个步骤的详情入口；目标步骤不在步骤列表时禁用并说明原因，避免点开一个空面板。 */
+function StepLinkButton({
+  label, target, available, reason, onOpenStep,
+}: {
+  label: string; target: string; available: boolean; reason: string; onOpenStep: (stepName: string) => void;
+}) {
+  if (!available) {
+    return (
+      <Tooltip title={reason}>
+        <span className={styles.disabledAction}>
+          <Button size="small" type="link" disabled>{label}</Button>
+        </span>
+      </Tooltip>
+    );
+  }
+  return <Button size="small" type="link" onClick={() => onOpenStep(target)}>{label}</Button>;
+}
+
 function resultHeadline(result: string, analysisOnly: boolean, deliveredCode: boolean, delivered: boolean, changedCount: number, changeEvidenceKnown: boolean, finalApprovalPending: boolean, executionFailed: boolean): string {
   if (result === 'BLOCKED') return '验证受阻';
   if (executionFailed || ['FAILED', 'FAIL'].includes(result)) return '任务未完成';
-  if (finalApprovalPending) return '本地候选已准备，等待最终审批';
+  // 取消、跳过与人工处理是三种不同的停点，不能和“已交付/已完成”混读。
   if (result === 'CANCELLED') return '任务已取消';
+  if (result === 'SKIPPED') return '本任务已跳过，未执行修复';
   if (result === 'REJECTED') return '变更已被拒绝';
+  if (['MANUAL', 'INSUFFICIENT_EVIDENCE'].includes(result)) return '需人工处理，未确认修复完成';
+  if (finalApprovalPending) return '本地候选已准备，等待最终审批';
   if (analysisOnly && delivered) return '分析报告已提交';
   if (deliveredCode) return '源码修改已提交';
   if (analysisOnly && changedCount > 0 && changeEvidenceKnown) return '源码有改动，但本次仅交付分析报告';
@@ -198,7 +218,6 @@ function resultHeadline(result: string, analysisOnly: boolean, deliveredCode: bo
   if (analysisOnly) return '本次走分析报告交付路径';
   if (changedCount > 0 && changeEvidenceKnown) return '检测到代码改动，但尚未完成源码交付';
   if (changedCount > 0) return '修复 Agent 声明了改动，尚未完成差异核验';
-  if (['MANUAL', 'INSUFFICIENT_EVIDENCE'].includes(result)) return '分析结束，需人工处理';
   if (['RUNNING', 'PENDING', 'QUEUED', 'WAITING_APPROVAL'].includes(result)) return '任务仍在处理中';
   if (delivered) return '交付记录已生成';
   return result ? '任务已结束' : '任务结果待确认';
@@ -207,6 +226,10 @@ function resultHeadline(result: string, analysisOnly: boolean, deliveredCode: bo
 function resultDescription(analysisOnly: boolean, delivered: boolean, deliveredCode: boolean, changedCount: number, changeEvidenceKnown: boolean, finalApprovalPending: boolean, result: string, executionFailed: boolean): string {
   if (result === 'BLOCKED') return '已保留当前补丁与有效证据；排除具体受阻原因后重新验证，无需批准未验证修改。';
   if (executionFailed || result === 'FAILED' || result === 'FAIL') return '任务未完成；请查看停止原因和失败节点。';
+  if (result === 'CANCELLED') return '执行已被取消；已产出的记录保留，但本轮不再推进。';
+  if (result === 'SKIPPED') return '本任务被跳过，没有进入修复流程；这不是失败结论。';
+  if (result === 'REJECTED') return '变更已被拒绝；请在审批记录中查看驳回原因。';
+  if (result === 'MANUAL' || result === 'INSUFFICIENT_EVIDENCE') return '证据不足或超出自动修复范围，需人工处理；未视为修复失败，也未视为修复成功。';
   if (finalApprovalPending) return '本地候选已准备，等待最终审批；系统不会自动合并。';
   if (analysisOnly && delivered) return '仅提交 final.json 分析报告，源码改动未随分支交付。';
   if (analysisOnly && changedCount > 0 && changeEvidenceKnown) return `检测到 ${changedCount} 个源码文件有改动，但本次只交付分析报告。`;
@@ -216,7 +239,6 @@ function resultDescription(analysisOnly: boolean, delivered: boolean, deliveredC
   if (changedCount > 0 && !changeEvidenceKnown) return '修改文件尚未完成基线比对，不能确认实际差异。';
   if (changedCount > 0) return '已发现源码差异，但尚无可靠的分支交付证据。';
   if (changeEvidenceKnown) return '基线比对未发现源码差异。';
-  if (result === 'MANUAL' || result === 'INSUFFICIENT_EVIDENCE') return '证据不足或超出自动修复范围，需人工处理。';
   if (['RUNNING', 'PENDING', 'QUEUED', 'WAITING_APPROVAL'].includes(result)) return '任务仍在执行或等待人工决策。';
   if (delivered) return '交付记录已生成。';
   return result ? '任务已结束；详情见下方各阶段结果。' : '任务结果待确认。';
@@ -228,6 +250,7 @@ function StageItem({ title, steps, hint }: { title: string; steps: Array<StepRec
   else if (completed.some((step) => toneForStep(step) === 'running')) tone = 'running';
   else if (completed.some((step) => toneForStep(step) === 'waiting')) tone = 'waiting';
   else if (completed.some((step) => toneForStep(step) === 'manual')) tone = 'manual';
+  else if (completed.some((step) => toneForStep(step) === 'cancelled')) tone = 'cancelled';
   else if (completed.every((step) => toneForStep(step) === 'skipped')) tone = 'skipped';
   else if (completed.length) tone = 'success';
 
@@ -269,13 +292,54 @@ export function TaskOverview({
 
   const locateStep = stepOf(steps, 'locate_agent');
   const repairStep = stepOf(steps, 'repair_agent');
-  const checkStep = stepOf(steps, 'check_changes');
-  const verifyStep = stepOf(steps, 'verify_issue');
-  const regressionStep = stepOf(steps, 'run_regression');
   const reviewStep = stepOf(steps, 'review_agent');
   const deliveryStep = stepOf(steps, 'publish_delivery') ?? stepOf(steps, 'prepare_delivery');
   const approvalStep = stepOf(steps, 'request_approval');
   const finalStep = stepOf(steps, 'finalize_execution');
+
+  // 审查 Agent 的内部工具通常不在步骤主表里；先从 review_agent 的输出读出内部工具清单，
+  // 再按需取回归档的正式记录，取不到时明确区分“未执行”和“数据未回传”。
+  const reviewSubstepList = useMemo(() => reviewSubsteps(reviewStep?.output), [reviewStep?.output]);
+  const substepByName = useMemo(
+    () => new Map(reviewSubstepList.map((item) => [item.name, item] as const)),
+    [reviewSubstepList],
+  );
+  const missingToolPaths = useMemo(() => REVIEW_TOOL_NAMES.flatMap((name) => {
+    if (stepOf(steps, name)) return [];
+    const path = substepByName.get(name)?.recordPath ?? '';
+    return path ? [{ name, path }] : [];
+  }), [steps, substepByName]);
+  const internalRecords = useQuery({
+    queryKey: [...queryKeys.artifactContent(detail.run_id, '', detail.task.task_id), { internal: missingToolPaths }],
+    queryFn: async () => {
+      const entries = await Promise.all(missingToolPaths.map(async ({ name, path }) => {
+        try {
+          const response = await api.artifactContent(detail.run_id, path, detail.task.task_id);
+          return [name, toStepRecord(response.content)] as const;
+        } catch {
+          // 归档缺失时保持空值，由证据区显示“未回传”，不伪造结果。
+          return [name, undefined] as const;
+        }
+      }));
+      return new Map(entries);
+    },
+    enabled: missingToolPaths.length > 0,
+    staleTime: 60_000,
+  });
+
+  // 取值顺序：步骤主表 → 归档的完整记录 → 审查输出里的内部工具摘要。
+  // 三者都取不到时，只能区分“审查没跑过”和“审查跑过但没回传”。
+  const toolStep = (name: ReviewToolName): StepRecord | undefined =>
+    stepOf(steps, name) ?? internalRecords.data?.get(name) ?? substepToRecord(substepByName.get(name));
+  const toolSummary = (name: ReviewToolName): string => substepByName.get(name)?.summary || '';
+  const checkStep = toolStep('check_changes');
+  const verifyStep = toolStep('verify_issue');
+  const regressionStep = toolStep('run_regression');
+  const syntaxStep = toolStep('syntax_regression');
+  const reviewRan = Boolean(reviewStep);
+  const checkEvidence = evidenceState(checkStep, substepByName.get('check_changes'), reviewRan);
+  const verifyEvidence = evidenceState(verifyStep, substepByName.get('verify_issue'), reviewRan);
+  const regressionEvidence = evidenceState(regressionStep, substepByName.get('run_regression'), reviewRan);
 
   const locate = dict(locateStep?.output);
   const repair = dict(repairStep?.output);
@@ -311,6 +375,8 @@ export function TaskOverview({
     removed: 0,
   });
   const changedCount = changedFiles.length;
+  // 核验结论回传了，但文件级差异清单没有回来：既不是“没有差异”，也不是“没执行”。
+  const changeListMissing = checkEvidence === 'available' && !changeEvidenceKnown && changedCount === 0;
   const gateTotals = dict(gate.totals);
   const added = Number(gateTotals.added ?? changedFiles.reduce((sum, file) => sum + Number(file.added || 0), 0)) || 0;
   const removed = Number(gateTotals.removed ?? changedFiles.reduce((sum, file) => sum + Number(file.removed || 0), 0)) || 0;
@@ -368,8 +434,20 @@ export function TaskOverview({
   const regressionSyntaxOnly = getText(regression, 'status') === 'syntax_only' || getText(regression, 'mode') === 'syntax';
   const regressionPassed = regressionStep?.assessment ? regressionStep.assessment.outcome === 'passed' : regression.passed === true && !regressionSyntaxOnly;
   const verifyUnverified = verifyStep?.assessment?.outcome === 'inconclusive' || getText(verify, 'status') === 'unverified';
-  const qualitySteps = [stepOf(steps, 'syntax_regression'), verifyStep, regressionStep].filter(Boolean) as StepRecord[];
+  const qualitySteps = [syntaxStep, verifyStep, regressionStep].filter(Boolean) as StepRecord[];
   const qualityFailed = qualitySteps.some((step) => toneForStep(step) === 'danger');
+  // 内部证据缺失时不能推断验证结论，只能说明缺失本身。
+  const verifyVerdict = evidenceVerdict(verifyEvidence, verifyPassed, verifyUnverified);
+  const regressionVerdict = evidenceVerdict(regressionEvidence, regressionPassed, false);
+  const verifyText = verifyEvidence !== 'available'
+    ? EVIDENCE_STATE_LABELS[verifyEvidence]
+    : syntaxOnlyVerification ? '仅语法检查' : verifyVerdict.text;
+  const verifyTone = verifyEvidence !== 'available' || syntaxOnlyVerification ? 'muted' : verifyVerdict.tone;
+  const regressionText = regressionEvidence !== 'available'
+    ? EVIDENCE_STATE_LABELS[regressionEvidence]
+    : regressionSyntaxOnly ? '仅语法编译' : regressionVerdict.text;
+  const regressionTone = regressionEvidence !== 'available' || regressionSyntaxOnly ? 'muted' : regressionVerdict.tone;
+  const internalEvidenceMissing = [checkEvidence, verifyEvidence, regressionEvidence].includes('not_returned');
   const resultFailed = !taskActive && !taskPaused
     && (recoveryFailed || ['FAILED', 'FAIL'].includes(result) || qualityFailed || deliveryStep?.status === 'failed');
   const terminalReasonFromFailure = recoveryFailed
@@ -378,10 +456,13 @@ export function TaskOverview({
       [...steps].reverse().find((step) => step.status === 'failed')?.error?.message || ''
     );
   const originalErrorPreview = originalError.split(/\r?\n/)[0] || originalError;
+  const terminalRecord = terminalStep ? stepOf(steps, terminalStep) : undefined;
 
+  // 差异产物可能挂在变更核验步骤上，也可能挂在审查步骤上，两处都要认。
   const diffArtifact = useMemo(() => (
-    checkStep?.artifacts?.find((artifact) => artifact.name === 'diff' || artifact.path.endsWith('/diff.json'))
-  ), [checkStep?.artifacts]);
+    (checkStep?.artifacts || []).concat(reviewStep?.artifacts || [])
+      .find((artifact) => artifact.name === 'diff' || artifact.path.endsWith('/diff.json'))
+  ), [checkStep?.artifacts, reviewStep?.artifacts]);
   const [diffOpen, setDiffOpen] = useState(false);
   const [selectedDiffPath, setSelectedDiffPath] = useState('');
   const diffQuery = useQuery({
@@ -414,7 +495,7 @@ export function TaskOverview({
     }
   };
 
-  const stageStates = NINE_STAGES.map((stage) => stageStateOf(stage, steps, activeStep, taskActive));
+  const stageStates = TASK_PHASE_GROUPS.map((stage) => stageStateOf(stage, steps, activeStep, taskActive));
   // 活跃任务必须有“当前”档:没有任何阶段命中当前节点时,推进到第一个未来档。
   const firstFuture = stageStates.indexOf('future');
   const navStates: StageState[] = stageStates.map((state, index) => {
@@ -425,8 +506,12 @@ export function TaskOverview({
   return (
     <div className={styles.overview}>
       <nav className={styles.stageNav} aria-label="执行阶段">
-        {NINE_STAGES.map((stage, index) => (
-          <span key={stage.key} className={`${styles.stage} ${styles[STAGE_CLASS[navStates[index]]]}`} title={stage.members.map((name) => STEP_LABELS[name] || name).join(' · ')}>
+        {TASK_PHASE_GROUPS.map((stage, index) => (
+          <span
+            key={stage.key}
+            className={`${styles.stage} ${styles[STAGE_CLASS[navStates[index]]]}`}
+            title={`${stage.label}（${STAGE_STATE_HINTS[navStates[index]]}）：${stage.members.map((name) => STEP_LABELS[name] || name).join(' · ')}`}
+          >
             <span className={styles.stageDot} aria-hidden="true" />
             {stage.label}
           </span>
@@ -487,18 +572,27 @@ export function TaskOverview({
         <div className={styles.facts}>
           <div className={styles.factPrimary}>
             <span>源码改动</span>
-            <strong>{changedCount > 0
-              ? changeEvidenceKnown ? `${changedCount} 个实际变更文件` : `${changedCount} 个文件声明待核验`
-              : changeEvidenceKnown ? '已核验：没有真实差异' : '尚无可核验源码差异'}</strong>
-            <small>{changedCount > 0 && changeEvidenceKnown ? `+${added} / −${removed} 行` : changeEvidenceKnown ? '基线差异核验已完成' : '未完成确定性基线比对'}</small>
+            <strong>{checkEvidence === 'not_returned'
+              ? '变更核验未回传'
+              : changeListMissing
+                ? '变更核验已执行，文件清单未回传'
+                : changedCount > 0
+                  ? changeEvidenceKnown ? `${changedCount} 个实际变更文件` : `${changedCount} 个文件声明待核验`
+                  : changeEvidenceKnown ? '已核验：没有真实差异' : '尚无可核验源码差异'}</strong>
+            <small>{checkEvidence === 'not_returned'
+              ? '审查内部证据缺失，不能确认实际差异'
+              : changeListMissing
+                ? '核验结论已回传，文件级差异没有随审查结论返回'
+                : changedCount > 0 && changeEvidenceKnown ? `+${added} / −${removed} 行`
+                  : changeEvidenceKnown ? '基线差异核验已完成' : '未完成确定性基线比对'}</small>
           </div>
           <div className={styles.factRow}>
             <span>{taskActive || taskPaused ? '当前节点' : '自动修复停止点'}</span>
-            <strong>{terminalLabel(terminalStep)}</strong>
+            <strong>{terminalLabel(terminalStep)}{terminalRecord ? ` · ${STOP_KIND_LABELS[stepStopKind(terminalRecord)]}` : ''}</strong>
           </div>
           <div className={styles.factRow}>
             <span>最后执行步骤</span>
-            <strong>{terminalLabel(lastExecutedStep?.name || '')}</strong>
+            <strong>{terminalLabel(lastExecutedStep?.name || '')}{lastExecutedStep ? ` · ${STOP_KIND_LABELS[stepStopKind(lastExecutedStep)]}` : ''}</strong>
           </div>
           <div className={styles.factRow}>
             <span>执行耗时</span>
@@ -528,9 +622,14 @@ export function TaskOverview({
         extra={terminalStep ? <span>自动修复停止点：{terminalLabel(terminalStep)}</span> : undefined}
       >
         <div className={styles.stageGrid} aria-label="任务执行阶段">
-          <StageItem title="根因定位" steps={[locateStep]} hint={locateStep ? toneText(toneForStep(locateStep)) : '未开始'} />
-          <StageItem title="代码修改" steps={[repairStep, checkStep]} hint={analysisOnly ? '未随报告分支交付源码' : changedCount ? (changeEvidenceKnown ? `${changedCount} 个实际变更文件` : `${changedCount} 个文件声明待核验`) : changeEvidenceKnown ? '基线比对未发现差异' : repairStep ? toneText(toneForStep(repairStep)) : '未开始'} />
-          <StageItem title="验证与回归" steps={qualitySteps} hint={qualitySteps.length ? qualityFailed ? '验证未通过' : verifyStep?.result === 'UNVERIFIED' ? '业务未验证，需人工确认' : '验证节点已执行' : '未执行'} />
+          <StageItem title="根因定位" steps={[locateStep]} hint={locateStep ? toneText(toneForStep(locateStep)) : '未执行'} />
+          <StageItem title="代码修改" steps={[repairStep, checkStep]} hint={analysisOnly ? '未随报告分支交付源码' : changedCount ? (changeEvidenceKnown ? `${changedCount} 个实际变更文件` : `${changedCount} 个文件声明待核验`) : changeEvidenceKnown ? '基线比对未发现差异' : repairStep ? toneText(toneForStep(repairStep)) : '未执行'} />
+          <StageItem title="验证与回归" steps={qualitySteps} hint={qualitySteps.length
+            ? qualityFailed ? '验证未通过'
+              : internalEvidenceMissing ? '审查内部证据未回传'
+                : verifyStep?.result === 'UNVERIFIED' ? '业务未验证，需人工确认'
+                  : '验证节点已执行'
+            : '未执行'} />
           <StageItem title="AI 审查" steps={[reviewStep]} hint={reviewVerdict ? ({
             PASS: '审查通过，准备本地候选',
             FAIL: '审查未通过，触发回修',
@@ -619,7 +718,12 @@ export function TaskOverview({
             </div>
           ) : (
             <div className={styles.pad}>
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="定位步骤尚未产出根因结论" />
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description={locateStep
+                  ? '定位步骤已执行，但没有产出根因结论'
+                  : '定位步骤未执行，本任务没有定位记录'}
+              />
             </div>
           )}
           {locateStep && (
@@ -702,8 +806,18 @@ export function TaskOverview({
           ) : (
             <div className={styles.pad}>
               <div className={styles.noChange}>
-                <strong>{changeEvidenceKnown ? '没有检测到真实源码差异' : claimedFilePaths.length ? '修改声明尚未核验' : '没有可核验的源码差异'}</strong>
-                <span>{changeEvidenceKnown ? '确定性门禁已比对基线；未将模型声明当作实际修改。' : claimedFilePaths.length ? '修复 Agent 声明了候选文件，但还没有确定性差异证据。' : '任务可能只做根因分析，或在修改前已终止。'}</span>
+                <strong>{checkEvidence === 'not_returned'
+                  ? '变更门禁证据未回传'
+                  : changeListMissing
+                    ? '变更核验已执行，但没有回传文件清单'
+                    : changeEvidenceKnown ? '没有检测到真实源码差异' : claimedFilePaths.length ? '修改声明尚未核验' : '没有可核验的源码差异'}</strong>
+                <span>{checkEvidence === 'not_returned'
+                  ? '审查内部的变更核验已执行，但结果没有回传到本任务，不能据此判断是否存在真实差异。'
+                  : changeListMissing
+                    ? '核验结论已经回传，文件级差异清单没有随审查结论返回；请用“查看代码差异”核对逐行差异。'
+                    : changeEvidenceKnown ? '确定性门禁已比对基线；未将模型声明当作实际修改。'
+                      : claimedFilePaths.length ? '修复 Agent 声明了候选文件，但还没有确定性差异证据。'
+                        : '任务可能只做根因分析，或在修改前已终止。'}</span>
               </div>
             </div>
           )}
@@ -711,7 +825,15 @@ export function TaskOverview({
             {diffArtifact && (
               <Button size="small" icon={<DiffOutlined />} onClick={() => setDiffOpen(true)}>查看代码差异</Button>
             )}
-            {checkStep && <Button size="small" type="link" onClick={() => onOpenStep('check_changes')}>变更门禁详情</Button>}
+            <StepLinkButton
+              label="变更门禁详情"
+              target="check_changes"
+              available={Boolean(stepOf(steps, 'check_changes'))}
+              reason={checkEvidence === 'not_executed'
+                ? '变更门禁未执行，本任务没有该步骤记录'
+                : '变更门禁记录只存在于审查归档产物中，不在步骤列表里，无法在此打开'}
+              onOpenStep={onOpenStep}
+            />
           </div>
         </Panel>
 
@@ -736,28 +858,41 @@ export function TaskOverview({
           <div className={styles.qualityList}>
             <div className={styles.qualityRow}>
               <span>问题验证</span>
-              <strong className={syntaxOnlyVerification ? styles.qualityMuted : verifyPassed ? styles.qualityGood : verifyStep ? styles.qualityBad : styles.qualityMuted}>
-                {syntaxOnlyVerification ? '仅语法检查' : verifyPassed ? '通过' : verifyUnverified ? '未验证' : verifyStep ? '未通过' : '未执行'}
+              <strong className={verifyTone === 'good' ? styles.qualityGood : verifyTone === 'bad' ? styles.qualityBad : styles.qualityMuted}>
+                {verifyText}
               </strong>
               <small className={styles.qualityDetail}>
-                {syntaxOnlyVerification
-                  ? '未执行原始问题重放'
-                  : getText(verify, 'mode')}{getText(verify, 'reason') && !syntaxOnlyVerification ? ` · ${getText(verify, 'reason')}` : ''}
+                {verifyEvidence === 'not_executed'
+                  ? '审查内部的问题重放工具未执行'
+                  : verifyEvidence === 'not_returned'
+                    ? '审查内部证据未回传（见下方说明）'
+                    : syntaxOnlyVerification
+                      ? '未执行原始问题重放'
+                      : getText(verify, 'mode') || toolSummary('verify_issue')}{getText(verify, 'reason') && !syntaxOnlyVerification ? ` · ${getText(verify, 'reason')}` : ''}
               </small>
             </div>
             <div className={styles.qualityRow}>
               <span>回归测试</span>
-              <strong className={regressionSyntaxOnly ? styles.qualityMuted : regressionPassed ? styles.qualityGood : regressionStep ? styles.qualityBad : styles.qualityMuted}>
-                {regressionSyntaxOnly ? '仅语法编译' : regressionPassed ? '通过' : regressionStep ? '未通过' : '未执行'}
+              <strong className={regressionTone === 'good' ? styles.qualityGood : regressionTone === 'bad' ? styles.qualityBad : styles.qualityMuted}>
+                {regressionText}
               </strong>
               <small className={styles.qualityDetail}>
-                {regression.command_count !== undefined ? `${String(regression.command_count)} 条命令` : '未记录命令数'}
-                {getText(regression, 'reason') ? ` · ${getText(regression, 'reason')}` : ''}
+                {regressionEvidence === 'not_executed'
+                  ? '审查内部的真实请求回归工具未执行'
+                  : regressionEvidence === 'not_returned'
+                    ? '审查内部证据未回传（见下方说明）'
+                    : `${regression.command_count !== undefined ? `${String(regression.command_count)} 条命令` : toolSummary('run_regression') || '未记录命令数'}${getText(regression, 'reason') ? ` · ${getText(regression, 'reason')}` : ''}`}
               </small>
             </div>
           </div>
           <div className={styles.reviewBlock}>
             <label className={styles.label}>{analysisOnly ? 'AI 审查结论（报告路径）' : 'AI 审查结论（非最终审批）'}</label>
+            {internalEvidenceMissing && (
+              <Banner tone="warn">
+                审查内部证据未回传：变更核验、原问题重放或真实请求回归的结果没有随审查结论返回，
+                下方“未回传”不代表通过或未通过，请到执行记录或审查归档产物中核对。
+              </Banner>
+            )}
             {reviewStep ? (
               <>
                 <p className={styles.reviewCompact}>{shortText(reviewSummary || '审查步骤已执行，但没有记录摘要。', 220)}</p>
@@ -783,13 +918,35 @@ export function TaskOverview({
                 )}
               </>
             ) : (
-              <p className={styles.mutedLine}>未产生 AI 审查结论。任务可能在修复、验证阶段前结束，或处于人工审查模式。</p>
+              <p className={styles.mutedLine}>审查步骤未执行，本任务没有 AI 审查结论；任务可能在修复、验证阶段前结束，或处于人工审查模式。</p>
             )}
           </div>
           <div className={styles.actionsRow}>
-            {verifyStep && <Button size="small" type="link" onClick={() => onOpenStep('verify_issue')}>问题验证详情</Button>}
-            {regressionStep && <Button size="small" type="link" onClick={() => onOpenStep('run_regression')}>回归详情</Button>}
-            {reviewStep && <Button size="small" type="link" onClick={() => onOpenStep('review_agent')}>完整审查记录</Button>}
+            <StepLinkButton
+              label="问题验证详情"
+              target="verify_issue"
+              available={Boolean(stepOf(steps, 'verify_issue'))}
+              reason={verifyEvidence === 'not_executed'
+                ? '原问题重放未执行，本任务没有该步骤记录'
+                : '验证记录只存在于审查归档产物中，不在步骤列表里，无法在此打开'}
+              onOpenStep={onOpenStep}
+            />
+            <StepLinkButton
+              label="回归详情"
+              target="run_regression"
+              available={Boolean(stepOf(steps, 'run_regression'))}
+              reason={regressionEvidence === 'not_executed'
+                ? '真实请求回归未执行，本任务没有该步骤记录'
+                : '回归记录只存在于审查归档产物中，不在步骤列表里，无法在此打开'}
+              onOpenStep={onOpenStep}
+            />
+            <StepLinkButton
+              label="完整审查记录"
+              target="review_agent"
+              available={Boolean(reviewStep)}
+              reason="审查步骤未执行，本任务没有该步骤记录"
+              onOpenStep={onOpenStep}
+            />
           </div>
         </Panel>
 
@@ -860,7 +1017,7 @@ export function TaskOverview({
         styles={{ body: { padding: 10, overflow: 'hidden' } }}
       >
         {diffQuery.isLoading ? <Skeleton active paragraph={{ rows: 8 }} />
-          : diffQuery.isError ? <Empty description="差异产物读取失败，请从 check_changes 步骤核对错误。" />
+          : diffQuery.isError ? <Empty description="差异产物读取失败，请到变更门禁步骤核对错误。" />
             : diffPayload ? (
               <CodeDiffViewer
                 payload={diffPayload}
@@ -868,7 +1025,11 @@ export function TaskOverview({
                 onSelectedPathChange={setSelectedDiffPath}
               />
             )
-              : <Empty description="该任务没有完整差异文本产物" />}
+              : <Empty description={checkEvidence === 'available'
+                ? '变更门禁已执行，但没有回传差异文本产物'
+                : checkEvidence === 'not_returned'
+                  ? '审查内部证据未回传，本任务没有可展示的差异文本'
+                  : '变更门禁未执行，本任务没有差异产物'} />}
       </WorkbenchDrawer>
     </div>
   );

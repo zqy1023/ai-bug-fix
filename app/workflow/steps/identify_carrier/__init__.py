@@ -17,7 +17,10 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _patch(output: dict[str, Any]) -> dict[str, Any]:
-    return {"tasks": list(output["tasks"])}
+    # 步骤没有产出任务列表（被取消或执行失败）：不回写任何状态。
+    if "tasks" not in output:
+        return {}
+    return {"tasks": list(output.get("tasks") or [])}
 
 
 SPEC = StepSpec(

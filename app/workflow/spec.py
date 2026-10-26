@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 if TYPE_CHECKING:
     from app.application.context import StepContext
@@ -104,6 +104,20 @@ class StepSpec:
     def patch(self, output: dict[str, Any]) -> dict[str, Any]:
         """回写字段；没有声明的步骤回写空字典。"""
         return self.output_patch(output) if self.output_patch else {}
+
+    def produced(self, output: dict[str, Any]) -> bool:
+        """载荷是否真的是本步的输出。
+
+        步骤被取消或执行失败时，``result.output`` 是错误载荷（例如
+        ``{"control_cancelled": True}``），并不是本步的输出模型；把它交给
+        ``output_patch`` 会在硬索引处抛 KeyError，甚至让整个运行中断。
+        这里用输出契约本身判定，插件无需各自记住"我失败时该回写什么"。
+        """
+        try:
+            self.output_model.model_validate(dict(output))
+        except ValidationError:
+            return False
+        return True
 
 
 @dataclass(frozen=True)

@@ -262,7 +262,7 @@ STEP_DEPENDENCIES = {
 
 
 def dependencies_for(name: str, review_mode: str = "agent") -> tuple[Dependency, ...]:
-    """所有入口共用的步骤依赖；决策允许在原问题验证后提前执行。"""
+    """完整执行、单步执行和恢复操作共用的当前步骤依赖。"""
     from app.workflow.spec import Dependency
 
     return tuple(

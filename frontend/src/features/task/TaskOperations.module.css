@@ -14,6 +14,8 @@
 .runErrorWrap strong { font-weight: 600; color: var(--wb-warning); }
 
 .permission { margin: 0; padding-top: 12px; font-size: 11.5px; color: var(--wb-ink-muted); line-height: 1.7; }
+/* 禁用按钮需要包一层元素，Tooltip 才能在禁用态弹出原因。 */
+.disabledAction { display: inline-flex; }
 
 .footer { display: flex; flex-wrap: wrap; gap: 6px 20px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--wb-line-soft); color: var(--wb-ink-muted); font-size: 11.5px; }
 

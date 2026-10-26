@@ -5,7 +5,7 @@ from typing import Any
 from app.domain.errors import StepFailed
 from app.workflow.acceptance import AcceptanceInput, define_acceptance
 from app.workflow.contracts import AcceptanceContract
-from app.workflow.spec import StepSpec
+from app.workflow.spec import RecordView, StepSpec
 
 
 def run(ctx, data: AcceptanceInput) -> AcceptanceContract:
@@ -45,4 +45,11 @@ SPEC = StepSpec(
     output_model=AcceptanceContract,
     input_builder=_input,
     output_patch=lambda output: {"acceptance_contract": output},
+    # 落盘投影：baseline_manifest 是"carrier 全部文件 × 哈希"的全量清单，
+    # 体积随 carrier 规模线性增长。它不进步骤记录，否则记录会顶破 1 MiB 上限，
+    # 而写记录失败会连带让失败记录也写不进去，整轮中止。清单本体已经在
+    # source_snapshot.json 产物与状态通道里各有一份。
+    input_record=RecordView(
+        keep=("problem", "baseline_dir", "diagnosis"),
+    ),
 )

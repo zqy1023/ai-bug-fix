@@ -33,7 +33,7 @@ def run_timestamps(
     lifecycle: dict[str, Any], report: dict[str, Any], failure: dict[str, Any],
     *, created_at: str, terminal: bool,
 ) -> dict[str, Any]:
-    """活动周期不继承旧终态时间；兼容没有 lifecycle 的旧运行。"""
+    """活动周期不继承旧终态时间；终态时间由当前生命周期及正式报告提供。"""
     return {
         "started_at": lifecycle.get("started_at") or created_at,
         "finished_at": (
@@ -49,7 +49,7 @@ def task_stages() -> list[dict[str, Any]]:
     from app.workflow.registry import resolve
 
     load_all()
-    titles = {"prepare_context": "准备上下文", "validate_changes": "变更与验证"}
+    titles = {"prepare_context": "准备上下文"}
     return [
         {
             "key": name,

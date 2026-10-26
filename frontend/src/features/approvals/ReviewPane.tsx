@@ -85,8 +85,8 @@ export function ReviewPane({ item }: { item: ApprovalItem }) {
   const taskDetail = taskQuery.data;
   const task = taskDetail?.task;
   const steps = task?.steps ?? [];
-  const checkStep = stepOf(steps, 'check_changes');
-  const checkOutput = asObject(checkStep?.output);
+  const checkStep = stepOf(steps, 'review_agent');
+  const checkOutput = asObject(checkStep?.output?.payload || checkStep?.output);
   const gateFilesAvailable = Boolean(checkStep && Array.isArray(checkOutput.files));
   const gateFiles = (Array.isArray(checkOutput.files) ? checkOutput.files : [])
     .filter((file): file is FileEvidence => {
@@ -95,7 +95,7 @@ export function ReviewPane({ item }: { item: ApprovalItem }) {
     })
     .map((file) => file as FileEvidence);
 
-  // 有确定性门禁证据时，按实际状态显示；只有旧记录缺少门禁输出时才降级显示方案声明。
+  // 有确定性门禁证据时，按实际状态显示；审查执行结果尚未取得时明确标记为方案声明。
   const changedFiles: FileEvidence[] = gateFilesAvailable
     ? gateFiles.filter((file) => !['unchanged', 'same'].includes(text(file.status).toLowerCase()))
     : (item.changed_files ?? []).map((path) => ({ path, status: 'declared' }));
@@ -346,7 +346,7 @@ export function ReviewPane({ item }: { item: ApprovalItem }) {
           <p className={styles.padNote}>
             {gateFilesAvailable
               ? '确定性门禁输出中没有实际变化文件；请勿把 Agent 的修改声明当成真实差异。'
-              : '未返回文件清单。请先检查任务详情中的 check_changes 步骤记录。'}
+              : '未返回文件清单。请先检查任务详情中的修复后代码审查 Agent。'}
           </p>
         )}
         {!diffArtifact && !taskQuery.isLoading && (
@@ -384,7 +384,7 @@ export function ReviewPane({ item }: { item: ApprovalItem }) {
         {diffQuery.isLoading ? (
           <Skeleton active paragraph={{ rows: 10 }} />
         ) : diffQuery.isError ? (
-          <Empty description="读取 diff 产物失败，请检查 check_changes 的步骤记录。" />
+          <Empty description="读取 diff 产物失败，请检查 修复后代码审查 Agent 的内部证据。" />
         ) : diffPayload ? (
           <CodeDiffViewer
             payload={diffPayload}

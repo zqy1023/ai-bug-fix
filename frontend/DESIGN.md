@@ -1,7 +1,7 @@
 # 修复工作台 · Stitch 设计落地
 
 当前视觉基于 2026-10-25 确认的四张 Google Stitch 画板。项目 ID：`12538434318285344375`。
-原始画板、HTML、设计令牌和研究记录保存在工作区 `.stitch/`；当前文档描述实际 React 实现。
+当前文档描述实际 React 实现；运行和构建不依赖设计过程产物。
 
 ## 视觉语言
 
@@ -44,7 +44,6 @@ KeyValueList、Banner、StatusBadge；新增 RunProgress 与 VerificationCheckli
 ## 验证
 
 - `npm --prefix frontend run build`
-- `node tests/frontend_workbench.cjs`：原有正式判定与审批回归场景。
 - `node tests/frontend_redesign.cjs`：四工作区 × 明暗主题 × 1440 / 768 / 390px，验证归档加载、
   同批次切换、源码差异、过期证据、任务筛选、操作权限、取消审批、批准和驳回回修。
 
@@ -55,4 +54,3 @@ Playwright 模块路径与运行地址分别通过 PLAYWRIGHT_MODULE、UI_ORIGIN
 
 2026-10-26 根据原始 Stitch HTML 与用户截图纠正了执行批次页和公共导航的结构偏差。
 此前的功能与响应式检查不能替代原稿视觉核对；其他页面和完整子页面样式仍需按框架清单逐项复核。
-细节见工作区 `.stitch/FIDELITY-AUDIT.md`。

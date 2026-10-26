@@ -5,7 +5,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../../lib/api';
 import { queryKeys } from '../../lib/queryKeys';
-import { taskCanRetry, taskFailure, taskHasFailed, taskIsActive, taskState } from '../../lib/lifecycle';
+import { taskFailure, taskHasFailed, taskIsActive, taskState } from '../../lib/lifecycle';
 import type { TaskDetailResponse } from '../../lib/types';
 import { Banner } from '../../components/ui';
 import styles from './TaskOperations.module.css';
@@ -24,6 +24,7 @@ export const TaskOperations: FC<TaskOperationsProps> = ({ detail, onInspect, onR
   const failed = taskHasFailed(detail.task);
   const active = taskIsActive(detail.task);
   const reason = taskFailure(detail);
+  const retryAvailability = detail.actions?.retry;
   const current = detail.task.lifecycle?.current_step || detail.task.current_step;
   const currentTitle = detail.task.steps.find((step) => step.name === current)?.title || current;
   const retry = useMutation({
@@ -53,13 +54,23 @@ export const TaskOperations: FC<TaskOperationsProps> = ({ detail, onInspect, onR
         <div className={styles.buttons}>
           <Tooltip title="重新获取任务状态"><Button aria-label="刷新任务" icon={<ReloadOutlined spin={refreshing} />} onClick={onRefresh} /></Tooltip>
           <Button icon={<FileSearchOutlined />} onClick={onInspect}>{failed ? '定位失败节点' : '执行记录'}</Button>
-          {taskCanRetry(detail) && <Button type="primary" icon={<ReloadOutlined />} loading={retry.isPending} onClick={() => retry.mutate()}>{['MANUAL', 'INSUFFICIENT_EVIDENCE'].includes(taskState(detail.task)) ? '重新调查此任务' : '重试此任务'}</Button>}
+          {retryAvailability?.enabled ? (
+            <Button type="primary" icon={<ReloadOutlined />} loading={retry.isPending} onClick={() => retry.mutate()}>{['MANUAL', 'INSUFFICIENT_EVIDENCE'].includes(taskState(detail.task)) ? '重新调查此任务' : '重试此任务'}</Button>
+          ) : retryAvailability?.reason ? (
+            // 不允许重试时给出禁用入口和原因，避免用户点出必然失败的操作。
+            <Tooltip title={retryAvailability.reason}>
+              <span className={styles.disabledAction}><Button disabled>暂不可重试</Button></span>
+            </Tooltip>
+          ) : null}
           {detail.task.approval_pending && <Button type="primary" onClick={() => navigate(`/approvals?task=${encodeURIComponent(detail.task.task_id)}`)}>处理审批 <ArrowRightOutlined /></Button>}
           {detail.run_error?.status && detail.run_error.error_type !== 'WORKFLOW_FAILED' && (
             <Button onClick={() => navigate(`/runs/${encodeURIComponent(detail.run_id)}`)}>处理批次异常 <ArrowRightOutlined /></Button>
           )}
         </div>
       </div>
+      {retryAvailability?.reason && !retryAvailability.enabled && !active && (
+        <p className={styles.permission}>暂不可重试：{retryAvailability.reason}</p>
+      )}
       {reason && !active && <details className={styles.more}><summary>查看任务停止原因</summary><p className={styles.reason}>{reason === 'ANALYSIS_ONLY' ? '本轮仅输出分析报告，未确认代码修复。' : reason}</p></details>}
       {detail.run_error?.message && detail.run_error.error_type !== 'WORKFLOW_FAILED' && (
         <div className={styles.runErrorWrap} role="alert">
@@ -67,7 +78,6 @@ export const TaskOperations: FC<TaskOperationsProps> = ({ detail, onInspect, onR
         </div>
       )}
       <details className={styles.more}><summary>状态与操作说明</summary>
-      {detail.actions?.retry.reason && !active && <p className={styles.permission}>{detail.actions.retry.reason}</p>}
       <div className={styles.footer}>
         <span>{active ? '任务正在执行' : detail.task.approval_pending ? '等待人工决策' : '任务已停止自动推进'}</span>
         <span>{detail.worker_active ? '本轮工作流仍在运行' : detail.run_status === 'paused' ? '本轮已暂停' : '本轮没有活动工作线程'}</span>

@@ -82,6 +82,61 @@ class RedactForDeliveryTests(unittest.TestCase):
         self.assertEqual(redact_for_delivery(""), "")
         self.assertEqual(redact_for_delivery(None), "")
 
+    def test_json_quoted_headers_masked(self):
+        """JSON 形态的鉴权头/cookie 之前因引号夹在中间而漏出。"""
+        from app.infrastructure.redaction import redact_for_delivery
+
+        self.assertEqual(
+            redact_for_delivery('{"Authorization": "Bearer sk-abc123"}'),
+            '{"Authorization": "***"}',
+        )
+        self.assertEqual(
+            redact_for_delivery('{"Cookie": "session=deadbeef"}'),
+            '{"Cookie": "***"}',
+        )
+
+    def test_password_assignment_masked(self):
+        from app.infrastructure.redaction import redact_for_delivery
+
+        self.assertEqual(redact_for_delivery("password=hunter2"), "password=***")
+        self.assertEqual(redact_for_delivery("passwd: hunter2"), "passwd: ***")
+        self.assertEqual(redact_for_delivery("password: hunter2"), "password: ***")
+        self.assertEqual(
+            redact_for_delivery('{"password": "hunter2"}'),
+            '{"password": "***"}',
+        )
+        self.assertEqual(
+            redact_for_delivery('client_secret="xyz123"'),
+            'client_secret="***"',
+        )
+
+    def test_pem_private_key_block_masked(self):
+        from app.infrastructure.redaction import redact_for_delivery
+
+        block = (
+            "-----BEGIN RSA PRIVATE KEY-----\n"
+            "MIIEowIBAAKCAQEA1234\n"
+            "-----END RSA PRIVATE KEY-----"
+        )
+        masked = redact_for_delivery(block)
+        self.assertNotIn("MIIEowIBAAKCAQEA1234", masked)
+        self.assertNotIn("BEGIN RSA PRIVATE KEY", masked)
+
+    def test_bare_aws_key_id_masked(self):
+        from app.infrastructure.redaction import redact_for_delivery
+
+        self.assertEqual(
+            redact_for_delivery("id=AKIAIOSFODNN7EXAMPLE"),
+            "id=***",
+        )
+
+    def test_prose_with_secret_word_unchanged(self):
+        """secret/token 也可能是正文用语，不要把说明文字抹掉。"""
+        from app.infrastructure.redaction import redact_for_delivery
+
+        text = "secret: 已轮换，无需处理；token 由网关侧签发"
+        self.assertEqual(redact_for_delivery(text), text)
+
 
 class SourceRedactTests(unittest.TestCase):
     """P1-1：source.py 的 URL/argv 脱敏恢复。"""

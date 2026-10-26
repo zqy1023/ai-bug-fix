@@ -1,2 +1,4 @@
 /* 执行控制按钮组:放进 PageHeader actions,跟随页头排布。 */
 .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* 禁用按钮需要包一层元素，Tooltip 才能在禁用态弹出原因。 */
+.disabledAction { display: inline-flex; }

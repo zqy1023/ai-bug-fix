@@ -110,6 +110,8 @@ class ReviewView(ReviewAgentOutput):
     review_notes: str = ""
     substeps: list[dict[str, Any]] = Field(default_factory=list)
     review_report_path: str = ""
+    changed_files: list[str] = Field(default_factory=list)
+    files: list[dict[str, Any]] = Field(default_factory=list)
 
 
 __all__ = ["ReviewAgentOutput", "ReviewInput", "ReviewView"]

@@ -15,6 +15,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from config.settings import parse_bool
+
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_PATH = Path(__file__).resolve().parent / "config.json"
 ENV_PREFIX = "AI_REPAIR_AGENT_REPAIR_"
@@ -34,9 +36,6 @@ DEFAULTS: dict[str, Any] = {
     "timeout_seconds": 480,
     "options": {},
 }
-
-_BOOL_TRUE = {"1", "true", "yes", "on"}
-
 
 class RepairConfigError(ValueError):
     """修复 agent 配置非法。"""
@@ -93,12 +92,12 @@ class RepairConfig:
             source = str(resolved)
         force_writable = environment.get(f"{ENV_PREFIX}WRITABLE", "").strip()
         if force_writable:
-            payload["writable"] = force_writable.lower() in _BOOL_TRUE
+            payload["writable"] = parse_bool(force_writable)
         enables = environment.get("AI_REPAIR_AGENT_REPAIR_ENABLED", "").strip()
         if not enables:
             enables = environment.get(f"{ENV_PREFIX}ENABLED", "").strip()
         if enables:
-            payload["enabled"] = enables.lower() in _BOOL_TRUE
+            payload["enabled"] = parse_bool(enables)
         provider = environment.get(f"{ENV_PREFIX}PROVIDER", "").strip()
         if provider:
             payload["provider"] = provider

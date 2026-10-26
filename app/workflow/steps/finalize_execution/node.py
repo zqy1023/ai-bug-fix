@@ -491,7 +491,7 @@ def _output(records: list[StepRecord], name: str) -> dict[str, Any]:
 def full_output(
     store: Any, run_id: str, task_id: str, records: list[StepRecord], name: str
 ) -> dict[str, Any]:
-    """Read full validated output, retaining normalized conclusions for old records."""
+    """Read current formal output; running records may not have a handoff yet."""
     from app.workflow.definitions import REVIEW_EVIDENCE_STEPS
     if name in REVIEW_EVIDENCE_STEPS and not any(record.name == name for record in records):
         review = _output(records, "review_agent")

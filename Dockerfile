@@ -13,9 +13,13 @@ COPY __init__.py ./__init__.py
 # uid 10001 与 docker-compose 的 APP_UID 默认值一致；HOME 必须显式指向 app 用户的
 # 主目录——compose 以数字 user 运行时容器不会自动设置 HOME，git 提交、httpx 等
 # 依赖会退回 "/" 或无主目录而失败。
+# /var/log/yqtrack 必须在镜像里建好并授权：yq_common 的日志初始化在 Linux 下
+# 固定写 /var/log/yqtrack/<project>，它吞掉 makedirs 的 PermissionError 后，
+# RotatingFileHandler 会因目录不存在在 import 期抛 FileNotFoundError，
+# api 容器因此崩溃重启、frontend 的 depends_on: service_healthy 永不满足。
 RUN useradd --create-home --uid 10001 app \
-    && mkdir -p /home/app /app/runtime \
-    && chown -R app:app /app /home/app
+    && mkdir -p /home/app /app/runtime /var/log/yqtrack/py.ai.bug.fixer \
+    && chown -R app:app /app /home/app /var/log/yqtrack
 ENV HOME=/home/app
 USER app
 EXPOSE 8000

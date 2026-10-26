@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from contextlib import closing
 from pathlib import Path
 
 from config.settings import settings
+
+logger = logging.getLogger(__name__)
 
 
 def _control_flags(runtime_dir: str | Path, run_id: str) -> tuple[bool, bool]:
@@ -23,7 +26,10 @@ def _control_flags(runtime_dir: str | Path, run_id: str) -> tuple[bool, bool]:
                 "SELECT pause_requested, cancel_requested FROM run_control WHERE run_id = ?", (run_id,)
             ).fetchone()
             return (bool(row[0]), bool(row[1])) if row else (False, False)
-    except sqlite3.Error:
+    except sqlite3.Error as error:
+        # 控制库读不到时不能伪造"未请求"，但也绝不能静默：用户的取消/暂停
+        # 会就此失效，工作流继续跑完整轮，日志里还得留得下痕迹。
+        logger.warning("读取运行控制信号失败（run_id=%s）：%s", run_id, error)
         return False, False
 
 

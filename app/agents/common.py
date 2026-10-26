@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 import uuid
@@ -12,7 +13,8 @@ from typing import Any, Callable
 from app.domain.json_text import loads_object
 from app.infrastructure.records.database import RecordDatabase
 from app.infrastructure.records.policy import debug_artifacts
-from config.settings import settings
+
+logger = logging.getLogger(__name__)
 
 _AUDIT_LOCK = threading.Lock()
 
@@ -276,8 +278,7 @@ def _persist_agent_events(
                     count += 1
         return target.relative_to(run_root).as_posix(), count
     except Exception:
-        import logging
-        logging.getLogger(__name__).exception(
+        logger.exception(
             "Agent 事件轨迹持久化失败 run_id=%s task_id=%s call_id=%s",
             run_id, task_id, call_id,
         )
@@ -290,7 +291,19 @@ def _persist_prompt_snapshot(record: dict[str, Any], request: Any) -> str:
     ``model_calls.jsonl`` 只保存 hash 与字符数，无法支撑"查看提示词"。快照是审计
     快照保留原文，仅在任务级目录内落盘；页面预览与完整归档分开。
     """
-    if not _debug_for_record(record) or not settings.workbench_prompt_snapshot:
+    if not _debug_for_record(record):
+        return ""
+    try:
+        from app.infrastructure.config import load_config
+
+        # 开关读运行期配置：settings 里的同名常量在 import 期就固化了，
+        # 部署时无法关闭提示词快照（快照是未脱敏原文）。
+        runtime = load_config()
+    except Exception:
+        # 运行配置都读不出来时无法确定归档目录，不落快照。
+        logger.exception("读取运行配置失败，跳过提示词快照")
+        return ""
+    if not runtime.workbench_prompt_snapshot:
         return ""
     run_id = str(record.get("run_id") or "")
     task_id = str(record.get("task_id") or "")
@@ -302,9 +315,7 @@ def _persist_prompt_snapshot(record: dict[str, Any], request: Any) -> str:
     ):
         return ""
     try:
-        from app.infrastructure.config import load_config
-
-        run_root = Path(load_config().runtime_dir).resolve() / "runs" / run_id
+        run_root = Path(runtime.runtime_dir).resolve() / "runs" / run_id
         roots = [
             str(item)
             for item in (
@@ -326,11 +337,10 @@ def _persist_prompt_snapshot(record: dict[str, Any], request: Any) -> str:
             "task_prompt": str(getattr(request, "prompt", "") or ""),
             "prompt_context": context_text,
         }
-        limit = settings.workbench_prompt_max_chars
         rendered: dict[str, str] = {}
         truncated = False
         for key, value in sections.items():
-            text, was_cut = _snapshot_text(value, roots, limit)
+            text, was_cut = _snapshot_text(value, roots)
             rendered[key] = text
             truncated = truncated or was_cut
         # 工作区可被回收；把压缩前完整任务证据一并归档，页面可直接展开。
@@ -383,7 +393,7 @@ def _persist_prompt_snapshot(record: dict[str, Any], request: Any) -> str:
         return ""
 
 
-def _snapshot_text(value: str, roots: list[str], limit: int) -> tuple[str, bool]:
+def _snapshot_text(value: str, roots: list[str]) -> tuple[str, bool]:
     """完整保留实际输入的字符串和路径；预算只限制发送，不裁剪审计副本。"""
     return str(value or ""), False
 

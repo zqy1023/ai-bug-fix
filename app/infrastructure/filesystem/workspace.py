@@ -837,11 +837,18 @@ class WorkspaceManager:
 
     @staticmethod
     def _safe_name(value: str) -> str:
-        """将任务键转换成安全目录名，避免非法字符和大小写造成碰撞。"""
-        return "".join(
+        """将任务键转换成安全目录名，避免非法字符和大小写造成碰撞。
+
+        全是点的名字（"."、".."）能通过下面的字符白名单，拼进路径后会解析到
+        父目录：回归工作区清理时等于对工作区根执行整树删除，必须显式改写。
+        """
+        result = "".join(
             char if char.isalnum() or char in "-_" or char == "." else f"%{ord(char):02X}"
             for char in str(value).casefold()
         )
+        if result and not result.strip("."):
+            return "%2E" * len(result)
+        return result
 
     @staticmethod
     def safe_name(value: str) -> str:

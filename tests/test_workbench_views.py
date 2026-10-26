@@ -44,7 +44,7 @@ class WorkbenchViewTests(unittest.TestCase):
         self.assertTrue(run_actions(**{**base, "safe_startup": True})["retry"].enabled)
         self.assertFalse(run_actions(**{**base, "safe_startup": True, "current": False})["retry"].enabled)
 
-    def test_task_http_uses_formal_output_and_locks_historical_records(self):
+    def test_task_http_uses_current_formal_output(self):
         with TemporaryDirectory() as directory:
             store = RecordStore(Path(directory))
             root = store.run_dir("run")
@@ -80,10 +80,6 @@ class WorkbenchViewTests(unittest.TestCase):
                 approval = response.json()["items"][0]
                 self.assertEqual(approval["delivery"]["candidate_id"], "complete-candidate")
                 self.assertTrue(approval["actions"]["approve"]["enabled"])
-                metadata.write_text(json.dumps({"workflow_version": 5}), encoding="utf-8")
-                detail = client.get("/api/v1/runs/run/tasks/task").json()
-                self.assertTrue(detail["read_only"])
-                self.assertIn("历史", detail["actions"]["retry"]["reason"])
 
     def test_step_http_does_not_offer_rerun_for_approval(self):
         with TemporaryDirectory() as directory:

@@ -3,17 +3,39 @@ import styles from './ValidationResult.module.css';
 
 const labels: Record<string, string> = { passed: '通过', failed: '不通过', unverified: '无法确认', retry: '自动恢复验证', repair: '回修代码', deliver: '准备本地候选', blocked: '验证受阻' };
 
+type Payload = Record<string, unknown>;
+
+/** 步骤输出可能直接挂在 output 上，也可能包在 output.payload 里。 */
+function payloadOf(step: StepRecord): Payload {
+  return (step.output?.payload || step.output || {}) as Payload;
+}
+
+/** 内部验证步骤是否真的回传了数据；空输出不能被读成“没有问题”。 */
+function hasPayload(step: StepRecord): boolean {
+  return Object.keys(payloadOf(step)).length > 0;
+}
+
 export function ValidationResult({ step }: { step: StepRecord }) {
-  const payload = (step.output?.payload || step.output || {}) as Record<string, unknown>;
-  if (step.name === 'plan_validation') return <section className={styles.block}>
+  const payload = payloadOf(step);
+  if (step.name === 'plan_validation') {
+    if (!hasPayload(step)) return <section className={styles.block}>
+      <h3>本次验证范围</h3>
+      <p className={styles.notice}>验证计划没有回传输出，无法确认本次验证覆盖了哪些断言；这不代表验证已通过，也不代表验证未通过。</p>
+    </section>;
+    return <section className={styles.block}>
     <h3>本次验证范围</h3><p>原始响应双侧重放与真实请求分别验证；仅采用原始录制响应和实际请求结果。</p>
     <p>原始响应：{payload.has_original_response === true ? '已取得' : payload.has_original_response === false ? '缺失，无法确认原异常修复效果' : '本步骤未记录响应可用性，请查看正式评估和输入证据'}</p>
     <ul>{(Array.isArray(payload.changed_symbols) ? payload.changed_symbols : []).map((value) => <li key={String(value)}>{String(value)}</li>)}</ul>
   </section>;
+  }
   if (step.name === 'summarize_validation') {
     const dimensions = (payload.dimensions || {}) as Record<string, {status: string; reason: string}>;
     const report = (payload.report || {}) as Record<string, unknown>;
     const assertions = (Array.isArray(report.results) ? report.results : []) as Array<{assertion_id: string; status: string; summary: string}>;
+    if (!hasPayload(step) || (!assertions.length && !Object.keys(dimensions).length)) return <section className={styles.block}>
+      <h3>实际验证结论</h3>
+      <p className={styles.notice}>验证结论没有回传，或回传内容里没有任何维度与断言；不能据此判断验证通过或未通过。</p>
+    </section>;
     return <section className={styles.block}><h3>实际验证结论</h3>
       {assertions.length > 0 && <table className={styles.table}><thead><tr><th>断言</th><th>结果</th><th>说明</th></tr></thead><tbody>
         {assertions.map((item) => <tr key={item.assertion_id}><td>{item.assertion_id}</td><td>{labels[item.status] || item.status}</td><td>{item.summary}</td></tr>)}

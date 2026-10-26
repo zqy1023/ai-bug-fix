@@ -26,7 +26,9 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
             "files": sorted(data.changed_files),
         }
     )
-    if not data.analysis_only:
+    # 正式交付（publish）必须始终绑定到已审批的候选：analysis_only 只影响
+    # "交付什么内容"，不能成为跳过候选身份校验的旁路。
+    if data.publish or not data.analysis_only:
         if data.binding is None:
             raise StepFailed("交付缺少验证证据身份")
         current = evidence_version(data.ai_workspace_path, data.changed_files)
@@ -52,7 +54,7 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
                 "分析任务交付失败：缺少最终报告", {"reason": "report_missing"}
             )
     else:
-        from app.workflow.steps.prepare_delivery.legacy import is_legacy_changed_path
+        from app.workflow.steps.prepare_delivery.report_paths import is_legacy_changed_path
 
         if data.legacy_analysis_required or any(
             is_legacy_changed_path(path) for path in data.changed_files

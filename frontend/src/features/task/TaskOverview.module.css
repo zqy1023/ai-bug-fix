@@ -39,6 +39,8 @@
 .stageCurrent .stageDot { background: var(--wb-primary); border-color: var(--wb-primary); }
 .stageFailed { color: var(--wb-danger); }
 .stageFailed .stageDot { background: var(--wb-danger); border-color: var(--wb-danger); }
+.stageStopped { color: var(--wb-warning); }
+.stageStopped .stageDot { background: var(--wb-warning); border-color: var(--wb-warning); }
 
 /* ===== 结果横幅 ===== */
 .hero {
@@ -136,6 +138,8 @@
 .padTight { padding: 10px 14px; }
 .actionsRow { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 0 14px 12px; margin-top: auto; }
 .actionsRow :global(.ant-btn-link) { padding-inline: 5px; font-size: 11px; }
+/* 禁用的详情入口需要包一层元素，Tooltip 才能在禁用态弹出原因。 */
+.disabledAction { display: inline-flex; }
 .cardGrid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: stretch; }
 
 /* 折叠块 */
@@ -256,6 +260,8 @@
 .markAdded { background: var(--wb-success); }
 .markDeleted { background: var(--wb-danger); }
 .markModified { background: var(--wb-primary); }
+/* 取消与跳过必须看得出来不同：跳过是浅灰，取消是显式灰点。 */
+.markCancelled { background: var(--wb-ink-faint); }
 .fileStatus {
   flex-shrink: 0;
   min-width: 34px;

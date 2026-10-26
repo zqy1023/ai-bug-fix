@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable
 from typing import Any
@@ -49,6 +50,8 @@ from app.workflow.routes import (
     REPRODUCE,
 )
 from app.workflow.spec import StepSpec
+
+logger = logging.getLogger(__name__)
 
 
 def run_stage(
@@ -154,6 +157,9 @@ def run_stage(
     except Exception as error:
         # Step plugins must fail inside the task graph, not escape the nested subgraph
         # and abort every carrier in the run. The router decides whether to retry or finalize.
+        # 记录里只留 public_exception 的折叠文本，堆栈必须在这里落到服务端日志，
+        # 否则新步骤崩溃后只剩"错误类型：X"，无从定位。
+        logger.exception("步骤 %s 执行异常", spec.name)
         reason = public_exception(error, prefix=f"步骤 {spec.name} 执行异常")
         return _save_fail(
             spec,
@@ -289,11 +295,16 @@ def bind(
         )
         from app.workflow.definitions import next_step_for
 
+        # 步骤是否真的产出了通过契约校验的输出。取消/执行失败时 result.output 是
+        # 错误载荷，不能当成本步输出交给 output_patch（会在硬索引处抛 KeyError）。
+        produced = spec.produced(result.output)
+
         # 审批拒绝是业务决定而非节点崩溃；保留 REJECT 决定供路由进入有上限的回修循环。
-        if result.failure is None and not (
+        rejected = (
             spec.name == "request_approval"
-            and result.output.get("decision") == "REJECT"
-        ):
+            and str(result.output.get("decision") or "").upper() == "REJECT"
+        )
+        if result.failure is None and produced and not rejected:
             patch = spec.patch(result.output)
             route_status = str(patch.get("last_result") or result.status)
             # A business FAIL is an ordinary node return, so LangGraph RetryPolicy cannot
@@ -306,10 +317,7 @@ def bind(
                 patch["retry_reason"] = (
                     summary_of(result.output) or f"{spec.name} 返回失败结论"
                 )
-        elif (
-            spec.name == "request_approval"
-            and str(result.output.get("decision") or "").upper() == "REJECT"
-        ):
+        elif rejected:
             # Only a verified rejection with successful branch cleanup may enter the retry loop.
             # A cleanup failure, invalid retry target, or manually blocked approval must stop;
             # silently defaulting an invalid target to repair_agent can rerun the wrong stage.
@@ -339,7 +347,9 @@ def bind(
             if spec.name in {"verify_issue", "run_regression"}:
                 payload = {"passed": False, "status": "unverified", **result.output}
                 if "reason" not in payload:
-                    payload["reason"] = result.failure.reason
+                    payload["reason"] = str(
+                        result.failure.reason if result.failure else "步骤未产出结果"
+                    )
                 patch.update(spec.patch(payload))
             if result.failure is not None and result.failure.recoverable:
                 target = _retry_target_for_step(spec.name)
@@ -420,10 +430,15 @@ def _save_fail(
     )
     record.artifacts = list(artifacts)
     record.output = output
+    # retryable 只由失败类别决定：普通失败可由操作者单步重试，manual/rejected
+    # 是人工介入结论，重试没有意义。记录与交接产物必须用同一个值，不能一个
+    # 恒 False、另一个恒 True。
+    retryable = error.result == "failed"
     if status == "failed":
         record.error = StepError(
             code=error_code_of(error.code),
             message=public_exception(error, prefix=f"步骤 {spec.name} 执行失败"),
+            retryable=retryable,
         )
     record.finished_at = utc_now()
     record.duration_ms = round((time.perf_counter() - started) * 1000, 2)
@@ -433,7 +448,7 @@ def _save_fail(
         error={
             "code": str(record.error.code),
             "message": record.error.message,
-            "retryable": True,
+            "retryable": retryable,
         }
         if record.error
         else None,
@@ -441,16 +456,30 @@ def _save_fail(
         business=record.result,
     )
     record.execution, record.assessment = formal.execution, formal.assessment
-    store.save(str(state.get("run_id") or ""), record, task_id, **views)
+    try:
+        store.save(str(state.get("run_id") or ""), record, task_id, **views)
+    except StepFailed:
+        # 记录超限时同样的内容再存一次还是超限；让异常逃出去会中止整轮，
+        # 失败的那一步连一条记录都留不下，事后完全无从定位。这里退一步写
+        # 最小失败记录，至少保住"哪一步失败、错误码是什么"。
+        minimal = record.model_copy(deep=True)
+        minimal.input = {}
+        minimal.output = {}
+        try:
+            store.save(str(state.get("run_id") or ""), minimal, task_id)
+        except Exception:
+            logger.exception("步骤 %s 的最小失败记录也无法落盘", spec.name)
     # 进程内路由取值保持不变：manual 仍是 manual，rejected 仍落 failed。
     return StepResult(
         outcome=outcome_of(
             record.output,
             execution_status="failed" if status == "failed" else "succeeded",
             error={
-                "code": error.code or "STEP_EXECUTION_FAILED",
+                # 用落盘记录的同一个错误码：原始码可能不在 StepErrorCode
+                # 词汇表内，交接产物与 steps.json 会出现两个不同的码。
+                "code": str(record.error.code) if record.error else "STEP_EXECUTION_FAILED",
                 "message": record.summary,
-                "retryable": error.result == "failed",
+                "retryable": retryable,
             }
             if status == "failed"
             else None,

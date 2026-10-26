@@ -43,7 +43,7 @@ sync_source_repo
 
 ## 工作步骤
 
-v7 有 23 个确定性步骤插件，另有 Locate、Repair、Review 三个 Agent。
+v7 有 17 个主流程确定性步骤插件，另有 Locate、Repair、Review 三个 Agent。
 
 | 步骤 | 正式产出 / 判断依据 |
 |---|---|
@@ -60,12 +60,6 @@ v7 有 23 个确定性步骤插件，另有 Locate、Repair、Review 三个 Agen
 | `reproduce_baseline` | `BaselineReproduction`，不运行修复后代码 |
 | `claim_repair_slot` | 修复资格 |
 | `repair_agent` | 修改说明和声明的改动清单；输入包含验收契约 |
-| `check_changes` | 平台扫描的实际改动、范围/安全门禁和 diff |
-| `syntax_regression` | 编译结果，使用临时 pycache |
-| `plan_validation` | `ValidationPlan`，绑定问题、完整基线、验收、补丁和策略 |
-| `verify_issue` | 同一原始正文在基线及补丁上的执行证据 |
-| `run_regression` | `server_dev.main` 真实请求及补充命令的业务结果 |
-| `summarize_validation` | 逐条断言结果、证据过期判断和维度汇总 |
 | `review_agent` | 修复后代码审查 Agent：语法、业务修复、影响范围及环境/官网状态说明 |
 | `decide_validation` | 重试、回修、准备交付或阻断 |
 | `prepare_analysis` | 分析报告，不产生任务终态 |
@@ -114,7 +108,7 @@ artifact_paths: 正式证据引用
 分析报告可按配置直接交付报告分支，随后统一收尾。
 
 正式 `resolution.result` 为 `delivered / analysis_delivered / skipped / blocked / failed / rejected / cancelled`。
-等待审批属于运行状态。旧版任务只读；v7 不恢复旧版 checkpoint，需新建执行。
+等待审批属于运行状态。只接受当前 v7 协议；旧版数据及 checkpoint 不适配、不迁移，需新建执行。
 工作流协议 v7 与独立的验证器/AI 审查协议版本分别维护。
 
 ## 本地验证
@@ -127,7 +121,7 @@ npm --prefix frontend run build
 
 离线测试覆盖正式 Runner 和存储恢复、图路径、验收身份、状态失效、人工审查模式，以及临时 Git 仓库和 bare remote 上的候选/正式推送幂等性。测试不访问业务远程或调用真实模型。
 
-后端专项回归按职责组织：`test_redaction.py` 检查交付脱敏，`test_delivery_reporting.py` 检查交付终态与报告，`test_request_regression.py` 检查请求回归，`test_workspace_boundaries.py` 检查文件过滤与权限，`test_step_inputs.py` 检查输入边界，`test_artifact_policy.py` 检查产物策略。工作流集成测试保留在 `test_workflow_v6.py`，API、日志采集与前端契约测试分别独立维护。新增用例应验证实际生产行为，避免仅比较别名或测试标准库本身。
+后端专项回归按职责组织：`test_redaction.py` 检查交付脱敏，`test_delivery_reporting.py` 检查交付终态与报告，`test_request_regression.py` 检查请求回归，`test_workspace_boundaries.py` 检查文件过滤与权限，`test_step_inputs.py` 检查输入边界，`test_artifact_policy.py` 检查产物策略。工作流集成测试保留在 `test_workflow.py`，API、日志采集与前端契约测试分别独立维护。新增用例应验证实际生产行为，避免仅比较别名或测试标准库本身。
 
 ## Agent 子图
 
@@ -169,7 +163,7 @@ npm --prefix frontend run build
 .venv/Scripts/python.exe -m unittest discover -s tests -p 'test_*.py' -q
 ```
 
-设计与组件职责见 `frontend/DESIGN.md`。浏览器验收脚本为 `tests/frontend_workbench.cjs`，使用显式 API 样本，覆盖四个工作区和三种屏幕宽度；运行前启动前端，并提供 Playwright 模块（`PLAYWRIGHT_MODULE`）与浏览器通道（`UI_BROWSER_CHANNEL`，默认 msedge）。验收截图写入临时目录，不混入业务运行记录。
+设计与组件职责见 `frontend/DESIGN.md`。浏览器验收脚本为 `tests/frontend_redesign.cjs`，使用显式 API 样本，覆盖四个工作区和三种屏幕宽度；运行前启动前端，并提供 Playwright 模块（`PLAYWRIGHT_MODULE`）与浏览器通道（`UI_BROWSER_CHANNEL`，默认 msedge）。验收截图写入临时目录，不混入业务运行记录。
 
 工作台能力：
 
@@ -219,7 +213,7 @@ npm --prefix frontend run build
 6. 单步执行是写操作：必须持运行锁、写入控制审计，写步骤需要显式确认；活跃执行由服务端拒绝并返回 409。
 7. 令牌只保存在当前页面内存中。按钮状态不替代服务端的权限、状态机、输入校验、幂等和审计。
 
-API 约定：所有控制面请求通过 `src/lib/api.ts` 发出，路径以 `/api/v1` 为前缀；健康检查使用 `/api/health`。类型集中于 `src/lib/types.ts`。前端不直接访问数据库、Git 或本地文件系统。
+API 约定：所有控制面请求通过 `src/lib/api.ts` 发出，路径以 `/api/v1` 为前缀；健康检查使用 `/api/v1/health`（该端点同样受令牌保护，生产环境需带 `Authorization: Bearer <WORKBENCH_API_TOKEN>`；未配置令牌时才会放行）。类型集中于 `src/lib/types.ts`。前端不直接访问数据库、Git 或本地文件系统。
 
 ## 本地启动
 
@@ -270,11 +264,11 @@ npm run build
 
 运行记录目录通过 `AI_REPAIR_RUNTIME_DIR` 配置，未设置时默认是项目根目录 `runtime/`；Docker 部署把持久化卷挂载到 `/app/runtime`，运行记录目录也使用 `/app/runtime`。
 
-`runtime/workspaces` 是可重建缓存：`shared/cache-<key>` 按 Git commit、业务子目录和过滤规则指纹复用只读源码基线，`shared/refs/<run>.json` 固定每轮使用的版本；同一提交的多轮执行共用一棵树。`ai/<run>-<task>` 只保存任务可修改的运输商代码，`delivery/<branch>` 与 `regression/<task>` 是临时 Git 克隆。旧 `shared/<run>` 目录继续兼容，不自动迁移历史 checkpoint。
+`runtime/workspaces` 是可重建缓存：`shared/cache-<key>` 按 Git commit、业务子目录和过滤规则指纹复用只读源码基线，`shared/refs/<run>.json` 固定每轮使用的版本；同一提交的多轮执行共用一棵树。`ai/<run>-<task>` 只保存任务可修改的运输商代码，`delivery/<branch>` 与 `regression/<task>` 是临时 Git 克隆。不读取旧 `shared/<run>` 目录，也不迁移旧 checkpoint。
 
 工作区在任务收尾、执行退出、服务启动及运行期间定时回收。`AI_REPAIR_WORKSPACE_GC_INTERVAL_SECONDS` 默认 3600 秒；`AI_REPAIR_WORKSPACE_RETENTION_DAYS` 默认 7 天，从生命周期结束时间计算，0 表示终态后可立即回收。暂停、待审批、验证受阻（BLOCKED）和活动任务的基线引用保留；只有所有引用均过期后才删除共享基线。验证受阻任务保留 AI 工作区供后续排查；其他已结束任务的 AI 工作区按任务自身保留期清理。临时交付／回归克隆按 `AI_REPAIR_DELIVERY_WORKSPACE_TTL_HOURS`（默认 24 小时）清理，存在活动 worker 时保守保留。`AI_REPAIR_WORKSPACE_GC_ENABLED=false` 关闭自动回收。审计记录、源码快照和恢复指针保存在 `runtime/runs`，不参与工作区回收；过期工作区被清理后，重新修改源码应发起新任务。
 
-每轮使用一个 `records.sqlite` 集中保存 run/task 生命周期、模型调用元数据、Agent 指标和步骤／产物历史；`steps.json`、报告、Diff、验证证据及恢复数据保持原有独立文件。读取兼容旧 `lifecycle.json`、`model_calls.jsonl`、指标 JSONL 和历史目录，历史数据不批量迁移。
+每轮使用一个 `records.sqlite` 集中保存 run/task 生命周期、模型调用元数据、Agent 指标和步骤／产物历史；`steps.json`、报告、Diff、验证证据及恢复数据保持原有独立文件。生命周期、模型调用、指标和历史仅使用集中存储，不读取旧 JSON/JSONL 文件。
 
 `AI_REPAIR_ARTIFACT_MODE=compact`（默认）保留完整校验后 Agent 结论、调用摘要和统计，不归档完整提示词、公开事件及重复的原始模型输出。设为 `debug` 后额外保存这些调试产物（提示词快照仍受 `workbench_prompt_snapshot` 控制）。工作台在精简模式下仍可查看调用统计与结论，提示词快照和事件显示为未保存。模式在创建运行时记入 `run.json`，后续恢复沿用该轮模式，配置变更只影响新运行。
 
@@ -298,6 +292,13 @@ URL 模式的镜像是**完整 Git 仓库**（引用、分支、对象都在，�
 3. 容器只需挂载运行数据到 `/app/runtime`；源仓库在运行时从远程克隆，容器必须能访问 Git 远程地址。`AI_REPAIR_RUNTIME_DIR` 在 compose 中固定为 `/app/runtime`。
 4. 构建机必须能够访问 `requirements.txt` 中声明的内部 `yq_common` 包地址。
 
+> 上线前必须处理的供应链前提：`yq_common` 目前是**明文 HTTP** 的直接 URL 依赖
+> （`http://n.17track.net:8081/.../yq_common-0.0.77-py3-none-any.whl`），Dockerfile 用
+> `--trusted-host` 关闭了证书校验，且该依赖没有哈希锁定（`constraints.txt` 只约束
+> PyPI 包，直接 URL 依赖不受它约束）。这意味着构建期可以拿到被替换过的 wheel。
+> 准生产上线前需要制品库提供 HTTPS，并改用 `--require-hashes` 的锁定文件安装；
+> 在此之前不要把该镜像当作可对外发布的安全产物。
+
 ```bash
 docker compose config
 docker compose up -d --build
@@ -309,11 +310,11 @@ docker compose logs -f api frontend
 
 ## 准生产目录
 
-根目录只保留运行源码 `app/`、`config/`、`workbench/`，前端源码及构建配置 `frontend/`，服务入口、运行依赖清单、环境配置、Docker 部署文件和本说明。`.git/` 保留版本记录；本机 `.venv/`、前端 `node_modules/` 和 `dist/` 用于当前运行及构建，不进入容器构建上下文。
+根目录保留运行源码 `app/`、`config/`、`workbench/`，前端源码及构建配置 `frontend/`，服务入口 `server.py`、运行依赖清单 `requirements.txt`、环境配置、Docker 部署文件和本说明。`.git/` 保留版本记录；本机 `.venv/`、前端 `node_modules/` 和 `dist/` 用于当前运行及构建，不进入容器构建上下文。
 
-测试脚本、诊断产物、历史审计文档、开发工具配置及缓存已移出项目。业务回归执行器、Agent 提示词和真实运行记录属于生产功能，不按测试文件清理。运行数据由 `AI_REPAIR_RUNTIME_DIR` 管理，不作为发布源码。
+`tests/`（单元测试与 Playwright 验收脚本）、`constraints.txt`、`logs/`、`runtime/` 仍留在仓库里，但都不进镜像构建上下文（见 `.dockerignore`），发布时应按发布清单排除。业务回归执行器、Agent 提示词和真实运行记录属于生产功能，不按测试文件清理。运行数据由 `AI_REPAIR_RUNTIME_DIR` 管理，不作为发布源码。
 
-准生产检查使用后端 `/api/health` 和前端构建；健康接口应报告 `review_contract_version=5`、`log_redaction_enabled=false`。修改后需重启后端才能加载新代码。
+准生产检查使用后端 `/api/v1/health` 和前端构建；健康接口应报告 `review_contract_version=6、workflow_version=7`、`log_redaction_enabled=false`。修改后需重启后端才能加载新代码。
 
 ## 日志查询范围
 
@@ -323,9 +324,8 @@ docker compose logs -f api frontend
 “显式运行参数 → 环境配置（进程变量优先于 `.env`）→ settings 默认值”。
 审查模式、最大尝试次数、日志条数上限也遵循同一规则；重试和单步恢复优先保留原运行参数，包含 `log_limit=0`。
 按日 ES 索引覆盖范围由查询小时数自动计算（`ceil(hours / 24) + 1`），索引日期使用日志时区；不再单独配置索引天数或索引时区。
-旧部署的 `LOG_PULL_DAYS` 仅作为未设置小时数时的兼容回退，新配置统一使用小时数。
 新建执行默认 `log_limit=0`，表示窗口内全量拉取，没有 1,000 / 10,000 条的隐藏截断，
 也没有扫描总时长截断；单次 ES 请求仍保留网络超时。
 前端不再显示日志条数限制输入，读取阶段会展示已扫描、可解析和独立问题计数。
 
-审查内部检查不再支持独立重跑；单步执行和审批驳回后的验证恢复统一进入 `review_agent`。内部检查的完整记录由审查节点产物引用访问。工作流拓扑升级至 v7，v6 历史运行保持只读，需新建批次使用新流程。
+审查内部检查不再支持独立重跑；单步执行和审批驳回后的验证恢复统一进入 `review_agent`。内部检查的完整记录由审查节点产物引用访问。工作流拓扑升级至 v7，旧版运行不再提供兼容读取，需新建批次使用当前流程。

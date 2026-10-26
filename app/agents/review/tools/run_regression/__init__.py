@@ -29,12 +29,15 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
 def _patch(output: dict[str, Any]) -> dict[str, Any]:
     result = {"mode": "regression", **dict(output)}
     status = str(result.get("status") or "").lower()
+    if "passed" not in output:
+        # 工具被取消或异常中断：没有结论可写。
+        return {}
     return {
         "regression_result": result,
         # 未验证结果交由统一决策重试或阻断，不授予交付资格。
         "last_result": "passed"
         if status in {"unverified", "skipped", "not_configured", "not_executed"}
-        or result["passed"]
+        or result.get("passed")
         else "failed",
     }
 

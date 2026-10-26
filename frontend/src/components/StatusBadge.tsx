@@ -15,8 +15,10 @@ const RUN: Record<string, BadgeSpec> = {
   failed: { label: '失败', tone: 'danger', live: false },
   paused: { label: '已暂停', tone: 'neutral', live: false },
   pause_requested: { label: '暂停中', tone: 'neutral', live: true },
-  cancelled: { label: '已停止', tone: 'neutral', live: false },
-  cancel_requested: { label: '停止中', tone: 'neutral', live: true },
+  // 停止 / 跳过 / 需人工处理 / 业务失败必须是四种可区分的徽标，
+  // 否则用户会把“被取消”读成“从未执行”或“失败”。
+  cancelled: { label: '已停止', tone: 'waiting', live: false },
+  cancel_requested: { label: '停止中', tone: 'waiting', live: true },
 };
 
 const TASK: Record<string, BadgeSpec> = {
@@ -25,7 +27,7 @@ const TASK: Record<string, BadgeSpec> = {
   RUNNING: { label: '运行中', tone: 'running', live: true },
   RETRYING: { label: '重试中', tone: 'running', live: true },
   PAUSED: { label: '已暂停', tone: 'neutral', live: false },
-  CANCELLED: { label: '已停止', tone: 'neutral', live: false },
+  CANCELLED: { label: '已停止', tone: 'waiting', live: false },
   PARTIAL_FAILED: { label: '部分失败', tone: 'danger', live: false },
   PENDING: { label: '等待中', tone: 'neutral', live: false },
   WAITING_APPROVAL: { label: '待交付审批', tone: 'waiting', live: false },
@@ -34,8 +36,8 @@ const TASK: Record<string, BadgeSpec> = {
   DELIVERED: { label: '交付已提交', tone: 'success', live: false },
   COMPLETED: { label: '已结束（无交付记录）', tone: 'neutral', live: false },
   BLOCKED: { label: '验证受阻', tone: 'waiting', live: false },
-  MANUAL: { label: '需人工处理', tone: 'manual', live: false },
-  INSUFFICIENT_EVIDENCE: { label: '证据不足', tone: 'manual', live: false },
+  MANUAL: { label: '需人工处理', tone: 'running', live: false },
+  INSUFFICIENT_EVIDENCE: { label: '证据不足', tone: 'running', live: false },
   REJECTED: { label: '已驳回', tone: 'danger', live: false },
   FAILED: { label: '失败', tone: 'danger', live: false },
   FAIL: { label: '失败', tone: 'danger', live: false },
@@ -50,6 +52,8 @@ const STEP: Record<string, BadgeSpec> = {
   succeeded: { label: '成功', tone: 'success', live: false },
   failed: { label: '失败', tone: 'danger', live: false },
   skipped: { label: '跳过', tone: 'neutral', live: false },
+  // 步骤级取消：没有对应枚举时会退化成原始英文状态，这里补上中文与独立色调。
+  cancelled: { label: '已取消', tone: 'waiting', live: false },
 };
 
 function lookup(kind: BadgeKind, value?: string | null, stepName?: string): BadgeSpec {
@@ -57,7 +61,8 @@ function lookup(kind: BadgeKind, value?: string | null, stepName?: string): Badg
   const key = kind === 'step' && raw === 'waiting' && stepName === 'request_approval'
     ? 'waiting_approval' : raw;
   const source = kind === 'run' ? RUN : kind === 'task' ? TASK : STEP;
-  return source[key] ?? source[key.toUpperCase()] ?? { label: key || '未开始', tone: 'pending', live: false };
+  // 步骤状态可能出现大小写混写，兜底成小写键，避免退化成原始英文状态。
+  return source[key] ?? source[key.toUpperCase()] ?? source[key.toLowerCase()] ?? { label: key || '未开始', tone: 'pending', live: false };
 }
 
 export function toneOf(kind: BadgeKind, value?: string | null): Tone {

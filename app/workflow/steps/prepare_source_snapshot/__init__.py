@@ -22,11 +22,14 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _patch(output: dict[str, Any]) -> dict[str, Any]:
+    # 步骤没有产出快照（被取消或执行失败）：不回写任何状态。
+    if "source_project_path" not in output:
+        return {}
     return {
-        "source_project_path": str(output["source_project_path"]),
-        "framework": str(output["framework"]),
-        "baseline_manifest": dict(output["baseline_manifest"]),
-        "baseline_dir": str(output["baseline_dir"]),
+        "source_project_path": str(output.get("source_project_path") or ""),
+        "framework": str(output.get("framework") or ""),
+        "baseline_manifest": dict(output.get("baseline_manifest") or {}),
+        "baseline_dir": str(output.get("baseline_dir") or ""),
     }
 
 
@@ -38,15 +41,16 @@ SPEC = StepSpec(
     output_model=SourceSnapshotOutput,
     input_builder=_input,
     output_patch=_patch,
-    # baseline_manifest 必须留在记录里：它是本步的正式输出字段，短路复用时
-    # runner 要拿投影后的 output 重新过 SourceSnapshotOutput 校验，缺了就直接报错。
     output_record=RecordView(
+        # baseline_manifest 不进步骤记录：它是"carrier 全部文件 × 哈希"的全量清单，
+        # 体积随 carrier 规模线性增长，整份留在 steps.json 里会顶破记录大小上限。
+        # 清单本体已经是 source_snapshot.json 产物，状态通道与交接产物里也各有一份，
+        # 单步续跑从 workflow/state.json 恢复，不依赖步骤记录里的副本。
         keep=(
             "source_project_path",
             "framework",
             "baseline_dir",
             "file_count",
-            "baseline_manifest",
         )
     ),
 )

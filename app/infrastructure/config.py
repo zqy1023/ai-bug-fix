@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 from dotenv import load_dotenv
-from config.settings import settings
+from config.settings import env_bool, settings
 
 
 class RunParameters(TypedDict):
@@ -105,6 +105,10 @@ class RuntimeConfig:
     workbench_sqlite_busy_timeout_ms: int
     # workbench_host：工作台服务监听地址。
     workbench_host: str
+    # workbench_allow_insecure：未配置 token 时是否允许绑定非回环地址。
+    workbench_allow_insecure: bool
+    # workbench_prompt_snapshot：是否把完整提示词快照写入任务审计目录。
+    workbench_prompt_snapshot: bool
     # workbench_api_port：工作台服务监听端口。
     workbench_api_port: int
     # workbench_cors_origins：允许跨域访问的来源。
@@ -279,6 +283,16 @@ def load_config() -> RuntimeConfig:
         ),
         workbench_host=os.getenv("WORKBENCH_BIND_HOST", settings.workbench_host).strip()
         or settings.workbench_host,
+        # 必须在 load_dotenv 之后读：settings 的默认值在 import 期就固化了，
+        # .env 里的 WORKBENCH_ALLOW_INSECURE 在本地根本不生效，容器里却生效。
+        workbench_allow_insecure=env_bool(
+            "WORKBENCH_ALLOW_INSECURE", settings.workbench_allow_insecure
+        ),
+        # 提示词快照保存的是未脱敏原文，必须留一个运行期开关：此前这个开关只
+        # 存在于 settings 里（进程启动后固化成常量），部署时无法关闭。
+        workbench_prompt_snapshot=env_bool(
+            "WORKBENCH_PROMPT_SNAPSHOT", settings.workbench_prompt_snapshot
+        ),
         workbench_api_port=max(
             1,
             int(os.getenv("WORKBENCH_BIND_PORT", str(settings.workbench_api_port))),
@@ -305,10 +319,7 @@ def load_config() -> RuntimeConfig:
                 )
             ),
         ),
-        git_push=(
-            os.getenv("AI_REPAIR_GIT_PUSH", str(settings.default_git_push).lower()).lower()
-            == "true"
-        ),
+        git_push=env_bool("AI_REPAIR_GIT_PUSH", settings.default_git_push),
         review_mode=review_mode,
         max_attempts=max(
             1,
@@ -328,11 +339,8 @@ def load_config() -> RuntimeConfig:
                 str(settings.delivery_workspace_ttl_hours),
             )),
         ),
-        workspace_gc_enabled=(
-            os.getenv(
-                "AI_REPAIR_WORKSPACE_GC_ENABLED",
-                str(settings.workspace_gc_enabled).lower(),
-            ).lower() == "true"
+        workspace_gc_enabled=env_bool(
+            "AI_REPAIR_WORKSPACE_GC_ENABLED", settings.workspace_gc_enabled
         ),
         workspace_gc_interval_seconds=max(1, int(os.getenv(
             "AI_REPAIR_WORKSPACE_GC_INTERVAL_SECONDS", str(settings.workspace_gc_interval_seconds),

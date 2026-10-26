@@ -25,3 +25,5 @@
 .dimension strong { font-size: 12px; }
 .dimension p { margin: 4px 0 0; color: var(--wb-ink-muted); font-size: 12px; }
 .alert { color: var(--wb-danger); }
+/* 内部验证数据未回传：不是失败结论，只是不可用。 */
+.notice { color: var(--wb-warning); }

@@ -310,6 +310,14 @@ def decide(state: dict[str, Any]) -> dict[str, Any]:
     if current_code_failure:
         action, target, reason = "repair", "repair_agent", str(review.get("summary") or "代码审查确认修复存在缺陷")
     elif (
+        (state.get("gate_result") or {}).get("passed") is False
+        or (state.get("syntax_result") or {}).get("passed") is False
+    ):
+        # 确定性范围/语法检查已经判定补丁不合格：这是客观结论，不能被
+        # "重新审查" 覆盖，否则会在 review_agent 与本节点之间空转直到
+        # 恢复次数用尽，代码始终没有被修。
+        action, target, reason = "repair", "repair_agent", "确定性检查未通过，回修代码"
+    elif (
         summary.get("workflow_version") != WORKFLOW_VERSION
         or summary.get("stale")
         or set(dimensions) != {"issue", "request"}

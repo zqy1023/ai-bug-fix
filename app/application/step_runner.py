@@ -414,7 +414,10 @@ class StepRunner:
                 request.continue_after
                 and self._on_continue is not None
                 and record is not None
-                and record.status != "failed"
+                # 只有真正跑完（succeeded）或正在等人工决定（waiting）的步骤才
+                # 推进工作流。skipped 表示这一步根本没执行，推进等于越过一道
+                # 没有产出的关卡；failed 同理。
+                and record.status in {"succeeded", "waiting"}
             ):
                 continuing = True
                 self._on_continue(request, payload)

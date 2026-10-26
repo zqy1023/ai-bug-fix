@@ -123,32 +123,60 @@ def build_review_pipeline(
             failure = StepError(code="STEP_EXECUTION_FAILED", message=reason, retryable=True)
             view = ReviewView(verdict="MANUAL", code_verdict="UNKNOWN", summary=reason, contract_error="REVIEW_PIPELINE_ERROR")
 
-        checks = view.checks or review_checks(
-            {**current, "check_passed": bool((current.get("gate_result") or {}).get("passed")),
-             "syntax_passed": bool((current.get("syntax_result") or {}).get("passed"))},
-            view.code_verdict, dimensions=view.dimensions.model_dump(mode="json"),
-        )
-        view = view.model_copy(update={"substeps": internal.summaries(), "review_report_path": REPORT_PATH, "checks": checks})
-        # 统一的正式输出只属于 review_agent，内部执行证据由引用访问。
-        output = view.model_dump(mode="json")
-        store.write_artifact(run_id, REPORT_PATH, {"substeps": internal.summaries()}, task_id)
-        saved = store.load(run_id, "review_agent", task_id) or parent
-        failure = failure or saved.error
-        saved.status, saved.result, saved.summary = "failed" if failure else "succeeded", view.verdict, view.summary
-        saved.error = failure
-        saved.finished_at = utc_now()
-        saved.output = output
-        refs = [*saved.artifacts, *(ref for record in internal.records.values() for ref in record.artifacts), ArtifactRef(name="review_substeps", path=REPORT_PATH)]
-        saved.artifacts = list({(ref.name, ref.path): ref for ref in refs}.values())
-        formal = outcome_of(output, business=view.verdict, summary=view.summary,
-                            execution_status="failed" if failure else "succeeded",
-                            error=failure.model_dump(mode="json") if failure else None)
-        saved.execution, saved.assessment = formal.execution, formal.assessment
-        store.save(run_id, saved, task_id)
-        patch = {**combined, "review": output, "last_result": "failed" if view.verdict == "FAIL" else "passed",
-                 "next_step": "decide_validation"}
-        # 内部步骤已有各自产物属主；这里只交接 Agent 自己的最终结论。
-        final = apply_step_result(store, current, "review_agent", {"review": output, "last_result": patch["last_result"], "next_step": "decide_validation"}, formal)
+        try:
+            checks = view.checks or review_checks(
+                {**current, "check_passed": bool((current.get("gate_result") or {}).get("passed")),
+                 "syntax_passed": bool((current.get("syntax_result") or {}).get("passed"))},
+                view.code_verdict, dimensions=view.dimensions.model_dump(mode="json"),
+            )
+            files = [
+                {key: item[key] for key in ("path", "status", "in_scope", "exists", "added", "removed", "problems") if key in item}
+                for item in (current.get("gate_result") or {}).get("files") or [] if isinstance(item, dict)
+            ]
+            view = view.model_copy(update={"substeps": internal.summaries(), "review_report_path": REPORT_PATH, "checks": checks,
+                                           "changed_files": list(current.get("changed_files") or []), "files": files})
+            # 统一的正式输出只属于 review_agent，内部执行证据由引用访问。
+            output = view.model_dump(mode="json")
+            # MANUAL 不是"通过"：审查没有取得有效结论时必须原样呈现给工作台，
+            # 否则一次没跑成的审查会显示成成功。
+            last_result = {
+                "FAIL": "failed",
+                "MANUAL": "manual",
+            }.get(str(view.verdict or "").upper(), "passed")
+            store.write_artifact(run_id, REPORT_PATH, {"substeps": internal.summaries()}, task_id)
+            saved = store.load(run_id, "review_agent", task_id) or parent
+            failure = failure or saved.error
+            saved.status, saved.result, saved.summary = "failed" if failure else "succeeded", view.verdict, view.summary
+            saved.error = failure
+            saved.finished_at = utc_now()
+            saved.output = output
+            refs = [*saved.artifacts, *(ref for record in internal.records.values() for ref in record.artifacts), ArtifactRef(name="review_substeps", path=REPORT_PATH)]
+            saved.artifacts = list({(ref.name, ref.path): ref for ref in refs}.values())
+            formal = outcome_of(output, business=view.verdict, summary=view.summary,
+                                execution_status="failed" if failure else "succeeded",
+                                error=failure.model_dump(mode="json") if failure else None)
+            saved.execution, saved.assessment = formal.execution, formal.assessment
+            store.save(run_id, saved, task_id)
+            patch = {**combined, "review": output, "last_result": last_result,
+                     "next_step": "decide_validation"}
+            # 内部步骤已有各自产物属主；这里只交接 Agent 自己的最终结论。
+            final = apply_step_result(store, current, "review_agent", {"review": output, "last_result": last_result, "next_step": "decide_validation"}, formal)
+        except Exception as error:
+            # 收尾阶段（产物写入、记录落盘、交接）失败也必须留下终态记录，
+            # 否则 review_agent 永远停留在 running，工作台看不到任何结论。
+            reason = public_exception(error, prefix="修复后代码审查收尾失败")
+            failure = StepError(code="STEP_EXECUTION_FAILED", message=reason, retryable=True)
+            saved = store.load(run_id, "review_agent", task_id) or parent
+            saved.status, saved.result, saved.summary = "failed", "MANUAL", reason
+            saved.error = failure
+            saved.finished_at = utc_now()
+            store.save(run_id, saved, task_id)
+            return {
+                **combined,
+                "review": {"verdict": "MANUAL", "summary": reason, "contract_error": "REVIEW_PIPELINE_ERROR"},
+                "last_result": "manual",
+                "next_step": "decide_validation",
+            }
         return {**patch, **final}
 
     return node

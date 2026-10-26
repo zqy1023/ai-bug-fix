@@ -18,7 +18,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
-from config.settings import settings
+from config.settings import parse_bool, settings
 from app.infrastructure.claude.tool_budget import ToolBudget
 
 _ALL_TOOLS = (
@@ -402,11 +402,38 @@ def _message_brief(message: Any) -> str:
 
 
 def _flag(name: str, default: bool) -> bool:
-    """环境变量可覆盖 settings；未设置时用项目默认值。"""
-    raw = os.getenv(name)
-    if raw is None or not raw.strip():
-        return default
-    return raw.strip().lower() == "true"
+    """环境变量可覆盖 settings；未设置时用项目默认值。
+
+    解析口径与 ``config.settings.parse_bool`` 一致：``1/true/yes/on`` 都算真。
+    此前这里只认字面量 ``true``，写成 ``1`` 会被静默当成关闭。
+    """
+    return parse_bool(os.getenv(name), default)
+
+
+_ARCHIVE_PATH: Path | None = None
+
+
+def _agent_archive_path() -> Path:
+    """事件归档路径：显式配置优先，否则落在运行目录下。
+
+    settings 里的默认值固定在仓库根目录；容器里 AI_REPAIR_RUNTIME_DIR 指向
+    挂载卷时，事件归档会写到未挂载的位置，容器重启即丢。路径在进程内不变，
+    只解析一次。
+    """
+    global _ARCHIVE_PATH
+    if _ARCHIVE_PATH is not None:
+        return _ARCHIVE_PATH
+    configured = os.getenv("AI_REPAIR_DEBUG_HOOK_LOG", "").strip()
+    if configured:
+        _ARCHIVE_PATH = Path(configured).resolve()
+        return _ARCHIVE_PATH
+    try:
+        from app.infrastructure.config import load_config
+
+        _ARCHIVE_PATH = Path(load_config().runtime_dir) / "agent-hooks.jsonl"
+    except Exception:
+        _ARCHIVE_PATH = settings.agent_archive_path
+    return _ARCHIVE_PATH
 
 
 _THINKING_OPEN = False
@@ -455,8 +482,7 @@ def _debug_hook_event(event: dict[str, Any]) -> None:
     from app.infrastructure.records.policy import debug_artifacts
     if not debug_artifacts() or not _flag("AI_REPAIR_DEBUG_HOOKS", settings.agent_archive):
         return
-    path_value = os.getenv("AI_REPAIR_DEBUG_HOOK_LOG", "").strip()
-    path = Path(path_value).resolve() if path_value else settings.agent_archive_path
+    path = _agent_archive_path()
     # 调试文件只保留过滤后的事件摘要，不序列化完整 SDK 消息、Prompt 或工具正文。
     safe_event: dict[str, Any] = {"event": str(event.get("event") or "unknown")}
     if event.get("event") == "PreToolUse":

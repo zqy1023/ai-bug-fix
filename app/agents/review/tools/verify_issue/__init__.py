@@ -27,12 +27,15 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
 
 def _patch(output: dict[str, Any]) -> dict[str, Any]:
     unverified = str(output.get("status") or "").lower() == "unverified"
+    if "passed" not in output:
+        # 工具被取消或异常中断：没有结论可写。
+        return {}
     return {
         "verify_result": output,
         # 未验证交由统一决策恢复或阻断，不进入后续昂贵阶段。
         "last_result": "passed"
         if unverified
-        else ("passed" if output["passed"] else "failed"),
+        else ("passed" if output.get("passed") else "failed"),
     }
 
 

@@ -34,7 +34,6 @@ from config.settings import settings
 
 # 提交说明采用简短摘要；原始运行证据保留原值。
 _MAX_COMMENT_CHARS = settings.max_commit_comment_chars
-_MAX_AUDIT_BYTES = settings.git_audit_max_bytes
 _logger = logging.getLogger(__name__)
 
 
@@ -177,7 +176,7 @@ class GitBranchDelivery:
     """在独立工作区中创建修复分支、复制、提交并推送修改。"""
 
     _BRANCH = settings.repair_branch_pattern
-    _AUDIT_SUFFIXES = {".md", ".json"}
+    _ANCHOR_ROOT = "refs/ai-bug-fixer"
 
     def __init__(self, config: GitDeliveryConfig | None = None) -> None:
         """创建不执行 MR 或自动合并的交付器。"""
@@ -212,9 +211,44 @@ class GitBranchDelivery:
                     repo.git.push(self._config.remote_name, "--delete", branch)
                 if local_branch and branch in {head.name for head in repo.heads}:
                     repo.git.branch("-D", branch)
+                # 交付锚点必须一起清掉：分支被删了但锚点还在，下一轮候选会被
+                # 上一次的锚点判定为"内容不匹配"，任务从此再也交付不出去。
+                self._drop_anchors(
+                    repo,
+                    str(state.get("run_id") or ""),
+                    str(state.get("task_id") or ""),
+                    branch,
+                )
         except Exception as error:
             raise DeliveryError(f"删除被拒绝的修复分支失败: {branch}") from error
         return {"deleted": True, "repair_branch": branch}
+
+    @staticmethod
+    def _anchor_slug(run_id: str, task_id: str, branch: str) -> str:
+        """锚点引用前缀：同一任务同一分支的锚点都在这一段下面。"""
+        raw = f"{run_id}-{task_id}-{branch}"
+        return re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("-") or "unknown"
+
+    @classmethod
+    def _anchor_ref(cls, run_id: str, task_id: str, branch: str, fingerprint: str) -> str:
+        """交付锚点引用。
+
+        内容指纹参与命名：内容变了就是新的锚点，不会和上一轮互相锁死；
+        可读前缀让"人工打回后清理分支"能顺带把本任务的锚点删干净。
+        """
+        digest = hashlib.sha256(fingerprint.encode()).hexdigest()[:16]
+        return f"{cls._ANCHOR_ROOT}/{cls._anchor_slug(run_id, task_id, branch)}/{digest}"
+
+    @classmethod
+    def _drop_anchors(cls, repo: Any, run_id: str, task_id: str, branch: str) -> int:
+        """删除本任务本分支下的全部交付锚点，返回删除数量。"""
+        prefix = f"{cls._ANCHOR_ROOT}/{cls._anchor_slug(run_id, task_id, branch)}/"
+        removed = 0
+        for ref in list(repo.refs):
+            if ref.path.startswith(prefix):
+                repo.git.update_ref("-d", ref.path)
+                removed += 1
+        return removed
 
     def deliver(self, state: Mapping[str, Any]) -> dict[str, Any]:
         """把 AI 工作区修改复制到独立修复分支工作区并提交推送。"""
@@ -246,15 +280,19 @@ class GitBranchDelivery:
             raise DeliveryError(f"不是有效的本地 Git 仓库: {branch_root}") from error
         git_root = Path(repo.working_tree_dir or branch_root).resolve()
         fingerprint = self._fingerprint(source_root, state)
-        identity = json.dumps(
-            [str(state.get("run_id") or ""), str(state.get("task_id") or ""), str(branch)], ensure_ascii=True,
+        anchor = self._anchor_ref(
+            str(state.get("run_id") or ""),
+            str(state.get("task_id") or ""),
+            str(branch),
+            fingerprint,
         )
-        anchor = "refs/ai-bug-fixer/" + hashlib.sha256(identity.encode()).hexdigest()
         receipt = state.get("delivery_receipt") or {}
         if isinstance(receipt, dict) and receipt:
-            if receipt.get("fingerprint") != fingerprint or receipt.get("repair_branch") != str(branch):
-                raise DeliveryError("交付内容已改变，不能复用旧提交；请重新执行验证与审查")
-            return self._resume_delivery(repo, state, receipt)
+            if receipt.get("fingerprint") == fingerprint and receipt.get("repair_branch") == str(branch):
+                return self._resume_delivery(repo, state, receipt)
+            # 收据属于上一轮候选：内容已经变了，旧提交不能复用，但也不能因此
+            # 永久阻断交付——按新内容重新交付即可（锚点已按内容指纹区分）。
+            receipt = {}
 
         # anchor 与步骤收据之间可能中断。只恢复带本次内容指纹的提交，绝不覆盖其它对象。
         anchored = next((ref for ref in repo.refs if ref.path == anchor), None)
@@ -812,60 +850,6 @@ class GitBranchDelivery:
             copied.append(relative.as_posix())
         return copied
 
-    @classmethod
-    def _copy_audit_records(
-        cls,
-        source_root: Path,
-        destination_root: Path,
-        state: Mapping[str, Any],
-    ) -> list[str]:
-        """失败或超轮次时复制完整公开 AI 记录，成功只保留终态报告。"""
-        if state.get("delivery_status") not in {"REPAIR_FAILED", "REPAIR_ROUND_LIMIT"}:
-            return []
-        audit_root = source_root / settings.artifact_dir_name
-        if not audit_root.is_dir():
-            return []
-        copied: list[str] = []
-        for source in audit_root.rglob("*"):
-            allowed = source.is_file() and not source.is_symlink()
-            if not allowed or source.suffix not in cls._AUDIT_SUFFIXES:
-                continue
-            try:
-                if source.stat().st_size > _MAX_AUDIT_BYTES:
-                    _logger.warning("跳过过大的审计产物: %s", source)
-                    continue
-                content = source.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError) as error:
-                _logger.warning("跳过无法读取的审计产物: %s (%s)", source, type(error).__name__)
-                continue
-            relative = source.relative_to(source_root)
-            destination = destination_root / relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            temporary: Path | None = None
-            try:
-                with tempfile.NamedTemporaryFile(
-                    mode="w",
-                    encoding="utf-8",
-                    dir=destination.parent,
-                    prefix=f".{destination.name}.",
-                    suffix=".audit",
-                    delete=False,
-                ) as output:
-                    output.write(content)
-                    temporary = Path(output.name)
-                shutil.copyfile(temporary, destination)
-            except OSError as error:
-                _logger.warning("跳过无法写入的审计产物: %s (%s)", source, type(error).__name__)
-                continue
-            finally:
-                if temporary is not None:
-                    try:
-                        temporary.unlink()
-                    except OSError:
-                        pass
-            copied.append(relative.as_posix())
-        return copied
-
     @staticmethod
     def _commit_message(state: Mapping[str, Any]) -> str:
         """生成带评论的提交说明。
@@ -879,7 +863,10 @@ class GitBranchDelivery:
         lines = [f"{settings.repair_branch_prefix}: {carrier} ({status})"]
         if bool(state.get("manual_confirmation_required")):
             lines += ["", "[MANUAL_CONFIRMATION_REQUIRED]"]
-            reasons = [str(item) for item in state.get("manual_confirmation_reasons") or []]
+            reasons = [
+                redact_for_delivery(str(item))
+                for item in state.get("manual_confirmation_reasons") or []
+            ]
             if reasons:
                 lines.append("  reasons: " + "; ".join(reasons[:5]))
 
@@ -887,8 +874,11 @@ class GitBranchDelivery:
         if error:
             lines += ["", f"error: {error}"]
 
-        analysis = _one_line(state.get("repair_analysis"), limit=settings.commit_analysis_chars)
-        summary = _one_line(state.get("repair_summary"))
+        analysis = _one_line(
+            redact_for_delivery(str(state.get("repair_analysis") or "")),
+            limit=settings.commit_analysis_chars,
+        )
+        summary = _one_line(redact_for_delivery(str(state.get("repair_summary") or "")))
         if analysis or summary:
             lines += ["", "repair:"]
             if analysis:
@@ -896,7 +886,7 @@ class GitBranchDelivery:
             if summary:
                 lines.append(f"  summary: {summary}")
 
-        review = _one_line(state.get("review_summary"))
+        review = _one_line(redact_for_delivery(str(state.get("review_summary") or "")))
         if review:
             lines += ["", "review:", f"  summary: {review}"]
         return "\n".join(lines)

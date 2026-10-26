@@ -21,7 +21,10 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _patch(output: dict[str, Any]) -> dict[str, Any]:
-    return {"ai_workspace_path": output["ai_workspace_path"]}
+    # 步骤没有产出工作区（被取消或执行失败）：不回写任何状态。
+    if "ai_workspace_path" not in output:
+        return {}
+    return {"ai_workspace_path": str(output.get("ai_workspace_path") or "")}
 
 
 SPEC = StepSpec(

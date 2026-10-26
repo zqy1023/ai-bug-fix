@@ -85,6 +85,8 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
             try:
                 ctx.services.delivery.discard_branch(
                     {
+                        "run_id": ctx.run.run_id,
+                        "task_id": data.task_id,
                         "source_repo_path": data.source_repo_path,
                         "repair_branch": data.repair_branch,
                         "pushed": data.delivery_pushed,
@@ -150,6 +152,8 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
             try:
                 ctx.services.delivery.discard_branch(
                     {
+                        "run_id": ctx.run.run_id,
+                        "task_id": data.task_id,
                         "source_repo_path": data.source_repo_path,
                         "repair_branch": data.repair_branch,
                         "pushed": data.delivery_pushed,

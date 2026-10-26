@@ -138,6 +138,13 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
                 item.model_dump(mode="json")
                 for item in store.list_steps(run_id, task_id)
             ]
+            # 审查 Agent 的内部工具（check_changes / verify_issue / run_regression …）
+            # 刻意不进 steps.json 主表，但工作台必须能看到它们的执行证据，
+            # 否则"变更校验/问题验证/回归验证"三块永远空白。
+            task_steps.extend(
+                item.model_dump(mode="json")
+                for item in store.list_review_substeps(run_id, task_id)
+            )
             final_path = store.task_dir(run_id, task_id) / "reports" / "final.json"
             report = _read_json(final_path, {})
             # 同一任务可经历多轮回修与多次审批；必须以最后一次 request_approval 为准。
@@ -447,11 +454,13 @@ def _all_run_ids(store: RecordStore) -> list[str]:
 def _health_payload(_: None = Depends(_authorize)) -> dict[str, Any]:
     config = _config()
     from app.agents.review.contract import REVIEW_CONTRACT_VERSION
+    from app.workflow.contracts import WORKFLOW_VERSION
     from app.agents.review.tools.verify_issue.assessment import CONTRACT_VERSION
     return {
         "status": "ok",
         "service": SERVICE_NAME,
         "version": SERVICE_VERSION,
+        "workflow_version": WORKFLOW_VERSION,
         "verification_contract_version": CONTRACT_VERSION,
         "review_contract_version": REVIEW_CONTRACT_VERSION,
         "log_redaction_enabled": False,

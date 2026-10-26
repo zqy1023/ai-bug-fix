@@ -17,7 +17,7 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
     carrier = WorkspaceManager.safe_carrier_name(str(task.get("carrier") or ""))
     locate = dict(state.get("locate") or {})
     # 旧框架判定与 prepare_delivery 共用同一实现，避免口径漂移。
-    from app.workflow.steps.prepare_delivery.legacy import report_dir, report_framework
+    from app.workflow.steps.prepare_delivery.report_paths import report_dir, report_framework
 
     report_framework_name = report_framework(evidence, locate, state.get("framework"))
     # 优先使用证据中的真实 carrier 目录（保留源码大小写）；没有证据时才回退到

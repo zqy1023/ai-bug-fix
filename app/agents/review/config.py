@@ -17,6 +17,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from config.settings import parse_bool
+
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_PATH = Path(__file__).resolve().parent / "config.json"
 ENV_PREFIX = "AI_REPAIR_AGENT_REVIEW_"
@@ -35,9 +37,6 @@ DEFAULTS: dict[str, Any] = {
     "timeout_seconds": 480,
     "options": {},
 }
-
-_BOOL_TRUE = {"1", "true", "yes", "on"}
-
 
 class ReviewConfigError(ValueError):
     """审查 agent 配置非法。"""
@@ -97,7 +96,7 @@ class ReviewConfig:
             source = str(resolved)
         enabled = environment.get(f"{ENV_PREFIX}ENABLED", "").strip()
         if enabled:
-            payload["enabled"] = enabled.lower() in _BOOL_TRUE
+            payload["enabled"] = parse_bool(enabled)
         provider = environment.get(f"{ENV_PREFIX}PROVIDER", "").strip()
         if provider:
             payload["provider"] = provider

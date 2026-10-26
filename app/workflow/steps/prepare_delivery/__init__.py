@@ -24,14 +24,16 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
     # 审查结论以主图通道为准。review_agent 回写的是 verdict 而不是 result；
     # human 模式跳过 AI 审查直接交付分支，交付门禁由人工在审批节点判定，
     # 因此这里用 HUMAN 标记"未经 AI 审查"，不能让空结论被当成审查未通过。
+    # 但人工模式不能覆盖真实结论：已有 PASS/FAIL 时以真实结论为准，
+    # 否则一次失败的审查会被改写成 HUMAN 而放行交付。
     review_mode = str(state.get("review_mode") or settings.default_review_mode).lower()
     review_decision = str(review_payload.get("verdict") or "")
-    if review_mode == "human" and not review_decision:
+    if review_mode == "human" and review_decision.upper() not in {"PASS", "FAIL"}:
         review_decision = "HUMAN"
     evidence = dict(state.get("evidence") or {})
     locate_payload = dict(state.get("locate") or {})
     # 旧框架判定与 finalize_execution 共用同一实现，避免口径漂移。
-    from app.workflow.steps.prepare_delivery.legacy import report_dir, report_framework
+    from app.workflow.steps.prepare_delivery.report_paths import report_dir, report_framework
 
     report_framework_name = report_framework(evidence, locate_payload, state.get("framework"))
     report_carrier = WorkspaceManager.safe_carrier_name(str(task.get("carrier") or ""))

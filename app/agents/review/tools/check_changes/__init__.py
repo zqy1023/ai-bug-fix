@@ -22,9 +22,12 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
 
 def _patch(output: dict[str, Any]) -> dict[str, Any]:
     # 平台扫描的实际差异是下游补丁身份的唯一来源。
+    # 内部工具被取消或异常中断时输出的是错误载荷，此时不覆盖差异身份。
+    if "changed_files" not in output:
+        return {}
     return {
         "gate_result": output,
-        "changed_files": output["changed_files"],
+        "changed_files": list(output.get("changed_files") or []),
     }
 
 

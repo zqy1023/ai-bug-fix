@@ -193,7 +193,7 @@ class LegacyReportHelperTests(unittest.TestCase):
     """旧框架证据、报告路径与修改范围判定保持一致。"""
 
     def test_legacy_reference_and_report_framework(self):
-        from app.workflow.steps.prepare_delivery.legacy import (
+        from app.workflow.steps.prepare_delivery.report_paths import (
             is_legacy_changed_path,
             legacy_reference,
             report_dir,

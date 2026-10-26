@@ -1,5 +1,5 @@
 import { StepAssessment } from './StepAssessment';
-import { StepOutcome, VerificationEvidence } from './StepOutcome';
+import { StepOutcome } from './StepOutcome';
 import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Skeleton, Tabs } from 'antd';
@@ -90,7 +90,7 @@ export function StepDetail({
     || (step.result ? FAILED_RESULTS.has(String(step.result).toUpperCase()) : false);
 
   const items = [
-    { key: 'conclusion', label: '结论与证据', children: <><StepOutcome step={step} /><VerificationEvidence runId={runId} taskId={taskId} step={step} /></> },
+    { key: 'conclusion', label: '结论与证据', children: <StepOutcome step={step} /> },
     { key: 'input', label: '原始输入', children: <JsonDocument value={step.input ?? {}} filename={`${step.name}-input.json`} /> },
     {
       key: 'output',
