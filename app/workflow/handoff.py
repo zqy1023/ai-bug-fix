@@ -99,6 +99,9 @@ STATE_CO_WRITERS = {
     "delivery_pushed": frozenset({"prepare_delivery"}),
     # 交付后的提交形态以 publish_delivery 为准（决定是否推送到远端）。
     "delivery_local_branch": frozenset({"publish_delivery"}),
+    # 预检写入的是命中的既有未合并分支（任务跳过的原因）；本轮新建分支由
+    # prepare_delivery 写入，两者都合法，缺一会让跳过任务在写状态时直接崩溃。
+    "repair_branch": frozenset({"repair_branch_preflight"}),
 }
 EXEMPT_FROM_OBSOLETE = frozenset({"baseline_dir", "baseline_manifest"})
 

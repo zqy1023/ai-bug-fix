@@ -340,6 +340,21 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(len(saved.outcome.output["analysis"]), 5000)
         self.assertEqual(saved.state.artifacts.repair, output)
 
+    def test_preflight_may_publish_pending_branch_name(self):
+        """预检跳过任务时要写入命中的未合并分支，不能被通道属主守卫拦截。"""
+        from app.workflow.handoff import apply_step_result, outcome_of
+
+        store = MemoryStore()
+        output = {"clear": False, "result": "skipped", "repair_branch": "fix/Test"}
+        update = apply_step_result(
+            store,
+            {**self.state},
+            "repair_branch_preflight",
+            {"repair_branch": "fix/Test"},
+            outcome_of(output),
+        )
+        self.assertEqual(update["repair_branch"], "fix/Test")
+
     def test_assertion_summary_is_explicit(self):
         report = summarize(self.state)["report"]
         self.assertEqual(
