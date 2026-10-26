@@ -85,6 +85,18 @@ STATE_OWNERS = {
     "delivery_candidate": "prepare_delivery",
     "approval_result": "request_approval",
     "delivery": "publish_delivery",
+    # 以下通道的属主由实际写入点确定：repair_branch 由 prepare_delivery 生成；
+    # delivery_pushed 的终态只由 publish_delivery 写入（prepare_delivery 只做候选重置）。
+    "repair_branch": "prepare_delivery",
+    "delivery_pushed": "publish_delivery",
+    "delivery_local_branch": "prepare_delivery",
+    "analysis_report": "prepare_analysis",
+    "task_summary": "finalize_execution",
+    "resolution": "finalize_execution",
+}
+# 候选阶段需要重置交付通道；这些步骤不是属主，但必须允许写入。
+STATE_CO_WRITERS = {
+    "delivery_pushed": frozenset({"prepare_delivery"}),
 }
 EXEMPT_FROM_OBSOLETE = frozenset({"baseline_dir", "baseline_manifest"})
 
@@ -152,10 +164,11 @@ def apply_step_result(
     """先保存无损交接，再发布图更新；摘要记录不承担恢复职责。"""
     for key, value in patch.items():
         if (
-            value
-            and key in STATE_OWNERS
+            key in STATE_OWNERS
             and STATE_OWNERS[key] != step
-            and not (step == "retry_prepare" and value == state.get(key))
+            and step not in STATE_CO_WRITERS.get(key, ())
+            # retry_prepare 是内部重置节点：新一轮尝试必须能清空旧通道。
+            and not (step == "retry_prepare" and (not value or value == state.get(key)))
         ):
             raise ValueError(f"STATE_OWNER_MISMATCH: {step} 不能写入 {key}")
     invalidated = {key: {} for key in INVALIDATES.get(step, ()) if key not in patch}

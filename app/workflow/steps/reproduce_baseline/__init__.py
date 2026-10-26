@@ -48,7 +48,9 @@ def _patch(output: dict[str, Any]) -> dict[str, Any]:
         "baseline_reproduction": output,
         "retry_target": "reproduce_baseline" if output.get("retryable") else "",
         "last_result": "passed" if passed else "manual",
-        "terminal_status": "passed" if passed else "BLOCKED",
+        # 基线未建立表示“无法验证”，不是流程阻断。保留原因并交给分析报告
+        # 分支，由人工按根因和建议验收标准处理。
+        "terminal_status": "passed" if passed else "",
         "blocked_reason": "" if passed else str(output.get("reason") or ""),
     }
 

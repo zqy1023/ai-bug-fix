@@ -179,8 +179,6 @@ class Settings:
     # 一致）的解释器，否则重放会在 import 阶段失败。留空表示用当前解释器。
     # 部署时用 AI_REPAIR_REPLAY_PYTHON 覆盖。
     replay_python: str = ""
-    # replay_output_chars：重放成功输出保留字符数。
-    replay_output_chars: int = 500
     # regression_tail_chars：回归命令输出保留的尾部字符数。
     regression_tail_chars: int = 8000
     # record_json_max_bytes：单条步骤记录字节上限。
@@ -217,8 +215,6 @@ class Settings:
     claude_event_text_chars: int = 2000
     # claude_event_value_chars：Agent 事件字段值保留字符数。
     claude_event_value_chars: int = 200
-    # claude_event_tool_text_chars：Agent 工具结果保留字符数。
-    claude_event_tool_text_chars: int = 800
     # claude_max_events：单个模型调用保留的事件数。
     claude_max_events: int = 200
     # claude_debug_log_max_bytes：Agent 调试日志轮转字节上限。

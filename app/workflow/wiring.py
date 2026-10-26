@@ -335,7 +335,7 @@ def _compose_phase(
         )
         if (
             after in step_names
-            and str(state.get("last_result") or "passed") != "passed"
+            and str(state.get("last_result") or "") != "passed"
         ):
             return {"continuation": {}}
         for name in selected:
@@ -350,14 +350,19 @@ def _compose_phase(
                 spec = registry.resolve(name)
                 from app.workflow.contracts import Handoff
 
-                formal = Handoff.model_validate(
-                    store.read_artifact(
-                        str(state["run_id"]),
-                        f"workflow/outputs/{name}.json",
-                        str(state.get("task_id") or ""),
+                try:
+                    formal = Handoff.model_validate(
+                        store.read_artifact(
+                            str(state["run_id"]),
+                            f"workflow/outputs/{name}.json",
+                            str(state.get("task_id") or ""),
+                        )
                     )
-                )
-                patch = {**spec.patch(formal.outcome.output), "last_result": "passed"}
+                except StepFailed:
+                    # 交接产物缺失或损坏不应中止整轮；重新执行该子步骤恢复产物。
+                    patch = nodes[name](current)
+                else:
+                    patch = {**spec.patch(formal.outcome.output), "last_result": "passed"}
             else:
                 patch = nodes[name](current)
             if not isinstance(patch, dict):
@@ -531,7 +536,7 @@ def continue_task_after_step(
     state["attempt"] = max(
         int(state.get("attempt") or 1), int(record.attempt if record else 1)
     )
-    state["automatic_attempt"] = 1
+    state.setdefault("automatic_attempt", 1)
     state["terminal_status"] = str(payload.get("terminal_status") or "")
     state["task_summary"] = {}
     state["max_attempts"] = int(

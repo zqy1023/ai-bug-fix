@@ -20,7 +20,7 @@ sync_source_repo
 ```
 
 `review_agent` 是修复后的唯一审查入口；内部检查只记录在 `artifacts/review_agent/`，不再向主 `steps.json` 添加独立验证节点。`human` 模式仍从同一入口收集证据，但不调用审查模型，代码语义交由人工审查。Agent 模式不因单项请求失败直接判定修复失败。
-定位不确定、旧框架或非 carrier 修改范围走 `prepare_analysis → prepare_delivery → finalize_execution`；报告生成不提前释放资格或宣告任务完成。
+定位不确定、旧框架、非 carrier 修改范围或修改前基线未复现时走 `prepare_analysis → prepare_delivery → finalize_execution`；分析报告附带未执行的建议验收标准，报告生成不提前释放资格或宣告任务完成。
 
 任务有独立 checkpoint。任务执行串行；某个任务等待人工审批时，父图可继续处理后续任务。工作流不自动合并分支。
 
@@ -98,9 +98,9 @@ artifact_paths: 正式证据引用
 修改前固定验收契约，以**完整 baseline manifest**计算基线身份，不以改动文件子集计算。当前平台支持基线异常匹配、正文送达、修复后框架语义比较和真实请求四项断言。
 验收契约与修改后执行计划分开：补丁变化只重建执行计划；验收内容、原始问题或基线变化分别给出错误码。
 
-修复后代码审查 Agent 按语法检查、业务修复检查和影响范围检查三个维度综合判断。重放与真实请求保留为执行证据；请求失败需区分代码缺陷、环境网络/代理/依赖故障与官网状态，不自动触发回修。三项审查均通过、证据有效且覆盖充分后才能准备候选；证据不足则阻断待验证，确认代码缺陷才回修。人工模式仍要求原问题重放和真实请求通过。真实请求保持原始请求参数和代理渠道，调用 `server_dev.main`。补充命令配置沿用现有环境变量。
+修复后代码审查 Agent 按语法检查、业务修复检查和影响范围检查三个维度综合判断。重放与真实请求保留为执行证据；请求失败需区分代码缺陷、环境网络/代理/依赖故障与官网状态，不自动触发回修。三项审查均通过、证据有效且覆盖充分后才能准备候选；证据不足则不进入修复，转分析报告交付并由人工验证，确认代码缺陷才回修。人工模式仍要求原问题重放和真实请求通过。真实请求保持原始请求参数和代理渠道，调用 `server_dev.main`。补充命令配置沿用现有环境变量。
 
-代码缺陷进入回修；执行故障按阶段有限重试；证据失效重新检查；证据缺失或次数耗尽记录 `blocked`。代码回修次数和各阶段恢复次数分别累计。
+代码缺陷进入回修；执行故障按阶段有限重试；证据失效重新检查；修改前基线未建立（如缺少录制响应）不记为阻断，转分析报告交付；只有执行故障次数耗尽或分析报告无法生成时才记录 `blocked`。代码回修次数和各阶段恢复次数分别累计。
 
 ### 审批、交付与终态
 
@@ -184,7 +184,7 @@ npm --prefix frontend run build
 
 运行与安全边界：
 
-- `server.py` 监听 `0.0.0.0:8000`。远程部署必须设置 `WORKBENCH_API_TOKEN`，并通过 HTTPS 反向代理和网络访问控制限制入口，禁止开放公网匿名访问。
+- `server.py` 默认监听 `0.0.0.0:8000`；未设置 `WORKBENCH_API_TOKEN` 时启动会回落为只监听 `127.0.0.1`（API 无鉴权，仅限本机访问）。对外部署必须设置强随机 `WORKBENCH_API_TOKEN`，并通过 HTTPS 反向代理和网络访问控制限制入口，禁止开放公网匿名访问。
 - 运行记录目录应位于持久化磁盘；同时备份 `workflow-checkpoints.sqlite3`、`workbench-control.sqlite3` 与运行产物。
 - 工作台不自动合并代码；代码交付仍遵守工作流门禁。
 - 当前 SSE 发送的是基于持久化运行记录的状态快照，不等于逐 token 模型流。取消接口目前表达停止请求，当前节点可能完成后才响应。
@@ -292,12 +292,13 @@ URL 模式的镜像是**完整 Git 仓库**（引用、分支、对象都在，�
 3. 容器只需挂载运行数据到 `/app/runtime`；源仓库在运行时从远程克隆，容器必须能访问 Git 远程地址。`AI_REPAIR_RUNTIME_DIR` 在 compose 中固定为 `/app/runtime`。
 4. 构建机必须能够访问 `requirements.txt` 中声明的内部 `yq_common` 包地址。
 
-> 上线前必须处理的供应链前提：`yq_common` 目前是**明文 HTTP** 的直接 URL 依赖
-> （`http://n.17track.net:8081/.../yq_common-0.0.77-py3-none-any.whl`），Dockerfile 用
-> `--trusted-host` 关闭了证书校验，且该依赖没有哈希锁定（`constraints.txt` 只约束
-> PyPI 包，直接 URL 依赖不受它约束）。这意味着构建期可以拿到被替换过的 wheel。
-> 准生产上线前需要制品库提供 HTTPS，并改用 `--require-hashes` 的锁定文件安装；
-> 在此之前不要把该镜像当作可对外发布的安全产物。
+> 供应链现状：`yq_common` 仍取自内网 Nexus 的**明文 HTTP** 直接 URL
+> （`http://n.17track.net:8081/.../yq_common-0.0.77-py3-none-any.whl`），因为该仓库
+> 只支持 HTTP（HTTPS 握手实测失败）；Dockerfile 保留 `--trusted-host` 以允许该 HTTP 源。
+> 该 wheel 已改用 PEP 508 直接引用并带 `#sha256=...` 内容哈希锁定，传输内容被替换会
+> 在安装时失败。TLS 依赖 Nexus 侧升级，升级前不要删除 `--trusted-host`。
+> 也不再使用 `constraints.txt`；如果要进一步启用 `--require-hashes`，需要先为全部
+> 传递依赖补齐哈希，当前仓库无法满足。
 
 ```bash
 docker compose config
@@ -312,7 +313,7 @@ docker compose logs -f api frontend
 
 根目录保留运行源码 `app/`、`config/`、`workbench/`，前端源码及构建配置 `frontend/`，服务入口 `server.py`、运行依赖清单 `requirements.txt`、环境配置、Docker 部署文件和本说明。`.git/` 保留版本记录；本机 `.venv/`、前端 `node_modules/` 和 `dist/` 用于当前运行及构建，不进入容器构建上下文。
 
-`tests/`（单元测试与 Playwright 验收脚本）、`constraints.txt`、`logs/`、`runtime/` 仍留在仓库里，但都不进镜像构建上下文（见 `.dockerignore`），发布时应按发布清单排除。业务回归执行器、Agent 提示词和真实运行记录属于生产功能，不按测试文件清理。运行数据由 `AI_REPAIR_RUNTIME_DIR` 管理，不作为发布源码。
+`tests/`（单元测试与 Playwright 验收脚本）、`logs/`、`runtime/` 仍留在仓库里，但都不进镜像构建上下文（见 `.dockerignore`），发布时应按发布清单排除。业务回归执行器、Agent 提示词和真实运行记录属于生产功能，不按测试文件清理。运行数据由 `AI_REPAIR_RUNTIME_DIR` 管理，不作为发布源码。
 
 准生产检查使用后端 `/api/v1/health` 和前端构建；健康接口应报告 `review_contract_version=6、workflow_version=7`、`log_redaction_enabled=false`。修改后需重启后端才能加载新代码。
 

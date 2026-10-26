@@ -18,6 +18,8 @@ const FILTERS = [
   ['manual', '需人工'], ['blocked', '验证受阻'], ['failed', '失败'], ['skipped', '已跳过'], ['cancelled', '已取消'], ['paused', '已暂停'], ['other', '其他'],
 ];
 const ACTIVE = new Set(['RUNNING', 'RETRYING', 'PENDING', 'QUEUED']);
+// 未到终态的任务没有停止点，继续显示生命周期里的当前节点。
+const NON_TERMINAL = new Set([...ACTIVE, 'PAUSED', 'WAITING_APPROVAL']);
 
 function state(task: BoardTask): string {
   return String(task.result || 'PENDING').toUpperCase();
@@ -88,6 +90,16 @@ export const TaskBoard: FC<TaskBoardProps> = ({ runId, stages = [], onOpen }) =>
             <tbody>{visible.map((task) => {
               const status = state(task);
               const failed = ['FAILED', 'FAIL', 'REJECTED', 'PARTIAL_FAILED'].includes(status);
+              // 终态任务优先展示真实停止点；只有未到终态时才回落到当前节点。
+              const stepName = (NON_TERMINAL.has(status)
+                ? task.current_step || task.terminal_step
+                : task.terminal_step || task.current_step) || '';
+              const stageTitle = stages.find((stage) => stage.members.includes(stepName))?.title;
+              const stepLabel = stageTitle || stepName || '等待分派';
+              const approvalWaiting = task.approval_pending || status === 'WAITING_APPROVAL';
+              const summary = ACTIVE.has(status)
+                ? '自动流程正在推进'
+                : task.terminal_reason || task.next_action || (approvalWaiting ? '等待人工审批' : '等待生成执行结论');
               return <tr key={task.task_id}>
                 <td>
                   <button type="button" className={styles.name} onClick={() => onOpen(task)}>{task.carrier || '未识别运输商'}</button>
@@ -95,13 +107,13 @@ export const TaskBoard: FC<TaskBoardProps> = ({ runId, stages = [], onOpen }) =>
                 </td>
                 <td><StatusBadge kind="task" value={status} /></td>
                 <td>
-                  <span title={task.current_step || task.terminal_step}>{stages.find((stage) => stage.members.includes(task.current_step || task.terminal_step))?.title || task.current_step || task.terminal_step || '等待分派'}</span>
+                  <span title={stepName || stepLabel}>{stepLabel}</span>
                   <small className={styles.cellSmall}>
                     <span className={styles.num}>{task.steps_count}</span> 个步骤 · <span className={styles.num}>{formatDuration(task.duration_ms)}</span>
                     {(task.attempt ?? 0) > 1 ? <> · 第 <span className={styles.num}>{task.attempt}</span> 次尝试</> : null}
                   </small>
                 </td>
-                <td className={styles.reason}><span title={task.terminal_reason}>{ACTIVE.has(status) ? '自动流程正在推进' : task.terminal_reason || task.next_action || '等待生成执行结论'}</span></td>
+                <td className={styles.reason}><span title={summary}>{summary}</span></td>
                 <td><Button type={failed || task.approval_pending ? 'primary' : 'text'} size="small" icon={<ArrowRightOutlined />} iconPosition="end" onClick={() => onOpen(task)}>{failed ? '排查失败' : task.approval_pending ? '查看审批' : '查看任务'}</Button></td>
               </tr>;
             })}</tbody>

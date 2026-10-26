@@ -10,6 +10,7 @@ run 级字段与结果汇总。
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -55,6 +56,8 @@ TASK_DISPATCH = "task_dispatch"
 TASK_COLLECT = "task_collect"
 
 _RUN_NODES = (SOURCE_SYNC, RUN_PREPARE, IDENTIFY)
+
+logger = logging.getLogger(__name__)
 
 
 class _RetryableNodeFailure(RuntimeError):
@@ -233,8 +236,17 @@ def build_task_graph(
                             try:
                                 if archive.exists() and not original.exists():
                                     archive.replace(original)
-                            except OSError:
-                                pass
+                            except OSError as restore_error:
+                                # 回滚失败不中断，但必须留下工作区/基线路径便于人工恢复。
+                                logger.warning(
+                                    "重试前恢复旧基线/工作区失败 workspace=%s baseline=%s "
+                                    "源路径=%s 归档路径=%s: %s",
+                                    workspace,
+                                    baseline,
+                                    original,
+                                    archive,
+                                    restore_error,
+                                )
                         return {
                             "attempt": int(state.get("attempt") or 1),
                             "last_result": "failed",

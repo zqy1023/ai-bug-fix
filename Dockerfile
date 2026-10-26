@@ -4,6 +4,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git nodejs build-essential passwd && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY requirements.txt ./requirements.txt
+# yq_common 通过内网 Nexus（仅 HTTP，https 握手实测失败）获取，wheel 已在
+# requirements.txt 中用 sha256 内容哈希锁定。TLS 需等 Nexus 侧升级后才能真正启用；
+# 在此之前不得删除 --trusted-host n.17track.net，否则 HTTP 源会因证书校验被拒绝。
+# 不要改为 --require-hashes：那会要求全部传递依赖也提供哈希，当前仓库无法满足。
 RUN python -m pip install --upgrade pip && python -m pip install --trusted-host n.17track.net -r requirements.txt
 COPY app ./app
 COPY config ./config

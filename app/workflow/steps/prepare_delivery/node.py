@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import traceback
 from pathlib import Path
+from typing import Any
 
 from app.application.context import StepContext
 from app.domain.errors import StepFailed
@@ -12,6 +13,37 @@ from app.infrastructure.redaction import public_exception
 from app.workflow.steps.prepare_delivery.models import DeliveryInput, DeliveryOutput
 
 logger = logging.getLogger(__name__)
+
+
+def _delivery_report(value: dict[str, Any]) -> dict[str, Any]:
+    """裁剪交付报告：移除内网代理地址与真实回归请求原文。
+
+    内部审计产物（如 ``artifacts/regression_report.json``）保持原样，只有会
+    进入交付面（delivery/final.json、task_summary.md）的报告副本脱敏。
+    不修改调用方持有的原对象，避免影响审计与哈希核对。
+    """
+    import copy
+
+    report = copy.deepcopy(value)
+    _strip_delivery_payload(report)
+    return report
+
+
+def _strip_delivery_payload(value: Any) -> None:
+    """递归删除交付报告中的环境地址与回归原始输入/脚本。"""
+    if isinstance(value, dict):
+        environment = value.get("environment")
+        if isinstance(environment, dict):
+            environment.pop("proxy_manager_address", None)
+        request = value.get("request_regression")
+        if isinstance(request, dict):
+            request.pop("input", None)
+            request.pop("script", None)
+        for item in value.values():
+            _strip_delivery_payload(item)
+    elif isinstance(value, list):
+        for item in value:
+            _strip_delivery_payload(item)
 
 
 def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
@@ -158,8 +190,10 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
                     repair_branch=data.repair_branch,
                 )
                 store.write_artifact(
-                    ctx.run.run_id, report_path, repair_report, data.task_id
+                    ctx.run.run_id, report_path, _delivery_report(repair_report), data.task_id
                 )
+        # 交付面副本与后续 task_summary 都使用脱敏后的报告；内部审计产物不动。
+        repair_report = _delivery_report(repair_report)
         result = ctx.services.delivery.deliver(
             {
                 "run_id": ctx.run.run_id,

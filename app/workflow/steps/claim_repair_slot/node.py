@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import sqlite3
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from git import Repo
+from git.exc import GitCommandError
 
 from app.domain.errors import StepFailed
 from app.domain.keys import repair_branch
@@ -16,7 +19,11 @@ from app.workflow.steps.claim_repair_slot.models import ClaimInput, ClaimOutput
 from config.settings import settings
 
 
+logger = logging.getLogger(__name__)
+
 _CLAIM_TTL = timedelta(hours=settings.repair_claim_ttl_hours)
+_RELEASE_ATTEMPTS = 3
+_RELEASE_BACKOFF_SECONDS = 0.1
 
 
 def _claim_key(source: str, branch: str, problem_key: str) -> str:
@@ -77,20 +84,62 @@ def _claim_slot(ctx: StepContext, source: str, branch: str, problem_key: str, ta
 
 
 def release_claim(root: str | Path, *, run_id: str, task_id: str) -> None:
-    """任务进入终态后释放修复资格；其他运行的 claim 不受影响。"""
-    connection = _claim_connection(Path(root))
-    try:
-        connection.execute("DELETE FROM repair_claims WHERE run_id=? AND task_id=?", (run_id, task_id))
-        connection.commit()
-    finally:
-        connection.close()
+    """任务进入终态后释放修复资格；其他运行的 claim 不受影响。
+
+    释放是终态收尾的一部分，单次 DELETE 遇到 SQLite 忙/磁盘瞬时故障就让
+    资格永远留在库里，后续同问题任务会被误判为"已被领取"。这里做短退避
+    重试，最终仍失败则记录 error 日志（带 claim_key）并把异常交给调用方，
+    由调用方决定是否中断。
+    """
+    root_path = Path(root)
+    claim_keys: list[str] = []
+    last_error: Exception | None = None
+    for attempt in range(1, _RELEASE_ATTEMPTS + 1):
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = _claim_connection(root_path)
+            rows = connection.execute(
+                "SELECT claim_key FROM repair_claims WHERE run_id=? AND task_id=?",
+                (run_id, task_id),
+            ).fetchall()
+            claim_keys = [str(row[0]) for row in rows] or claim_keys
+            connection.execute(
+                "DELETE FROM repair_claims WHERE run_id=? AND task_id=?",
+                (run_id, task_id),
+            )
+            connection.commit()
+            return
+        except Exception as error:
+            last_error = error
+            if connection is not None:
+                try:
+                    connection.rollback()
+                except Exception:
+                    pass
+            if attempt < _RELEASE_ATTEMPTS:
+                time.sleep(_RELEASE_BACKOFF_SECONDS * attempt)
+        finally:
+            if connection is not None:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+    logger.error(
+        "释放修复资格失败 run_id=%s task_id=%s claim_key=%s attempts=%s",
+        run_id, task_id, ",".join(claim_keys) or "<unknown>", _RELEASE_ATTEMPTS,
+        exc_info=last_error,
+    )
+    if last_error is not None:
+        raise last_error
 
 
 def renew_claim(root: str | Path, *, run_id: str, task_id: str) -> bool:
     """恢复尚未终态的任务时续租本运行已领取的资格。
 
-    只延长本 ``run_id`` + ``task_id`` 的未过期记录。其他运行占用、已过期或从未领取的
-    记录不在这里补领，避免恢复把别人的资格抢走。
+    只延长本 ``run_id`` + ``task_id`` 的记录。记录已按 claim_key 为主键，
+    存活即说明没有别的运行抢走同一问题（被抢走时记录已被删除或改写为对方），
+    因此运行自己的记录即使刚过 TTL 也可以原样续租，否则暂停超过租期的
+    运行将永远无法恢复。记录不存在时返回 ``False``，不做补领。
     """
     now = datetime.now(timezone.utc)
     expires = now + _CLAIM_TTL
@@ -102,13 +151,6 @@ def renew_claim(root: str | Path, *, run_id: str, task_id: str) -> bool:
             (run_id, task_id),
         ).fetchone()
         if row is None:
-            connection.rollback()
-            return False
-        try:
-            expired = datetime.fromisoformat(str(row[0])) <= now
-        except ValueError:
-            expired = True
-        if expired:
             connection.rollback()
             return False
         connection.execute(
@@ -207,8 +249,20 @@ def _pending_branch(repo: Repo, branch: str, remote_name: str) -> str:
             continue
         try:
             repo.git.merge_base("--is-ancestor", name, base)
-        except Exception:
-            return name
+        except GitCommandError as error:
+            # merge-base --is-ancestor: 0=已合入，1=未合入。只有 1 才代表
+            # "存在未合并修复分支"；其它状态是 Git 本身故障，不能静默当成
+            # 已合并而跳过清理，也不能把它误判成业务跳过。
+            if getattr(error, "status", None) == 1:
+                return name
+            raise StepFailed(
+                "git 探测失败（可重试）",
+                {
+                    "branch": name,
+                    "base": base,
+                    "git_status": getattr(error, "status", None),
+                },
+            ) from error
     return ""
 
 

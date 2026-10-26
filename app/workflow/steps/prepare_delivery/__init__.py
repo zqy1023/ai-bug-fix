@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.domain.errors import StepFailed
 from app.domain.keys import repair_branch
 from app.infrastructure.filesystem.workspace import WorkspaceManager
 from app.workflow.spec import StepSpec
@@ -46,7 +47,10 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
     if not analysis_only:
         from app.workflow.validation import summarize
         if summarize(state)["stale"]:
-            raise ValueError("CANDIDATE_EVIDENCE_STALE: 验证证据已过期，需要重新检查")
+            raise StepFailed(
+                "CANDIDATE_EVIDENCE_STALE: 验证证据已过期，需要重新检查",
+                code="CANDIDATE_EVIDENCE_STALE",
+            )
     from app.domain.repair_scope import legacy_analysis_required
     from app.workflow.confirmation import confirmation
 

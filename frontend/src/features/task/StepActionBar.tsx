@@ -19,7 +19,7 @@ export function StepActionBar({
   const [open, setOpen] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [failure, setFailure] = useState('');
-  const [continueRequested, setContinueRequested] = useState(true);
+  const [continueRequested, setContinueRequested] = useState(false);
   const continueAfter = continueRequested && continuation?.enabled === true;
   const risky = availability?.requires_confirmation || continueAfter;
   const blockedByStep = stepName === 'request_approval' || stepName === 'retry_prepare';

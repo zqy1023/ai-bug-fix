@@ -117,7 +117,13 @@ class RecordStore:
                 if backup_path.is_file():
                     try:
                         backup = json.loads(backup_path.read_text(encoding="utf-8"))
-                    except (OSError, json.JSONDecodeError):
+                    except (OSError, json.JSONDecodeError) as error:
+                        # 损坏的备份不能被当成"空备份"静默处理：留下可定位的
+                        # 路径与异常类型，再跳过本次合并（现有 tasks 仍然保留）。
+                        logging.getLogger(__name__).warning(
+                            "步骤记录备份无法读取，跳过备份合并 path=%s error=%s",
+                            backup_path, type(error).__name__, exc_info=True,
+                        )
                         backup = {}
                     backup_tasks = backup.get("tasks") if isinstance(backup, dict) else None
                     if isinstance(backup_tasks, list):

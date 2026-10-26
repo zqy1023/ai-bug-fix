@@ -36,6 +36,7 @@ from app.workflow.routes import (
 from app.workflow.spec import Dependency
 from app.workflow.state import WorkflowState
 from app.workflow.validation import DECIDE, PLAN, SUMMARY
+from config.settings import settings
 
 # 编排节点 -> 实际执行的插件。每个插件仍独立写入自己的步骤记录。
 PHASE_COMPOSITIONS = {
@@ -92,9 +93,18 @@ def route_baseline(state: WorkflowState) -> str:
     )
     if (
         state.get("retry_target") == REPRODUCE
-        and counts < int(state.get("max_attempts") or 3) - 1
+        and counts < int(state.get("max_attempts") or settings.default_max_attempts) - 1
     ):
         return RETRY
+    # 基线未建立（如缺少录制响应）不等于流程无法继续：交付根因分析和
+    # 建议验收标准，由人工修复并验证，而不是把任务记成验证受阻。
+    baseline = state.get("baseline_reproduction") or {}
+    if (
+        str(baseline.get("status") or "").lower() == "unverified"
+        and state.get("locate")
+        and state.get("ai_workspace_path")
+    ):
+        return ANALYSIS
     return FINALIZE
 
 
@@ -157,7 +167,7 @@ def route_publish(state: WorkflowState) -> str:
         attempts = (state.get("validation_recovery_counts") or {}).get(
             PUBLISH, 0
         )
-        if attempts < int(state.get("max_attempts") or 3) - 1:
+        if attempts < int(state.get("max_attempts") or settings.default_max_attempts) - 1:
             return RETRY
     return FINALIZE
 
@@ -173,7 +183,7 @@ TASK_CONDITIONAL_TRANSITIONS = (
         ),
         (REPRODUCE, FINALIZE),
     ),
-    (REPRODUCE, route_baseline, (CLAIM, RETRY, FINALIZE)),
+    (REPRODUCE, route_baseline, (CLAIM, RETRY, ANALYSIS, FINALIZE)),
     (CLAIM, after_claim, (REPAIR, RETRY, FINALIZE)),
     (REPAIR, route_repair, (REVIEW, RETRY, FINALIZE, ANALYSIS)),
     (REVIEW, after_review, (DECIDE, FINALIZE)),

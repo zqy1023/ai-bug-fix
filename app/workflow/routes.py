@@ -139,7 +139,7 @@ def after_claim(state: WorkflowState) -> str:
 
 
 def after_locate(state: WorkflowState) -> str:
-    """仅在证据支持的根因定位成功后，才领取本轮修复资格。"""
+    """定位通过后先定义验收条件，领取修复资格由后续路由决定。"""
     if (
         str(state.get("terminal_status") or "").upper() == "CANCELLED"
         or _result(state) == "cancelled"
@@ -157,8 +157,8 @@ def after_locate(state: WorkflowState) -> str:
         return FINALIZE
     disposition = locate_disposition(str(locate.get("status") or ""))
     if disposition == "repair" and _result(state) == "passed":
-        # 重新定位发生在已领取修复资格之后时，直接回到 repair，避免重复 claim 导致资格冲突。
-        return REPAIR if state.get("repair_slot_claimed") else CLAIM
+        # 定位通过 → 先定验收条件；领取修复资格由 DEFINE_ACCEPTANCE 之后的 route_baseline 决定。
+        return CLAIM
     # 定位不确定或需要人工判断时只生成分析报告，不在中间节点挂起审批。
     return FINALIZE
 
@@ -237,6 +237,11 @@ def _analysis_only_task(state: WorkflowState) -> bool:
     locate_status = str(locate.get("status") or "").upper()
     if locate_status not in {"LOCATED", "MANUAL", "INSUFFICIENT_EVIDENCE"}:
         return False
+    # 基线未建立时不再把任务记为验证受阻：只交付定位分析和建议验收标准，
+    # 由人工完成修复与验证。
+    baseline = state.get("baseline_reproduction") or {}
+    if str(baseline.get("status") or "").lower() == "unverified":
+        return True
     if legacy_analysis_required(state):
         return True
     if (

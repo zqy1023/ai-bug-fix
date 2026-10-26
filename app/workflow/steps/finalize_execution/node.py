@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -74,6 +74,12 @@ def build_report(ctx: StepContext, data: FinalizeInput) -> dict[str, Any]:
     )
     delivered = _output(records, "prepare_delivery")
     validation_decision = _output(records, "decide_validation")
+    acceptance_contract = full_output(
+        ctx.store, ctx.run.run_id, data.task_id, records, "define_acceptance"
+    )
+    baseline_reproduction = full_output(
+        ctx.store, ctx.run.run_id, data.task_id, records, "reproduce_baseline"
+    )
     manual_required, manual_reasons = confirmation(
         {
             "validation_decision": validation_decision,
@@ -113,6 +119,11 @@ def build_report(ctx: StepContext, data: FinalizeInput) -> dict[str, Any]:
         "candidate_files": locate.get("candidate_files", []),
         "change_plan": repair.get("change_plan", {}),
         "blocked_reason": repair.get("blocked_reason", ""),
+        "acceptance_contract": acceptance_contract,
+        "baseline_reproduction": baseline_reproduction,
+        "suggested_acceptance": _suggested_acceptance(
+            acceptance_contract, baseline_reproduction
+        ),
         "validation": {
             name: full_output(ctx.store, ctx.run.run_id, data.task_id, records, name)
             for name in ("verify_issue", "syntax_regression", "run_regression")
@@ -162,6 +173,26 @@ def build_report(ctx: StepContext, data: FinalizeInput) -> dict[str, Any]:
     return report
 
 
+def _release_claim_with_retry(root: str, *, run_id: str, task_id: str) -> None:
+    """终态释放修复资格；瞬时 SQLite/Git 故障重试 3 次，最终失败再交给调用方。
+
+    ``release_claim`` 内部已做重试；这里再兜一层，保证 API 注入/替换实现的
+    单次失败也不会把资格永久留在库里。释放失败不改变任务终态语义，因此调用
+    方只记录 warning，不中断收尾。
+    """
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            release_claim(root, run_id=run_id, task_id=task_id)
+            return
+        except Exception as error:
+            last_error = error
+            if attempt < 3:
+                time.sleep(0.1 * attempt)
+    assert last_error is not None
+    raise last_error
+
+
 def run(ctx: StepContext, data: FinalizeInput) -> FinalizeOutput:
     """写入可直接用于处置的终态报告；原始步骤记录仍以 steps.json 为准。"""
     report = build_report(ctx, data)
@@ -194,8 +225,8 @@ def run(ctx: StepContext, data: FinalizeInput) -> FinalizeOutput:
                         exc_info=True,
                     )
     try:
-        release_claim(ctx.store.root, run_id=ctx.run.run_id, task_id=data.task_id)
-    except (OSError, sqlite3.Error):
+        _release_claim_with_retry(ctx.store.root, run_id=ctx.run.run_id, task_id=data.task_id)
+    except Exception:
         logger.warning(
             "释放修复资格失败 run_id=%s task_id=%s",
             ctx.run.run_id,
@@ -236,6 +267,39 @@ def _record_reason(record: StepRecord | None) -> str:
     return ""
 
 
+def _suggested_acceptance(
+    contract: dict[str, Any], baseline: dict[str, Any]
+) -> dict[str, Any]:
+    """基线未建立时，把已固定的验收断言转成“未执行”的人工验收清单。"""
+    if str(baseline.get("status") or "").lower() != "unverified":
+        return {}
+    assertions = contract.get("assertions") if isinstance(contract, dict) else None
+    if not isinstance(assertions, list):
+        return {}
+    return {
+        "status": "not_executed",
+        "coverage": "baseline_unverified",
+        "reason": str(baseline.get("reason") or ""),
+        "assertions": [
+            {
+                "assertion_id": item.get("assertion_id"),
+                "description": item.get("description"),
+                "method": item.get("method"),
+                "verifier": item.get("verifier"),
+                "expected": item.get("expected"),
+                "execution_status": "not_executed",
+            }
+            for item in assertions
+            if isinstance(item, dict)
+        ],
+        "manual_verification": [
+            "按定位根因修改候选文件后，用同一运输商原始请求经 server_dev.main 复跑。",
+            "确认入口返回框架业务结果（TrackResponseModel 或明确的 ServiceError），不得出现未捕获异常。",
+            "补录本次请求与响应作为下一次任务的原始证据，使基线可重放。",
+        ],
+    }
+
+
 def _terminal_details(
     records: list[StepRecord],
     terminal_status: str,
@@ -256,14 +320,32 @@ def _terminal_details(
     status, outcome = str(terminal_status or "").upper(), str(result or "").upper()
 
     if status == "BLOCKED" or outcome == "BLOCKED":
+        # 真正受阻的步骤优先于固定的 decide_validation：最近一条 failed/blocked
+        # 记录才是业务事实；两者都没有时才回退验证决策节点，最后回退最新记录。
+        # 同名步骤可能先失败后重试成功，只有"该步骤最后一条记录仍失败"才算
+        # 阻塞点，否则会把早已通过的旧失败当成停止点。
+        latest_by_name = {item.name: item for item in ordered}
+        blocked_record = next(
+            (
+                item
+                for item in reversed(ordered)
+                if str(item.result or "").upper() == "BLOCKED"
+                or (
+                    item.status == "failed"
+                    and latest_by_name.get(item.name) is item
+                )
+            ),
+            None,
+        )
         decision_record = next(
             (item for item in reversed(ordered) if item.name == "decide_validation"),
             None,
         )
         if decision_record and not blocked_reason:
             blocked_reason = str(decision_record.output.get("reason") or "")
+        blocked_step = blocked_record or decision_record or latest
         return (
-            "decide_validation",
+            blocked_step.name if blocked_step else "decide_validation",
             blocked_reason or retry_reason or "验证受阻",
             "排除具体受阻原因后重新运行对应任务；无需批准未验证修改",
         )
@@ -363,6 +445,16 @@ def _terminal_details(
                 f"修复范围超出本任务权限：需要修改当前运输商目录之外的文件{detail}。"
                 "本任务只能修改当前运输商，不能自动修改共享层或其他运输商目录，已转人工处理。",
                 "为涉及的共享层或对应运输商单独发起修复任务；当前任务不继续自动修改范围外文件。",
+            )
+        analysis = _output(records, "prepare_analysis")
+        baseline = _output(records, "reproduce_baseline")
+        if analysis and str(baseline.get("status") or "").lower() == "unverified":
+            return (
+                "prepare_analysis",
+                str(analysis.get("reason") or "").strip()
+                or "未能建立验收基线，已生成分析报告；未执行代码修复。",
+                str(analysis.get("next_action") or "").strip()
+                or "按分析报告中的建议验收标准人工修复并验证后，再重新发起任务。",
             )
         for name in manual_names:
             record = next(

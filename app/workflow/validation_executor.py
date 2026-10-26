@@ -8,6 +8,33 @@ from typing import Any
 from app.infrastructure.filesystem.workspace import WorkspaceManager
 from config.settings import settings
 
+# 重放工作区复制上限：单次复制超过该体积直接失败，避免写满宿主磁盘。
+_COPY_LIMIT_BYTES = 2 * 1024**3
+
+
+def _copy_limit_failure(source: Path, label: str) -> dict[str, Any] | None:
+    """复制前累计源目录文件大小；超过上限时返回本执行器统一风格的失败。"""
+    import os
+
+    total = 0
+    for current, directories, filenames in os.walk(source):
+        # 复制时忽略 .git，统计口径保持一致。
+        directories[:] = [name for name in directories if name != ".git"]
+        for name in filenames:
+            try:
+                total += (Path(current) / name).stat().st_size
+            except OSError:
+                continue
+        if total > _COPY_LIMIT_BYTES:
+            return {
+                "passed": False,
+                "status": "unverified",
+                "mode": "response_replay",
+                "reason": f"{label}超过复制上限 {_COPY_LIMIT_BYTES // (1024**3)} GiB，"
+                "已停止复制以保护宿主磁盘",
+            }
+    return None
+
 
 def independent_verify(
     payload: dict[str, Any],
@@ -160,6 +187,9 @@ def independent_verify(
         "ai-replay-workspace-", parent=baseline_root.parent
     ) as directory:
         replay_root = Path(directory) / "repo"
+        oversized = _copy_limit_failure(baseline_root, "重放源目录")
+        if oversized:
+            return oversized
         shutil.copytree(
             baseline_root, replay_root, ignore=shutil.ignore_patterns(".git")
         )
@@ -177,7 +207,15 @@ def independent_verify(
                 "reason": "修复前源码快照不可用，无法建立基线",
             }
         fixed_root = Path(directory) / "fixed"
-        shutil.copytree(replay_root, fixed_root)
+        # 修复后副本必须在基线重放之前复制：基线重放跑的是未修复代码，会在
+        # 重放工作区里写业务输出/缓存，重放后再复制会把这些残留带进"修复后"
+        # 重放，破坏两侧独立性；体积上限也会把基线产生的写入算进修复副本。
+        # baseline_only 分支用不到这份副本，保持不复制。
+        if not payload.get("baseline_only"):
+            oversized = _copy_limit_failure(replay_root, "重放工作区快照")
+            if oversized:
+                return oversized
+            shutil.copytree(replay_root, fixed_root)
         baseline_result = run_replay(
             carrier=carrier,
             req_json=json.dumps(req_data, ensure_ascii=False),

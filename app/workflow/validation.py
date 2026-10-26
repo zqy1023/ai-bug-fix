@@ -19,6 +19,7 @@ from app.agents.review.tools.verify_issue.assessment import (
     changed_functions,
     verification_is_complete,
 )
+from config.settings import settings
 
 PLAN = "plan_validation"
 SUMMARY = "summarize_validation"
@@ -296,7 +297,7 @@ def decide(state: dict[str, Any]) -> dict[str, Any]:
     review = state.get("review") or {}
     attempts = dict(state.get("validation_recovery_counts") or {})
     repair_attempt = int(state.get("automatic_attempt") or 1)
-    limit = max(1, int(state.get("max_attempts") or 3))
+    limit = max(1, int(state.get("max_attempts") or settings.default_max_attempts))
     target, reason, action = "", "", "blocked"
     human = state.get("review_mode") == "human"
     dimensions = summary.get("dimensions") or {}

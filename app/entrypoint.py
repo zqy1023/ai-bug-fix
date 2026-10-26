@@ -235,8 +235,23 @@ def _ensure_task_final_report(
             is_cancelled = _cancel_requested(store.root, run_id)
         except Exception:
             logger.debug("读取任务取消标记失败 run_id=%s task_id=%s", run_id, task_id, exc_info=True)
+        # 暂停/等待审批不是"未完成"：任务生命周期里已有合法状态，先取它，
+        # 避免终态报告把 PAUSED 抹成 INCOMPLETE。
+        lifecycle_status = ""
+        if not is_cancelled:
+            try:
+                from app.infrastructure.records.lifecycle import LifecycleStore
+                root = getattr(store, "root", None)
+                if root is not None:
+                    lifecycle_status = str(
+                        LifecycleStore(root).read_task(run_id, task_id).get("status") or ""
+                    )
+            except Exception:
+                logger.debug("读取任务生命周期失败 run_id=%s task_id=%s", run_id, task_id, exc_info=True)
         if is_cancelled:
             result = "CANCELLED"
+        elif lifecycle_status in {"paused", "waiting_approval"}:
+            result = "PAUSED" if lifecycle_status == "paused" else "WAITING_APPROVAL"
         elif any(
             isinstance(record.output, dict) and record.output.get("legacy_only")
             for record in records
@@ -338,7 +353,23 @@ def _write_run_report(
         except Exception:
             logger.debug("读取 Run 取消标记失败 run_id=%s", run_id, exc_info=True)
 
-        if error is not None:
+        if cancellation_requested:
+            # 已取消优先于异常/未完成：用户主动停止后，取消安全节点抛出的
+            # 异常不应把 Run 改写成 FAILED，也不产生 run_failure 标记。
+            if error is not None:
+                # 取消优先不代表吞掉证据：异常类型与堆栈仍要进服务端日志，
+                # 否则"取消后崩溃"与"正常停止"无法区分。
+                logger.warning(
+                    "Run 已取消，忽略执行异常 run_id=%s error=%s",
+                    run_id, type(error).__name__,
+                    exc_info=(type(error), error, error.__traceback__),
+                )
+            result = "CANCELLED"
+            terminal = run_steps[-1] if run_steps else None
+            terminal_step = terminal.name if terminal else "workflow"
+            reason = "收到停止请求，本轮执行已按安全节点策略终止。"
+            next_action = "确认停止原因；如仍需修复，请在问题和证据确认后重新发起一轮执行。"
+        elif error is not None:
             result = "FAILED"
             logger.error("Run 工作流异常 run_id=%s", run_id, exc_info=(type(error), error, error.__traceback__))
             reason = _uncaught_reason(error)
@@ -359,12 +390,6 @@ def _write_run_report(
                 "failed_at": now, "terminal_step": terminal_step, "terminal_reason": reason,
             }
             _atomic_json(reports_dir / "run_failure.json", failure)
-        elif cancellation_requested:
-            result = "CANCELLED"
-            terminal = run_steps[-1] if run_steps else None
-            terminal_step = terminal.name if terminal else "workflow"
-            reason = "收到停止请求，本轮执行已按安全节点策略终止。"
-            next_action = "确认停止原因；如仍需修复，请在问题和证据确认后重新发起一轮执行。"
         elif failed_steps:
             terminal = failed_steps[-1]
             result = "FAILED"
@@ -391,8 +416,12 @@ def _write_run_report(
             failures = sum(count for key, count in counts.items()
                            if key in {"FAILED", "FAIL", "REJECTED", "INCOMPLETE", "CANCELLED"})
             blocked = counts.get("BLOCKED", 0)
+            paused = counts.get("PAUSED", 0) + counts.get("WAITING_APPROVAL", 0)
             if blocked:
                 result = "PARTIAL_FAILED" if successes else "BLOCKED"
+            elif paused and not (failures or manuals):
+                # 暂停是合法的可恢复状态，不能因为"不是成功"就折叠成 INCOMPLETE。
+                result = "PAUSED"
             elif failures or manuals:
                 result = "PARTIAL_FAILED" if successes else ("MANUAL" if manuals and not failures else "FAILED")
             elif successes + skipped == total:
@@ -402,6 +431,8 @@ def _write_run_report(
             blocker = next((task for task in task_results if task["result"].upper() not in {"SUCCESS", "SUCCEEDED", "SKIPPED"}), None)
             terminal_step = str(blocker.get("terminal_step") or "task_collect") if blocker else "task_collect"
             reason = f"本轮共处理 {total} 个任务：成功 {successes} 个，跳过 {skipped} 个，需人工介入 {manuals} 个，失败或未完成 {failures} 个。"
+            if paused:
+                reason = f"本轮共处理 {total} 个任务：成功 {successes} 个，跳过 {skipped} 个，已暂停 {paused} 个，需人工介入 {manuals} 个，失败或未完成 {failures} 个。"
             if blocker and blocker["terminal_reason"]:
                 reason += " 首个未成功任务：" + blocker["carrier"] + " / " + blocker["biztype"] + " — " + blocker["terminal_reason"]
             next_action = str(blocker.get("next_action") or "检查各任务终态报告，按团队流程完成人工评审与合并。") if blocker else "本轮任务已处理；检查已生成或已有修复分支，按团队流程评审与合并。"
@@ -415,6 +446,7 @@ def _write_run_report(
         _atomic_json(reports_dir / "final.json", report)
         from app.infrastructure.records.lifecycle import LifecycleStore
         status = {"SUCCESS": "succeeded", "NO_TASKS": "succeeded", "CANCELLED": "cancelled",
+                  "PAUSED": "paused",
                   "MANUAL": "partial_failed", "PARTIAL_FAILED": "partial_failed"}.get(result, "failed")
         LifecycleStore(store.root).update_run(run_id, status=status, finished_at=now)
         lifecycle = LifecycleStore(store.root)

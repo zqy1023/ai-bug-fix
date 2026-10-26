@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ from config.settings import settings
 
 MAX_OUTPUT_ITEMS = settings.check_changes_max_output_items
 _TRUNCATED_REASON = "…其余 {count} 条已省略"
+logger = logging.getLogger(__name__)
 
 
 def _limit_items(items: list[Any], *, kind: str) -> list[Any]:
@@ -190,10 +192,16 @@ def _render_file_contents(
     workspace_path: str,
     baseline_path: str,
     carrier: str,
-) -> list[dict[str, Any]]:
-    """为审批 UI 保留受限的修改前/修改后文本，不暴露范围外或非 Python 文件。"""
+) -> tuple[list[dict[str, Any]], bool]:
+    """为审批 UI 保留受限的修改前/修改后文本，不暴露范围外或非 Python 文件。
+
+    返回 ``(payload, degraded)``；定位 carrier 根目录失败时降级为空列表，
+    并在 diff 产物里标记 ``preview_degraded``。该标记只影响 UI 预览，
+    不参与门禁判定。
+    """
     workspace = Path(workspace_path).resolve()
     baseline = Path(baseline_path).resolve() if baseline_path else None
+    degraded = False
     try:
         carrier_roots = [
             workspace / relative
@@ -201,6 +209,11 @@ def _render_file_contents(
         ]
     except Exception:
         carrier_roots = []
+        degraded = True
+        logger.warning(
+            "无法定位 carrier 根目录，差异预览降级为无源码片段 workspace=%s carrier=%s",
+            workspace_path, carrier, exc_info=True,
+        )
 
     payload: list[dict[str, Any]] = []
     used = 0
@@ -278,7 +291,7 @@ def _render_file_contents(
                 "after": after_text,
             }
         )
-    return payload
+    return payload, degraded
 
 
 def _evidence(raw: dict[str, Any]) -> FileEvidence:
@@ -317,15 +330,18 @@ def run(ctx: StepContext, data: CheckInput) -> CheckOutput:
     failures = _limit_items(list(result.get("failures") or []), kind="failures")
     # 判定失败也要留下完整差异：下一轮修复看的就是这份。
     # 同时为 UI 提供修改前/修改后源码，有限大小内嵌且只允许目标 carrier Python 文件。
+    file_contents, preview_degraded = _render_file_contents(
+        all_files,
+        data.ai_workspace_path,
+        data.baseline_dir,
+        data.carrier,
+    )
     diff_payload = {
         "format": "side_by_side_v1",
         "diff": _render_diff(all_files, data.ai_workspace_path, data.baseline_dir),
-        "files": _render_file_contents(
-            all_files,
-            data.ai_workspace_path,
-            data.baseline_dir,
-            data.carrier,
-        ),
+        "files": file_contents,
+        # 降级只影响预览完整性，门禁结论仍以 validate_changed_files 为准。
+        "preview_degraded": preview_degraded,
     }
     ctx.emit_artifact("diff", "artifacts/diff.json", diff_payload)
     output = CheckOutput(

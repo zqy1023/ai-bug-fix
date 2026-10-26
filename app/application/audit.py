@@ -55,6 +55,7 @@ StepErrorCode = Literal[
     # "执行失败"，运维分不清是上下文缺失、语法不合法还是环境没配。
     "ACCEPTANCE_CONTEXT_MISSING",
     "APPROVAL_CONTEXT_MISSING",
+    "CANDIDATE_EVIDENCE_STALE",
     "REPRODUCE_CONTEXT_MISSING",
     "DELIVERY_EXECUTION_ERROR",
     "LOG_QUERY_ARGS_INVALID",
@@ -62,6 +63,22 @@ StepErrorCode = Literal[
     "RUN_CANCEL_REQUESTED",
     "STEP_RECORD_CORRUPTED",
     "SYNTAX_INVALID",
+    # 控制面与单步运行器实际使用、但此前不在词汇表内的拒绝码。缺少它们时
+    # error_code_of 会把"未确认写步骤""Run 仍活动"等明确原因折叠成通用失败。
+    "AGENT_EXECUTION_FAILED",
+    "AGENT_INPUT_INVALID",
+    "BUSINESS_STEP_FAILED",
+    "CONFIRM_WRITE_REQUIRED",
+    "INTERNAL_REVIEW_STEP",
+    "RUN_ACTIVE",
+    "RUN_ID_REQUIRED",
+    "RUN_NOT_FOUND",
+    "STEP_DEPENDENCY_MISSING",
+    "STEP_NOT_ALLOWED",
+    "STEP_NOT_FOUND",
+    "STEP_NOT_TASK_LEVEL",
+    "TASK_AWAITING_APPROVAL",
+    "TASK_ID_REQUIRED",
 ]
 
 # 落盘裁剪阈值。单条记录要能一眼看完，所以按"关键结论不丢、长内容折叠"来定。

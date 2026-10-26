@@ -463,6 +463,9 @@ def _health_payload(_: None = Depends(_authorize)) -> dict[str, Any]:
         "workflow_version": WORKFLOW_VERSION,
         "verification_contract_version": CONTRACT_VERSION,
         "review_contract_version": REVIEW_CONTRACT_VERSION,
+        # 该字段只表示「日志行本身是否脱敏」，当前进程日志不脱敏，因此必须如实
+        # 报告 False；交付面与异常摘要的脱敏走 redact_for_delivery /
+        # public_exception，与这个开关无关，不能据此把它改成 True。
         "log_redaction_enabled": False,
         "runtime_dir_configured": bool(config.runtime_dir),
         "source_repo_configured": config.source_repo is not None,
@@ -478,6 +481,7 @@ def _pending_approvals(_: None = Depends(_authorize)) -> dict[str, Any]:
         try:
             run = _run_payload(store, run_id)
         except (HTTPException, OSError, ValueError):
+            logger.warning("审批队列跳过无法读取的执行 run_id=%s", run_id, exc_info=True)
             continue
         for task in run["tasks"]:
             if task["approval_pending"]:
@@ -721,7 +725,7 @@ def _v1_run_summary(payload: dict[str, Any]) -> dict[str, Any]:
         elif control and control["pause_requested"]:
             status = "paused" if paused_step or (status == "paused" and not payload.get("worker_active")) else "pause_requested"
     except Exception:
-        logger.debug("读取执行控制状态失败 run_id=%s", run_id, exc_info=True)
+        logger.warning("读取执行控制状态失败 run_id=%s", run_id, exc_info=True)
     return {
         "run_id": run_id, "status": status,
         "terminal": bool(payload.get("terminal")) and not bool(payload.get("worker_active")),
@@ -789,6 +793,7 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
     checkpoint_node: str | None = None
     checkpoint_parent_id: str | None = None
     checkpoint_has_interrupt = False
+    checkpoint_read_failed = False
     try:
         from app.workflow.wiring import build_graph
         graph = build_graph(store=store)
@@ -809,9 +814,15 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
             bool(getattr(task, "interrupts", ())) for task in (getattr(snapshot, "tasks", ()) or ())
         )
     except Exception:
-        logger.debug("无法读取执行 checkpoint run_id=%s", run_id, exc_info=True)
+        # checkpoint 读不到时不能把空 next_nodes 当成"没有后续节点"：那会把
+        # 仍在恢复窗口里的 Run 误判成终态 cancelled。这里只标注降级，不改
+        # resumable——读不到 checkpoint 的"恢复"必然再次失败，还会先删掉
+        # 上一轮报告，不能把它当成可用动作提供给调用方。
+        checkpoint_read_failed = True
+        logger.warning("无法读取执行 checkpoint run_id=%s", run_id, exc_info=True)
     status = _v1_status(str(summary.get("status") or payload.get("status") or ""))
     connection = _control_db()
+    cancel_unconfirmed = False
     try:
         row = connection.execute(
             "SELECT pause_requested,cancel_requested FROM run_control WHERE run_id=?", (run_id,)
@@ -819,7 +830,13 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
         terminal_run_statuses = {"succeeded", "partial_failed", "failed", "cancelled"}
         # Stale control flags must not overwrite an already settled Run result.
         if row and row["cancel_requested"] and status not in terminal_run_statuses:
-            status = "cancelled" if not next_nodes and not summary.get("worker_active") else "cancel_requested"
+            if checkpoint_read_failed:
+                # 无法确认 checkpoint 是否还有后续节点时，只展示"停止中"，
+                # 不落成终态 cancelled。
+                status = "cancel_requested"
+                cancel_unconfirmed = True
+            else:
+                status = "cancelled" if not next_nodes and not summary.get("worker_active") else "cancel_requested"
         elif row and row["pause_requested"] and status not in terminal_run_statuses:
             has_waiting_step = any(step.get("status") == "waiting" for step in steps)
             has_waiting_step = has_waiting_step or any(
@@ -842,6 +859,10 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
         terminal = True
     if status == "cancelled" and not summary.get("worker_active"):
         terminal = True
+    if cancel_unconfirmed:
+        # 取消标记存在但 checkpoint 读不到：不能宣称终态 cancelled，前端应
+        # 继续按"停止中"展示并等待人工处理。
+        terminal = False
     from app.workflow.contracts import WORKFLOW_VERSION
     current = run_meta.get("workflow_version") == WORKFLOW_VERSION
     controls = run_actions(
@@ -864,6 +885,8 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
             "checkpoint_id": checkpoint_id, "created_at": checkpoint_created_at,
             "node": checkpoint_node, "parent_checkpoint_id": checkpoint_parent_id,
             "has_interrupt": checkpoint_has_interrupt,
+            # 读取失败时前端/运维据此判断"不可恢复"是数据问题而非执行状态。
+            "read_failed": checkpoint_read_failed,
         },
     }
 
@@ -896,10 +919,13 @@ def v1_health(_: None = Depends(_authorize)) -> dict[str, Any]:
 def v1_dashboard(_: None = Depends(_authorize)) -> dict[str, Any]:
     store = _store()
     summaries = []
+    unreadable_runs = 0
     for run_id in _all_run_ids(store):
         try:
             summaries.append(_v1_run_summary(_run_payload(store, run_id)))
         except (OSError, ValueError, HTTPException):
+            unreadable_runs += 1
+            logger.warning("仪表盘跳过无法读取的执行 run_id=%s", run_id, exc_info=True)
             continue
     now = datetime.now(timezone.utc)
     day_start = now - timedelta(hours=settings.dashboard_recent_hours)
@@ -924,6 +950,9 @@ def v1_dashboard(_: None = Depends(_authorize)) -> dict[str, Any]:
         "failed_24h": sum(item["failed_tasks"] for item in recent),
         "success_rate_7d": successes / total if total else 0.0,
         "recent_runs": summaries[:8], "daily_trend": list(daily.values()),
+        # 无法读取的记录跳过但不静默：前端据此提示数据可能不完整。
+        "unreadable_runs": unreadable_runs,
+        "degraded": unreadable_runs > 0,
     }
 
 
@@ -941,11 +970,14 @@ def v1_list_runs(
 ) -> dict[str, Any]:
     store = _store()
     items = []
+    unreadable_runs = 0
     from_time, to_time = _parse_time(from_), _parse_time(to)
     for run_id in _all_run_ids(store):
         try:
             item = _v1_run_summary(_run_payload(store, run_id))
         except (OSError, ValueError, HTTPException):
+            unreadable_runs += 1
+            logger.warning("执行列表跳过无法读取的记录 run_id=%s", run_id, exc_info=True)
             continue
         if status and item["status"] != status:
             continue
@@ -958,7 +990,11 @@ def v1_list_runs(
             continue
         items.append(item)
     start = (page - 1) * page_size
-    return {"items": items[start:start + page_size], "total": len(items), "page": page, "page_size": page_size}
+    return {
+        "items": items[start:start + page_size], "total": len(items),
+        "page": page, "page_size": page_size,
+        "unreadable_runs": unreadable_runs,
+    }
 
 
 @router.post("/api/v1/runs", status_code=202)
@@ -1051,6 +1087,23 @@ def _start_lifecycle_heartbeat(run_id: str) -> tuple[threading.Event, threading.
     return stop, thread
 
 
+def _clear_worker_active(run_id: str) -> None:
+    """清理 Run 的活动租约。
+
+    与工作区回收解耦：生命周期写入失败重试一次，仍然失败只记录日志，
+    后续工作区回收照常执行，不能因为一个字段写不进去就跳过清理。
+    """
+    for attempt in range(2):
+        try:
+            LifecycleStore(_store().root).update_run(run_id, worker_active=False)
+            return
+        except Exception:
+            logger.exception(
+                "清理 Run 活动租约失败 run_id=%s attempt=%s",
+                run_id, attempt + 1,
+            )
+
+
 def _complete_run_lifecycle(run_id: str, store: RecordStore) -> None:
     """Settle the run only after graph.invoke has returned; waiting interrupts are not failures."""
     lifecycle = LifecycleStore(store.root)
@@ -1061,6 +1114,9 @@ def _complete_run_lifecycle(run_id: str, store: RecordStore) -> None:
             status = "succeeded"
         elif result in {"CANCELLED", "CANCELED"}:
             status = "cancelled"
+        elif result == "PAUSED":
+            # 暂停/单步等待不是失败；保持可恢复状态，等待控制面继续。
+            status = "paused"
         elif result in {"MANUAL", "MANUAL_REVIEW_REQUIRED", "INSUFFICIENT_EVIDENCE", "BLOCKED"}:
             status = "partial_failed"
         elif result in {"PARTIAL_FAILED", "PARTIAL_FAILURE"}:
@@ -1155,6 +1211,18 @@ def _settle_task_lifecycles_after_run_failure(
         )
 
 
+def _discard_retry_archive(store: RecordStore, run_id: str) -> None:
+    """恢复已产生新报告后清掉启动时归档的上一轮报告。"""
+    reports = store.run_dir(run_id) / "reports"
+    for name in ("run_failure.json", "final.json"):
+        try:
+            (reports / f"{name}.retry_previous").unlink(missing_ok=True)
+        except OSError:
+            logger.warning(
+                "清理归档报告失败 run_id=%s name=%s", run_id, name, exc_info=True
+            )
+
+
 def _record_background_failure(
     run_id: str,
     error: Exception,
@@ -1164,6 +1232,24 @@ def _record_background_failure(
     """将图外异常写成可查询的终态产物，避免后台任务失败后 Run 永久显示运行中。"""
     try:
         logger.error("后台工作流异常 run_id=%s", run_id, exc_info=(type(error), error, error.__traceback__))
+        # 取消优先于异常：用户停止后节点抛出的异常不能把本轮改写成 FAILED，
+        # 也不能写出 run_failure.json 误导后续恢复判定。
+        from app.infrastructure.run_control import cancellation_requested
+
+        try:
+            cancelled = cancellation_requested(_store().root, run_id)
+        except Exception:
+            cancelled = False
+        if cancelled:
+            logger.info(
+                "后台异常发生在停止请求之后，按 CANCELLED 收敛 run_id=%s error=%s",
+                run_id, type(error).__name__,
+            )
+            from app.entrypoint import _write_run_report
+
+            _write_run_report(_store(), run_id)
+            LifecycleStore(_store().root).update_run(run_id, status="cancelled", worker_active=False)
+            return
         directory = _store().run_dir(_safe_id(run_id))
         if not directory.is_dir():
             return
@@ -1220,6 +1306,10 @@ def _record_background_failure(
             logger.exception("后台失败报告已保存，但生命周期收敛失败 run_id=%s", run_id)
         final_path = report_dir / "final.json"
         existing_report = _read_json(final_path, {})
+        if not existing_report:
+            # 恢复模式启动时把上一轮报告归档为 *.retry_previous；本次恢复失败
+            # 时用它兜底，避免新报告把任务明细退化成空列表。
+            existing_report = _read_json(report_dir / "final.json.retry_previous", {})
         if not isinstance(existing_report, dict):
             existing_report = {}
         final_tmp = report_dir / "final.json.tmp"
@@ -1255,6 +1345,7 @@ def _run_workflow_background_v1(
         store = _store()
         LifecycleStore(store.root).update_run(
             run_id, status="running", phase="workflow_startup", current_step="", error={}, worker_active=True,
+            allow_reactivate=True,
         )
         heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(run_id)
         run_workflow(run_id, overrides=overrides, prepared=True)
@@ -1269,14 +1360,14 @@ def _run_workflow_background_v1(
             heartbeat_thread.join(timeout=1)
         from app.infrastructure.runtime import close_sessions
         close_sessions(run_id)
+        _clear_worker_active(run_id)
         try:
-            LifecycleStore(_store().root).update_run(run_id, worker_active=False)
             from app.infrastructure.filesystem.workspace_gc import (
                 collect_configured_workspaces,
             )
             collect_configured_workspaces(_config())
         except Exception:
-            logger.exception("清理 Run 活动租约失败 run_id=%s", run_id)
+            logger.exception("回收配置工作区失败 run_id=%s", run_id)
         run_lock.release()
         with _RUN_LOCKS_GUARD:
             _STARTED_RUNS.discard(run_id)
@@ -1435,15 +1526,20 @@ def v1_retry_run(run_id: str, background: BackgroundTasks, _: None = Depends(_au
         if checkpoint.get("resumable"):
             mode = "resume"
             worker = _resume_workflow_background
-            # 与 restart 模式同口径：请求即清掉上一轮失败的报告与生命周期错误，
-            # 恢复执行期间 UI 不能继续把旧失败当成当前状态显示。
+            # 与 restart 模式同口径：请求即把上一轮失败的报告与生命周期错误
+            # 移出当前视图。这里归档而不是删除——恢复失败时
+            # _record_background_failure 仍要读回上一轮的任务明细，不能因为
+            # 一次失败的重试把历史报告清空。
             reports = store.run_dir(run_id) / "reports"
-            (reports / "run_failure.json").unlink(missing_ok=True)
-            (reports / "final.json").unlink(missing_ok=True)
+            for name in ("run_failure.json", "final.json"):
+                previous = reports / name
+                if previous.is_file():
+                    previous.replace(reports / f"{name}.retry_previous")
             LifecycleStore(store.root).update_run(
                 run_id, status="retrying", phase="retry_queued", current_step="",
                 error={}, error_type="", error_message="", terminal_reason="",
                 next_action="", worker_active=True,
+                allow_reactivate=True,
             )
         else:
             steps = store.list_steps(run_id)
@@ -1471,6 +1567,7 @@ def v1_retry_run(run_id: str, background: BackgroundTasks, _: None = Depends(_au
                 run_id, status="queued", phase="retry_queued", current_step="",
                 started_at=None, finished_at=None, error={},
                 error_type="", error_message="", terminal_reason="", next_action="",
+                allow_reactivate=True,
             )
             overrides = _config().run_parameters(run_meta)
             worker = _run_workflow_background_v1
@@ -1563,6 +1660,7 @@ def _resume_workflow_background(
         LifecycleStore(store.root).update_run(
             run_id, status="running", phase="workflow_resume", current_step="", error={}, worker_active=True,
             terminal_reason="", error_type="", error_message="", next_action="",
+            allow_reactivate=True,
         )
         heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(run_id)
         runtime_config = load_config()
@@ -1639,6 +1737,8 @@ def _resume_workflow_background(
         from app.entrypoint import _write_run_report_if_terminal
         _write_run_report_if_terminal(store, run_id, graph, final_state=final_state)
         _complete_run_lifecycle(run_id, store)
+        if (store.run_dir(run_id) / "reports" / "final.json").is_file():
+            _discard_retry_archive(store, run_id)
     except Exception as exc:
         logger.exception("恢复工作流失败 run_id=%s", run_id)
         phase = "approval_recovery" if resume_payload is not None else "workflow_resume"
@@ -1650,14 +1750,14 @@ def _resume_workflow_background(
             heartbeat_stop.set()
         if heartbeat_thread is not None:
             heartbeat_thread.join(timeout=1)
+        _clear_worker_active(run_id)
         try:
-            LifecycleStore(_store().root).update_run(run_id, worker_active=False)
             from app.infrastructure.filesystem.workspace_gc import (
                 collect_configured_workspaces,
             )
             collect_configured_workspaces(_config())
         except Exception:
-            logger.exception("清理恢复 Run 活动租约失败 run_id=%s", run_id)
+            logger.exception("回收恢复 Run 的工作区失败 run_id=%s", run_id)
         run_lock.release()
 
 
@@ -1670,11 +1770,13 @@ def _renew_open_claim(store: RecordStore, run_id: str, snapshot: Any) -> None:
 
     try:
         renewed = renew_claim(store.root, run_id=run_id, task_id=task_id)
-    except Exception:
-        logger.exception("恢复前续租修复资格失败 run_id=%s task_id=%s", run_id, task_id)
-        return
+    except Exception as error:
+        logger.error("恢复前续租修复资格失败 run_id=%s task_id=%s", run_id, task_id, exc_info=True)
+        # 续租失败后继续恢复会让 claim 过期，另一路可能同时修复同一问题。
+        raise RuntimeError("无法续租修复资格，终止恢复以避免并发修复") from error
     if not renewed:
-        logger.warning("恢复时没有可续租的修复资格 run_id=%s task_id=%s", run_id, task_id)
+        logger.error("恢复时没有可续租的修复资格 run_id=%s task_id=%s", run_id, task_id)
+        raise RuntimeError("修复资格已过期或不存在，终止恢复以避免并发修复")
 
 
 def _claimed_task_id(snapshot: Any) -> str:
@@ -1959,7 +2061,8 @@ def v1_control_audit(run_id: str, _: None = Depends(_authorize)) -> dict[str, An
 class V1StepRunRequest(BaseModel):
     # confirm_write：写步骤必须显式确认，避免误触外部写入。
     confirm_write: bool = False
-    continue_after: bool = True
+    # continue_after：默认不推进工作流；需要继续时必须由调用方显式要求。
+    continue_after: bool = False
 
 
 def _load_model_calls(run_id: str, task_id: str | None = None) -> list[dict[str, Any]]:
@@ -2222,11 +2325,13 @@ def v1_retry_task(
             started_at=None, finished_at=None, error={},
             error_type="", error_message="", terminal_reason="", next_action="",
             worker_active=True,
+            allow_reactivate=True,
         )
         LifecycleStore(store.root).update_task(
             run_id, task_id, status="retrying", current_step="retry_prepare",
             attempt=next_attempt, terminal_step="", terminal_reason="", next_action="",
             error={}, last_error={}, last_error_summary="",
+            allow_reactivate=True,
         )
         connection = _control_db()
         try:
@@ -2259,17 +2364,26 @@ def v1_retry_task(
         except Exception:
             logger.exception("Task 重试已提交，但审计写入失败 run_id=%s task_id=%s", run_id, task_id)
     except Exception:
+        compensation_failures: list[tuple[str, OSError]] = []
         if not checkpoint_updated:
             if baseline_archive is not None and baseline_archive.exists() and baseline_original is not None:
                 try:
                     baseline_archive.replace(baseline_original)
-                except OSError:
-                    logger.exception("Task 重试失败后恢复旧基线失败 run_id=%s task_id=%s", run_id, task_id)
+                except OSError as error:
+                    logger.exception(
+                        "Task 重试失败后恢复旧基线失败 run_id=%s task_id=%s path=%s",
+                        run_id, task_id, baseline_archive,
+                    )
+                    compensation_failures.append((str(baseline_archive), error))
             if workspace_archive is not None and workspace_archive.exists() and workspace_original is not None:
                 try:
                     workspace_archive.replace(workspace_original)
-                except OSError:
-                    logger.exception("Task 重试失败后恢复旧工作区失败 run_id=%s task_id=%s", run_id, task_id)
+                except OSError as error:
+                    logger.exception(
+                        "Task 重试失败后恢复旧工作区失败 run_id=%s task_id=%s path=%s",
+                        run_id, task_id, workspace_archive,
+                    )
+                    compensation_failures.append((str(workspace_archive), error))
             try:
                 LifecycleStore(store.root).update_run(
                     run_id, status=str(detail.get("status") or "failed"),
@@ -2280,10 +2394,25 @@ def v1_retry_task(
                     terminal_step=str((task_payload.get("lifecycle") or {}).get("terminal_step") or "finalize_execution"),
                     terminal_reason=str((task_payload.get("lifecycle") or {}).get("terminal_reason") or "Task 重试未能提交。"),
                     next_action="检查运行记录和源码工作区后重试。",
+                    allow_reactivate=True,
                 )
             except Exception:
                 logger.exception("Task 重试失败后恢复生命周期状态失败 run_id=%s task_id=%s", run_id, task_id)
         lock.release()
+        if compensation_failures:
+            # 归档回滚失败会让下一次重试读到空路径；必须显式终止并把完整
+            # 归档路径返回给调用方，而不是吞掉异常后留下不一致状态。
+            paths = "；".join(
+                f"{path}（{type(error).__name__}）"
+                for path, error in compensation_failures
+            )
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "code": "RETRY_COMPENSATION_FAILED",
+                    "message": f"Task 重试未提交且原归档未能恢复，请检查归档路径：{paths}",
+                },
+            ) from compensation_failures[0][1]
         raise
 
     background.add_task(_resume_workflow_background, run_id, lock)
@@ -2397,7 +2526,7 @@ def v1_run_step(
         runtime = load_config()
         services = build_services(config=runtime, source_repo=runtime.source_repo)
         lifecycle = LifecycleStore(store.root)
-        lifecycle.update_run(run_id, status="running", worker_active=True, error={})
+        lifecycle.update_run(run_id, status="running", worker_active=True, error={}, allow_reactivate=True)
         stop, heartbeat = _start_lifecycle_heartbeat(run_id)
         try:
             previous_report = store.run_dir(run_id) / "reports/final.json"

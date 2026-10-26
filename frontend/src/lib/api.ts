@@ -120,7 +120,7 @@ export const api = {
     request<TaskDetailResponse>('/runs/' + encode(runId) + '/tasks/' + encode(taskId)),
   step: (runId: string, taskId: string, stepName: string) =>
     request<StepDetailResponse>('/runs/' + encode(runId) + '/tasks/' + encode(taskId) + '/steps/' + encode(stepName)),
-  runStep: (runId: string, taskId: string, stepName: string, confirmWrite: boolean, continueAfter = true) =>
+  runStep: (runId: string, taskId: string, stepName: string, confirmWrite: boolean, continueAfter = false) =>
     request<{ run_id: string; task_id: string; step: string; status: string; accepted: boolean; started_at: string }>(
       '/runs/' + encode(runId) + '/tasks/' + encode(taskId) + '/steps/' + encode(stepName) + '/run',
       { method: 'POST', body: JSON.stringify({ confirm_write: confirmWrite, continue_after: continueAfter }) },
@@ -177,7 +177,7 @@ export const api = {
   retryRun: (runId: string) =>
     request<{ status: string; mode: 'resume' | 'restart'; message?: string }>('/runs/' + encode(runId) + '/retry', { method: 'POST' }),
   retryTask: (runId: string, taskId: string) =>
-    request<{ status: string; attempt: number; message?: string; run_id?: string; task_id?: string }>(
+    request<{ status: string; attempt?: number; message?: string; run_id?: string; task_id?: string }>(
       '/runs/' + encode(runId) + '/tasks/' + encode(taskId) + '/retry',
       { method: 'POST' },
     ),

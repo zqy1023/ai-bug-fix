@@ -22,7 +22,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from git import Repo
-from git.exc import InvalidGitRepositoryError, NoSuchPathError
+from git.exc import GitCommandError, InvalidGitRepositoryError, NoSuchPathError
 
 from app.infrastructure.config import RuntimeConfig
 
@@ -151,7 +151,15 @@ def _sync_mirror(
     except (InvalidGitRepositoryError, NoSuchPathError) as error:
         raise SourceRepoError(f"源仓库镜像不是有效 Git 仓库: {_display(mirror)}") from error
     try:
-        if _origin_url(repo, remote) != config.source_url:
+        origin_url = _origin_url(repo, remote)
+        if origin_url is None:
+            # 读取失败时不能删除镜像：继续用现有镜像 fetch，让真实 Git 错误
+            # 在 fetch 阶段显式暴露，而不是静默丢失本地镜像与历史。
+            _logger.warning(
+                "无法确认镜像远程地址，跳过镜像重建并继续同步: %s",
+                _display(mirror),
+            )
+        elif origin_url != config.source_url:
             repo.close()
             _force_remove(mirror)
             _clone(config, mirror, env, remote, timeout, cancel_requested=cancel_requested, on_progress=on_progress)
@@ -264,12 +272,30 @@ def _default_branch(
     raise SourceRepoError(f"远程 {remote} 没有可用的默认分支")
 
 
-def _origin_url(repo: Repo, remote: str) -> str:
-    """读取源远程 URL；远程不存在时返回空串。"""
+def _origin_url(repo: Repo, remote: str) -> str | None:
+    """读取源远程 URL。
+
+    只有"远程确实不存在"才返回空串；读取失败（索引/锁/进程异常等）返回
+    ``None``，调用方据此跳过镜像重建，不能把瞬时读失败误判成 URL 变更而
+    删除并重新克隆整个镜像。
+    """
     try:
         return repo.git.remote("get-url", remote).strip()
-    except Exception:
-        return ""
+    except GitCommandError as error:
+        detail = str(getattr(error, "stderr", "") or error)
+        if getattr(error, "status", None) in {1, 2} and "no such remote" in detail.casefold():
+            return ""
+        _logger.warning(
+            "读取源远程 URL 失败，无法确认镜像来源 remote=%s: %s",
+            remote, detail.strip()[-500:],
+        )
+        return None
+    except Exception as error:
+        _logger.warning(
+            "读取源远程 URL 异常，无法确认镜像来源 remote=%s error=%s",
+            remote, type(error).__name__, exc_info=True,
+        )
+        return None
 
 
 def _run_git(
