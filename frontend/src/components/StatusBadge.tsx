@@ -9,7 +9,7 @@ type BadgeSpec = { label: string; tone: Tone; live: boolean };
 const RUN: Record<string, BadgeSpec> = {
   queued: { label: '排队中', tone: 'neutral', live: false },
   running: { label: '运行中', tone: 'running', live: true },
-  waiting_approval: { label: '待交付审批', tone: 'waiting', live: false },
+  waiting_approval: { label: '待人工复核', tone: 'waiting', live: false },
   succeeded: { label: '已完成', tone: 'success', live: false },
   partial_failed: { label: '部分失败', tone: 'danger', live: false },
   failed: { label: '失败', tone: 'danger', live: false },
@@ -30,7 +30,7 @@ const TASK: Record<string, BadgeSpec> = {
   CANCELLED: { label: '已停止', tone: 'waiting', live: false },
   PARTIAL_FAILED: { label: '部分失败', tone: 'danger', live: false },
   PENDING: { label: '等待中', tone: 'neutral', live: false },
-  WAITING_APPROVAL: { label: '待交付审批', tone: 'waiting', live: false },
+  WAITING_APPROVAL: { label: '待人工复核', tone: 'waiting', live: false },
   SUCCESS: { label: '待手动合并', tone: 'success', live: false },
   SUCCEEDED: { label: '待手动合并', tone: 'success', live: false },
   DELIVERED: { label: '交付已提交', tone: 'success', live: false },
@@ -38,7 +38,7 @@ const TASK: Record<string, BadgeSpec> = {
   BLOCKED: { label: '验证受阻', tone: 'waiting', live: false },
   MANUAL: { label: '需人工处理', tone: 'running', live: false },
   INSUFFICIENT_EVIDENCE: { label: '证据不足', tone: 'running', live: false },
-  REJECTED: { label: '已驳回', tone: 'danger', live: false },
+  REJECTED: { label: '已打回', tone: 'danger', live: false },
   FAILED: { label: '失败', tone: 'danger', live: false },
   FAIL: { label: '失败', tone: 'danger', live: false },
 };

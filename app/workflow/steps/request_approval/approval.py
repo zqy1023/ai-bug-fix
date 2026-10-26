@@ -8,7 +8,7 @@ from app.agents.review.tools.check_changes.verification import validate_changed_
 
 
 def final_gate(state: dict[str, Any]) -> dict[str, Any]:
-    """人工批准后再次校验目标 carrier 范围。"""
+    """人工确认保留后再次校验目标 carrier 范围。"""
     workspace = state.get("ai_workspace_path")
     if not workspace:
         return {"passed": False, "reason": "缺少最终门禁工作区"}

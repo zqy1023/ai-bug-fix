@@ -509,13 +509,13 @@ def _terminal_details(
         detail = str(
             approval_output.get("reason") or approval_output.get("summary") or ""
         ).strip()
-        reason = "人工审批拒绝了本次变更方案。拒绝原因：" + (
+        reason = "人工复核打回了本次交付并撤回修复分支。打回原因：" + (
             detail or "审批记录未填写具体原因。"
         )
         return (
             "request_approval",
             reason,
-            "根据拒绝意见调整方案；重新验证后再提交审批。",
+            "根据打回意见调整方案；重新验证并交付后再次进入人工复核。",
         )
 
     failed_records = [

@@ -24,6 +24,12 @@ type FileEvidence = Dict & {
   removed?: number;
   problems?: string[];
 };
+const RECOVERY_LABELS: Record<string, string> = {
+  verified: '已验证',
+  unverified: '未验证',
+  failed: '失败',
+  not_executed: '未执行',
+};
 function asObject(value: unknown): Dict {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Dict
@@ -125,6 +131,13 @@ export function ReviewPane({ item }: { item: ApprovalItem }) {
   // identify_carrier preserves the error field from the normalized ES record as the original log text.
   const originalError = rawStringField(problem, 'error', 'raw_error');
   const serviceName = stringField(problem, 'service_name');
+  const recovery = item.business_recovery;
+  const recoveryText = recovery ? RECOVERY_LABELS[recovery.status] ?? '未记录' : '未记录';
+  const recoveryColor = recovery?.status === 'verified'
+    ? 'green'
+    : recovery?.status === 'failed'
+      ? 'red'
+      : recovery ? 'gold' : 'default';
   const totalAdded = changedFiles.reduce((sum, file) => sum + (Number(file.added) || 0), 0);
   const totalRemoved = changedFiles.reduce((sum, file) => sum + (Number(file.removed) || 0), 0);
   const fileProblems = changedFiles.flatMap((file) => {
@@ -151,6 +164,9 @@ export function ReviewPane({ item }: { item: ApprovalItem }) {
         <Tag color={item.scope === 'carrier' ? 'blue' : 'orange'}>
           {item.scope === 'carrier' ? '运输商范围' : '项目 / 共享范围'}
         </Tag>
+        <Tag color={recoveryColor} title={recovery?.reason || '真实请求未执行或未返回业务结果'}>
+          业务恢复：{recoveryText}
+        </Tag>
       </header>
 
       {task?.approval_pending && text(asObject(taskDetail?.run_error).status).toUpperCase() === 'FAILED' && (
@@ -170,7 +186,7 @@ export function ReviewPane({ item }: { item: ApprovalItem }) {
           { label: '提交', value: item.delivery?.commit || '未记录' },
           { label: '目标分支', value: item.delivery?.branch || '未记录' },
           { label: '候选 ID', value: item.delivery?.candidate_id || '未记录' },
-          { label: '交付状态', value: item.delivery?.phase === 'prepared' ? '本地候选已准备，等待批准后正式交付' : '请核对候选与审批状态', text: true },
+          { label: '交付状态', value: item.delivery?.phase === 'published' ? '修复分支已交付，确认保留或打回撤回' : item.delivery?.phase === 'prepared' ? '本地候选已准备，等待正式交付' : '请核对候选与审批状态', text: true },
         ]} />
         <details className={styles.moreIdentity}><summary>执行、任务与审批时间</summary>
         <KeyValueList items={[
@@ -370,7 +386,7 @@ export function ReviewPane({ item }: { item: ApprovalItem }) {
       </Panel>
 
       <p className={styles.caution}>
-        批准后系统核验并正式交付此候选提交，不会自动合并；驳回后当前候选失效，并从指定阶段回修。
+        修复分支已交付；确认前系统会重新核验候选提交。确认后保留分支由你手动合并，打回则撤回分支并从指定阶段回修。
       </p>
 
       <WorkbenchDrawer

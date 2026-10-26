@@ -290,6 +290,27 @@ def summarize(state: dict[str, Any]) -> dict[str, Any]:
     ).model_dump(mode="json")
 
 
+def business_recovery(run_regression: dict[str, Any] | None) -> dict[str, str]:
+    """把真实请求回归收敛成审批面可直接展示的业务恢复状态。
+
+    ``verified``：真实请求返回了有效业务结果；``failed``：请求已执行但框架
+    记录了业务错误；``unverified``：请求未完成或无法确认业务结果；
+    ``not_executed``：本轮没有执行真实请求。该字段只描述业务恢复，不替代
+    代码审查结论。
+    """
+    output = run_regression if isinstance(run_regression, dict) else {}
+    request = output.get("request_regression")
+    if not isinstance(request, dict) or not request:
+        return {"status": "not_executed", "reason": "本轮未执行真实请求"}
+    status = str(request.get("status") or "").lower()
+    reason = str(request.get("reason") or output.get("reason") or "")
+    if status == "verified" and request.get("passed") is True:
+        return {"status": "verified", "reason": reason or "真实请求返回有效业务结果"}
+    if status == "failed":
+        return {"status": "failed", "reason": reason or "真实请求返回业务错误"}
+    return {"status": "unverified", "reason": reason or "真实请求未完成业务验证"}
+
+
 def decide(state: dict[str, Any]) -> dict[str, Any]:
     summary = state.get("validation_summary") or {}
     if state.get("validation_plan"):
@@ -341,7 +362,7 @@ def decide(state: dict[str, Any]) -> dict[str, Any]:
         elif review.get("code_verdict") == "FAIL":
             action, target, reason = "repair", "repair_agent", str(review.get("summary") or "代码审查确认修复存在缺陷")
         elif checked.passed:
-            action, reason = "deliver", "修复后代码审查通过，准备本地候选并等待人工审批"
+            action, reason = "deliver", "修复后代码审查通过，交付修复分支后进入人工复核"
         else:
             reason = str(review.get("summary") or "审查证据不足或存在待判断事项，不能确认修复成功")
     elif any(item.get("status") == "failed" for item in dimensions.values()):
@@ -365,7 +386,7 @@ def decide(state: dict[str, Any]) -> dict[str, Any]:
             )
             reason = item["reason"]
         else:
-            action, reason = "deliver", "验证完成，准备本地候选并等待人工审批"
+            action, reason = "deliver", "验证完成，交付修复分支后进入人工复核"
     if target in RECOVERY_TARGETS:
         if attempts.get(target, 0) < limit - 1:
             action = "retry"

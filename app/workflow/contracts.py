@@ -251,6 +251,7 @@ class TaskResolution(ContractModel):
     result: Literal[
         "delivered",
         "analysis_delivered",
+        "waiting_approval",
         "skipped",
         "blocked",
         "failed",

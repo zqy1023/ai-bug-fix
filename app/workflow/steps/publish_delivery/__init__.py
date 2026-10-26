@@ -1,4 +1,4 @@
-"""审批通过后交付同一候选提交，不重新生成补丁。"""
+"""交付修复分支：AI 审查通过后直接交付，人工复核只决定保留还是打回。"""
 
 from typing import Any
 
@@ -10,16 +10,20 @@ from app.workflow.steps.prepare_delivery.node import run
 
 
 def input_of(state):
-    approval = state.get("approval_result") or {}
-    if str(approval.get("decision") or "").upper() != "APPROVE":
-        # 裸 ValueError 会被折叠成通用执行失败，运维看不出是"没审批就交付"。
+    # 正式交付必须与准备阶段生成的候选是同一个提交：candidate_id 绑定验证证据、
+    # 分支与文件清单，避免在两次步骤之间换掉补丁或分支。
+    candidate = state.get("delivery_candidate")
+    candidate_id = (
+        str(candidate.get("candidate_id") or "") if isinstance(candidate, dict) else ""
+    )
+    if not candidate_id:
         raise StepFailed(
-            "正式交付需要人工批准", code="APPROVAL_CONTEXT_MISSING"
+            "正式交付缺少准备阶段的候选身份", code="DELIVERY_CANDIDATE_MISSING"
         )
     return {
         **_input(state),
         "publish": True,
-        "approved_candidate_id": str(approval.get("candidate_id") or ""),
+        "delivery_candidate_id": candidate_id,
     }
 
 
@@ -27,16 +31,12 @@ def _patch(output: dict[str, Any]) -> dict[str, Any]:
     # 步骤没有产出交付结果（被取消或执行失败）：不回写任何状态。
     if "pushed" not in output:
         return {}
-    pushed = bool(output.get("pushed"))
-    patch: dict[str, Any] = {
+    return {
         "delivery": output,
-        "delivery_pushed": pushed,
+        "delivery_pushed": bool(output.get("pushed")),
+        "delivery_local_branch": bool(output.get("local_branch")),
         "delivery_commit": str(output.get("commit") or ""),
     }
-    # 终态只由真正推送成功的交付写入；未推送时由 finalize_execution 收尾。
-    if pushed:
-        patch["terminal_status"] = "DELIVERED"
-    return patch
 
 
 SPEC = StepSpec(

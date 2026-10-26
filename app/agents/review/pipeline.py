@@ -137,6 +137,11 @@ def build_review_pipeline(
                                            "changed_files": list(current.get("changed_files") or []), "files": files})
             # 统一的正式输出只属于 review_agent，内部执行证据由引用访问。
             output = view.model_dump(mode="json")
+            # agent_adapter 在 pipeline enrich 之前已写过一次 validated.json；
+            # 这里用完整输出覆盖，避免审批/审计读到缺少 changed_files/substeps 的旧快照。
+            store.write_artifact(
+                run_id, "agents/review_agent.validated.json", output, task_id
+            )
             # MANUAL 不是"通过"：审查没有取得有效结论时必须原样呈现给工作台，
             # 否则一次没跑成的审查会显示成成功。
             last_result = {

@@ -386,7 +386,9 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
     view = ReviewView(
         verdict=verdict,
         passed=verdict == "PASS",
-        delivery_eligible=False,
+        # 审查层面的候选资格：PASS 才可进入交付候选；真正放行仍由
+        # decide_validation 结合证据版本与人工审批决定。
+        delivery_eligible=verdict == "PASS",
         contract_error="" if checked.valid else checked.reason,
         evidence_version=current_version,
         code_verdict=code_verdict,

@@ -69,8 +69,8 @@ TASK_NODE_NAMES = (
     REVIEW,
     DECIDE,
     DELIVER,
-    APPROVE,
     PUBLISH,
+    APPROVE,
     ANALYSIS,
     FINALIZE,
     RETRY,
@@ -145,20 +145,30 @@ def route_candidate(state: WorkflowState) -> str:
             if state.get("retry_target") == DELIVER
             else FINALIZE
         )
-    return FINALIZE if _analysis_only_task(state) else APPROVE
+    # 本地候选准备好后直接正式交付；人工审批只决定保留还是打回交付结果。
+    return FINALIZE if _analysis_only_task(state) else PUBLISH
 
 
 def route_approval(state: WorkflowState) -> str:
+    # 旧顺序（审批→交付）挂起的任务恢复后还没有交付记录，先补交付再收尾。
     if (
         not cancelled(state)
         and state.get("approval_granted")
         and not state.get("approval_cleanup_failed")
+        and not _delivery_landed(state)
     ):
         return PUBLISH
     return after_approval(state)
 
 
 def route_publish(state: WorkflowState) -> str:
+    # 交付成功才进入人工复核：复核只决定保留已交付分支还是打回撤回。
+    if (
+        not cancelled(state)
+        and state.get("last_result") == "passed"
+        and _delivery_landed(state)
+    ):
+        return APPROVE
     if (
         not cancelled(state)
         and state.get("last_result") == "failed"
@@ -170,6 +180,15 @@ def route_publish(state: WorkflowState) -> str:
         if attempts < int(state.get("max_attempts") or settings.default_max_attempts) - 1:
             return RETRY
     return FINALIZE
+
+
+def _delivery_landed(state: WorkflowState) -> bool:
+    """交付步骤确实产出了落到远端或源仓库本地分支的提交。"""
+    delivery = state.get("delivery")
+    if not isinstance(delivery, dict):
+        return False
+    commit = str(delivery.get("commit") or "").strip()
+    return bool(commit) and bool(delivery.get("pushed") or delivery.get("local_branch"))
 
 
 TASK_CONDITIONAL_TRANSITIONS = (
@@ -199,15 +218,15 @@ TASK_CONDITIONAL_TRANSITIONS = (
         ),
         (RETRY, DELIVER, FINALIZE),
     ),
-    # 人工批准本地候选后，才执行正式交付。
+    # 人工复核在交付之后：通过即保留已交付分支，打回则撤回分支并在上限内回修。
     (APPROVE, route_approval, (RETRY, FINALIZE, PUBLISH)),
     (
         ANALYSIS,
         lambda s: DELIVER if s.get("last_result") == "passed" else FINALIZE,
         (DELIVER, FINALIZE),
     ),
-    (DELIVER, route_candidate, (APPROVE, RETRY, FINALIZE)),
-    (PUBLISH, route_publish, (RETRY, FINALIZE)),
+    (DELIVER, route_candidate, (PUBLISH, RETRY, FINALIZE)),
+    (PUBLISH, route_publish, (APPROVE, RETRY, FINALIZE)),
     (FINALIZE, lambda s: END, (END,)),
     (
         RETRY,

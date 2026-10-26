@@ -1,11 +1,12 @@
 import { useEffect, useState, type FC } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, Button, Input, Pagination, Skeleton } from 'antd';
 import { ArrowRightOutlined, SearchOutlined } from '@ant-design/icons';
 import type { BoardTask, WorkflowStage } from '../../lib/types';
 import { api } from '../../lib/api';
 import { queryKeys } from '../../lib/queryKeys';
+import { workbenchQueries } from '../../lib/workbenchQueries';
 import { formatDuration } from '../../lib/format';
 import { StatusBadge } from '../../components/StatusBadge';
 import { EmptyState } from '../../components/EmptyState';
@@ -27,6 +28,7 @@ function state(task: BoardTask): string {
 
 export const TaskBoard: FC<TaskBoardProps> = ({ runId, stages = [], onOpen }) => {
   const [params, setParams] = useSearchParams();
+  const queryClient = useQueryClient();
   const filter = FILTERS.some(([key]) => key === params.get('result')) ? params.get('result')! : 'all';
   const page = Math.max(1, Number(params.get('page')) || 1);
   const pageSize = [10, 20, 50, 100].includes(Number(params.get('size'))) ? Number(params.get('size')) : 20;
@@ -49,6 +51,10 @@ export const TaskBoard: FC<TaskBoardProps> = ({ runId, stages = [], onOpen }) =>
   const visible = query.data?.tasks ?? [];
   const counts: Record<string, number> = { ...query.data?.counts, all: query.data?.all_total ?? query.data?.total ?? 0 };
   const currentPage = query.data?.page ?? page;
+  // 悬停即预取详情，点击进入时直接命中缓存；prefetchQuery 会复用 staleTime，不会重复请求。
+  const prefetchTask = (task: BoardTask) => {
+    void queryClient.prefetchQuery(workbenchQueries.task(runId, task.task_id));
+  };
   if (query.isError) return <Alert type="error" showIcon message="任务列表加载失败" action={<Button onClick={() => void query.refetch()}>重试</Button>} />;
   return (
     <Panel
@@ -99,8 +105,8 @@ export const TaskBoard: FC<TaskBoardProps> = ({ runId, stages = [], onOpen }) =>
               const approvalWaiting = task.approval_pending || status === 'WAITING_APPROVAL';
               const summary = ACTIVE.has(status)
                 ? '自动流程正在推进'
-                : task.terminal_reason || task.next_action || (approvalWaiting ? '等待人工审批' : '等待生成执行结论');
-              return <tr key={task.task_id}>
+                : task.terminal_reason || task.next_action || (approvalWaiting ? '等待人工复核' : '等待生成执行结论');
+              return <tr key={task.task_id} onMouseEnter={() => prefetchTask(task)}>
                 <td>
                   <button type="button" className={styles.name} onClick={() => onOpen(task)}>{task.carrier || '未识别运输商'}</button>
                   <small className={styles.cellSmall}>{task.biztype || '未知业务类型'}</small>

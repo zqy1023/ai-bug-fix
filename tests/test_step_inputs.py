@@ -28,7 +28,7 @@ class InputBuilderDefenseTests(unittest.TestCase):
     def test_request_approval_missing_workspace(self):
         module = self._approval_module()
         with self.assertRaises(StepFailed) as caught:
-            module._input({"delivery_candidate": {"candidate_id": "c-1"}})
+            module._input({"delivery_candidate": {"candidate_id": "c-1", "commit": "a" * 40}})
         self.assertEqual(caught.exception.code, "APPROVAL_CONTEXT_MISSING")
         self.assertIn("ai_workspace_path", str(caught.exception))
 
@@ -45,7 +45,7 @@ class InputBuilderDefenseTests(unittest.TestCase):
             state = {
                 "task": {"carrier": "Test"},
                 "task_id": "test__gather__abc",
-                "delivery_candidate": {"candidate_id": "c-1"},
+                "delivery_candidate": {"candidate_id": "c-1", "commit": "a" * 40},
                 "ai_workspace_path": str(workspace),
                 "baseline_dir": str(baseline),
                 "changed_files": ["gathers/Test/main.py"],

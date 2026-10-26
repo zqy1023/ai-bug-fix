@@ -175,7 +175,7 @@ export function RunWorkspace() {
 
       {tab === 'tasks' && <>
         {runView.waiting_tasks > 0 && <section className={styles.approvalNotice} aria-label="批次待审批提示">
-          <div><strong>{runView.waiting_tasks} 个任务等待审批{runView.worker_active ? '，批次继续执行' : ''}</strong><p>当前候选等待工程师核对，批准后恢复对应任务的交付流程。</p></div>
+          <div><strong>{runView.waiting_tasks} 个任务等待审批{runView.worker_active ? '，批次继续执行' : ''}</strong><p>修复分支已交付，等待工程师核对后决定保留或打回。</p></div>
           <Button type="primary" onClick={() => navigate(`/approvals?run=${encodeURIComponent(runId)}`)}>前往审批（{runView.waiting_tasks}）</Button>
         </section>}
         <section className={styles.batchProgress} aria-label="批次处理进度"><RunProgress run={runView} detailed /></section>

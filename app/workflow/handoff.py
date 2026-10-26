@@ -97,6 +97,8 @@ STATE_OWNERS = {
 # 候选阶段需要重置交付通道；这些步骤不是属主，但必须允许写入。
 STATE_CO_WRITERS = {
     "delivery_pushed": frozenset({"prepare_delivery"}),
+    # 交付后的提交形态以 publish_delivery 为准（决定是否推送到远端）。
+    "delivery_local_branch": frozenset({"publish_delivery"}),
 }
 EXEMPT_FROM_OBSOLETE = frozenset({"baseline_dir", "baseline_manifest"})
 

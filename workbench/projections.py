@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any
 
 
@@ -42,8 +43,12 @@ def run_timestamps(
     }
 
 
+@lru_cache(maxsize=1)
 def task_stages() -> list[dict[str, Any]]:
-    """从实际图节点和插件注册表输出前端阶段契约。"""
+    """从实际图节点和插件注册表输出前端阶段契约。
+
+    节点定义和插件标题在进程内不变；任务详情每次请求都重新加载插件会
+    把固定开销带进首屏。"""
     from app.workflow.definitions import PHASE_COMPOSITIONS, TASK_NODE_NAMES
     from app.workflow.plugin_loader import load_all
     from app.workflow.registry import resolve

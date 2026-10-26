@@ -210,6 +210,10 @@ export interface ApprovalItem {
   status: 'pending' | 'approved' | 'rejected' | 'expired';
   summary: string;
   changed_files: string[];
+  business_recovery?: {
+    status: 'verified' | 'unverified' | 'failed' | 'not_executed';
+    reason: string;
+  };
   change_plan?: {
     scope: 'carrier' | 'project';
     rationale: string;

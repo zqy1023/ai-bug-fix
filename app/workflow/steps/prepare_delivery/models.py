@@ -20,11 +20,13 @@ class DeliveryInput(FrozenModel):
     - analysis_only: 是否只交付 final.json 分析报告
     - allow_push: 是否允许推送远程修复分支
     - require_push: 是否要求远程存在且推送成功
+    - publish: 是否正式交付；交付后由人工复核决定保留或打回
     """
 
     # task_id：字段说明见该模型文档与工作流契约。
     publish: bool = False
-    approved_candidate_id: str = ""
+    # delivery_candidate_id：准备阶段生成的候选身份，正式交付必须交付同一候选。
+    delivery_candidate_id: str = ""
     binding: EvidenceBinding | None = None
     task_id: str
     # carrier：字段说明见该模型文档与工作流契约。

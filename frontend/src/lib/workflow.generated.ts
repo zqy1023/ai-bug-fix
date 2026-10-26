@@ -110,18 +110,18 @@ export const WORKFLOW_STAGES = [
     "group": false
   },
   {
-    "key": "request_approval",
-    "title": "人工审批",
-    "members": [
-      "request_approval"
-    ],
-    "group": false
-  },
-  {
     "key": "publish_delivery",
     "title": "正式交付修复分支",
     "members": [
       "publish_delivery"
+    ],
+    "group": false
+  },
+  {
+    "key": "request_approval",
+    "title": "人工审批",
+    "members": [
+      "request_approval"
     ],
     "group": false
   },

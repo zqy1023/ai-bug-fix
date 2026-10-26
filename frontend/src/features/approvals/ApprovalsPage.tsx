@@ -64,7 +64,7 @@ export function ApprovalsPage() {
   return (
     <div className={`page ${styles.root}`}>
       <header className={styles.heading}>
-        <div><h1>交付审批</h1><p>审阅当前候选的改动与验证证据，核对变更范围与业务结论。</p></div>
+        <div><h1>交付审批</h1><p>AI 修复已直接交付到修复分支；请核对改动与验证证据，决定保留还是打回撤回。</p></div>
         <div><span className={styles.count}>待审批任务 <b>{items.length}</b></span><Button aria-label="刷新审批队列" icon={<ReloadOutlined />} loading={approvals.isFetching} onClick={() => void approvals.refetch()}>刷新队列</Button></div>
       </header>
 
@@ -76,7 +76,7 @@ export function ApprovalsPage() {
       ) : !items.length ? (
         <EmptyState
           title="当前没有待审批交付"
-          description="自动修复完成并通过门禁后会出现在这里；也可以直接回到执行批次观察运行。"
+          description="自动修复完成并交付到修复分支后会出现在这里；也可以直接回到执行批次观察运行。"
           action={<Button type="primary" onClick={() => navigate('/runs')}>回到执行批次</Button>}
         />
       ) : (

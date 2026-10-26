@@ -1,4 +1,4 @@
-"""人工审批暂停和恢复，以及最终门禁。"""
+"""交付后的人工复核：确认保留还是打回撤回，以及最终门禁。"""
 
 from __future__ import annotations
 
@@ -17,12 +17,18 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
     task = dict(state.get("task") or {})
     from app.workflow.confirmation import confirmation
 
-    # 审批指纹必须绑定真实交付候选与工作区证据；上游节点缺失这些通道时，
-    # 用结构化失败取代 KeyError，让记录里能看到可定位的原因。
-    candidate = state.get("delivery_candidate")
+    # 审批发生在交付之后：审批身份以正式交付结果为准；旧顺序（审批→交付）
+    # 挂起的任务恢复时还没有交付记录，回退到准备阶段的候选。
+    candidate = state.get("delivery")
+    if not isinstance(candidate, dict) or not candidate.get("candidate_id"):
+        candidate = state.get("delivery_candidate")
     if not isinstance(candidate, dict) or not candidate.get("candidate_id"):
         raise StepFailed(
             "审批上下文缺失: delivery_candidate", code="APPROVAL_CONTEXT_MISSING"
+        )
+    if not str(candidate.get("commit") or "").strip():
+        raise StepFailed(
+            "审批上下文缺失: 交付提交", code="APPROVAL_CONTEXT_MISSING"
         )
     workspace_path = str(state.get("ai_workspace_path") or "")
     baseline_dir = str(state.get("baseline_dir") or "")

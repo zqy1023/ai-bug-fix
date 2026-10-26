@@ -38,8 +38,8 @@ export function TaskReviewSummary({ detail, onOpenStep }: TaskReviewSummaryProps
   return <div className={styles.root}>
     <section className={styles.summary} aria-label="修复概览">
       <div className={styles.kicker}><FileSearchOutlined /> 修复概览</div>
-      <h2>{heading || (summary ? String(summary) : task.approval_pending ? '本地候选已准备，等待核验与审批' : '跟踪问题定位、修复与交付结果')}</h2>
-      <p>{stopped ? '本轮结果以分析报告和停止原因为准，未将步骤执行完成视为修复通过。' : detail.delivery?.phase === 'published' ? '正式交付已完成，提交与分支信息可在任务信息中查看。' : detail.delivery?.phase === 'prepared' ? '当前为本地候选；审批通过后，系统将重新核验并执行正式交付。' : '修复结论以步骤的正式业务判定和归档证据为准。'}</p>
+      <h2>{heading || (summary ? String(summary) : task.approval_pending ? (detail.delivery?.phase === 'published' ? '修复分支已交付，等待人工复核' : '本地候选已准备，等待交付与复核') : '跟踪问题定位、修复与交付结果')}</h2>
+      <p>{stopped ? '本轮结果以分析报告和停止原因为准，未将步骤执行完成视为修复通过。' : detail.delivery?.phase === 'published' ? '修复分支已交付，提交与分支信息可在任务信息中查看。' : detail.delivery?.phase === 'prepared' ? '当前为本地候选；交付后由人工复核，决定保留或打回。' : '修复结论以步骤的正式业务判定和归档证据为准。'}</p>
       {heading && summary && <details className={styles.error}><summary>分析结论与停止原因</summary><p>{String(summary)}</p></details>}
       {original && <details className={styles.error}><summary>原始异常 <code>{original.split(/\r?\n/)[0]}</code></summary><pre>{original}</pre></details>}
     </section>

@@ -392,6 +392,13 @@ class WorkflowTests(unittest.TestCase):
                     result.update(
                         validation_decision=decision, retry_target=decision["target"]
                     )
+                elif name == "publish_delivery":
+                    result["delivery"] = {
+                        "candidate_id": "candidate",
+                        "commit": "a" * 40,
+                        "pushed": True,
+                        "local_branch": False,
+                    }
                 elif name == "request_approval":
                     result.update(approval_granted=True, decision="APPROVE")
                 elif name == "finalize_execution":
@@ -410,12 +417,13 @@ class WorkflowTests(unittest.TestCase):
         graph.invoke(state)
         return trace
 
-    def test_human_success_path_approves_before_publish(self):
+    def test_human_success_path_publishes_before_approval(self):
         trace = self.graph_trace()
         self.assertIn("review_agent", trace)
         self.assertLess(trace.index("reproduce_baseline"), trace.index("repair_agent"))
+        # 交付在人工复核之前：复核只决定保留还是打回已交付分支。
         self.assertLess(
-            trace.index("request_approval"), trace.index("publish_delivery")
+            trace.index("publish_delivery"), trace.index("request_approval")
         )
         self.assertEqual(trace.count("finalize_execution"), 1)
 
@@ -625,9 +633,22 @@ class WorkflowTests(unittest.TestCase):
         run("decide_validation")
         self.assertEqual(state["validation_decision"]["action"], "deliver")
         run("prepare_delivery")
+        candidate_report = store.read_artifact("run", "delivery/final.json", "task")
+        self.assertEqual(candidate_report["result"], "WAITING_APPROVAL")
+        self.assertEqual(candidate_report["resolution"]["result"], "waiting_approval")
+        self.assertEqual(candidate_report["resolution"]["terminal_step"], "request_approval")
+        self.assertEqual(candidate_report["resolution"]["reason"], candidate_report["terminal_reason"])
+        self.assertIn(candidate_report["business_recovery"]["status"], {"verified", "unverified", "failed", "not_executed"})
         self.assertTrue(calls, [(record.name, record.summary) for record in store.list_steps("run", "task")])
         self.assertFalse(calls[0]["allow_push"])
         candidate = state["delivery_candidate"]["candidate_id"]
+        # 交付在人工复核之前；复核身份取自正式交付结果。
+        run("publish_delivery")
+        self.assertTrue(calls[-1]["allow_push"])
+        self.assertEqual(state["delivery"]["candidate_id"], candidate)
+        delivered_report = store.read_artifact("run", "delivery/final.json", "task")
+        self.assertEqual(delivered_report["resolution"]["terminal_step"], "request_approval")
+        self.assertIn("已交付", delivered_report["resolution"]["reason"])
         state["decision"] = "APPROVE"
         with patch(
             "app.workflow.steps.request_approval.node.final_gate",
@@ -635,16 +656,13 @@ class WorkflowTests(unittest.TestCase):
         ):
             run("request_approval")
         self.assertEqual(state["approval_result"]["candidate_id"], candidate)
-        run("publish_delivery")
-        self.assertTrue(calls[-1]["allow_push"])
-        self.assertEqual(state["delivery"]["candidate_id"], candidate)
         restored = state_from_records(store, "run", "task")
         self.assertEqual(restored["delivery"]["commit"], "a" * 40)
         self.assertEqual(restored["acceptance_contract"], state["acceptance_contract"])
         run("finalize_execution")
         self.assertEqual(state["resolution"]["result"], "delivered")
 
-    def test_publish_rejects_changed_candidate_or_unapproved_state(self):
+    def test_publish_rejects_changed_candidate(self):
         from app.domain.errors import StepFailed
         from app.workflow.steps.prepare_delivery.models import DeliveryInput
         from app.workflow.steps.prepare_delivery.node import run
@@ -657,9 +675,9 @@ class WorkflowTests(unittest.TestCase):
             changed_files=self.state["changed_files"],
             binding=self.state["validation_plan"]["binding"],
             publish=True,
-            approved_candidate_id="expired",
+            delivery_candidate_id="expired",
         )
-        with self.assertRaisesRegex(StepFailed, "审批未绑定"):
+        with self.assertRaisesRegex(StepFailed, "交付候选不匹配"):
             run(SimpleNamespace(), data)
 
     def test_identification_creates_one_task_per_biztype_and_carrier(self):
@@ -800,6 +818,11 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(observed[0]["regression_results"]["status"], "failed")
         self.assertEqual(update["review"]["verdict"], "PASS")
         self.assertEqual(decide({**state, **update})["action"], "deliver")
+        validated = store.read_artifact("run", "agents/review_agent.validated.json", "task")
+        self.assertEqual(validated["changed_files"], state["changed_files"])
+        self.assertTrue(validated["substeps"])
+        self.assertEqual(validated["review_report_path"], "artifacts/review_agent/substeps.json")
+        self.assertTrue(validated["delivery_eligible"])
         self.assertIsNotNone(store.load("run", "verify_issue", "task"))
         self.assertTrue(any(ref.name == "verification_report" for ref in store.load("run", "review_agent", "task").artifacts))
         self.assertEqual(len(store.read_artifact("run", "artifacts/review_agent/substeps.json", "task")["substeps"]), 6)

@@ -208,9 +208,9 @@ function resultHeadline(result: string, analysisOnly: boolean, deliveredCode: bo
   // 取消、跳过与人工处理是三种不同的停点，不能和“已交付/已完成”混读。
   if (result === 'CANCELLED') return '任务已取消';
   if (result === 'SKIPPED') return '本任务已跳过，未执行修复';
-  if (result === 'REJECTED') return '变更已被拒绝';
+  if (result === 'REJECTED') return '交付已打回';
   if (['MANUAL', 'INSUFFICIENT_EVIDENCE'].includes(result)) return '需人工处理，未确认修复完成';
-  if (finalApprovalPending) return '本地候选已准备，等待最终审批';
+  if (finalApprovalPending) return delivered ? '修复分支已交付，等待人工复核' : '本地候选已准备，等待正式交付';
   if (analysisOnly && delivered) return '分析报告已提交';
   if (deliveredCode) return '源码修改已提交';
   if (analysisOnly && changedCount > 0 && changeEvidenceKnown) return '源码有改动，但本次仅交付分析报告';
@@ -228,9 +228,11 @@ function resultDescription(analysisOnly: boolean, delivered: boolean, deliveredC
   if (executionFailed || result === 'FAILED' || result === 'FAIL') return '任务未完成；请查看停止原因和失败节点。';
   if (result === 'CANCELLED') return '执行已被取消；已产出的记录保留，但本轮不再推进。';
   if (result === 'SKIPPED') return '本任务被跳过，没有进入修复流程；这不是失败结论。';
-  if (result === 'REJECTED') return '变更已被拒绝；请在审批记录中查看驳回原因。';
+  if (result === 'REJECTED') return '人工复核打回了本次交付并撤回修复分支；请在审批记录中查看打回原因。';
   if (result === 'MANUAL' || result === 'INSUFFICIENT_EVIDENCE') return '证据不足或超出自动修复范围，需人工处理；未视为修复失败，也未视为修复成功。';
-  if (finalApprovalPending) return '本地候选已准备，等待最终审批；系统不会自动合并。';
+  if (finalApprovalPending) return delivered
+    ? '修复分支已交付到目标仓库，等待你确认保留或打回；系统不会自动合并。'
+    : '本地候选已准备，等待正式交付；系统不会自动合并。';
   if (analysisOnly && delivered) return '仅提交 final.json 分析报告，源码改动未随分支交付。';
   if (analysisOnly && changedCount > 0 && changeEvidenceKnown) return `检测到 ${changedCount} 个源码文件有改动，但本次只交付分析报告。`;
   if (analysisOnly && changedCount > 0) return `检测到 ${changedCount} 个修改声明，尚未核实真实差异；本次只交付分析报告。`;
@@ -434,11 +436,12 @@ export function TaskOverview({
   const regressionSyntaxOnly = getText(regression, 'status') === 'syntax_only' || getText(regression, 'mode') === 'syntax';
   const regressionPassed = regressionStep?.assessment ? regressionStep.assessment.outcome === 'passed' : regression.passed === true && !regressionSyntaxOnly;
   const verifyUnverified = verifyStep?.assessment?.outcome === 'inconclusive' || getText(verify, 'status') === 'unverified';
+  const regressionUnverified = regressionStep?.assessment?.outcome === 'inconclusive' || getText(regression, 'status') === 'unverified';
   const qualitySteps = [syntaxStep, verifyStep, regressionStep].filter(Boolean) as StepRecord[];
   const qualityFailed = qualitySteps.some((step) => toneForStep(step) === 'danger');
   // 内部证据缺失时不能推断验证结论，只能说明缺失本身。
   const verifyVerdict = evidenceVerdict(verifyEvidence, verifyPassed, verifyUnverified);
-  const regressionVerdict = evidenceVerdict(regressionEvidence, regressionPassed, false);
+  const regressionVerdict = evidenceVerdict(regressionEvidence, regressionPassed, regressionUnverified);
   const verifyText = verifyEvidence !== 'available'
     ? EVIDENCE_STATE_LABELS[verifyEvidence]
     : syntaxOnlyVerification ? '仅语法检查' : verifyVerdict.text;
@@ -636,10 +639,12 @@ export function TaskOverview({
             MANUAL: analysisOnly
               ? '仅交付报告，不进入源码审批'
               : finalApprovalPending
-                ? '本地候选已准备，等待最终审批'
+                ? landed
+                  ? '修复分支已交付，等待人工复核'
+                  : '本地候选已准备，等待正式交付'
                 : landed
                   ? '源码分支已正式交付'
-                  : '先准备本地候选，再人工复核',
+                  : '先准备本地候选再交付',
           } as Record<string, string>)[reviewVerdict] || reviewVerdict : '未执行'} />
           <StageItem title="Git 交付" steps={[deliveryStep]} hint={landed ? analysisOnly ? '分析报告分支已提交' : '修复分支已提交' : deliveryStep ? toneText(toneForStep(deliveryStep)) : '未交付'} />
         </div>
@@ -844,14 +849,14 @@ export function TaskOverview({
               <h3>验证与审查</h3>
               <span className={styles.titleSub}>{analysisOnly
                 ? '当前分支交付的是分析报告，不进入源码修复审批'
-                : 'AI 审查不是人工审批；最终人工审批只在源码分支成功提交后出现'}</span>
+                : 'AI 审查通过后会直接交付修复分支；人工复核只在交付后决定保留或打回'}</span>
             </span>
           )}
           extra={reviewVerdict ? (
             <Tag color={reviewVerdict === 'PASS' ? 'success' : reviewVerdict === 'FAIL' ? 'error' : 'gold'}>{({
               PASS: 'AI 审查通过',
               FAIL: 'AI 审查未通过',
-              MANUAL: analysisOnly ? '报告路径' : finalApprovalPending ? '等待最终审批' : landed ? '已正式交付' : '先准备候选再审批',
+              MANUAL: analysisOnly ? '报告路径' : landed ? (finalApprovalPending ? '已交付，等待人工复核' : '已正式交付') : finalApprovalPending ? '等待正式交付' : '先准备候选再交付',
             } as Record<string, string>)[reviewVerdict] || reviewVerdict}</Tag>
           ) : undefined}
         >
@@ -960,7 +965,7 @@ export function TaskOverview({
           )}
           extra={(
             <Tag color={landed ? 'success' : deliveryStep?.status === 'failed' ? 'error' : 'default'}>
-              {landed ? '已正式交付' : prepared ? '本地候选待审批' : deliveryStep?.status === 'failed' ? '交付失败' : '未确认提交'}
+              {landed ? (finalApprovalPending ? '已交付，等待人工复核' : '已正式交付') : prepared ? '本地候选已准备' : deliveryStep?.status === 'failed' ? '交付失败' : '未确认提交'}
             </Tag>
           )}
         >
@@ -991,7 +996,7 @@ export function TaskOverview({
                 {landed
                   ? '系统没有自动合并。请在 Git 上核对变更并由你手动合并。'
                   : prepared
-                    ? '当前仅准备本地候选；批准后才正式交付此提交。'
+                    ? '当前仅准备本地候选；随后会正式交付此提交，再进入人工复核。'
                   : deliveryStep.status === 'failed'
                     ? stepSummary(deliveryStep) || '交付步骤失败，请查看节点输入、错误和日志。'
                     : '没有足够的提交证据证明分支已可靠落地。'}

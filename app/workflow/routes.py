@@ -192,7 +192,7 @@ def after_review(state: WorkflowState) -> str:
 
 
 def after_approval(state: WorkflowState) -> str:
-    """审批后路由：最终审批决定是否正式交付当前候选，不自动合并。"""
+    """人工复核路由：只决定保留已交付分支还是打回撤回，不自动合并。"""
     if (
         str(state.get("terminal_status") or "").upper() == "CANCELLED"
         or _result(state) == "cancelled"
@@ -217,7 +217,7 @@ def after_approval(state: WorkflowState) -> str:
     if approval_result != "passed":
         return FINALIZE
 
-    # 最终审批只决定是否保留已交付分支供人工合并；工作流不自动合并。
+    # 人工确认保留时工作流收尾；修复分支留给人工合并，不自动合并。
     return FINALIZE
 
 

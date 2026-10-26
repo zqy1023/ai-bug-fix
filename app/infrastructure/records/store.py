@@ -290,14 +290,23 @@ class RecordStore:
             return None
         return _validated(body, run_id, step_name)
 
+    def steps_snapshot(self, run_id: str) -> dict[str, Any]:
+        """读取一次步骤记录快照，供同一请求内多个任务投影复用。"""
+        with self._lock:
+            return self._read_steps(run_id)
+
     def list_steps(self, run_id: str, task_id: str = "") -> list[StepRecord]:
         """返回已落盘的步骤记录。任务级只返回该任务，run 级不含 tasks。
 
         审查 Agent 的内部工具记录不进这里：它们是单个 Agent 的内部证据，
         由 list_review_substeps() 单独按需读取。
         """
-        with self._lock:
-            payload = self._read_steps(run_id)
+        return self.list_steps_from_snapshot(run_id, self.steps_snapshot(run_id), task_id)
+
+    def list_steps_from_snapshot(
+        self, run_id: str, payload: dict[str, Any], task_id: str = ""
+    ) -> list[StepRecord]:
+        """从已解析的 steps.json 投影步骤，避免多任务场景重复读盘解析。"""
         if task_id:
             tasks = payload.get("tasks")
             slot = next(

@@ -212,14 +212,24 @@ def _changed_hashes(project: Path, changed_files: list[str]) -> dict[str, str]:
     return result
 
 
-def _runtime_status(status: str, workspace: Path, project: Path) -> tuple[str, list[str]]:
-    """仅从状态对账中剔除明确的、被 Git 忽略的入口运行目录。
+def _is_bytecode_artifact(line: str) -> bool:
+    """Python 字节码缓存不是业务改动，不能触发“修改工作区”门禁。"""
+    if len(line) < 4:
+        return False
+    path = line[3:].strip().strip('"').replace("\\", "/")
+    return "__pycache__" in path.split("/") or path.casefold().endswith(".pyc")
 
-    main 初始化日志与 Nacos 本地缓存是入口的正常行为。豁免目录可用
-    ``REGRESSION_RUNTIME_EXEMPT_DIRS``（逗号分隔）覆盖，默认 ``logs,nacos-data``；
-    匹配按"Git 状态行路径以豁免目录为前缀"判定，不再要求整行逐字符相等
-    （``--untracked-files=all`` 会把豁免目录里的单个文件逐行列出），但保留
-    ``!!`` untracked/ignored 语义：受跟踪文件和其它新文件仍须对账。
+
+def _runtime_status(status: str, workspace: Path, project: Path) -> tuple[str, list[str]]:
+    """仅从状态对账中剔除明确的运行产物。
+
+    main 初始化日志与 Nacos 本地缓存是入口的正常行为；Python 字节码缓存
+    （``__pycache__/``、``*.pyc``）是解释器/编译检查的副产物，同样不属于业务
+    改动。豁免目录可用 ``REGRESSION_RUNTIME_EXEMPT_DIRS``（逗号分隔）覆盖，
+    默认 ``logs,nacos-data``；匹配按"Git 状态行路径以豁免目录为前缀"判定，
+    不再要求整行逐字符相等（``--untracked-files=all`` 会把豁免目录里的单个
+    文件逐行列出），但保留 ``!!`` untracked/ignored 语义：受跟踪文件和其它
+    新文件仍须对账。
     """
     prefix = project.relative_to(workspace).as_posix()
     prefix = "" if prefix == "." else prefix + "/"
@@ -227,8 +237,13 @@ def _runtime_status(status: str, workspace: Path, project: Path) -> tuple[str, l
     exempt_dirs = {name.strip() for name in configured.split(",") if name.strip()} or {"logs", "nacos-data"}
     exempt_prefixes = tuple(f"!! {prefix}{name}/" for name in exempt_dirs)
     lines = status.splitlines()
-    kept = [line for line in lines if not line.startswith(exempt_prefixes)]
-    runtime = [line[3:] for line in lines if line.startswith(exempt_prefixes)]
+    exempted = [line for line in lines if line.startswith(exempt_prefixes)]
+    bytecode = [line for line in lines if _is_bytecode_artifact(line)]
+    ignored = set(exempted) | set(bytecode)
+    kept = [line for line in lines if line not in ignored]
+    runtime = list(dict.fromkeys(
+        [line[3:] for line in exempted] + [line[3:] for line in bytecode]
+    ))
     return "\n".join(kept), runtime
 
 

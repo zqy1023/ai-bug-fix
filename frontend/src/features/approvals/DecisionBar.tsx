@@ -68,6 +68,13 @@ const TARGET_LABELS: Record<ApprovalRetryTarget, string> = {
   prepare_delivery: 'Git 分支交付',
 };
 
+const RECOVERY_LABELS: Record<string, string> = {
+  verified: '已验证',
+  unverified: '未验证',
+  failed: '失败',
+  not_executed: '未执行',
+};
+
 type DecisionInput = {
   decision: 'approve' | 'reject';
   reason: string;
@@ -88,6 +95,10 @@ export function DecisionBar({ item, onDecided }: { item: ApprovalItem; onDecided
     () => REJECTION_REASONS.find((option) => option.value === reasonCode),
     [reasonCode],
   );
+  const recovery = item.business_recovery;
+  const recoveryWarning = recovery && recovery.status !== 'verified'
+    ? `注意：实时业务验证为「${RECOVERY_LABELS[recovery.status] ?? recovery.status}」，批准只代表代码修复通过，不代表业务已恢复。${recovery.reason ? `（${recovery.reason}）` : ''}`
+    : '';
   const retryTarget = reasonCode === 'other' ? retryTargetOverride : selectedReason?.retryTarget ?? '';
   const rejectReason = reasonCode === 'other'
     ? reason.trim()
@@ -142,11 +153,14 @@ export function DecisionBar({ item, onDecided }: { item: ApprovalItem; onDecided
 
     setPending(decision);
     modal.confirm({
-      title: decision === 'approve' ? '批准这次交付？' : '驳回本地候选并回修？',
-      content: decision === 'approve'
-        ? '将对本次候选提交重新核验，并按运行配置交付修复分支；系统不会自动合并。'
-        : `系统将使当前候选失效，再从「${retryTarget ? TARGET_LABELS[retryTarget] : '未选择阶段'}」重新执行。当前尝试次数达到上限时，任务会按工作流规则终止。`,
-      okText: decision === 'approve' ? '确认批准' : '确认驳回并重跑',
+      title: decision === 'approve' ? '确认保留这次交付？' : '打回并撤回已交付分支？',
+      content: decision === 'approve' ? (
+        <>
+          {recoveryWarning && <p style={{ color: '#d46b08', marginBottom: 8 }}>{recoveryWarning}</p>}
+          <p>修复分支已交付；确认前会重新核验候选提交。保留后由人工合并，系统不会自动合并。</p>
+        </>
+      ) : `系统将撤回本次交付的修复分支，再从「${retryTarget ? TARGET_LABELS[retryTarget] : '未选择阶段'}」重新执行。当前尝试次数达到上限时，任务会按工作流规则终止。`,
+      okText: decision === 'approve' ? '确认保留' : '确认打回并重跑',
       okButtonProps: { danger: decision === 'reject' },
       cancelText: '返回',
       onOk: async () => {
@@ -213,27 +227,27 @@ export function DecisionBar({ item, onDecided }: { item: ApprovalItem; onDecided
       </details>
       {!item.actions?.approve.enabled && <p className={styles.warning}>{item.actions?.approve.reason || '服务未提供操作许可，暂不能提交审批'}</p>}
       <div className={styles.actions}>
-        <p>批准后核验并交付候选提交<br /><span>系统不会自动合并</span></p>
+        <p>确认后保留已交付的修复分支<br /><span>系统不会自动合并</span></p>
         <Button
           danger
-          aria-label="驳回并回修"
+          aria-label="打回并撤回"
           icon={<StopOutlined />}
           disabled={Boolean(pending) || !item.actions?.reject.enabled || !reasonCode || (reasonCode === 'other' && (!retryTargetOverride || !reason.trim()))}
           loading={decide.isPending && pending === 'reject'}
           onClick={() => run('reject')}
         >
-          驳回并回修
+          打回并撤回
         </Button>
         <Button
           type="primary"
-          aria-label="批准并交付"
+          aria-label="确认保留"
           icon={<CheckOutlined />}
           disabled={Boolean(pending) || !item.actions?.approve.enabled}
           title={item.actions?.approve.reason || (!item.actions ? '服务未提供操作许可' : undefined)}
           loading={decide.isPending && pending === 'approve'}
           onClick={() => run('approve')}
         >
-          批准并交付
+          确认保留
         </Button>
       </div>
     </footer>

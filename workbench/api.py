@@ -113,18 +113,24 @@ def _run_lock(run_id: str) -> threading.Lock:
     return lock
 
 
-def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
+def _run_payload(
+    store: RecordStore, run_id: str, *, substeps_for: str | None = None
+) -> dict[str, Any]:
+    """构建 Run 聚合投影。
+
+    ``substeps_for`` 指定只加载某个任务的审查内部证据；任务详情只需要当前
+    任务，避免为 30+ 个任务读取无关的 review_agent 子步骤产物。
+    """
     directory = store.run_dir(run_id)
     if not directory.is_dir():
         raise HTTPException(status_code=404, detail="运行记录不存在")
     from app.workflow.contracts import WORKFLOW_VERSION
     if store.load_run(run_id).get("workflow_version") != WORKFLOW_VERSION:
         raise HTTPException(status_code=409, detail="工作流版本不受支持，请新建当前版本执行")
-    steps_payload = _read_json(store.steps_path(run_id), {})
-    if not isinstance(steps_payload, dict):
-        steps_payload = {}
-    run_steps = [        item.model_dump(mode="json")
-        for item in store.list_steps(run_id)
+    steps_payload = store.steps_snapshot(run_id)
+    run_steps = [
+        item.model_dump(mode="json")
+        for item in store.list_steps_from_snapshot(run_id, steps_payload)
     ]
     task_slots = steps_payload.get("tasks", [])
     lifecycle_store = LifecycleStore(store.root)
@@ -136,15 +142,16 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
             task_id = slot["task_id"]
             task_steps = [
                 item.model_dump(mode="json")
-                for item in store.list_steps(run_id, task_id)
+                for item in store.list_steps_from_snapshot(run_id, steps_payload, task_id)
             ]
             # 审查 Agent 的内部工具（check_changes / verify_issue / run_regression …）
             # 刻意不进 steps.json 主表，但工作台必须能看到它们的执行证据，
             # 否则"变更校验/问题验证/回归验证"三块永远空白。
-            task_steps.extend(
-                item.model_dump(mode="json")
-                for item in store.list_review_substeps(run_id, task_id)
-            )
+            if substeps_for is None or task_id == substeps_for:
+                task_steps.extend(
+                    item.model_dump(mode="json")
+                    for item in store.list_review_substeps(run_id, task_id)
+                )
             final_path = store.task_dir(run_id, task_id) / "reports" / "final.json"
             report = _read_json(final_path, {})
             # 同一任务可经历多轮回修与多次审批；必须以最后一次 request_approval 为准。
@@ -1426,10 +1433,11 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
     """只返回一个任务的详情，避免 Run 页面携带并渲染所有任务的步骤与产物。"""
     store = _store()
     run_id, task_id = _safe_id(run_id), _safe_id(task_id)
-    payload = _run_payload(store, run_id)
+    payload = _run_payload(store, run_id, substeps_for=task_id)
     source = next((item for item in payload.get("tasks", []) if item.get("task_id") == task_id), None)
     if source is None:
         raise HTTPException(status_code=404, detail="该执行中不存在此任务")
+    run_summary = _v1_run_summary(payload)
     steps = [_formal_step_payload(store, run_id, task_id, step) for step in source.get("steps") or []]
     report = source.get("report") if isinstance(source.get("report"), dict) else {}
     artifacts = []
@@ -1456,7 +1464,7 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
     retry = task_retry_action(
         current=current, worker_active=bool(payload.get("worker_active")),
         run_failed=(store.run_dir(run_id) / "reports/run_failure.json").is_file(),
-        run_status=_v1_run_summary(payload)["status"],
+        run_status=run_summary["status"],
         task={**source, "result": source.get("status"), "steps": steps},
     )
     return {
@@ -1464,7 +1472,7 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
         "actions": {"retry": retry.model_dump(mode="json")},
         "delivery": delivery_view(steps).model_dump(mode="json"),
         "run_id": run_id,
-        "run_status": _v1_run_summary(payload)["status"],
+        "run_status": run_summary["status"],
         "worker_active": bool(payload.get("worker_active")),
         "run_terminal": bool(payload.get("terminal")),
         "run_error": run_error if isinstance(run_error, dict) else {},
@@ -1865,8 +1873,13 @@ def v1_list_approvals(
         steps = task.get("steps") if isinstance(task.get("steps"), list) else []
         repair_step = next((value for value in reversed(steps) if value.get("name") == "repair_agent"), {})
         review_step = next((value for value in reversed(steps) if value.get("name") == "review_agent"), {})
+        regression_step = next((value for value in reversed(steps) if value.get("name") == "run_regression"), {})
         repair_output = repair_step.get("output") if isinstance(repair_step.get("output"), dict) else {}
         review_output = review_step.get("output") if isinstance(review_step.get("output"), dict) else {}
+        regression_output = regression_step.get("output") if isinstance(regression_step.get("output"), dict) else {}
+        from app.workflow.validation import business_recovery
+
+        recovery = business_recovery(regression_output)
         repair_plan = repair_output.get("change_plan") if isinstance(repair_output.get("change_plan"), dict) else {}
         review_plan = review_output.get("change_plan") if isinstance(review_output.get("change_plan"), dict) else {}
         # 审查 Agent 新提出的 project 方案覆盖早先 carrier 方案，和工作流实际将审批的状态保持一致。
@@ -1903,9 +1916,12 @@ def v1_list_approvals(
         from workbench.view_models import ActionAvailability
         metadata = store.load_run(run_id)
         current = metadata.get("workflow_version") == WORKFLOW_VERSION
+        # 审批发生在交付之后：已交付（published）同样允许确认保留或打回，
+        # 打回由审批节点撤回该分支。准备中（prepared）的旧任务也保留入口。
+        deliverable = current and candidate.phase in {"prepared", "published"} and bool(candidate.candidate_id)
         approve = ActionAvailability(
-            enabled=current and candidate.phase == "prepared" and bool(candidate.candidate_id),
-            reason="" if current and candidate.phase == "prepared" and candidate.candidate_id else "缺少有效本地候选或记录属于历史工作流",
+            enabled=deliverable,
+            reason="" if deliverable else "缺少有效交付候选或记录属于历史工作流",
         )
         reject = ActionAvailability(enabled=current, reason="" if current else "历史工作流只读，请创建新执行")
         items.append({
@@ -1916,6 +1932,7 @@ def v1_list_approvals(
             "scope": safe_plan["scope"], "status": "pending", "summary": summary,
             "changed_files": list(dict.fromkeys(str(value) for value in files if str(value).strip())),
             "change_plan": safe_plan,
+            "business_recovery": recovery,
             "created_at": item.get("updated_at") or datetime.now(timezone.utc).isoformat(), "expires_at": None,
         })
     return {"items": items, "total": len(items)}

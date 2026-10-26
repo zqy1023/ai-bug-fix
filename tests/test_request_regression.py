@@ -203,6 +203,57 @@ class RuntimeStatusExemptTests(unittest.TestCase):
         self.assertEqual(runtime, ["Src/proj/tmp-data/x.log"])
         self.assertIn("!! Src/proj/logs/app.log", kept)
 
+    def test_bytecode_cache_is_runtime_artifact(self):
+        from app.agents.review.tools.run_regression.regression import _runtime_status
+
+        workspace, project = self._layout()
+        status = "\n".join(
+            [
+                "!! Src/proj/gathers/Test/__pycache__/",
+                "?? Src/proj/gathers/Test/parser.cpython-311.pyc",
+                "?? Src/proj/gathers/Test/new.py",
+            ]
+        )
+        kept, runtime = _runtime_status(status, workspace, project)
+        self.assertEqual(
+            runtime,
+            [
+                "Src/proj/gathers/Test/__pycache__/",
+                "Src/proj/gathers/Test/parser.cpython-311.pyc",
+            ],
+        )
+        self.assertNotIn("__pycache__", kept)
+        self.assertNotIn(".pyc", kept)
+        self.assertIn("?? Src/proj/gathers/Test/new.py", kept)
+
+
+class BusinessRecoveryTests(unittest.TestCase):
+    """审批面业务恢复状态只由真实请求结果决定。"""
+
+    def test_request_status_mapping(self):
+        from app.workflow.validation import business_recovery
+
+        self.assertEqual(
+            business_recovery({
+                "request_regression": {"status": "verified", "passed": True, "reason": "ok"}
+            })["status"],
+            "verified",
+        )
+        self.assertEqual(
+            business_recovery({
+                "request_regression": {"status": "unverified", "passed": False, "reason": "no body"}
+            })["status"],
+            "unverified",
+        )
+        self.assertEqual(
+            business_recovery({
+                "request_regression": {"status": "failed", "passed": False, "reason": "403"}
+            })["status"],
+            "failed",
+        )
+        self.assertEqual(business_recovery({})["status"], "not_executed")
+        self.assertEqual(business_recovery(None)["status"], "not_executed")
+
 
 class RequestRunnerTimeoutConstantTests(unittest.TestCase):
     """原始请求未设置超时时，向 track_config 注入有效默认值。"""

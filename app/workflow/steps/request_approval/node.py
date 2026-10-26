@@ -1,4 +1,4 @@
-"""10 人工审批。等待用 LangGraph interrupt。"""
+"""10 交付后人工复核。等待用 LangGraph interrupt；打回时撤回已交付分支。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from app.workflow.steps.request_approval.models import (
 
 
 def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
-    """没有决定就挂起；驳回决定须包含原因和白名单内的恢复阶段。"""
+    """没有决定就挂起；打回须包含原因和白名单内的回修阶段，并先撤回交付分支。"""
     decision_reason = str(data.reason or "").strip()[:1000]
     retry_target = str(data.retry_target or "")
     if data.decision == "PENDING":
