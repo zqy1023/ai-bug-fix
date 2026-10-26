@@ -22,7 +22,6 @@ class ESLogAdapter:
         client: Any,
         scanner: Any,
         index_provider: Any,
-        tz_offset: int,
         *,
         index_prefix: str = settings.es_index_prefix,
         scan_size: int = settings.es_scan_size,
@@ -30,11 +29,10 @@ class ESLogAdapter:
         excluded_messages: list[str] | None = None,
         request_timeout: int = settings.es_timeout_seconds,
     ) -> None:
-        """注入 ES 客户端、扫描器、索引提供器与业务时区。"""
+        """注入 ES 客户端、扫描器、索引提供器；时区由 index_provider 闭包负责。"""
         self._client = client
         self._scanner = scanner
         self._index_provider = index_provider
-        self._tz_offset = int(tz_offset)
         self._index_prefix = index_prefix
         self._scan_size = max(1, int(scan_size))
         self._scroll = scroll
@@ -64,7 +62,9 @@ class ESLogAdapter:
         由独立的 ``deduplicate_error`` 步骤完成。
         """
         if hours < 1 or limit < 0:
-            raise ValueError("日志小时数必须大于零，条数上限不能为负数")
+            raise StepFailed(
+                "日志小时数必须大于零，条数上限不能为负数", code="LOG_QUERY_ARGS_INVALID"
+            )
         funnel = {"es_hits": 0, "unparseable": 0, "parsed": 0,
                   "record_limit": limit, "limit_reached": 0}
         checkpoint = scan_state if scan_state is not None else {}
@@ -152,9 +152,8 @@ class ESLogAdapter:
                     failures = checkpoint.setdefault("parse_failures", {"counts": {}, "samples": []})
                     failures["counts"][reason] = failures["counts"].get(reason, 0) + 1
                     if len(failures["samples"]) < 20:
-                        from app.infrastructure.redaction import redact_output
                         failures["samples"].append({"reason": reason, "missing_fields": missing,
-                                                   "message_preview": redact_output(message)[:1000]})
+                                                   "message_preview": message[:1000]})
                 else:
                     funnel["parsed"] += 1
                     yield row
@@ -287,7 +286,7 @@ class ESLogAdapter:
         if track_config:
             result["track_config"] = track_config
         # 显式 error: 后可能只剩异常摘要，必须在丢弃 message 上下文前保留代理渠道。
-        from app.workflow.steps.verify_issue.replay_model import extract_track_config
+        from app.agents.review.tools.verify_issue.replay_model import extract_track_config
 
         recovered_config = extract_track_config({"req": req_obj, "track_config": track_config, "message": message})
         if recovered_config:

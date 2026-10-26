@@ -8,6 +8,8 @@ from typing_extensions import TypedDict
 
 
 class RepairState(TypedDict, total=False):
+    acceptance_contract: dict[str, Any]
+    baseline_reproduction: dict[str, Any]
     """修复子图自己的状态。"""
 
     # run_id：该模型字段用于承载对应契约中的结构化数据。
@@ -37,12 +39,12 @@ class RepairState(TypedDict, total=False):
     evidence: dict[str, Any]
     # locate：该模型字段用于承载对应契约中的结构化数据。
     locate: dict[str, Any]
-    analysis: str        # 模型给出的完整诊断结论
-    summary: str         # 一句话标题式总结
+    analysis: str  # 模型给出的完整诊断结论
+    summary: str  # 一句话标题式总结
     # changed_files：该模型字段用于承载对应契约中的结构化数据。
     changed_files: list[str]
-    change_plan: dict[str, Any]   # 结构化方案：passed=false 时同样保留
-    blocked_reason: str          # 改不动的结构化原因
+    change_plan: dict[str, Any]  # 结构化方案：passed=false 时同样保留
+    blocked_reason: str  # 改不动的结构化原因
     scope_escalation_required: bool  # 共享层范围，只能转分析报告
     # baseline_manifest：该模型字段用于承载对应契约中的结构化数据。
     baseline_manifest: dict[str, str]
@@ -50,7 +52,7 @@ class RepairState(TypedDict, total=False):
     baseline_dir: str
     # result：该模型字段用于承载对应契约中的结构化数据。
     result: Literal["passed", "failed"]
-    passed: bool            # LangGraph 只保留声明过的通道，漏声明会被静默丢弃
+    passed: bool  # LangGraph 只保留声明过的通道，漏声明会被静默丢弃
     failure_kind: str
     # raw_result：该模型字段用于承载对应契约中的结构化数据。
     raw_result: str

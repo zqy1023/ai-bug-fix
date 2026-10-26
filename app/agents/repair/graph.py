@@ -107,6 +107,8 @@ def _call(
         {**state, "run_id": str(state["run_id"]), "task_id": task, "carrier": carrier},
         framework=str(evidence["framework"]),
         evidence={
+            "acceptance_contract": state["acceptance_contract"],
+            "baseline_reproduction": state["baseline_reproduction"],
             "prepared_source_evidence": evidence,
             "locate": locate,
             "deterministic_analysis": deterministic_analysis,

@@ -1,50 +1,49 @@
-import { RightOutlined } from '@ant-design/icons';
+import { useQuery } from '@tanstack/react-query';
+import { DownOutlined, RightOutlined, ArrowRightOutlined } from '@ant-design/icons';
 import type { RunSummary } from '../../lib/types';
-import { formatDuration, formatTime, shortId } from '../../lib/format';
-import { StatusBadge } from '../../components/StatusBadge';
-import { RunProgressHeatmap } from '../../components/RunProgressHeatmap';
-import { ACTIVE_RUN } from '../../lib/lifecycle';
+import { formatBatchTime, shortId } from '../../lib/format';
+import { workbenchQueries } from '../../lib/workbenchQueries';
+import { RunProgress } from '../../components/RunProgress';
+import styles from './RunCard.module.css';
 
-export function RunCard({ run, onOpen }: { run: RunSummary; onOpen: () => void }) {
-  const running = run.terminal || !ACTIVE_RUN.has(run.status) ? 0 : Math.max(
-    0,
-    run.task_count - run.succeeded_tasks - run.failed_tasks - run.manual_tasks - run.waiting_tasks - (run.inactive_tasks ?? 0),
-  );
-  const startedAt = new Date(run.started_at).getTime();
-  const finished = run.finished_at
-    ? new Date(run.finished_at).getTime() - startedAt
-    : run.terminal || !ACTIVE_RUN.has(run.status)
-      ? undefined : Math.max(0, Date.now() - startedAt);
+export interface RunCardProps {
+  readonly run: RunSummary;
+  readonly expanded: boolean;
+  readonly onToggle: () => void;
+  readonly onOpen: () => void;
+}
 
-  return (
-    <button type="button" className="run-card" onClick={onOpen}>
-      <div className="run-card-head">
-        <span className="run-id" title={run.run_id}>run:{shortId(run.run_id, 10)}</span>
-        <StatusBadge kind="run" value={run.status} compact />
-        <span className="run-card-time">{formatDuration(finished)}</span>
-      </div>
-      <div className="run-card-meta">
-        <span>{run.task_count} 个任务</span>
-        <span className="dot-sep">·</span>
-        <span>{run.succeeded_tasks} 自动 / {run.manual_tasks} 报告</span>
-        {run.waiting_tasks > 0 && <span className="run-card-waiting">{run.waiting_tasks} 待审批</span>}
-        {run.status === 'running' && run.task_count === 0 && (
-          <span className="run-card-phase">启动中</span>
-        )}
-      </div>
-      <RunProgressHeatmap
-        succeeded={run.succeeded_tasks}
-        waiting={run.waiting_tasks}
-        manual={run.manual_tasks}
-        failed={run.failed_tasks}
-        running={running}
-        inactive={run.inactive_tasks ?? 0}
-        total={run.task_count}
-      />
-      <div className="run-card-foot">
-        <span>{run.operator ?? '系统'} · {formatTime(run.started_at)}</span>
-        <RightOutlined />
-      </div>
-    </button>
-  );
+const STATUS = {
+  queued: ['排队中', 'neutral'], running: ['执行中', 'active'], waiting_approval: ['待审批', 'waiting'],
+  succeeded: ['已完成', 'neutral'], partial_failed: ['部分失败', 'failed'], failed: ['失败', 'failed'],
+  paused: ['已暂停', 'neutral'], pause_requested: ['暂停中', 'waiting'], cancelled: ['已停止', 'neutral'], cancel_requested: ['停止中', 'waiting'],
+} as const;
+
+export function RunCard({ run, expanded, onToggle, onOpen }: RunCardProps) {
+  const detail = useQuery({ ...workbenchQueries.run(run.run_id), enabled: expanded });
+  const view = detail.data;
+  const latestStep = view?.steps?.at(-1);
+  const currentTask = !run.terminal && view?.tasks?.find((task) => task.task_id === view.run_lifecycle?.current_task_id);
+  const terminalMessage = view?.run_report?.terminal_reason || view?.run_error?.message || view?.run_lifecycle?.terminal_reason;
+  const latest = (run.terminal ? terminalMessage : view?.run_lifecycle?.progress?.message)
+    || terminalMessage || latestStep?.assessment?.summary || latestStep?.summary
+    || (run.waiting_tasks ? `${run.waiting_tasks} 个任务等待人工交付审批` : run.task_count === 0 ? '尚未派发问题任务，查看执行案卷了解当前进展' : `${run.task_count} 个任务的执行记录已同步`);
+  const [label, tone] = STATUS[run.status] || ['状态未知', 'neutral'];
+  return <><tr className={`${styles.row}${expanded ? ` ${styles.selected}` : ''}`}>
+    <td><div className={styles.identity}>
+      <button type="button" className={styles.expand} onClick={onToggle} aria-expanded={expanded} aria-controls={`run-latest-${run.run_id}`} aria-label={`${expanded ? '收起' : '展开'}批次 ${run.run_id}`}>{expanded ? <DownOutlined /> : <RightOutlined />}</button>
+      <div><button type="button" className={styles.name} onClick={onOpen}>自动修复批次{run.status === 'running' && <i aria-hidden="true" />}</button><code className={styles.id} title={run.run_id}>{shortId(run.run_id, 25)}</code></div>
+    </div></td>
+    <td><span className={`${styles.status} ${styles[tone]}`}><i aria-hidden="true" />{label}</span></td>
+    <td className={styles.progress}><RunProgress run={run} list /></td>
+    <td className={styles.center}>{run.waiting_tasks > 0 ? <span className={styles.waiting}>{run.waiting_tasks}</span> : <span className={styles.zero}>0</span>}</td>
+    <td className={styles.time} title={run.started_at}>{formatBatchTime(run.started_at)}</td>
+    <td className={styles.last}><button type="button" className={styles.open} onClick={onOpen}>{run.terminal ? '回溯' : '详情'}</button></td>
+  </tr>{expanded && <tr className={styles.expandedRow}><td colSpan={6}>
+    <div className={styles.latest} id={`run-latest-${run.run_id}`}>
+      <span className={styles.latestLabel}>最近动作</span>
+      <span className={styles.latestText}>{detail.isLoading ? '正在读取批次最新记录…' : detail.isError ? '最新记录读取失败' : latest}{currentTask && <> · 当前任务 <code>{currentTask.task_id}</code></>}</span>
+      {detail.isError ? <button className={styles.open} onClick={() => void detail.refetch()}>重试</button> : <button type="button" className={styles.open} onClick={onOpen}>进入批次详情 <ArrowRightOutlined /></button>}
+    </div>
+  </td></tr>}</>;
 }

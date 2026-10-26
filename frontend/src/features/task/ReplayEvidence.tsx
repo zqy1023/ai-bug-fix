@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button, Checkbox, Input, message } from 'antd';
+import styles from './ReplayEvidence.module.css';
 
 export function object(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -51,8 +52,8 @@ export function TextEvidence({ text, name, displayText, notice }: {
   const needle = search.toLocaleLowerCase();
   const at = needle ? visible.toLocaleLowerCase().indexOf(needle, cursor) : -1;
   useEffect(() => { match.current?.scrollIntoView({ block: 'nearest' }); }, [at, search]);
-  return <div className="text-evidence">
-    <div className="replay-log-toolbar">
+  return <div className={styles.textEvidence}>
+    <div className={styles.toolbar}>
       <span>原文 {text.length.toLocaleString()} 字符</span>
       <Input aria-label="查找当前证据" placeholder="查找文本" value={search} onChange={(event) => { setSearch(event.target.value); setCursor(0); }} />
       {search && <Button size="small" disabled={at < 0} onClick={() => setCursor(visible.toLocaleLowerCase().indexOf(needle, at + needle.length) < 0 ? 0 : at + needle.length)}>下一处</Button>}
@@ -60,9 +61,9 @@ export function TextEvidence({ text, name, displayText, notice }: {
       <Button size="small" onClick={() => void navigator.clipboard.writeText(text).then(() => message.success('已复制完整原文')).catch(() => message.error('复制失败'))}>复制原文</Button>
       <Button size="small" onClick={() => saveEvidence(new Blob([text], { type: 'text/plain;charset=utf-8' }), name)}>下载原文</Button>
     </div>
-    {notice && <p className="evidence-note">{notice}</p>}
-    {search && <p className="evidence-note">{at < 0 ? '未找到匹配文本' : `匹配位置：第 ${at + 1} 个字符`}</p>}
-    <pre className={'replay-log-code' + (wrap ? ' is-wrapped' : '')}>{at < 0 ? visible || '没有记录内容' : <>{visible.slice(0, at)}<mark ref={match}>{visible.slice(at, at + search.length)}</mark>{visible.slice(at + search.length)}</>}</pre>
+    {notice && <p className={styles.note}>{notice}</p>}
+    {search && <p className={styles.note}>{at < 0 ? '未找到匹配文本' : `匹配位置：第 ${at + 1} 个字符`}</p>}
+    <pre className={`${styles.code}${wrap ? ` ${styles.wrapped}` : ''}`}>{at < 0 ? visible || '没有记录内容' : <>{visible.slice(0, at)}<mark ref={match}>{visible.slice(at, at + search.length)}</mark>{visible.slice(at + search.length)}</>}</pre>
   </div>;
 }
 
@@ -70,8 +71,8 @@ export function ReplayComparison({ replay, full = false }: { replay: Record<stri
   const comparison = object(replay.replay_comparison);
   const warning = evidenceWarning(replay);
   return <>
-    {warning && <p className="evidence-warning" role="alert">{warning}</p>}
-    <div className="replay-result-grid">
+    {warning && <p className={styles.warning} role="alert">{warning}</p>}
+    <div className={styles.resultGrid}>
       {(['baseline', 'fixed'] as const).map((side) => {
         const value = object(comparison[side]);
         const observation = object(value.observation);
@@ -82,7 +83,7 @@ export function ReplayComparison({ replay, full = false }: { replay: Record<stri
           && calls.every((call) => call.business_entry === true && !String(call.entrypoint || '').includes('traced_process'));
         let result: unknown;
         try { result = object(JSON.parse(String(replay[side === 'baseline' ? 'replay_baseline_output' : 'replay_output'] || '{}'))).result; } catch { result = undefined; }
-        return <article className="replay-result-card" key={side}>
+        return <article className={styles.resultCard} key={side}>
           <strong>{side === 'baseline' ? '修复前' : '修复后'}</strong>
           <p>框架返回：<b>{String(value.error_type || '未记录')}</b></p>
           <p>原因：{shortError(value.error_msg) || '未返回原因'}</p>
@@ -90,12 +91,12 @@ export function ReplayComparison({ replay, full = false }: { replay: Record<stri
           {errors.map((error, index) => {
             const frames = Array.isArray(error.frames) ? error.frames.map(object) : [];
             const frame = frames.at(-1);
-            return <p key={index}>解析原异常：<b>{String(error.type || '未知类型')}</b> · {shortError(error.message)}{frame && <small className="evidence-location">{String(frame.file || '').replaceAll('\\', '/').split('/').slice(-3).join('/')}:{String(frame.line || '')} · {String(frame.function || '')}</small>}</p>;
+            return <p key={index}>解析原异常：<b>{String(error.type || '未知类型')}</b> · {shortError(error.message)}{frame && <small className={styles.location}>{String(frame.file || '').replaceAll('\\', '/').split('/').slice(-3).join('/')}:{String(frame.line || '')} · {String(frame.function || '')}</small>}</p>;
           })}
           <p>输入送达：{inputVerified ? '已确认同一正文到达业务解析入口' : '未确认'}</p>
           {inputVerified && <p>实际解析函数：<code>{calls.map((call) => String(call.entrypoint || '')).join('、')}</code></p>}
           <p>轨迹数量：{String(value.event_count ?? '未记录')} · 执行：{value.executed === true ? '已完成' : '未完成或未记录'}</p>
-          {full && result !== undefined && <details className="evidence-technical"><summary>完整框架结果</summary><TextEvidence text={JSON.stringify(result, null, 2)} name={`${side}-result.json`} /></details>}
+          {full && result !== undefined && <><pre className={styles.resultPreview}>{JSON.stringify(result, null, 2)}</pre><details className={styles.technical}><summary>完整框架结果</summary><TextEvidence text={JSON.stringify(result, null, 2)} name={`${side}-result.json`} /></details></>}
         </article>;
       })}
     </div>

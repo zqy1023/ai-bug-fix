@@ -1,3 +1,6 @@
+import type { ExecutionResult, Assessment, ActionAvailability, DeliveryView } from './workflow.generated';
+export type { ExecutionResult, Assessment, ActionAvailability, DeliveryView } from './workflow.generated';
+
 export type StepStatus = 'pending' | 'running' | 'waiting' | 'succeeded' | 'failed' | 'skipped';
 export type RunStatus =
   | 'queued' | 'running' | 'waiting_approval' | 'succeeded' | 'partial_failed'
@@ -58,6 +61,8 @@ export interface ArtifactRef {
 }
 
 export interface StepRecord {
+  execution?: ExecutionResult | null;
+  assessment?: Assessment | null;
   name: string;
   title: string;
   status: StepStatus;
@@ -119,6 +124,9 @@ export interface TaskSummary {
 }
 
 export interface TaskDetailResponse {
+  read_only?: boolean;
+  actions?: { retry: ActionAvailability };
+  delivery?: DeliveryView;
   run_id: string;
   run_status: RunStatus;
   worker_active?: boolean;
@@ -146,6 +154,8 @@ export interface WorkflowStage {
 }
 
 export interface RunDetail extends RunSummary {
+  read_only?: boolean;
+  actions?: Record<'pause' | 'resume' | 'retry' | 'cancel', ActionAvailability>;
   worker_active?: boolean;
   phase?: string;
   run_lifecycle?: {
@@ -185,12 +195,12 @@ export interface CheckpointHistoryResponse {
 export type ApprovalRetryTarget =
   | 'locate_agent'
   | 'repair_agent'
-  | 'validate_changes'
-  | 'run_regression'
   | 'review_agent'
   | 'prepare_delivery';
 
 export interface ApprovalItem {
+  delivery?: DeliveryView;
+  actions?: { approve: ActionAvailability; reject: ActionAvailability };
   approval_id: string;
   run_id: string;
   task_id: string;
@@ -356,6 +366,7 @@ export interface StepContext {
 }
 
 export interface StepDetailResponse {
+  actions?: { rerun: ActionAvailability; continue_after: ActionAvailability };
   run_id: string;
   task_id: string;
   step: StepRecord;

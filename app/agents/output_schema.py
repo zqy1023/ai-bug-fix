@@ -18,12 +18,13 @@ def output_schema(role: str) -> dict[str, Any]:
             evidence.get("properties", {}).pop(key, None)
     for key in ("root_cause", "summary", "analysis", "blocked_reason"):
         if key in schema["properties"]:
-            schema["properties"][key]["pattern"] = r"^$|[\u3400-\u9fff]"
+            # 只要求"至少一个非空白字符"：中文强制会把纯代码/单号的合法结论判为非法。
+            schema["properties"][key]["pattern"] = r"\S"
     for key in ("facts", "evidence_gaps", "findings", "required_changes"):
         items = schema["properties"].get(key, {}).get("items", {})
         if items.get("type") == "string":
-            items["pattern"] = r"[\u3400-\u9fff]"
+            items["pattern"] = r"\S"
     finding = schema.get("$defs", {}).get("SourceEvidence", {}).get("properties", {}).get("finding")
     if finding is not None:
-        finding["pattern"] = r"[\u3400-\u9fff]"
+        finding["pattern"] = r"\S"
     return schema

@@ -1,4 +1,5 @@
 import type { StepContext } from '../../lib/types';
+import styles from './ContextInspector.module.css';
 
 /**
  * 上下文（三级信息，默认折叠）：变更文件、方案范围、交付状态、输出计数与标志位。
@@ -54,7 +55,7 @@ export function ContextInspector({ context }: { context?: StepContext }) {
   if (!context || !hasContent) return null;
 
   return (
-    <details className="context-panel">
+    <details className={styles.panel}>
       <summary>
         上下文 · 变更文件 {files.length}
         {context.change_plan_scope && ` · ${scopeLabel(context.change_plan_scope)}`}
@@ -62,21 +63,21 @@ export function ContextInspector({ context }: { context?: StepContext }) {
       </summary>
 
       {files.length > 0 && (
-        <ul className="inspector-files">
+        <ul className={styles.files}>
           {files.map((file) => <li key={file}><code>{file}</code></li>)}
         </ul>
       )}
       {counts.length > 0 && (
-        <div className="inspector-chips">
+        <div className={styles.chips}>
           {counts.map(([key, value]) => (
-            <span key={key}>{COUNT_LABELS[key] || key.replace(/_/g, ' ')} {value}</span>
+            <span key={key} className={styles.chip}>{COUNT_LABELS[key] || key.replace(/_/g, ' ')} {value}</span>
           ))}
         </div>
       )}
       {flags.length > 0 && (
-        <div className="inspector-chips">
+        <div className={styles.chips}>
           {flags.map(([key, value]) => (
-            <span key={key} className={value ? 'is-on' : ''}>{FLAG_LABELS[key] || key.replace(/_/g, ' ')}：{value ? '是' : '否'}</span>
+            <span key={key} className={`${styles.chip}${value ? ` ${styles.chipOn}` : ''}`}>{FLAG_LABELS[key] || key.replace(/_/g, ' ')}：{value ? '是' : '否'}</span>
           ))}
         </div>
       )}

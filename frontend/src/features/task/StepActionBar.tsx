@@ -1,24 +1,27 @@
+import type { ActionAvailability } from '../../lib/types';
 import { useState } from 'react';
 import { App, Button, Checkbox, Modal } from 'antd';
 import { PlayCircleOutlined } from '@ant-design/icons';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../../lib/api';
 import { queryKeys } from '../../lib/queryKeys';
-import { AGENT_STEPS, WRITE_STEPS } from './stages';
+import { AGENT_STEPS } from './stages';
+import styles from './StepActionBar.module.css';
 
 export function StepActionBar({
-  runId, taskId, stepName, stepStatus, runActive, approvalPending = false,
+  runId, taskId, stepName, stepStatus, runActive, approvalPending = false, availability, continuation,
 }: {
   runId: string; taskId: string; stepName: string; stepStatus: string;
-  runActive: boolean; approvalPending?: boolean;
+  runActive: boolean; approvalPending?: boolean; availability?: ActionAvailability; continuation?: ActionAvailability;
 }) {
   const { message } = App.useApp();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [failure, setFailure] = useState('');
-  const [continueAfter, setContinueAfter] = useState(true);
-  const risky = WRITE_STEPS.has(stepName) || continueAfter;
+  const [continueRequested, setContinueRequested] = useState(true);
+  const continueAfter = continueRequested && continuation?.enabled === true;
+  const risky = availability?.requires_confirmation || continueAfter;
   const blockedByStep = stepName === 'request_approval' || stepName === 'retry_prepare';
 
   const mutation = useMutation({
@@ -40,23 +43,23 @@ export function StepActionBar({
     },
   });
 
-  if (blockedByStep || approvalPending) {
+  if (!availability || !availability.enabled || blockedByStep || approvalPending) {
     return (
-      <div className="step-action-bar is-blocked">
-        {blockedByStep
+      <div className={`${styles.bar} ${styles.blocked}`}>
+        {availability?.reason || (!availability ? '正在确认操作权限；旧版服务不提供操作许可，请升级后端。' : blockedByStep
           ? '审批必须在“交付审批”页完成，单步执行不提供该入口。'
-          : '该任务仍有待处理交付审批，不能通过单步执行绕过；请先在交付审批页完成或恢复决策。'}
+          : '该任务仍有待处理交付审批，不能通过单步执行绕过；请先在交付审批页完成或恢复决策。')}
       </div>
     );
   }
 
   return (
-    <div className="step-action-bar">
-      <div className="step-action-copy">
+    <div className={styles.bar}>
+      <div className={styles.copy}>
         <strong>{continueAfter ? '从此节点继续执行' : stepStatus === 'failed' ? '失败节点重试' : '仅执行当前节点'}</strong>
         <span>重跑所选节点，默认接续后续流程；不会从头重跑已完成节点，人工审批仍需单独处理。</span>
-        {runActive && <span className="action-warning">执行仍在活跃状态，后端会拒绝单步写入。</span>}
-        {failure && <span className="action-failure">{failure}</span>}
+        {runActive && <span className={styles.warning}>执行仍在活跃状态，后端会拒绝单步写入。</span>}
+        {failure && <span className={styles.failure}>{failure}</span>}
       </div>
       <Button type="primary" icon={<PlayCircleOutlined />} disabled={runActive} onClick={() => setOpen(true)}>
         {stepStatus === 'failed'
@@ -74,15 +77,16 @@ export function StepActionBar({
         onOk={() => mutation.mutate()}
       >
         <p>将基于已落盘记录重建输入并执行该步骤。执行结果会覆盖当前步骤记录并写入控制审计。</p>
-        <Checkbox checked={continueAfter} onChange={(event) => setContinueAfter(event.target.checked)}>完成后继续后续流程（直到审批、暂停或任务结束）</Checkbox>
+        <Checkbox checked={continueAfter} disabled={!continuation?.enabled} onChange={(event) => setContinueRequested(event.target.checked)}>完成后继续后续流程（直到审批、暂停或任务结束）</Checkbox>
+        {continuation?.reason && <p className={styles.note}>{continuation.reason}</p>}
         {risky && (
-          <div className="confirm-block">
+          <div className={styles.confirmBlock}>
             <Checkbox checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)}>
               我确认该步骤可能产生外部写入（工作区、分支或修复资格）
             </Checkbox>
           </div>
         )}
-        <p className="confirm-note">执行期间请勿同时操作整轮执行；活跃的 run 会被后端拒绝。</p>
+        <p className={styles.note}>执行期间请勿同时操作整轮执行；活跃的 run 会被后端拒绝。</p>
       </Modal>
     </div>
   );

@@ -16,11 +16,15 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from typing import Any
 
-from app.infrastructure.claude.session import ClaudeSession, resolve_tools, run_agent_once
-from app.agents.policy import ToolPolicy
 from app.agents.common import invoke_with_audit
+from app.agents.policy import ToolPolicy
 from app.agents.review.config import ReviewConfig
 from app.application.contracts import AgentRequest
+from app.infrastructure.claude.session import (
+    ClaudeSession,
+    resolve_tools,
+    run_agent_once,
+)
 
 
 class ReviewProvider(ABC):
@@ -56,8 +60,8 @@ class ClaudeSessionProvider(ReviewProvider):
         from app.agents.output_schema import output_schema
         request = request.model_copy(update={"provider": self.name})
         ToolPolicy.validate(request)
-        from app.infrastructure.runtime import drop_session, session_scope
         from app.agents.session_context import invoke_session, session_fingerprint
+        from app.infrastructure.runtime import drop_session, session_scope
 
         # key 不含 prompt_hash：每轮提示词必然不同，带它进来会让缓存永不命中。
         session_key = f"{request.workspace}\x00{request.run_id}\x00{request.task_id}"
@@ -134,12 +138,17 @@ class ManualProvider(ReviewProvider):
         request = request.model_copy(update={"provider": self.name})
         ToolPolicy.validate(request)
         payload = {
-            "result": "MANUAL",
+            "verdict": "MANUAL",
             "passed": False,
             "code_verdict": "UNKNOWN",
             "coverage": {"decision": "unknown", "reason": "人工审查模式，尚未评估本次变更覆盖",
                          "reviewed_symbols": [], "missing_checks": ["人工核对源码及验证证据"]},
-            "mode": "MANUAL_REVIEW_REQUIRED",
+            "dimensions": {
+                key: {"status": "unverified", "reason": "人工审查模式，等待核对源码与执行证据", "evidence": []}
+                for key in ("syntax", "business", "scope")
+            },
+            "environment_assessment": "人工审查尚未核对验证环境，无法确认",
+            "upstream_assessment": "人工审查尚未核对官网状态，无法确认",
             "summary": self._REASON,
             "findings": [],
             "required_changes": [],

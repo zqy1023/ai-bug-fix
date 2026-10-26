@@ -1,0 +1,28 @@
+/* 任务操作条:状态徽标 + 动作按钮组 + 失败原因与事实脚注。 */
+.card { padding: 12px 14px; border: 1px solid var(--wb-line); border-left: 2px solid var(--wb-primary); border-radius: 10px; background: var(--wb-surface); }
+.cardFailed { border-left-color: var(--wb-danger); }
+
+.head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.identity { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.identity > strong { font-size: 12.5px; }
+.identity > span { color: var(--wb-ink-muted); font-size: 11.5px; }
+.buttons { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.reason { margin: 12px 0 0; color: var(--wb-ink); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; max-height: 140px; overflow-y: auto; white-space: pre-wrap; }
+
+.runErrorWrap { margin-top: 12px; }
+.runErrorWrap strong { font-weight: 600; color: var(--wb-warning); }
+
+.permission { margin: 0; padding-top: 12px; font-size: 11.5px; color: var(--wb-ink-muted); line-height: 1.7; }
+
+.footer { display: flex; flex-wrap: wrap; gap: 6px 20px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--wb-line-soft); color: var(--wb-ink-muted); font-size: 11.5px; }
+
+@media (max-width: 900px) { .buttons { flex-wrap: wrap; } }
+
+.card {border-radius:8px;padding:18px;}
+
+.card {position:sticky;bottom:12px;z-index:15;border-color:var(--wb-line);box-shadow:0 3px 16px color-mix(in srgb,var(--wb-ink) 5%,transparent);}
+.more {margin-top:12px;font-size:10px;color:var(--wb-ink-muted);}
+.more summary {cursor:pointer;}
+
+.card {position:sticky;bottom:0;z-index:15;padding:12px 20px;border:0;border-top:1px solid var(--wb-line);border-radius:0;margin-top:auto;background:var(--wb-surface);box-shadow:0 -3px 12px color-mix(in srgb,var(--wb-ink) 3%,transparent);}.card .head {gap:10px;}.card .head strong {font-size:11px;}.card .buttons {flex-wrap:wrap;}.card .buttons :global(.ant-btn){font-size:11px;height:30px;}.card .more {margin-top:8px;}@media(max-width:900px){.card{position:static;padding:14px;}}

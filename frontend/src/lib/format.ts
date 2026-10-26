@@ -20,6 +20,16 @@ export function formatTime(value?: string | null): string {
   return parsed.isValid() ? parsed.format('MM-DD HH:mm:ss') : value;
 }
 
+/** Compact batch timestamps; the full ISO remains available on the cell title. */
+export function formatBatchTime(value?: string | null): string {
+  if (!value) return '—';
+  const parsed = dayjs(value);
+  if (!parsed.isValid()) return value;
+  if (parsed.isSame(dayjs(), 'day')) return `今天 ${parsed.format('HH:mm')}`;
+  if (parsed.isSame(dayjs().subtract(1, 'day'), 'day')) return `昨天 ${parsed.format('HH:mm')}`;
+  return parsed.format('M月D日 HH:mm');
+}
+
 export function formatTokens(value?: number | null): string {
   if (value === undefined || value === null) return '—';
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;

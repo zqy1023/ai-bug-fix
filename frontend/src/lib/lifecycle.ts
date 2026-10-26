@@ -6,7 +6,7 @@ const FAILED_TASK = new Set(['FAILED', 'FAIL', 'REJECTED', 'PARTIAL_FAILED']);
 
 /** 所有任务视图共用生命周期判定，历史节点失败不覆盖新一次执行。 */
 export function taskState(task: Pick<TaskSummary, 'result' | 'lifecycle'>): string {
-  return String(task.lifecycle?.status || task.result || 'PENDING').toUpperCase();
+  return String(task.result || 'PENDING').toUpperCase();
 }
 
 export function taskIsActive(task: Pick<TaskSummary, 'result' | 'lifecycle'>): boolean {
@@ -25,12 +25,5 @@ export function taskFailure(detail: TaskDetailResponse): string {
 }
 
 export function taskCanRetry(detail: TaskDetailResponse): boolean {
-  const manual = ['MANUAL', 'INSUFFICIENT_EVIDENCE', 'BLOCKED'].includes(taskState(detail.task));
-  if (manual) return !detail.worker_active && !detail.task.approval_pending;
-  return taskHasFailed(detail.task)
-    && ['failed', 'partial_failed', 'succeeded'].includes(detail.run_status)
-    && !detail.worker_active && !detail.task.approval_pending
-    && (!detail.run_error?.status || detail.run_error.error_type === 'WORKFLOW_FAILED')
-    && detail.task.steps.some((step) => step.name === 'finalize_execution')
-    && !detail.task.steps.some((step) => step.name === 'prepare_delivery');
+  return detail.actions?.retry.enabled === true;
 }

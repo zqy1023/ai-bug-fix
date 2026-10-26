@@ -1,17 +1,35 @@
-"""确定后续动作：平台确定性节点，不调用模型。"""
-from typing import Any
-from app.workflow.spec import StepSpec, FrozenModel, Dependency
-from app.workflow.validation import decision_patch
+"""确定性验证节点，输入输出由正式模型限定。"""
 
-class Input(FrozenModel):
-    state: dict[str, Any]
+from app.workflow.spec import StepSpec
+from app.workflow.validation import ValidationDecision, decide
+from app.workflow.validation_context import ValidationContext, input_of
 
-class Output(FrozenModel):
-    payload: dict[str, Any]
 
-def run(ctx, data: Input) -> Output:
-    return Output(payload=decision_patch(data.state))
+def run(ctx, data: ValidationContext) -> ValidationDecision:
+    return ValidationDecision.model_validate(decide(data.model_dump(mode="json")))
 
-SPEC = StepSpec(next_step="finalize_execution", name="decide_validation", title="确定后续动作", runner=run, input_model=Input,
-                output_model=Output, input_builder=lambda state: {"state": {key: state[key] for key in ['check_passed', 'syntax_passed', 'gate_result', 'ai_workspace_path', 'baseline_dir', 'changed_files', 'problem', 'validation_plan', 'verify_result', 'regression_result', 'validation_summary', 'review', 'validation_recovery_counts', 'automatic_attempt', 'max_attempts', 'review_mode'] if key in state}},
-                output_patch=lambda output: dict(output["payload"]), depends_on=(Dependency("review_agent", "task"),))
+
+def patch(output):
+    return {
+        "validation_decision": output,
+        "retry_target": output["target"],
+        "retry_reason": output["reason"],
+        "blocked_reason": output["reason"] if output["action"] == "blocked" else "",
+        "manual_confirmation_required": output["manual_required"],
+        "manual_confirmation_reasons": ["用户选择人工代码审查"]
+        if output["manual_required"]
+        else [],
+        "terminal_status": "BLOCKED" if output["action"] == "blocked" else "passed",
+        "last_result": "passed",
+    }
+
+
+SPEC = StepSpec(
+    name="decide_validation",
+    title="确定后续动作",
+    runner=run,
+    input_model=ValidationContext,
+    output_model=ValidationDecision,
+    input_builder=input_of,
+    output_patch=patch,
+)

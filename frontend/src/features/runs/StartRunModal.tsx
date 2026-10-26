@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { api, ApiError } from '../../lib/api';
 import { queryKeys } from '../../lib/queryKeys';
+import styles from './StartRunModal.module.css';
 
 const { Text } = Typography;
 
@@ -81,13 +82,13 @@ export function StartRunModal({ open, onClose }: { open: boolean; onClose: () =>
             <Radio.Button value="human">人工审查</Radio.Button>
           </Radio.Group>
         </Form.Item>
-        <Text type="secondary" className="form-note">
+        <Text type="secondary" className={styles.note}>
           AI 审查：通过后自动交付修复分支，并进入交付审批。人工审查：跳过 AI 审查，回归通过后直接交付修复分支，由人工在交付审批里审查分支内容。
         </Text>
         <Form.Item label="最大修复尝试次数" name="max_attempts" rules={[{ required: true, message: '请输入尝试次数' }]}>
           <InputNumber min={1} max={config.data.limits.max_attempts} precision={0} style={{ width: '100%' }} suffix="次" />
         </Form.Item>
-        <div className="form-callout">
+        <div className={styles.callout}>
           提交后全链路自动执行，操作会写入控制审计。除“交付审批”外无需人工介入。
         </div>
       </Form>}

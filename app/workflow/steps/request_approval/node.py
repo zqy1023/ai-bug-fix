@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
+from langgraph.types import interrupt
+
+from app.application.context import StepContext
 from app.domain.errors import StepFailed
 from app.infrastructure.redaction import public_exception
-from app.application.context import StepContext
 from app.workflow.steps.request_approval.approval import final_gate
 from app.workflow.steps.request_approval.models import (
     APPROVAL_RETRY_TARGETS,
     ApprovalInput,
     ApprovalOutput,
 )
-from langgraph.types import interrupt
 
 
 def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
@@ -19,27 +20,40 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
     decision_reason = str(data.reason or "").strip()[:1000]
     retry_target = str(data.retry_target or "")
     if data.decision == "PENDING":
-        resumed = interrupt({
-            "kind": "change_approval",
-            "task_id": data.task_id,
-            "approval_fingerprint": data.approval_fingerprint,
-            "manual_confirmation_required": data.manual_confirmation_required,
-            "manual_confirmation_reasons": list(data.manual_confirmation_reasons),
-            "changed_files": list(data.changed_files),
-            "actions": ["APPROVE", "REJECT"],
-            "retry_targets": sorted(APPROVAL_RETRY_TARGETS),
-        })
+        resumed = interrupt(
+            {
+                "kind": "change_approval",
+                "task_id": data.task_id,
+                "approval_fingerprint": data.approval_fingerprint,
+                "manual_confirmation_required": data.manual_confirmation_required,
+                "manual_confirmation_reasons": list(data.manual_confirmation_reasons),
+                "changed_files": list(data.changed_files),
+                "actions": ["APPROVE", "REJECT"],
+                "retry_targets": sorted(APPROVAL_RETRY_TARGETS),
+            }
+        )
         if isinstance(resumed, dict):
             decision = str(resumed.get("decision") or "PENDING").upper()
             supplied_fingerprint = str(resumed.get("approval_fingerprint") or "")
             if supplied_fingerprint != data.approval_fingerprint:
-                raise StepFailed("审批指纹不匹配，拒绝使用过期审批", {"decision": "PENDING", "passed": False, "reason": "审批指纹不匹配"})
+                raise StepFailed(
+                    "审批指纹不匹配，拒绝使用过期审批",
+                    {
+                        "decision": "PENDING",
+                        "passed": False,
+                        "reason": "审批指纹不匹配",
+                    },
+                )
             decision_reason = str(resumed.get("reason") or "").strip()[:1000]
             retry_target = str(resumed.get("retry_target") or "")
         else:
             raise StepFailed(
                 "审批恢复值必须包含决定和审批指纹",
-                {"decision": "PENDING", "passed": False, "reason": "审批恢复值格式无效"},
+                {
+                    "decision": "PENDING",
+                    "passed": False,
+                    "reason": "审批恢复值格式无效",
+                },
             )
     else:
         decision = data.decision
@@ -48,7 +62,12 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
         if retry_target not in APPROVAL_RETRY_TARGETS:
             raise StepFailed(
                 "驳回恢复节点无效，拒绝执行",
-                {"decision": "REJECT", "passed": False, "reason": "驳回恢复节点无效", "retry_target": ""},
+                {
+                    "decision": "REJECT",
+                    "passed": False,
+                    "reason": "驳回恢复节点无效",
+                    "retry_target": "",
+                },
                 result="manual",
             )
 
@@ -56,16 +75,22 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
             if ctx.services.delivery is None:
                 raise StepFailed(
                     "审批拒绝但交付服务未配置，无法删除已交付分支",
-                    {"decision": "REJECT", "approval_cleanup_failed": True, "passed": False},
+                    {
+                        "decision": "REJECT",
+                        "approval_cleanup_failed": True,
+                        "passed": False,
+                    },
                     result="manual",
                 )
             try:
-                ctx.services.delivery.discard_branch({
-                    "source_repo_path": data.source_repo_path,
-                    "repair_branch": data.repair_branch,
-                    "pushed": data.delivery_pushed,
-                    "local_branch": data.delivery_local_branch,
-                })
+                ctx.services.delivery.discard_branch(
+                    {
+                        "source_repo_path": data.source_repo_path,
+                        "repair_branch": data.repair_branch,
+                        "pushed": data.delivery_pushed,
+                        "local_branch": data.delivery_local_branch,
+                    }
+                )
             except Exception as error:
                 reason = public_exception(error, prefix="审批拒绝后清理修复分支失败")
                 raise StepFailed(
@@ -81,11 +106,18 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
         rejection_summary = decision_reason or "人工打回（未填写补充说明）"
         store = getattr(ctx, "store", None)
         if store is not None:
-            receipt = store.task_dir(ctx.run.run_id, data.task_id) / "delivery" / "operation.json"
+            receipt = (
+                store.task_dir(ctx.run.run_id, data.task_id)
+                / "delivery"
+                / "operation.json"
+            )
             if receipt.is_file():
                 # 已确认删除旧分支后开始新的审批修订；旧收据留档但不能复用旧提交。
                 import uuid
-                receipt.replace(receipt.with_name(f"operation.rejected-{uuid.uuid4().hex}.json"))
+
+                receipt.replace(
+                    receipt.with_name(f"operation.rejected-{uuid.uuid4().hex}.json")
+                )
         raise StepFailed(
             f"人工打回：{rejection_summary}",
             {
@@ -98,7 +130,10 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
             result="rejected",
         )
     if decision != "APPROVE":
-        raise StepFailed("缺少人工决定", {"decision": "PENDING", "passed": False, "reason": "缺少人工决定"})
+        raise StepFailed(
+            "缺少人工决定",
+            {"decision": "PENDING", "passed": False, "reason": "缺少人工决定"},
+        )
 
     gate = final_gate(
         {
@@ -113,14 +148,18 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
         reason = str(gate.get("reason") or "最终门禁失败")
         if data.delivery_pushed or data.delivery_local_branch:
             try:
-                ctx.services.delivery.discard_branch({
-                    "source_repo_path": data.source_repo_path,
-                    "repair_branch": data.repair_branch,
-                    "pushed": data.delivery_pushed,
-                    "local_branch": data.delivery_local_branch,
-                })
+                ctx.services.delivery.discard_branch(
+                    {
+                        "source_repo_path": data.source_repo_path,
+                        "repair_branch": data.repair_branch,
+                        "pushed": data.delivery_pushed,
+                        "local_branch": data.delivery_local_branch,
+                    }
+                )
             except Exception as error:
-                cleanup_reason = public_exception(error, prefix="最终门禁失败，清理修复分支也失败")
+                cleanup_reason = public_exception(
+                    error, prefix="最终门禁失败，清理修复分支也失败"
+                )
                 raise StepFailed(
                     cleanup_reason,
                     {
@@ -138,7 +177,11 @@ def run(ctx: StepContext, data: ApprovalInput) -> ApprovalOutput:
             result="rejected",
         )
     return ApprovalOutput(
-        decision="APPROVE", passed=True, reason="人工审批通过", retry_target="",
+        candidate_id=data.candidate_id,
+        decision="APPROVE",
+        passed=True,
+        reason="人工审批通过",
+        retry_target="",
         manual_confirmation_required=data.manual_confirmation_required,
     )
 

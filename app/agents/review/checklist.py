@@ -1,34 +1,19 @@
-"""由真实上游结果生成分项状态，模型不改写确定性检查结论。"""
-
+"""三个代码审查维度的展示投影。"""
 from typing import Any
 
-from app.workflow.steps.verify_issue.assessment import verification_is_complete
 
-
-def review_checks(state: dict[str, Any], code_verdict: str, coverage: dict[str, Any] | None = None) -> list[dict[str, str]]:
-    """区分未验证与失败，每行保留一句可操作说明。"""
-    gate = state.get("gate_result") or {}
-    verify = dict(state.get("verify_result") or {})
-    regression = state.get("regression_result") or {}
-    coverage = coverage or {}
-    versions = [(state.get(name) or {}).get("evidence_version") or {}
-                for name in ("gate_result", "verify_result", "regression_result")]
-    version_ok = all(v.get("patch_id") for v in versions) and len({v["patch_id"] for v in versions}) == 1
-    rows = [
-        ("scope", "范围与变更检查", "passed" if state.get("check_passed") else "failed" if gate else "unverified",
-         "只修改当前运输商，变更检查通过" if state.get("check_passed") else str(gate.get("reason") or "尚无变更检查结果")),
-        ("syntax", "语法检查", "passed" if state.get("syntax_passed") else "unverified",
-         "Python 语法检查通过" if state.get("syntax_passed") else "缺少已通过的语法结果"),
-        ("code", "代码逻辑审查", {"PASS": "passed", "FAIL": "failed"}.get(code_verdict, "unverified"),
-         {"PASS": "未发现已确认代码缺陷", "FAIL": "发现代码缺陷，见下方待修复项"}.get(code_verdict, "AI 尚未确认代码逻辑，需人工复核")),
-        ("issue", "原始问题验证", "passed" if verification_is_complete(verify) else "failed" if verify.get("status") == "failed" else "unverified",
-         str(verify.get("reason") or "尚未取得原始问题的验证结果")),
-        ("regression", "业务请求与补充回归", "passed" if regression.get("status") == "verified" and regression.get("passed") else
-         str(regression.get("status")) if regression.get("status") in {"syntax_only", "not_configured", "not_executed", "failed"} else "unverified",
-         str(regression.get("reason") or "未取得补充回归执行记录")),
-        ("coverage", "本次变更的验证覆盖", {"sufficient": "passed", "insufficient": "unverified"}.get(str(coverage.get("decision")), "unverified"),
-         str(coverage.get("reason") or "按实际变更核对证据覆盖范围")),
-        ("version", "证据与补丁版本", "passed" if version_ok else "unverified",
-         "三项证据对应同一补丁哈希" if version_ok else "证据版本缺失或不一致，需要重新检查"),
-    ]
-    return [{"key": key, "label": label, "status": status, "detail": detail[:280]} for key, label, status, detail in rows]
+def review_checks(state: dict[str, Any], code_verdict: str,
+                  coverage: dict[str, Any] | None = None,
+                  dimensions: dict[str, Any] | None = None) -> list[dict[str, str]]:
+    dimensions = dimensions or {}
+    rows = []
+    for key, label in (("syntax", "语法检查"), ("business", "业务修复检查"), ("scope", "影响范围检查")):
+        item = dimensions.get(key) or {}
+        status = item.get("status", "unverified")
+        detail = item.get("reason") or "等待修复后代码审查 Agent 核对证据"
+        if key == "syntax" and not state.get("syntax_passed"):
+            status, detail = "unverified", "尚无通过的确定性语法检查，不能确认通过"
+        if key == "scope" and not state.get("check_passed"):
+            status, detail = "unverified", "修改范围门禁尚未通过，不能确认通过"
+        rows.append({"key": key, "label": label, "status": status, "detail": str(detail)[:4000]})
+    return rows

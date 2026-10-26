@@ -7,12 +7,12 @@ import re
 from pathlib import Path
 from typing import Any
 
-from app.infrastructure.filesystem.workspace import WorkspaceManager
-from app.domain.errors import StepFailed
-from app.application.context import StepContext
-from app.workflow.steps.prepare_evidence.models import EvidenceInput, EvidenceOutput
-from app.domain.policies import is_registered_service
 from app.agents.locate.config import LocateConfig
+from app.application.context import StepContext
+from app.domain.errors import StepFailed
+from app.domain.policies import is_registered_service
+from app.infrastructure.filesystem.workspace import WorkspaceManager
+from app.workflow.steps.prepare_evidence.models import EvidenceInput, EvidenceOutput
 from config.settings import settings
 
 _STOPWORDS = {
@@ -151,24 +151,8 @@ def _references_legacy(new_root: Path | None, legacy_root: Path | None) -> bool:
     return False
 
 
-def _legacy_reason(carrier: str, chain: list[str], new_dir: str = "") -> str:
-    """保留旧框架证据说明，供定位报告使用。"""
-    entry = f"{new_dir}/main.py" if new_dir else f"gathers/{carrier}/main.py"
-    missing_entry = f"缺少新框架入口 {entry}"
-    if chain:
-        where = "、".join(chain[:3])
-        return (
-            f"carrier {carrier} {missing_entry}，采集链路会执行旧框架 spiders/ 代码"
-            f"（转发点：{where}），改 gathers/ 无法生效，转人工处理"
-        )
-    return (
-        f"目标 carrier 只有旧框架 spiders/{carrier} 实现，{missing_entry}，转人工处理"
-    )
-
-
-
 def run(ctx: StepContext, data: EvidenceInput) -> EvidenceOutput:
-    """定位唯一 carrier 目录并返回有限候选文件，新旧框架均可进入修复。"""
+    """定位唯一 carrier 目录并准备候选文件；旧框架只提供分析证据。"""
     if not is_registered_service(data.service_name):
         raise StepFailed(f"service_name 未注册，禁止准备修复证据: {data.service_name}")
     if not data.workspace_path:
@@ -195,18 +179,12 @@ def run(ctx: StepContext, data: EvidenceInput) -> EvidenceOutput:
         carrier_dir = legacy_dir.relative_to(root).as_posix()
     # 旧框架也必须生成真实候选源码证据供只读定位 Agent 分析。
     # 是否允许修复由后续路由决定；这里不提前终止分析。
+    # LegacySpiderProvider 委托场景已由 _references_legacy 的
+    # "legacyspiderprovider"/"legacy_spider_provider" 标记覆盖，不再重复扫描。
     legacy_dependency = (
         data.framework == "gathers"
         and _references_legacy(new_root, legacy_dir)
     )
-    # New-framework wrappers can delegate through LegacySpiderProvider without
-    # importing spiders/ directly; expose the real legacy carrier as read evidence.
-    if data.framework == "gathers" and legacy_dir is not None and new_root is not None:
-        legacy_dependency = legacy_dependency or any(
-            "legacyspiderprovider" in source.read_text(encoding="utf-8", errors="ignore").lower()
-            or "legacy_spider_provider" in source.read_text(encoding="utf-8", errors="ignore").lower()
-            for source in new_root.rglob("*.py") if source.is_file()
-        )
     all_files = [
         path.relative_to(root).as_posix()
         for path in sorted(carrier_root.rglob("*.py"))

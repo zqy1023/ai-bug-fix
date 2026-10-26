@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.workflow.steps.check_changes.verification import validate_changed_files
+from app.agents.review.tools.check_changes.verification import validate_changed_files
 
 
 def final_gate(state: dict[str, Any]) -> dict[str, Any]:

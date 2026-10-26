@@ -1,6 +1,14 @@
 import { useMemo, useRef, useState, type RefObject } from 'react';
 import { Empty, Tag } from 'antd';
 import { CodeOutlined } from '@ant-design/icons';
+import styles from './CodeDiffViewer.module.css';
+
+const LINE_KIND_CLASS: Record<string, string> = {
+  same: 'lineSame',
+  add: 'lineAdd',
+  remove: 'lineRemove',
+  blank: 'lineBlank',
+};
 
 type Dict = Record<string, unknown>;
 type ChangeKind = 'same' | 'add' | 'remove';
@@ -250,12 +258,12 @@ function CodePane({
   onScroll: () => void;
 }) {
   return (
-    <div className={`code-diff-pane is-${side}`}>
-      <div className="code-diff-pane-head">
+    <div className={styles.pane}>
+      <div className={styles.paneHead}>
         <span>{side === 'old' ? '原始版本' : '修改后'}</span>
         <span>{rows.length ? `${rows.length} 行对照` : '空文件'}</span>
       </div>
-      <div className="code-diff-scroll" ref={scrollRef} onScroll={onScroll}>
+      <div className={styles.scroll} ref={scrollRef} onScroll={onScroll}>
         {rows.map((row) => {
           const lineNumber = side === 'old' ? row.leftNumber : row.rightNumber;
           const lineText = side === 'old' ? row.leftText : row.rightText;
@@ -263,8 +271,8 @@ function CodePane({
             : side === 'old' ? (row.leftNumber === undefined ? 'blank' : 'remove')
               : (row.rightNumber === undefined ? 'blank' : 'add');
           return (
-            <div key={row.key} className={`code-diff-line is-${cellKind}`}>
-              <span className="code-diff-gutter">{lineNumber ?? ''}</span>
+            <div key={row.key} className={`${styles.line} ${styles[LINE_KIND_CLASS[cellKind] ?? 'lineSame']}`}>
+              <span className={styles.gutter}>{lineNumber ?? ''}</span>
               <code>{lineText === '' || lineText === undefined ? ' ' : lineText}</code>
             </div>
           );
@@ -344,14 +352,14 @@ export function CodeDiffViewer({
   }
 
   return (
-    <div className="code-diff-workbench">
+    <div className={styles.workbench}>
       {diffWarnings.length > 0 && (
-        <div className="code-diff-truncation-warning" role="status">
+        <div className={styles.warn} role="status">
           {diffWarnings.map((warning) => warning.replace(/^#\s*/, '')).join('；')}
         </div>
       )}
-      <aside className="code-diff-file-tree">
-        <header><span>变更文件</span><Tag>{files.length}</Tag></header>
+      <aside className={styles.fileTree}>
+        <header className={styles.treeHead}><span>变更文件</span><Tag>{files.length}</Tag></header>
         {files.map((file) => {
           const active = file.path === activePath;
           const rows = fileRows.get(file.path) ?? [];
@@ -361,24 +369,24 @@ export function CodeDiffViewer({
             <button
               type="button"
               key={file.path}
-              className={`code-diff-file-item${active ? ' is-active' : ''}`}
+              className={`${styles.fileItem}${active ? ` ${styles.fileItemActive}` : ''}`}
               onClick={() => select(file.path)}
               title={file.path}
             >
-              <span className="code-diff-file-name"><CodeOutlined />{file.path}</span>
-              <span className="code-diff-file-meta">
-                <span className="code-diff-added">+{added}</span>
-                <span className="code-diff-removed">−{removed}</span>
+              <span className={styles.fileName}><CodeOutlined />{file.path}</span>
+              <span className={styles.fileMeta}>
+                <span className={styles.added}>+{added}</span>
+                <span className={styles.removed}>−{removed}</span>
                 <span>{statusText(file.status)}</span>
               </span>
             </button>
           );
         })}
       </aside>
-      <section className="code-diff-editor">
+      <section className={styles.editor}>
         {activeFile ? (
           <>
-            <header className="code-diff-file-banner">
+            <header className={styles.fileBanner}>
               <div>
                 <strong>{activeFile.path}</strong>
                 <span>{activeFile.available ? '显示完整文件上下文' : activeFile.reason}</span>
@@ -387,15 +395,15 @@ export function CodeDiffViewer({
                 {statusText(activeFile.status)}
               </Tag>
             </header>
-            <div className="code-diff-two-pane">
+            <div className={styles.twoPane}>
               {activeFile.available ? (
-                <div className="code-diff-panes">
+                <div className={styles.panes}>
                   <CodePane side="old" rows={activeRows} scrollRef={oldScrollRef} onScroll={syncOldToNew} />
                   <CodePane side="new" rows={activeRows} scrollRef={newScrollRef} onScroll={syncNewToOld} />
                 </div>
               ) : (
-                <div className="code-diff-legacy">
-                  <div className="code-diff-panes">
+                <div className={styles.legacy}>
+                  <div className={styles.panes}>
                     <CodePane side="old" rows={activeRows} scrollRef={oldScrollRef} onScroll={syncOldToNew} />
                     <CodePane side="new" rows={activeRows} scrollRef={newScrollRef} onScroll={syncNewToOld} />
                   </div>

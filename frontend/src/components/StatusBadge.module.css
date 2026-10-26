@@ -1,0 +1,29 @@
+/* 状态圆点:颜色由 tone 类注入的 --tone 语义变量驱动,文字保持正文色。 */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 18px;
+  white-space: nowrap;
+  color: var(--wb-ink);
+}
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tone, var(--wb-ink-faint));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--tone, var(--wb-ink-faint)) 14%, transparent);
+  flex: none;
+}
+.live { animation: badge-pulse 1.8s ease-in-out infinite; }
+.compact { font-size: 10.5px; gap: 6px; }
+.compact .dot { width: 5px; height: 5px; }
+@keyframes badge-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--tone, var(--wb-ink-faint)) 14%, transparent); }
+  50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--tone, var(--wb-ink-faint)) 6%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .live { animation: none; }
+}

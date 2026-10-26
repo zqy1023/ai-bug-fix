@@ -4,16 +4,17 @@ from __future__ import annotations
 
 from typing import Literal
 
-from app.domain.approval import APPROVAL_RETRY_TARGETS, RetryTarget
-
-from app.workflow.spec import FrozenModel
 from pydantic import Field
+
+from app.domain.approval import APPROVAL_RETRY_TARGETS, RetryTarget
+from app.workflow.spec import FrozenModel
 
 
 class ApprovalInput(FrozenModel):
     """request_approval 的输入。"""
 
     # task_id：字段说明见该模型文档与工作流契约。
+    candidate_id: str
     task_id: str
     # decision：字段说明见该模型文档与工作流契约。
     decision: Literal["PENDING", "APPROVE", "REJECT"] = "PENDING"
@@ -44,6 +45,7 @@ class ApprovalInput(FrozenModel):
 
 
 class ApprovalOutput(FrozenModel):
+    candidate_id: str = ""
     """request_approval 的输出。"""
 
     # decision：字段说明见该模型文档与工作流契约。

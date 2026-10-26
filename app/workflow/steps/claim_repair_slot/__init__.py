@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.workflow.spec import Dependency, StepSpec
+from app.workflow.spec import StepSpec
 from app.workflow.steps.claim_repair_slot.models import ClaimInput, ClaimOutput
 from app.workflow.steps.claim_repair_slot.node import run
 
@@ -32,8 +32,6 @@ SPEC = StepSpec(
     output_model=ClaimOutput,
     input_builder=_input,
     output_patch=_patch,
-    depends_on=(Dependency("identify_carrier", "run"), Dependency("locate_agent", "task")),
-    next_step="repair_agent",
 )
 
 __all__ = ["SPEC"]

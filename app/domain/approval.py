@@ -11,8 +11,6 @@ from typing import Literal, get_args
 RetryTarget = Literal[
     "locate_agent",
     "repair_agent",
-    "validate_changes",
-    "run_regression",
     "review_agent",
     "prepare_delivery",
 ]

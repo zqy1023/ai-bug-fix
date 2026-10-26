@@ -1,10 +1,11 @@
-import { Collapse, Tag } from 'antd';
+import { Collapse } from 'antd';
 import type { PromptSnapshot } from '../../lib/types';
 import { EmptyState } from '../../components/EmptyState';
+import styles from './PromptViewer.module.css';
 
 function Section({ text }: { text?: string }) {
-  if (!text) return <div className="prompt-empty">该段为空</div>;
-  return <pre className="prompt-text">{text}</pre>;
+  if (!text) return <div className={styles.empty}>该段为空</div>;
+  return <pre className={styles.text}>{text}</pre>;
 }
 
 export function PromptViewer({ snapshot }: { snapshot?: PromptSnapshot | Record<string, never> }) {
@@ -28,14 +29,14 @@ export function PromptViewer({ snapshot }: { snapshot?: PromptSnapshot | Record<
   ];
 
   return (
-    <div className="prompt-viewer">
-      <div className="prompt-meta">
-        <Tag color="blue">{prompt.prompt_version || '未记录版本'}</Tag>
-        <span className="prompt-hash">哈希 {prompt.prompt_hash?.slice(0, 12) || '未记录'}</span>
+    <div className={styles.viewer}>
+      <div className={styles.meta}>
+        <span className={styles.chip}>{prompt.prompt_version || '未记录版本'}</span>
+        <span className={styles.hash}>哈希 {prompt.prompt_hash?.slice(0, 12) || '未记录'}</span>
         <span>第 {prompt.attempt} 次尝试</span>
         <span>{prompt.model}</span>
-        {prompt.redacted && <span className="prompt-flag">已脱敏</span>}
-        {prompt.truncated && <span className="prompt-flag is-warn">已截断</span>}
+        {prompt.redacted && <span className={styles.flag}>已脱敏</span>}
+        {prompt.truncated && <span className={`${styles.flag} ${styles.flagWarn}`}>已截断</span>}
       </div>
       <Collapse defaultActiveKey={['task']} ghost items={items} />
     </div>

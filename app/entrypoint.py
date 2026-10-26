@@ -60,7 +60,7 @@ def prepare_run(
     resolved = run_id or uuid.uuid4().hex
     store = RecordStore(config.runtime_dir)
     metadata = {
-        "workflow_version": 5,
+        "workflow_version": 7,
         "source_repo_path": str(config.source_repo),
         "project_subdir": str(config.project_subdir or ""),
         "log_service_name": config.log_service_name,
@@ -135,7 +135,7 @@ def run_workflow(
                 "log_excluded_biztypes": list(config.excluded_biztypes),
                 "log_hours": config.log_hours,
                 "log_limit": config.limit,
-                "workflow_version": 5,
+                "workflow_version": 7,
                 "attempt": 1,
                 "max_attempts": config.max_attempts,
                 "review_mode": config.review_mode,
@@ -223,10 +223,10 @@ def _ensure_task_final_report(
     finalizer = next((record for record in reversed(all_records) if record.name == "finalize_execution"), None)
     final_output = finalizer.output if finalizer and isinstance(finalizer.output, dict) else {}
 
-    result = str(existing.get("result") or final_output.get("delivery_status") or "").upper()
-    if result in {"COMPLETED", "SUCCEEDED"} and final_output.get("delivery_status"):
-        result = str(final_output["delivery_status"]).upper()
-    terminal_status = str(existing.get("terminal_status") or result).upper()
+    # 本轮 finalize 的结论优先于上一份报告：重试成功的任务不能沿用旧报告的
+    # FAILED/旧报错；只有任务没有重新走到 finalize 时才回退旧报告。
+    result = str(final_output.get("delivery_status") or existing.get("result") or "").upper()
+    terminal_status = str(result or existing.get("terminal_status")).upper()
 
     if not result:
         is_cancelled = False
@@ -259,8 +259,8 @@ def _ensure_task_final_report(
         inferred_reason = "任务已结束，但系统未能从持久化步骤记录还原具体结束原因。"
         inferred_action = "查看最后一个步骤的输入、输出和错误，补齐处置记录后再重试或转人工。"
 
-    terminal_reason = str(existing.get("terminal_reason") or final_output.get("terminal_reason") or inferred_reason or "").strip()
-    next_action = str(existing.get("next_action") or final_output.get("next_action") or inferred_action or "").strip()
+    terminal_reason = str(final_output.get("terminal_reason") or inferred_reason or existing.get("terminal_reason") or "").strip()
+    next_action = str(final_output.get("next_action") or inferred_action or existing.get("next_action") or "").strip()
     if error is not None and result == "FAILED" and not terminal_reason:
         terminal_reason = _uncaught_reason(error)
         next_action = "检查失败步骤的错误类型和任务产物；修复后重新执行该任务。"
@@ -275,7 +275,7 @@ def _ensure_task_final_report(
         "report_kind": "task_final",
         "task_id": task_id, "carrier": carrier, "biztype": biztype,
         "result": result, "status": result, "terminal_status": result,
-        "terminal_step": str(existing.get("terminal_step") or final_output.get("terminal_step") or terminal_step or "workflow"),
+        "terminal_step": str(final_output.get("terminal_step") or terminal_step or existing.get("terminal_step") or "workflow"),
         "terminal_reason": terminal_reason or "任务结束，但现有记录没有提供更具体的结束原因。",
         "next_action": next_action or "查看终态步骤的错误详情和关联产物，确认后续处置动作。",
         "finished_at": str(existing.get("finished_at") or final_output.get("finished_at") or finished_at),
@@ -286,7 +286,6 @@ def _ensure_task_final_report(
         ],
         "root_cause": str(existing.get("root_cause") or locate.get("root_cause") or locate.get("analysis") or ""),
         "change_summary": str(existing.get("change_summary") or repair.get("summary") or repair.get("analysis") or ""),
-        "legacy_report": bool(existing.get("legacy_report")) or not bool(existing.get("terminal_reason")),
     }
 
 

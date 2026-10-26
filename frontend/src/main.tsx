@@ -5,9 +5,10 @@ import { ConfigProvider, App as AntApp } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import '@ant-design/v5-patch-for-react-19';
 import 'antd/dist/reset.css';
+import './styles/fonts.css';
 import './styles.css';
 import { AppRouter } from './app/router';
-import { workbenchTheme } from './app/theme';
+import { ThemeProvider, useThemeMode, getAntdTheme } from './app/ThemeProvider';
 import { ApiError } from './lib/api';
 
 const queryClient = new QueryClient({
@@ -23,12 +24,22 @@ const queryClient = new QueryClient({
   },
 });
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <ConfigProvider locale={zhCN} theme={workbenchTheme}>
+/** AntD 主题与 --wb-* 变量共用同一个模式来源。 */
+function ThemedApp() {
+  const { mode } = useThemeMode();
+  return (
+    <ConfigProvider locale={zhCN} theme={getAntdTheme(mode)}>
       <QueryClientProvider client={queryClient}>
         <AntApp><AppRouter /></AntApp>
       </QueryClientProvider>
     </ConfigProvider>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+    <ThemeProvider>
+      <ThemedApp />
+    </ThemeProvider>
   </React.StrictMode>,
 );

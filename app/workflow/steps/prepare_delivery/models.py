@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pydantic import Field
 
+from app.workflow.contracts import EvidenceBinding
 from app.workflow.spec import FrozenModel
 
 
@@ -22,6 +23,9 @@ class DeliveryInput(FrozenModel):
     """
 
     # task_id：字段说明见该模型文档与工作流契约。
+    publish: bool = False
+    approved_candidate_id: str = ""
+    binding: EvidenceBinding | None = None
     task_id: str
     # carrier：字段说明见该模型文档与工作流契约。
     carrier: str
@@ -57,6 +61,9 @@ class DeliveryInput(FrozenModel):
 
 
 class DeliveryOutput(FrozenModel):
+    candidate_id: str = ""
+    binding: EvidenceBinding | None = None
+    delivery_status: str = "PREPARED"
     """交付步骤的输出。"""
 
     # repair_branch：字段说明见该模型文档与工作流契约。

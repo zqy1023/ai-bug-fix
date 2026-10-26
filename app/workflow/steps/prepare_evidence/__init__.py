@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.workflow.spec import Dependency, RecordView, StepSpec
+from app.workflow.spec import RecordView, StepSpec
 from app.workflow.steps.prepare_evidence.models import EvidenceInput, EvidenceOutput
 from app.workflow.steps.prepare_evidence.node import run
 
@@ -35,8 +35,6 @@ SPEC = StepSpec(
     output_model=EvidenceOutput,
     input_builder=_input,
     output_patch=_patch,
-    depends_on=(Dependency("identify_carrier", "run"), Dependency("prepare_source_snapshot", "task"), Dependency("prepare_workspace", "task")),
-    next_step="locate_agent",
     # 原始请求保存在去重日志产物中，记录中仅保留分类与错误证据。
     input_record=RecordView(
         trim=(("problem", ("carrier", "error", "service_name", "biztype")),)

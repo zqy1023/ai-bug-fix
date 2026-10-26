@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
-from app.domain.keys import problem_key, task_id
-from app.domain.errors import StepFailed
 from app.application.context import StepContext
+from app.domain.errors import StepFailed
+from app.domain.keys import problem_key, task_id
 from app.domain.policies import is_registered_service
 from app.workflow.steps.identify_carrier.models import (
     IdentifyCarrierInput,
@@ -39,14 +39,20 @@ def records_of(ctx: StepContext) -> list[dict[str, Any]]:
         raise StepFailed("normalized_records 产物必须包含 records 数组")
     for key in _COUNT_KEYS:
         if payload.get(key) != record.output.get(key):
-            raise StepFailed(f"normalize_error 的 {key} 与 normalized_records 产物不一致")
+            raise StepFailed(
+                f"normalize_error 的 {key} 与 normalized_records 产物不一致"
+            )
     if isinstance(inline, list) and len(inline) != len(payload["records"]):
         raise StepFailed("normalize_error 的内联 records 与产物条数不一致")
     return payload["records"]
 
 
 def run(ctx: StepContext, data: IdentifyCarrierInput) -> IdentifyCarrierOutput:
-    """保留已注册服务，只为每个业务类型和 carrier 组合创建一个任务。"""
+    """保留已注册服务，只为每个业务类型和 carrier 组合创建一个任务。
+
+    同一 ``(biztype, carrier)`` 下的多种异常只保留日志中最早出现的一个
+    （``representative_index`` 最小的代表问题），其余异常等下一轮再处理。
+    """
     records = records_of(ctx)
 
     groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
@@ -86,14 +92,26 @@ def run(ctx: StepContext, data: IdentifyCarrierInput) -> IdentifyCarrierOutput:
 
 
 def _ok(problem: dict[str, Any]) -> bool:
-    """分类字段必须来自日志原值，且服务名已登记。"""
+    """分类字段必须来自日志原值，且服务名已登记。
+
+    旧记录可能缺 ``problem`` 载荷或缺其中后续要用的键；这里补齐 isinstance
+    防御，让畸形记录计入 manual，而不是在分组或任务构建时抛 KeyError。
+    """
     for field in ("service_name", "biztype", "carrier"):
         value = problem.get(field)
         if not isinstance(value, str) or not value:
             return False
+    payload = problem.get("problem")
+    if not isinstance(payload, dict):
+        return False
+    # 只做"键存在"检查：缺键才会让分组/任务构建抛 KeyError；值的类型交给下游契约。
+    for field in ("service_name", "biztype", "carrier", "req", "error"):
+        if field not in payload:
+            return False
+    index = problem.get("representative_index")
+    if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+        return False
     return is_registered_service(str(problem["service_name"]))
 
 
 __all__ = ["records_of", "run"]
-
-

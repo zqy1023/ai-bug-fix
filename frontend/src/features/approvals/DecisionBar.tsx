@@ -6,6 +6,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ApprovalItem, ApprovalRetryTarget } from '../../lib/types';
 import { api, ApiError } from '../../lib/api';
 import { queryKeys } from '../../lib/queryKeys';
+import styles from './DecisionBar.module.css';
 
 const { TextArea } = Input;
 
@@ -32,14 +33,14 @@ const REJECTION_REASONS: Array<{
   {
     value: 'validation',
     label: '问题验证不足',
-    retryTarget: 'validate_changes',
-    help: '保留当前候选代码，重新执行变更门禁和问题验证。',
+    retryTarget: 'review_agent',
+    help: '保留当前候选代码，重新执行修复后代码审查及其内部验证。',
   },
   {
     value: 'regression',
     label: '回归验证不足',
-    retryTarget: 'run_regression',
-    help: '保留当前候选代码，重新执行回归验证。',
+    retryTarget: 'review_agent',
+    help: '保留当前候选代码，重新执行修复后代码审查及其内部请求验证。',
   },
   {
     value: 'review',
@@ -51,7 +52,7 @@ const REJECTION_REASONS: Array<{
     value: 'delivery',
     label: '交付分支或提交信息有误',
     retryTarget: 'prepare_delivery',
-    help: '保留已审查代码和审查结论，重新创建交付分支。',
+    help: '保留已审查代码和审查结论，重新准备本地候选。',
   },
   {
     value: 'other',
@@ -63,8 +64,6 @@ const REJECTION_REASONS: Array<{
 const TARGET_LABELS: Record<ApprovalRetryTarget, string> = {
   locate_agent: '根因定位',
   repair_agent: '代码修复',
-  validate_changes: '变更门禁与问题验证',
-  run_regression: '回归验证',
   review_agent: 'AI 审查',
   prepare_delivery: 'Git 分支交付',
 };
@@ -111,7 +110,8 @@ export function DecisionBar({ item, onDecided }: { item: ApprovalItem; onDecided
       setReason('');
       onDecided();
       if (variables.decision === 'approve') {
-        message.success('已批准，分支已保留；请在 Git 上手动检查并合并');
+        message.success('批准请求已受理，后台将正式交付本次候选；请在任务详情查看交付结果');
+        navigate(`/runs/${encodeURIComponent(item.run_id)}/tasks/${encodeURIComponent(item.task_id)}`);
       } else {
         // API only confirms that the async checkpoint resume was accepted. It cannot
         // guarantee cleanup or retry has already succeeded, so take the operator to live task status.
@@ -123,6 +123,7 @@ export function DecisionBar({ item, onDecided }: { item: ApprovalItem; onDecided
   });
 
   const run = (decision: 'approve' | 'reject') => {
+    if (pending || decide.isPending) return;
     if (decision === 'reject' && !reasonCode) {
       message.warning('请先选择驳回原因，确保任务回到正确的执行阶段');
       return;
@@ -141,10 +142,10 @@ export function DecisionBar({ item, onDecided }: { item: ApprovalItem; onDecided
 
     setPending(decision);
     modal.confirm({
-      title: decision === 'approve' ? '批准这次交付？' : '驳回并删除交付分支？',
+      title: decision === 'approve' ? '批准这次交付？' : '驳回本地候选并回修？',
       content: decision === 'approve'
-        ? '将保留本次交付分支供你手动检查和合并；系统不会自动合并。'
-        : `系统将先清理当前交付分支，再从「${retryTarget ? TARGET_LABELS[retryTarget] : '未选择阶段'}」重新执行。当前尝试次数达到上限时，任务会按工作流规则终止。`,
+        ? '将对本次候选提交重新核验，并按运行配置交付修复分支；系统不会自动合并。'
+        : `系统将使当前候选失效，再从「${retryTarget ? TARGET_LABELS[retryTarget] : '未选择阶段'}」重新执行。当前尝试次数达到上限时，任务会按工作流规则终止。`,
       okText: decision === 'approve' ? '确认批准' : '确认驳回并重跑',
       okButtonProps: { danger: decision === 'reject' },
       cancelText: '返回',
@@ -157,9 +158,11 @@ export function DecisionBar({ item, onDecided }: { item: ApprovalItem; onDecided
   };
 
   return (
-    <footer className="decision-bar">
-      <div className="decision-reason">
-        <div className="decision-reject-field">
+    <footer className={styles.bar}>
+      <details className={styles.options}>
+      <summary>补充说明 / 设置驳回原因与回修阶段</summary>
+      <div className={styles.row}>
+        <div className={styles.field}>
           <label htmlFor="approval-reject-reason">驳回原因</label>
           <Select
             id="approval-reject-reason"
@@ -172,7 +175,7 @@ export function DecisionBar({ item, onDecided }: { item: ApprovalItem; onDecided
           />
         </div>
 
-        <div className="decision-retry-route">
+        <div className={styles.route}>
           <div>
             <span>重新执行阶段</span>
             <strong>{retryTarget ? TARGET_LABELS[retryTarget] : '选择原因后确定回退阶段'}</strong>
@@ -189,29 +192,33 @@ export function DecisionBar({ item, onDecided }: { item: ApprovalItem; onDecided
             <p>{selectedReason?.help || '请先选择驳回原因；系统将按预设映射恢复到对应节点。'}</p>
           )}
         </div>
-
-        <div className="decision-reason-note">
-          <label htmlFor="decision-reason">
-            {reasonCode === 'other' ? '驳回说明（必填）' : '补充说明（可选）'}
-          </label>
-          <TextArea
-            id="decision-reason"
-            value={reason}
-            onChange={(event) => setReason(event.target.value)}
-            rows={2}
-            maxLength={1000}
-            showCount
-            placeholder={reasonCode === 'other'
-              ? '说明其他驳回原因，以及希望系统如何调整'
-              : '补充具体文件、问题或验收要求；预设原因会自动写入审计'}
-          />
-        </div>
       </div>
-      <div className="decision-actions">
+
+      <div className={styles.noteField}>
+        <label htmlFor="decision-reason">
+          {reasonCode === 'other' ? '驳回说明（必填）' : '补充说明（可选）'}
+        </label>
+        <TextArea
+          id="decision-reason"
+          value={reason}
+          onChange={(event) => setReason(event.target.value)}
+          rows={2}
+          maxLength={1000}
+          showCount
+          placeholder={reasonCode === 'other'
+            ? '说明其他驳回原因，以及希望系统如何调整'
+            : '补充具体文件、问题或验收要求；预设原因会自动写入审计'}
+        />
+      </div>
+      </details>
+      {!item.actions?.approve.enabled && <p className={styles.warning}>{item.actions?.approve.reason || '服务未提供操作许可，暂不能提交审批'}</p>}
+      <div className={styles.actions}>
+        <p>批准后核验并交付候选提交<br /><span>系统不会自动合并</span></p>
         <Button
           danger
+          aria-label="驳回并回修"
           icon={<StopOutlined />}
-          disabled={!reasonCode || (reasonCode === 'other' && (!retryTargetOverride || !reason.trim()))}
+          disabled={Boolean(pending) || !item.actions?.reject.enabled || !reasonCode || (reasonCode === 'other' && (!retryTargetOverride || !reason.trim()))}
           loading={decide.isPending && pending === 'reject'}
           onClick={() => run('reject')}
         >
@@ -219,11 +226,14 @@ export function DecisionBar({ item, onDecided }: { item: ApprovalItem; onDecided
         </Button>
         <Button
           type="primary"
+          aria-label="批准并交付"
           icon={<CheckOutlined />}
+          disabled={Boolean(pending) || !item.actions?.approve.enabled}
+          title={item.actions?.approve.reason || (!item.actions ? '服务未提供操作许可' : undefined)}
           loading={decide.isPending && pending === 'approve'}
           onClick={() => run('approve')}
         >
-          批准，保留分支
+          批准并交付
         </Button>
       </div>
     </footer>

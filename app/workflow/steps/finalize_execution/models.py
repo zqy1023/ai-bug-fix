@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.workflow.contracts import TaskResolution
 from app.workflow.spec import FrozenModel
 
 
@@ -29,6 +30,7 @@ class FinalizeInput(FrozenModel):
 
 
 class FinalizeOutput(FrozenModel):
+    resolution: TaskResolution | None = None
     """收尾步骤的输出。"""
 
     # report_path：字段说明见该模型文档与工作流契约。

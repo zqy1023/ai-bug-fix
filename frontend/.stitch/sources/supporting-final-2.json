@@ -1,0 +1,24 @@
+{
+  "content": [
+    {
+      "text": "{\"name\":\"projects/12538434318285344375/screens/9f06de3933834668ae6164d4681c5cf5\",\"title\":\"批次详情 (语义校准版)\",\"screenshot\":{\"name\":\"projects/12538434318285344375/files/e05ed8aac9c643f59276581d5b8b3f70\",\"downloadUrl\":\"https://lh3.googleusercontent.com/aida/AEtjO1UnCna7YFg0t4xAh0ygKCF18fBPggb0MF0Szp0_xeLK4hcA5X-EnqhJe1ShymihB7GzaULuWVR3n3GCkixWCzNYJSA9fB2DcXTYvYLRusdUfEn0F7CAmf2nMjKD2w-gM2lu8M1wOa5_ETqhKC6BuCSyFLpwY5p0O3lqKeixd4MAZk0eooM-VS8mXeJsR6myjfh_ZhV5Gofce6jok3UilGvwincBhkxe8YlHYSRBI_q7owBOobj3EhsL8g\"},\"htmlCode\":{\"name\":\"projects/12538434318285344375/files/fa936529277047a0809846acdc06ee73\",\"downloadUrl\":\"https://contribution.usercontent.google.com/download?c=CgthaWRhX2NvZGVmeBJ7Eh1hcHBfY29tcGFuaW9uX2dlbmVyYXRlZF9maWxlcxpaCiVodG1sXzRhNmZiYWY0MjAzNzQ1NmE4NzlhYzRjZmE4MjY1NzA4EgoSBhCB-O2AAhgBkgEkCgpwcm9qZWN0X2lkEhZCFDEyNTM4NDM0MzE4Mjg1MzQ0Mzc1&filename=&opi=96797242\",\"mimeType\":\"text/html\"},\"width\":\"2560\",\"height\":\"2048\",\"deviceType\":\"DESKTOP\"}",
+      "type": "text"
+    }
+  ],
+  "structuredContent": {
+    "deviceType": "DESKTOP",
+    "height": "2048",
+    "htmlCode": {
+      "downloadUrl": "https://contribution.usercontent.google.com/download?c=CgthaWRhX2NvZGVmeBJ7Eh1hcHBfY29tcGFuaW9uX2dlbmVyYXRlZF9maWxlcxpaCiVodG1sXzRhNmZiYWY0MjAzNzQ1NmE4NzlhYzRjZmE4MjY1NzA4EgoSBhCB-O2AAhgBkgEkCgpwcm9qZWN0X2lkEhZCFDEyNTM4NDM0MzE4Mjg1MzQ0Mzc1&filename=&opi=96797242",
+      "mimeType": "text/html",
+      "name": "projects/12538434318285344375/files/fa936529277047a0809846acdc06ee73"
+    },
+    "name": "projects/12538434318285344375/screens/9f06de3933834668ae6164d4681c5cf5",
+    "screenshot": {
+      "downloadUrl": "https://lh3.googleusercontent.com/aida/AEtjO1UnCna7YFg0t4xAh0ygKCF18fBPggb0MF0Szp0_xeLK4hcA5X-EnqhJe1ShymihB7GzaULuWVR3n3GCkixWCzNYJSA9fB2DcXTYvYLRusdUfEn0F7CAmf2nMjKD2w-gM2lu8M1wOa5_ETqhKC6BuCSyFLpwY5p0O3lqKeixd4MAZk0eooM-VS8mXeJsR6myjfh_ZhV5Gofce6jok3UilGvwincBhkxe8YlHYSRBI_q7owBOobj3EhsL8g",
+      "name": "projects/12538434318285344375/files/e05ed8aac9c643f59276581d5b8b3f70"
+    },
+    "title": "批次详情 (语义校准版)",
+    "width": "2560"
+  }
+}

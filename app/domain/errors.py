@@ -10,40 +10,6 @@ class WorkflowError(RuntimeError):
     """工作流系统错误基类。"""
 
 
-class InputValidationError(WorkflowError):
-    """输入字段或状态无效，不重试。"""
-
-
-class ExternalServiceError(WorkflowError):
-    """外部服务调用失败，可按 operation key 有限重试。"""
-
-
-class AgentOutputError(WorkflowError):
-    """Agent 输出为空、截断或结构非法，不无限重试。"""
-
-
-class PermissionDeniedError(WorkflowError):
-    """步骤或适配器超出授权范围，必须转人工。"""
-
-
-class VerificationFailedError(WorkflowError):
-    """确定性或独立验证失败，回到修复轮次。"""
-
-
-class RegressionFailedError(WorkflowError):
-    """准生产回归失败，禁止进入审查和交付。"""
-
-
-class StepFailedError(WorkflowError):
-    """步骤执行失败，由流水线决定回流还是终止。"""
-
-    def __init__(self, step_name: str, reason: str) -> None:
-        """记录失败步骤和原因。"""
-        super().__init__(f"{step_name}: {reason}")
-        self.step_name = step_name
-        self.reason = reason
-
-
 class DeliveryError(WorkflowError):
     """修复分支交付失败，并携带人工接管所需上下文。"""
 

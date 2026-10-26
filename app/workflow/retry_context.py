@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 from app.infrastructure.records.store import RecordStore
-from app.infrastructure.redaction import redact_output
 
 
 def _sanitize(value: Any) -> Any:
@@ -22,7 +21,7 @@ def _sanitize(value: Any) -> Any:
 def _compact(value: Any, depth: int = 0) -> Any:
     """Bound repeated context before placing it in the next prompt."""
     if isinstance(value, str):
-        text = redact_output(value)
+        text = value
         return text[:1000] + ("…（完整内容见重试产物）" if len(text) > 1000 else "")
     if depth >= 4:
         return "详见重试产物"
@@ -108,7 +107,7 @@ def capture_retry_context(state: dict[str, Any], store: RecordStore | None = Non
         value = _compact(payload[key])
         encoded = json.dumps(value, ensure_ascii=False, default=str)
         context[key] = value if len(encoded) <= 1600 else encoded[:1600] + "…（详见重试产物）"
-    context["diff"] = redact_output(diff)[:4000]
+    context["diff"] = diff[:4000]
     length = len(json.dumps(context, ensure_ascii=False, default=str))
     if length > 12000:
         context["diff"] = context["diff"][:max(0, 4000 - (length - 12000) - 100)]

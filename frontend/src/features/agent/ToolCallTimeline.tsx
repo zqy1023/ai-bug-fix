@@ -1,8 +1,11 @@
 import { useState } from 'react';
-import { CheckCircleFilled, CloseCircleFilled, QuestionCircleOutlined, ToolFilled } from '@ant-design/icons';
+import { ToolFilled } from '@ant-design/icons';
 import type { AgentEvent } from '../../lib/types';
 import { EmptyState } from '../../components/EmptyState';
+import { StatusDot } from '../../components/StatusBadge';
+import type { Tone } from '../../app/theme';
 import { formatDuration } from '../../lib/format';
+import styles from './ToolCallTimeline.module.css';
 
 type Call = {
   id?: string;
@@ -51,6 +54,12 @@ export function pairEvents(events: AgentEvent[]): Call[] {
   return calls;
 }
 
+function callTone(call: Call): Tone {
+  if (call.isError) return 'danger';
+  if (call.status === 'succeeded') return 'success';
+  return 'neutral';
+}
+
 /** 按 SDK 调用 ID 关联；旧归档缺 ID 时保留未关联结果。 */
 export function ToolCallTimeline({ events, expectedCount }: { events: AgentEvent[]; expectedCount?: number }) {
   const calls = pairEvents(events);
@@ -62,31 +71,31 @@ export function ToolCallTimeline({ events, expectedCount }: { events: AgentEvent
   }
   const labels = { pending: '结果缺失／执行中', succeeded: '已完成', failed: '执行失败', denied: '已拒绝', unlinked: '旧记录缺少调用 ID，未关联' };
   const visible = showAll ? calls : calls.slice(0, 12);
-  return <div>
-    {calls.some(call => call.status === 'unlinked') && <p className="text-warning">旧归档缺少调用 ID，结果单独展示，不能据此判断某次读取或修改成功。</p>}
-    <ol className="tool-timeline">
-      {visible.map((call, index) => <li key={`${call.id || call.tool}-${index}`} className={'tool-item' + (call.isError ? ' is-error' : '')}>
-        <span className="tool-icon"><ToolFilled /></span>
-        <div className="tool-body">
-          <div className="tool-head">
+  return <div className={styles.wrap}>
+    {calls.some(call => call.status === 'unlinked') && <p className={styles.notice}>旧归档缺少调用 ID，结果单独展示，不能据此判断某次读取或修改成功。</p>}
+    <ol className={styles.timeline}>
+      {visible.map((call, index) => <li key={`${call.id || call.tool}-${index}`} className={`${styles.item}${call.isError ? ` ${styles.itemError}` : ''}`}>
+        <span className={styles.icon}><ToolFilled /></span>
+        <div className={styles.body}>
+          <div className={styles.head}>
             <strong>{call.tool}</strong>
-            <span className="tool-input">{Object.entries(call.input).filter(([key]) => ['file_path', 'path', 'pattern', 'offset', 'limit'].includes(key)).map(([key, value]) =>
+            <span className={styles.input}>{Object.entries(call.input).filter(([key]) => ['file_path', 'path', 'pattern', 'offset', 'limit'].includes(key)).map(([key, value]) =>
               <code key={key} style={{ whiteSpace: 'normal', overflowWrap: 'anywhere' }}>{key}={String(value)}</code>)}</span>
-            <span className="tool-duration">{typeof call.durationMs === 'number' ? formatDuration(call.durationMs) : '耗时未记录'}</span>
-            <span>{labels[call.status]}</span>
-            {call.status === 'succeeded' ? <CheckCircleFilled className="tool-status" /> :
-              call.isError ? <CloseCircleFilled className="tool-status is-error" /> : <QuestionCircleOutlined />}
+            <span className={styles.duration}>{typeof call.durationMs === 'number' ? formatDuration(call.durationMs) : '耗时未记录'}</span>
+            <StatusDot tone={callTone(call)} label={labels[call.status]}>
+              <span className={`${styles.status}${call.isError ? ` ${styles.statusError}` : ''}`}>{labels[call.status]}</span>
+            </StatusDot>
           </div>
-          {Object.keys(call.input).length > 0 && <details><summary>完整调用参数</summary><pre>{JSON.stringify(call.input, null, 2)}</pre></details>}
+          {Object.keys(call.input).length > 0 && <details className={styles.details}><summary>完整调用参数</summary><pre>{JSON.stringify(call.input, null, 2)}</pre></details>}
           {call.result && <>
-            <pre className={'tool-result' + (openResult[index] ? ' is-open' : '')}>{call.result}</pre>
-            {call.result.length > 220 && <button type="button" className="tool-result-toggle"
+            <pre className={`${styles.result}${openResult[index] ? ` ${styles.resultOpen}` : ''}`}>{call.result}</pre>
+            {call.result.length > 220 && <button type="button" className={styles.toggle}
               onClick={() => setOpenResult(current => ({ ...current, [index]: !current[index] }))}>
               {openResult[index] ? '收起结果' : `展开完整结果（${call.result.length} 字）`}</button>}
           </>}
         </div>
       </li>)}
     </ol>
-    {calls.length > 12 && <button type="button" onClick={() => setShowAll(!showAll)}>{showAll ? '收起' : `查看全部 ${calls.length} 条工具记录`}</button>}
+    {calls.length > 12 && <button type="button" className={styles.more} onClick={() => setShowAll(!showAll)}>{showAll ? '收起' : `查看全部 ${calls.length} 条工具记录`}</button>}
   </div>;
 }

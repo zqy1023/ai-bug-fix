@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.workflow.spec import Dependency, StepSpec
+from app.workflow.spec import StepSpec
 from app.workflow.steps.deduplicate_error.models import (
     DeduplicateErrorInput,
     DeduplicateErrorOutput,
@@ -24,7 +24,6 @@ SPEC = StepSpec(
     output_model=DeduplicateErrorOutput,
     input_builder=_input,
     task_level=False,
-    depends_on=(Dependency("normalize_error", "run"),),
 )
 
 __all__ = ["SPEC"]

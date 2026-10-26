@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -24,7 +25,6 @@ from git import Repo
 from git.exc import InvalidGitRepositoryError, NoSuchPathError
 
 from app.infrastructure.config import RuntimeConfig
-from app.infrastructure.redaction import redact_output
 
 
 class SourceRepoError(RuntimeError):
@@ -111,6 +111,7 @@ def sync_source_repo(
     config: RuntimeConfig,
     *,
     cancel_requested: Callable[[], bool] | None = None,
+    on_progress: Callable[[dict[str, int]], None] | None = None,
 ) -> Path | None:
     """解析本轮源仓库路径；URL 模式先克隆或拉取受控镜像，可响应 Run 取消信号。"""
     if not config.source_url:
@@ -124,7 +125,7 @@ def sync_source_repo(
     try:
         if cancel_requested and cancel_requested():
             raise SourceRepoCancelled("Run 已请求停止，源仓库同步未启动")
-        _sync_mirror(config, mirror, cancel_requested=cancel_requested)
+        _sync_mirror(config, mirror, cancel_requested=cancel_requested, on_progress=on_progress)
     finally:
         _SYNC_LOCK.release()
     return mirror
@@ -135,6 +136,7 @@ def _sync_mirror(
     mirror: Path,
     *,
     cancel_requested: Callable[[], bool] | None = None,
+    on_progress: Callable[[dict[str, int]], None] | None = None,
 ) -> None:
     """克隆缺失镜像，或拉取并使工作树对齐远端默认分支。"""
     env = dict(os.environ)
@@ -142,7 +144,7 @@ def _sync_mirror(
     remote = config.git_remote
     timeout = config.git_fetch_timeout_seconds
     if not (mirror / ".git").is_dir():
-        _clone(config, mirror, env, remote, timeout, cancel_requested=cancel_requested)
+        _clone(config, mirror, env, remote, timeout, cancel_requested=cancel_requested, on_progress=on_progress)
         return
     try:
         repo = Repo(mirror)
@@ -152,7 +154,7 @@ def _sync_mirror(
         if _origin_url(repo, remote) != config.source_url:
             repo.close()
             _force_remove(mirror)
-            _clone(config, mirror, env, remote, timeout, cancel_requested=cancel_requested)
+            _clone(config, mirror, env, remote, timeout, cancel_requested=cancel_requested, on_progress=on_progress)
             return
         _run_git(["fetch", "--prune", remote], mirror, env, timeout, cancel_requested=cancel_requested)
         try:
@@ -188,6 +190,7 @@ def _clone(
     timeout: int,
     *,
     cancel_requested: Callable[[], bool] | None = None,
+    on_progress: Callable[[dict[str, int]], None] | None = None,
 ) -> None:
     """克隆到临时目录后原子替换，避免中断留下半成品镜像。
 
@@ -204,7 +207,16 @@ def _clone(
         if cone:
             command.append("--sparse")
         command.extend([config.source_url, str(temporary)])
-        _run_git(command, None, env, timeout, cancel_requested=cancel_requested)
+        def clone_progress(elapsed: int) -> None:
+            if on_progress is None:
+                return
+            files = (temporary / ".git/objects/pack").glob("*")
+            downloaded = sum(path.stat().st_size for path in files if path.is_file())
+            on_progress({"downloaded_bytes": downloaded, "elapsed_seconds": elapsed,
+                         "timeout_seconds": config.git_clone_timeout_seconds})
+
+        _run_git(command, None, env, config.git_clone_timeout_seconds,
+                 cancel_requested=cancel_requested, on_progress=clone_progress)
         _apply_sparse_checkout(temporary, cone, env, timeout, cancel_requested=cancel_requested)
         temporary.replace(mirror)
     except SourceRepoError:
@@ -267,6 +279,7 @@ def _run_git(
     timeout: int,
     *,
     cancel_requested: Callable[[], bool] | None = None,
+    on_progress: Callable[[int], None] | None = None,
 ) -> str:
     """执行 Git 命令，失败信息保留原值。"""
     # 同时覆盖已有镜像的 checkout 和新镜像的首次检出，不依赖宿主机全局配置。
@@ -285,7 +298,15 @@ def _run_git(
             start_new_session=os.name != "nt",
         )
         started = time.monotonic()
+        last_progress = 0.0
         while True:
+            now = time.monotonic()
+            if on_progress and now - last_progress >= 5:
+                last_progress = now
+                try:
+                    on_progress(int(now - started))
+                except Exception:
+                    logging.getLogger(__name__).debug("无法记录源码克隆进度", exc_info=True)
             if cancel_requested and cancel_requested():
                 raise SourceRepoCancelled("Run 已请求停止，已终止正在执行的 Git 命令")
             remaining = timeout - (time.monotonic() - started)
@@ -311,7 +332,7 @@ def _run_git(
     if process is None:
         raise SourceRepoError("Git 子进程未能启动")
     if process.returncode != 0:
-        detail = redact_output((stderr or stdout or "").strip())
+        detail = (stderr or stdout or "").strip()
         raise SourceRepoError(
             f"Git 命令失败（git {' '.join(_redact_args(args))}）: {detail[-1500:]}"
         )
@@ -351,13 +372,30 @@ def _terminate_git_process(process: subprocess.Popen[str]) -> None:
 
 
 def _redact_args(args: list[str]) -> list[str]:
-    """保留原始参数，兼容旧接口。"""
-    return [_redact_url(arg) for arg in args]
+    """记录命令参数：URL 凭据剥掉，疑似令牌的 argv 值掩掉。"""
+    redacted: list[str] = []
+    for arg in args:
+        value = _redact_url(str(arg))
+        redacted.append("***" if _looks_like_token(value) else value)
+    return redacted
 
 
 def _redact_url(value: str) -> str:
-    """日志保留原始命令参数，兼容旧接口。"""
-    return value
+    """记录 URL 时剥掉 userinfo 凭据（https://user:pass@host → https://***@host）。"""
+    if "@" not in value or "://" not in value:
+        return value
+    return re.sub(r"://[^/@]+@", "://***@", value)
+
+
+def _looks_like_token(value: str) -> bool:
+    """判断一段 argv 是否疑似访问令牌。
+
+    保守口径：整段是 40+ 位 base64/base64url/hex 连续串才算；纯小写 hex 的
+    40/64 位通常是 Git SHA-1/SHA-256，不是机密，保留以便核对提交。
+    """
+    if len(value) < 40 or not re.fullmatch(r"[A-Za-z0-9/+_=-]+", value):
+        return False
+    return not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value)
 
 
 def _display(value: Path | str) -> str:

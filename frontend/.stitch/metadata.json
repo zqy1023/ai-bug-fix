@@ -1,0 +1,57 @@
+{
+  "projectId": "12538434318285344375",
+  "title": "AI 修复工作台 · Stitch 前端重设计",
+  "projectUrl": "https://stitch.withgoogle.com/projects/12538434318285344375",
+  "designSystem": {
+    "id": "assets/3046306167093605981",
+    "displayName": "Repair Atlas · Precision Workbench"
+  },
+  "createdDate": "2026-10-25",
+  "generatedBy": "Stitch official MCP API",
+  "screens": [
+    {
+      "name": "projects/12538434318285344375/screens/7275588c35de440380eaadd20b198a78",
+      "id": "7275588c35de440380eaadd20b198a78",
+      "title": "执行批次",
+      "width": "2560",
+      "height": "2048",
+      "slug": "supporting-final-1",
+      "number": 1,
+      "intent": "筛选运行、查看任务进度，定位等待审批或需处理的批次。"
+    },
+    {
+      "name": "projects/12538434318285344375/screens/9f06de3933834668ae6164d4681c5cf5",
+      "id": "9f06de3933834668ae6164d4681c5cf5",
+      "title": "批次详情",
+      "width": "2560",
+      "height": "2048",
+      "slug": "supporting-final-2",
+      "number": 2,
+      "intent": "保留批次上下文，分开呈现任务阶段、业务验证与交付状态。"
+    },
+    {
+      "name": "projects/12538434318285344375/screens/42671027aaf64179b7719d9f11b3e7cf",
+      "id": "42671027aaf64179b7719d9f11b3e7cf",
+      "title": "任务工作台",
+      "width": "2560",
+      "height": "2048",
+      "slug": "task-final",
+      "number": 3,
+      "intent": "对照同一请求在修复前后的证据，再下钻代码与执行记录。"
+    },
+    {
+      "name": "projects/12538434318285344375/screens/1a6e644c94a24f159f2b944b51e7897e",
+      "id": "1a6e644c94a24f159f2b944b51e7897e",
+      "title": "交付审批",
+      "width": "2560",
+      "height": "2048",
+      "slug": "supporting-final-3",
+      "number": 4,
+      "intent": "结合当前候选、验证证据与代码差异作出交付决定。"
+    }
+  ],
+  "scope": "Design artboards and original HTML exports; no production source changes.",
+  "deviceType": "DESKTOP",
+  "Last Sync Time": "2026-10-25T08:26:07.975233+00:00",
+  "sourcePolicy": "Reuse the four local artboards explicitly selected by the user for replacement."
+}

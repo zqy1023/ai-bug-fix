@@ -19,18 +19,10 @@ def _control_flags(runtime_dir: str | Path, run_id: str) -> tuple[bool, bool]:
             str(database),
             timeout=settings.workbench_control_read_timeout_seconds,
         )) as connection:
-            columns = {row[1] for row in connection.execute("PRAGMA table_info(run_control)")}
-            names = [name for name in ("pause_requested", "cancel_requested") if name in columns]
-            if not names:
-                return False, False
-            selected = ", ".join(names)
             row = connection.execute(
-                f"SELECT {selected} FROM run_control WHERE run_id = ?", (run_id,)
+                "SELECT pause_requested, cancel_requested FROM run_control WHERE run_id = ?", (run_id,)
             ).fetchone()
-            if not row:
-                return False, False
-            values = dict(zip(names, row))
-            return bool(values.get("pause_requested", 0)), bool(values.get("cancel_requested", 0))
+            return (bool(row[0]), bool(row[1])) if row else (False, False)
     except sqlite3.Error:
         return False, False
 

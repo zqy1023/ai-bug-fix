@@ -5,7 +5,6 @@ status used by APIs and the workbench. The two must not be conflated.
 """
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -22,48 +21,28 @@ def _now() -> str:
 
 
 class LifecycleStore:
-    """集中保存生命周期，读取时兼容旧的 lifecycle.json。"""
+    """仅从当前运行的 SQLite 读取和更新生命周期。"""
 
     def __init__(self, runtime_dir: str | Path) -> None:
         self.root = Path(runtime_dir).resolve() / "runs"
 
-    def run_path(self, run_id: str) -> Path:
-        return self.root / safe_name(run_id) / "lifecycle.json"
-
-    def task_path(self, run_id: str, task_id: str) -> Path:
-        return self.root / safe_name(run_id) / "tasks" / safe_name(task_id) / "lifecycle.json"
-
     def read_run(self, run_id: str) -> dict[str, Any]:
-        return self._database(run_id).get("", "lifecycle") or self._read(self.run_path(run_id))
+        return self._database(run_id).get("", "lifecycle") or {}
 
     def read_task(self, run_id: str, task_id: str) -> dict[str, Any]:
-        return self._database(run_id).get(safe_name(task_id), "lifecycle") or self._read(self.task_path(run_id, task_id))
+        return self._database(run_id).get(safe_name(task_id), "lifecycle") or {}
 
     def update_run(self, run_id: str, **changes: Any) -> dict[str, Any]:
-        path = self.run_path(run_id)
-        return self._update_state(run_id, "", path, {"run_id": run_id, "status": "queued"}, changes)
+        return self._update_state(run_id, "", {"run_id": run_id, "status": "queued"}, changes)
 
     def update_task(self, run_id: str, task_id: str, **changes: Any) -> dict[str, Any]:
-        path = self.task_path(run_id, task_id)
-        return self._update_state(
-            run_id, safe_name(task_id), path,
-            {"run_id": run_id, "task_id": task_id, "status": "pending"},
-            changes,
-        )
-
-    @staticmethod
-    def _read(path: Path) -> dict[str, Any]:
-        try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {}
-        return value if isinstance(value, dict) else {}
+        return self._update_state(run_id, safe_name(task_id), {"run_id": run_id, "task_id": task_id, "status": "pending"}, changes)
 
     def _database(self, run_id: str) -> RecordDatabase:
         return RecordDatabase(self.root / safe_name(run_id))
 
     def _update_state(
-        self, run_id: str, task_id: str, path: Path,
+        self, run_id: str, task_id: str,
         defaults: dict[str, Any], changes: dict[str, Any],
     ) -> dict[str, Any]:
         def transform(current: dict[str, Any]) -> dict[str, Any]:
@@ -84,7 +63,7 @@ class LifecycleStore:
             return value
 
         return self._database(run_id).update(
-            task_id, "lifecycle", transform, fallback=self._read(path),
+            task_id, "lifecycle", transform,
         )
 
 

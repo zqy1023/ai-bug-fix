@@ -4,6 +4,8 @@ import { api } from '../../lib/api';
 import { queryKeys } from '../../lib/queryKeys';
 import { formatTime } from '../../lib/format';
 import { EmptyState } from '../../components/EmptyState';
+import { Panel } from '../../components/ui';
+import styles from './ControlAuditPanel.module.css';
 
 /** 控制审计：所有生命周期与单步操作都在这里留痕。 */
 export function ControlAuditPanel({ runId }: { runId: string }) {
@@ -13,26 +15,28 @@ export function ControlAuditPanel({ runId }: { runId: string }) {
     refetchInterval: 15000,
   });
 
-  if (query.isLoading) return <Skeleton active paragraph={{ rows: 5 }} />;
+  if (query.isLoading) return <Panel title="操作审计" flush><div className={styles.loading}><Skeleton active paragraph={{ rows: 5 }} /></div></Panel>;
   if (query.isError) {
-    return <EmptyState title="控制审计暂时不可读取" action={<Button onClick={() => void query.refetch()}>重试</Button>} compact />;
+    return <Panel title="操作审计"><EmptyState title="控制审计暂时不可读取" action={<Button onClick={() => void query.refetch()}>重试</Button>} compact /></Panel>;
   }
   const items = query.data?.items ?? [];
   if (!items.length) {
-    return <EmptyState title="暂无控制操作" description="启动、暂停、恢复、停止与单步执行都会记录在这里。" compact />;
+    return <Panel title="操作审计"><EmptyState title="暂无控制操作" description="启动、暂停、恢复、停止与单步执行都会记录在这里。" compact /></Panel>;
   }
 
   return (
-    <ul className="audit-list">
-      {items.map((item) => (
-        <li key={item.id} className="audit-item">
-          <span className="audit-time">{formatTime(item.created_at)}</span>
-          <span className="audit-action">{item.action}</span>
-          <span className="audit-actor">{item.actor}</span>
-          {item.task_id && <code className="audit-task">{item.task_id}</code>}
-          {item.reason && <span className="audit-reason" title={item.reason}>{item.reason}</span>}
-        </li>
-      ))}
-    </ul>
+    <Panel title={<>操作审计<span className={styles.headNote}>人工操作与系统控制动作</span></>} flush>
+      <ul className={styles.list}>
+        {items.map((item) => (
+          <li key={item.id} className={styles.item}>
+            <span className={styles.time}>{formatTime(item.created_at)}</span>
+            <span className={styles.actor}>{item.actor}</span>
+            <span className={styles.action}>{item.action}</span>
+            <code className={styles.task} title={item.task_id}>{item.task_id}</code>
+            <span className={styles.reason} title={item.reason}>{item.reason}</span>
+          </li>
+        ))}
+      </ul>
+    </Panel>
   );
 }

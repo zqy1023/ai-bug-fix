@@ -60,6 +60,18 @@ class CoverageAssessment(FrozenModel):
     missing_checks: list[str] = Field(default_factory=list)
 
 
+class ReviewDimension(FrozenModel):
+    status: Literal["passed", "failed", "unverified"] = "unverified"
+    reason: str = ""
+    evidence: list[str] = Field(default_factory=list)
+
+
+class ReviewDimensions(FrozenModel):
+    syntax: ReviewDimension = Field(default_factory=ReviewDimension)
+    business: ReviewDimension = Field(default_factory=ReviewDimension)
+    scope: ReviewDimension = Field(default_factory=ReviewDimension)
+
+
 class ReviewAgentOutput(FrozenModel):
     """审查步骤对外只留结论、发现项和回修要求。
 
@@ -73,6 +85,9 @@ class ReviewAgentOutput(FrozenModel):
     passed: bool = False
     code_verdict: Literal["PASS", "FAIL", "UNKNOWN"] = "UNKNOWN"
     coverage: CoverageAssessment = Field(default_factory=CoverageAssessment)
+    dimensions: ReviewDimensions = Field(default_factory=ReviewDimensions)
+    environment_assessment: str = ""
+    upstream_assessment: str = ""
     # summary：字段说明见该模型文档与工作流契约。
     summary: str = ""
     # findings：字段说明见该模型文档与工作流契约。
@@ -93,6 +108,8 @@ class ReviewView(ReviewAgentOutput):
     checks: list[dict[str, str]] = Field(default_factory=list)
     next_action: str = ""
     review_notes: str = ""
+    substeps: list[dict[str, Any]] = Field(default_factory=list)
+    review_report_path: str = ""
 
 
 __all__ = ["ReviewAgentOutput", "ReviewInput", "ReviewView"]

@@ -9,9 +9,9 @@ from dataclasses import dataclass
 from typing import Any
 
 RESULT_VALUES = ("PASS", "FAIL", "MANUAL")
-REVIEW_CONTRACT_VERSION = 5
+REVIEW_CONTRACT_VERSION = 6
 # 需要跟着任务状态长期携带的字段：结论、公开发现项与回修要求。
-RESULT_FIELDS = ("verdict", "passed", "code_verdict", "coverage", "summary", "findings", "required_changes", "change_plan")
+RESULT_FIELDS = ("verdict", "passed", "code_verdict", "coverage", "dimensions", "environment_assessment", "upstream_assessment", "summary", "findings", "required_changes", "change_plan")
 _MAX_FIELD_CHARS = 4000
 _MAX_ITEMS = 20
 
@@ -26,7 +26,7 @@ def slim_review(payload: dict[str, Any]) -> dict[str, Any]:
         if field == "change_plan" and isinstance(value, dict):
             from copy import deepcopy
             slim[field] = deepcopy(value)
-        elif field == "coverage" and isinstance(value, dict):
+        elif field in {"coverage", "dimensions"} and isinstance(value, dict):
             slim[field] = _clip_nested(value)
         elif isinstance(value, str):
             slim[field] = _clip(value)
@@ -96,7 +96,7 @@ def validate_shape(payload: dict[str, Any]) -> tuple[bool, str]:
     if not isinstance(payload.get("passed"), bool):
         return False, "passed 必须是布尔值"
     if (value == "PASS") != payload["passed"]:
-        return False, "passed 必须与 result 一致"
+        return False, "passed 必须与 verdict 一致"
     if not isinstance(payload.get("findings"), list):
         return False, "findings 必须是数组"
     if not isinstance(payload.get("required_changes"), list):
@@ -114,6 +114,26 @@ def validate_shape(payload: dict[str, Any]) -> tuple[bool, str]:
         return False, "已确认缺陷尚存在时不能声明代码检查通过"
     if value == "PASS" and payload["required_changes"]:
         return False, "仍有必需处理项时不能批准补丁"
+    dimensions = payload.get("dimensions")
+    if not isinstance(dimensions, dict) or set(dimensions) != {"syntax", "business", "scope"}:
+        return False, "必须提供语法、业务修复、影响范围三个审查维度"
+    for key, item in dimensions.items():
+        if not isinstance(item, dict) or item.get("status") not in {"passed", "failed", "unverified"}:
+            return False, f"dimensions.{key} 状态无效"
+        if not isinstance(item.get("reason"), str) or not item["reason"].strip():
+            return False, f"dimensions.{key} 必须说明判断依据"
+        refs = item.get("evidence")
+        if not isinstance(refs, list) or any(not isinstance(ref, str) or not ref.strip() for ref in refs):
+            return False, f"dimensions.{key}.evidence 必须是证据引用数组"
+        if item["status"] in {"passed", "failed"} and not refs:
+            return False, f"dimensions.{key} 确定结论必须引用证据"
+    statuses = {item["status"] for item in dimensions.values()}
+    if value == "PASS" and statuses != {"passed"}:
+        return False, "三个审查维度全部通过才能批准补丁"
+    if "failed" in statuses and payload["code_verdict"] != "FAIL":
+        return False, "确认审查缺陷时 code_verdict 必须为 FAIL"
+    if payload["code_verdict"] == "FAIL" and "failed" not in statuses:
+        return False, "代码缺陷必须对应具体审查维度"
     coverage = payload.get("coverage")
     if not isinstance(coverage, dict) or coverage.get("decision") not in {"sufficient", "insufficient", "unknown"}:
         return False, "coverage 必须明确声明 sufficient/insufficient/unknown"
@@ -127,8 +147,9 @@ def validate_shape(payload: dict[str, Any]) -> tuple[bool, str]:
     if coverage["decision"] == "sufficient" and coverage["missing_checks"]:
         return False, "覆盖仍有必需检查缺口时不能声明 sufficient"
     if payload.get("change_plan"):
-        from app.application.plans import ChangePlan
         from pydantic import ValidationError
+
+        from app.application.plans import ChangePlan
         try:
             ChangePlan.model_validate(payload["change_plan"])
         except ValidationError as error:

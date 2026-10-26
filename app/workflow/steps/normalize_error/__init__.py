@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.workflow.spec import Dependency, StepSpec
-from app.workflow.steps.normalize_error.models import NormalizeErrorInput, NormalizeErrorOutput
+from app.workflow.spec import StepSpec
+from app.workflow.steps.normalize_error.models import (
+    NormalizeErrorInput,
+    NormalizeErrorOutput,
+)
 from app.workflow.steps.normalize_error.node import run
 
 
@@ -21,8 +24,6 @@ SPEC = StepSpec(
     output_model=NormalizeErrorOutput,
     input_builder=_input,
     task_level=False,
-    depends_on=(Dependency("discover_logs", "run"),),
-    next_step="deduplicate_error",
 )
 
 __all__ = ["SPEC"]

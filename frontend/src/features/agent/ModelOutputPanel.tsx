@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { ModelCall } from '../../lib/types';
 import { formatDuration, formatTokens } from '../../lib/format';
 import { EmptyState } from '../../components/EmptyState';
+import styles from './ModelOutputPanel.module.css';
 
 function statusLabel(status: string): string {
   return ({
@@ -14,8 +15,8 @@ function statusLabel(status: string): string {
 }
 
 function statusClass(status: string): string {
-  if (status === 'succeeded') return 'text-success';
-  if (status === 'failed') return 'text-danger';
+  if (status === 'succeeded') return styles.statusOk;
+  if (status === 'failed') return styles.statusBad;
   return '';
 }
 
@@ -25,8 +26,8 @@ export function ModelOutputPanel({ call, fullOutput }: { call: ModelCall; fullOu
   const archived = fullOutput || call.output_preview || '';
   const preview = archived.slice(0, 500);
   return (
-    <div className="model-output">
-      <div className="model-metrics">
+    <div className={styles.output}>
+      <div className={styles.metrics}>
         <div><span>配置模型</span><strong>{call.model || '—'}</strong></div>
         <div><span>状态</span><strong className={statusClass(call.status)}>{statusLabel(call.status)}</strong></div>
         <div><span>输入 tokens</span><strong>{formatTokens(call.input_tokens)}</strong></div>
@@ -40,13 +41,13 @@ export function ModelOutputPanel({ call, fullOutput }: { call: ModelCall; fullOu
         <div><span>提供方／用量来源</span><strong>{call.provider || '历史未记录'}／{call.usage_source === 'sdk_reported' ? 'SDK 回报' : '未知'}</strong></div>
         <div><span>事件数</span><strong>{call.event_count ?? 0}</strong></div>
       </div>
-      <p>调用成功表示取得模型返回；业务与审查结论见步骤结果。缺失用量不计作零。</p>
-      {Boolean(call.sdk_receipt?.model_usage) && <details><summary>SDK 实际模型与用量回执</summary><pre>{JSON.stringify(call.sdk_receipt, null, 2)}</pre></details>}
-      {call.error_type && <div className="model-error">错误类型：{call.error_type}</div>}
-      {Boolean(call.error_detail) && <details><summary>查看调用失败详情</summary><pre>{String(call.error_detail)}</pre></details>}
+      <p className={styles.note}>调用成功表示取得模型返回；业务与审查结论见步骤结果。缺失用量不计作零。</p>
+      {Boolean(call.sdk_receipt?.model_usage) && <details className={styles.details}><summary>SDK 实际模型与用量回执</summary><pre>{JSON.stringify(call.sdk_receipt, null, 2)}</pre></details>}
+      {call.error_type && <div className={styles.errorBox}>错误类型：{call.error_type}</div>}
+      {Boolean(call.error_detail) && <details className={styles.details}><summary>查看调用失败详情</summary><pre>{String(call.error_detail)}</pre></details>}
       {archived ? (
-        <><pre className="model-preview">{expanded ? archived : preview}</pre>
-          {archived.length > 500 && <button type="button" onClick={() => setExpandedCall(expanded ? '' : call.model_call_id)}>
+        <><pre className={styles.preview}>{expanded ? archived : preview}</pre>
+          {archived.length > 500 && <button type="button" className={styles.toggle} onClick={() => setExpandedCall(expanded ? '' : call.model_call_id)}>
             {expanded ? '收起输出' : `展开已归档输出（${archived.length} 字）`}
           </button>}
         </>

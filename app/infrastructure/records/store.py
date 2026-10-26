@@ -7,8 +7,7 @@
 写，所以 ``save`` 的"读-改-写"放在进程内的锁里就够了。跨进程并发写同一个 run
 不被支持——光靠临时文件加替换防不住丢更新，这里不假装能防。
 
-**旧记录兼容**：读取边界把没有 ``schema_version`` 的记录按 v0 转换成当前格式，
-写入一律只写当前格式。历史 run 不需要批量迁移。
+记录只接受当前 schema_version，不转换旧协议。
 """
 
 from __future__ import annotations
@@ -28,52 +27,13 @@ from app.domain.keys import safe_name
 from app.domain.models import utc_now
 from app.application.audit import SCHEMA_VERSION, ArtifactRef, StepError, StepRecord
 from app.infrastructure.records.lifecycle import LifecycleStore
-from app.infrastructure.records.database import RecordDatabase, read_jsonl
+from app.infrastructure.records.database import RecordDatabase
 from app.infrastructure.records.policy import artifact_mode
 from app.workflow.spec import RecordView
 from config.settings import settings
 
 # 单条记录的硬上限：大字段移出后不该再接近 MB，撞上就是"漏了搬字段"。
 _JSON_MAX_BYTES = settings.record_json_max_bytes
-
-# v0 → v1 的字段改名与取值映射。
-_V0_STATUS = {"passed": "succeeded"}
-_V0_RENAMED = {"elapsed_ms": "duration_ms"}
-
-
-def _error_is_empty(value: Any) -> bool:
-    return value is None or (
-        isinstance(value, dict) and not str(value.get("code") or "") and not str(value.get("message") or "")
-    )
-
-
-def upgrade_record(body: dict[str, Any]) -> dict[str, Any]:
-    """把旧格式记录转换成当前格式。``load`` 与 ``list_steps`` 共用这一处。"""
-    if not isinstance(body, dict):
-        raise ValueError("步骤记录必须是对象")
-    if body.get("schema_version") == SCHEMA_VERSION:
-        return body
-    converted = {key: value for key, value in body.items() if key not in _V0_RENAMED}
-    for old, new in _V0_RENAMED.items():
-        if old in body and new not in converted:
-            converted[new] = body[old]
-    status = str(converted.get("status") or "pending")
-    converted["status"] = _V0_STATUS.get(status, status)
-    # 旧记录成功时也写空错误对象，新契约里成功就是没有错误对象。
-    if str(converted.get("status") or "") != "failed" or _error_is_empty(converted.get("error")):
-        converted["error"] = None
-    elif isinstance(converted.get("error"), dict):
-        converted["error"] = {
-            "code": "STEP_EXECUTION_FAILED",
-            "message": str(converted["error"].get("message") or ""),
-            "retryable": False,
-        }
-    converted.setdefault("result", None)
-    converted.setdefault("summary", "")
-    converted.setdefault("artifacts", [])
-    converted["schema_version"] = SCHEMA_VERSION
-    return converted
-
 
 class RecordStore:
     """读写执行目录下的步骤记录。"""
@@ -309,10 +269,16 @@ class RecordStore:
         )
 
     def load(self, run_id: str, step_name: str, task_id: str = "") -> StepRecord | None:
-        """读取步骤记录；不存在时返回空。旧格式在读取边界转换。"""
+        """读取步骤记录；不存在时返回空；旧协议直接拒绝。"""
         with self._lock:
             payload = self._read_steps(run_id)
         body = _step_body(payload, step_name, task_id)
+        if body is None and task_id:
+            from app.workflow.definitions import REVIEW_EVIDENCE_STEPS
+            if step_name in REVIEW_EVIDENCE_STEPS:
+                relative = f"artifacts/review_agent/steps/{step_name}.json"
+                if (self.task_dir(run_id, task_id) / relative).is_file():
+                    body = self.read_artifact(run_id, relative, task_id)
         if body is None:
             return None
         return _validated(body, run_id, step_name)
@@ -421,21 +387,12 @@ class RecordStore:
         return RecordDatabase(self.run_dir(run_id))
 
     def read_metrics(self, run_id: str, task_id: str) -> list[dict[str, Any]]:
-        """读取新旧指标，保留已存在的旧任务统计。"""
-        return (read_jsonl(self.task_dir(run_id, task_id) / "metrics/agent.jsonl")
-                + self.database(run_id).rows("agent_metrics", task_id))
+        """读取当前运行的集中指标。"""
+        return self.database(run_id).rows("agent_metrics", task_id)
 
     def step_history(self, run_id: str, task_id: str) -> list[dict[str, Any]]:
-        """合并旧历史文件与集中保存的历史步骤。"""
-        rows = self.database(run_id).rows("step_history", task_id)
-        for path in (self.task_dir(run_id, task_id) / "history/steps").glob("*.json"):
-            try:
-                value = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(value, dict):
-                    rows.append(value)
-            except (OSError, ValueError):
-                continue
-        return rows
+        """读取当前协议保存的步骤历史。"""
+        return self.database(run_id).rows("step_history", task_id)
 
     def create_run(self, run_id: str, payload: dict[str, Any]) -> None:
         """创建不可覆盖的执行元数据，供真实单步重放使用。"""
@@ -466,7 +423,9 @@ class RecordStore:
 def _validated(body: dict[str, Any], run_id: str, step_name: str) -> StepRecord:
     """校验一条记录，报错时带上执行与步骤名，便于定位。"""
     try:
-        return StepRecord.model_validate(upgrade_record(body))
+        if body.get("schema_version") != SCHEMA_VERSION:
+            raise ValueError("步骤记录协议版本不受支持")
+        return StepRecord.model_validate(body)
     except Exception as error:
         raise ValueError(f"执行 {run_id} 的步骤记录 {step_name or '<未知>'} 无法读取: {error}") from error
 
@@ -527,4 +486,4 @@ def _process_lock(path: Path):
             handle.close()
 
 
-__all__ = ["RecordStore", "StepError", "upgrade_record"]
+__all__ = ["RecordStore", "StepError"]

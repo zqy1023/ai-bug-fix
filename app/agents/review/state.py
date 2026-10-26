@@ -66,6 +66,9 @@ class ReviewState(TypedDict, total=False):
     review_notes: str
     code_verdict: str
     coverage: dict[str, Any]
+    dimensions: dict[str, Any]
+    environment_assessment: str
+    upstream_assessment: str
     # summary：该模型字段用于承载对应契约中的结构化数据。
     summary: str
     # findings：该模型字段用于承载对应契约中的结构化数据。

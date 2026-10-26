@@ -1,0 +1,68 @@
+/* AI 审查结果:结论横条 + 分项检查表 + 待处理事项。 */
+.result { display: grid; gap: 14px; }
+.verdict {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 13px 15px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--wb-warning) 35%, var(--wb-line));
+  border-left: 3px solid var(--wb-warning);
+  background: var(--wb-warning-soft);
+  flex-wrap: wrap;
+}
+.verdict strong { font-size: 15px; }
+.verdict p { margin: 6px 0 0; color: var(--wb-ink-muted); line-height: 1.7; font-size: 12px; overflow-wrap: anywhere; }
+.verdict code { color: var(--wb-ink-muted); font-family: var(--wb-mono); font-size: 11px; white-space: nowrap; }
+.verdictPass {
+  border-color: color-mix(in srgb, var(--wb-success) 35%, var(--wb-line));
+  border-left-color: var(--wb-success);
+  background: var(--wb-success-soft);
+}
+.verdictFail {
+  border-color: color-mix(in srgb, var(--wb-danger) 35%, var(--wb-line));
+  border-left-color: var(--wb-danger);
+  background: var(--wb-danger-soft);
+}
+.checkList { border: 1px solid var(--wb-line); border-radius: 8px; overflow: hidden; }
+.check {
+  display: grid;
+  grid-template-columns: 140px 64px minmax(0, 1fr);
+  gap: 14px;
+  padding: 11px 14px;
+  align-items: baseline;
+  min-height: 46px;
+}
+.check + .check { border-top: 1px solid var(--wb-line-soft); }
+.check > strong { font-size: 12px; }
+.check p { margin: 0; font-size: 12px; color: var(--wb-ink-muted); line-height: 1.7; overflow-wrap: anywhere; }
+.status { font-size: 12px; font-weight: 600; color: var(--wb-warning); }
+.statusPassed { color: var(--wb-success); }
+.statusFailed { color: var(--wb-danger); }
+.contractError { color: var(--wb-danger); font-size: 12px; overflow-wrap: anywhere; }
+.nextAction {
+  background: var(--wb-surface-muted);
+  border: 1px solid var(--wb-line-soft);
+  padding: 13px 15px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+.nextAction p { margin: 8px 0 0; line-height: 1.7; }
+.notes { font-size: 12px; color: var(--wb-ink-muted); }
+.notes summary { cursor: pointer; }
+.notes p, .notes li { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; }
+.notes ul { margin: 6px 0 0; padding-left: 18px; }
+.legacyNote {
+  padding: 12px;
+  background: var(--wb-surface-muted);
+  border: 1px solid var(--wb-line-soft);
+  border-radius: 8px;
+  color: var(--wb-ink-muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+@media (max-width: 760px) {
+  .check { grid-template-columns: minmax(0, 1fr) 64px; gap: 7px; }
+  .check p { grid-column: 1 / -1; }
+}

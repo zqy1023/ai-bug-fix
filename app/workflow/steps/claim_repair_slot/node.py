@@ -146,22 +146,36 @@ def pending_repair_branch(
     return _pending_branch(repo, branch, remote_name)
 
 
+def _effective_problem_key(data: ClaimInput) -> str:
+    """problem_key 缺失时的统一回退口径：task_id 的最后一段（问题指纹短哈希）。
+
+    分支名（``repair_branch``）与 claim 记录键必须用同一表达式，否则同一任务
+    在"分支预检"和"资格占用"两边会算出不同的键。task_id 由
+    ``task_id(biztype, carrier, fingerprint)`` 生成，末段就是指纹短哈希，
+    回退到它与分支名的指纹段语义一致。在途历史数据不受影响：claim 记录的
+    释放/续租都按 run_id + task_id 定位，不依赖 problem_key 口径。
+    """
+    return data.problem_key or data.task_id.rsplit("__", 1)[-1]
+
+
 def run(ctx: StepContext, data: ClaimInput) -> ClaimOutput:
     """已有未合并修复分支时跳过，保证本轮处理的是干净状态。"""
     if ctx.services.source_repo is None and not data.source_repo_path:
         raise StepFailed("源仓库未配置，无法判断修复分支")
     source = data.source_repo_path or str(ctx.services.source_repo)
+    # 分支名与 claim 键共用同一 problem_key 回退口径，见 _effective_problem_key。
+    problem_key = _effective_problem_key(data)
     branch = repair_branch(
         data.biztype,
         data.carrier,
         settings.repair_branch_prefix,
-        data.problem_key or data.task_id.rsplit("__", 1)[-1],
+        problem_key,
     )
     pending = pending_repair_branch(
         source,
         biztype=data.biztype,
         carrier=data.carrier,
-        problem_key=data.problem_key or data.task_id.rsplit("__", 1)[-1],
+        problem_key=problem_key,
         remote_name=ctx.services.git_remote or settings.default_git_remote,
     )
     if pending:
@@ -171,7 +185,7 @@ def run(ctx: StepContext, data: ClaimInput) -> ClaimOutput:
             result="skipped",
         )
 
-    if not _claim_slot(ctx, source, branch, data.problem_key or data.task_id, data.task_id):
+    if not _claim_slot(ctx, source, branch, problem_key, data.task_id):
         raise StepFailed(
             "同一问题已被其他运行领取，跳过本轮任务",
             {"claimed": False, "result": "skipped", "repair_branch": branch},

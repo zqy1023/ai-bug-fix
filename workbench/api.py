@@ -13,39 +13,44 @@ import re
 import secrets
 import threading
 import uuid
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
-from app.infrastructure.config import load_config
-from app.infrastructure.records.store import RecordStore
-from app.infrastructure.records.lifecycle import LifecycleStore
-from app.infrastructure.redaction import public_exception
 from app.domain.approval import APPROVAL_RETRY_TARGETS, RetryTarget
+from app.infrastructure.config import load_config
+from app.infrastructure.records.lifecycle import LifecycleStore
+from app.infrastructure.records.store import RecordStore
+from app.infrastructure.redaction import public_exception
 from config.settings import settings
-from workbench.projections import run_error as project_run_error, run_timestamps, task_stages
+from workbench.projections import run_error as project_run_error
+from workbench.projections import run_timestamps, task_stages
+from workbench.view_models import delivery_view, run_actions, task_retry_action
 
 router = APIRouter()
 SERVICE_NAME = "ai-repair-workbench"
 SERVICE_VERSION = "1.0.0"
 
 _ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,160}$")
-_RUN_LOCKS: dict[str, threading.Lock] = {}
+# Run 级执行锁按 run_id 累积，从不回收会让长驻进程缓慢泄漏内存。
+# 用 OrderedDict + 守护锁实现简单 LRU：命中即 move_to_end，超过
+# _RUN_LOCKS_LIMIT 时淘汰最旧条目。淘汰不强制回收使用中的锁——
+# 正在运行的线程仍持有锁对象引用，淘汰只让后续请求重建锁；
+# 并发正确性由 non-blocking acquire 与生命周期落盘共同保证。
+_RUN_LOCKS: OrderedDict[str, threading.Lock] = OrderedDict()
 _RUN_LOCKS_GUARD = threading.Lock()
+_RUN_LOCKS_LIMIT = 4096
 _STARTED_RUNS: set[str] = set()
 logger = logging.getLogger("workbench.api")
 
 
-class StartRunRequest(BaseModel):
-    # run_id：可选的调用方指定执行标识；缺省由服务端生成。
-    run_id: str | None = Field(default=None, max_length=160)
-
-
-class ApprovalRequest(BaseModel):
+class ApprovalDecision(BaseModel):
     # decision：交付审批决定。
     decision: str
     # reason：人工操作说明，用于审计与终态报告。
@@ -91,10 +96,30 @@ def _read_json(path: Path, default: Any = None) -> Any:
         return default
 
 
+def _run_lock(run_id: str) -> threading.Lock:
+    """获取（或创建）run 的执行锁；必须在 _RUN_LOCKS_GUARD 内调用。
+
+    命中即 move_to_end 触碰 LRU 顺序；超过 _RUN_LOCKS_LIMIT 时淘汰最旧条目。
+    使用中的锁对象仍被运行线程持有，淘汰只让后续请求重建锁，属可接受的取舍。
+    """
+    lock = _RUN_LOCKS.get(run_id)
+    if lock is None:
+        lock = threading.Lock()
+        _RUN_LOCKS[run_id] = lock
+    else:
+        _RUN_LOCKS.move_to_end(run_id)
+    while len(_RUN_LOCKS) > _RUN_LOCKS_LIMIT:
+        _RUN_LOCKS.popitem(last=False)
+    return lock
+
+
 def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
     directory = store.run_dir(run_id)
     if not directory.is_dir():
         raise HTTPException(status_code=404, detail="运行记录不存在")
+    from app.workflow.contracts import WORKFLOW_VERSION
+    if store.load_run(run_id).get("workflow_version") != WORKFLOW_VERSION:
+        raise HTTPException(status_code=409, detail="工作流版本不受支持，请新建当前版本执行")
     steps_payload = _read_json(store.steps_path(run_id), {})
     if not isinstance(steps_payload, dict):
         steps_payload = {}
@@ -123,7 +148,6 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
             biztype = str((report or {}).get("biztype") or _task_identity(slot, "biztype"))
             task_lifecycle = lifecycle_store.read_task(run_id, task_id)
             derived_step_status = _task_status(task_steps, approval)
-            inferred_status = derived_step_status
             lifecycle_status = str(task_lifecycle.get("status") or "").lower()
             task_status_labels = {
                 "pending": "PENDING", "queued": "PENDING", "running": "RUNNING",
@@ -132,21 +156,8 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
                 "failed": "FAILED", "cancelled": "CANCELLED", "manual": "MANUAL", "blocked": "BLOCKED",
                 "skipped": "SKIPPED",
             }
-            fallback_report = _report_from_steps(
-                task_id=task_id, carrier=carrier, biztype=biztype,
-                steps=task_steps, status=inferred_status,
-            )
-            if not isinstance(report, dict) or not report:
-                report = fallback_report
-            elif not report.get("terminal_reason") or not report.get("terminal_step") or not report.get("next_action"):
-                # 旧 final.json 可能只有 MANUAL/FAILED，按步骤记录补全报告；已存在字段不覆盖。
-                report = {
-                    **report,
-                    "terminal_step": report.get("terminal_step") or fallback_report.get("terminal_step"),
-                    "terminal_reason": report.get("terminal_reason") or fallback_report.get("terminal_reason"),
-                    "next_action": report.get("next_action") or fallback_report.get("next_action"),
-                    "legacy_report": True,
-                }
+            if not isinstance(report, dict):
+                raise HTTPException(status_code=500, detail="当前终态报告格式无效")
             approval_pending = _approval_pending(approval) or lifecycle_status == "waiting_approval"
             active_derived_statuses = {"RUNNING", "PENDING", "WAITING_APPROVAL", "PAUSED"}
             task_status = (
@@ -312,86 +323,6 @@ def _task_problem(slot: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
-def _report_from_steps(
-    *, task_id: str, carrier: str, biztype: str,
-    steps: list[dict[str, Any]], status: str,
-) -> dict[str, Any]:
-    """兼容旧运行：从已有持久化事实恢复报告，绝不把人工转派伪装成普通完成。"""
-    ordered = sorted(steps, key=lambda item: str(item.get("finished_at") or item.get("started_at") or ""))
-    final = next((item for item in reversed(ordered) if item.get("name") == "finalize_execution"), None)
-    final_output = final.get("output") if isinstance(final, dict) and isinstance(final.get("output"), dict) else {}
-    result = str(final_output.get("delivery_status") or status or "INCOMPLETE").upper()
-    terminal = ordered[-1] if ordered else {}
-    terminal_name = str(final_output.get("terminal_step") or terminal.get("name") or "workflow")
-    reason = str(final_output.get("terminal_reason") or "").strip()
-    next_action = str(final_output.get("next_action") or "").strip()
-
-    if not reason:
-        evidence = next((item for item in reversed(ordered) if item.get("name") == "prepare_evidence"), None)
-        evidence_output = evidence.get("output") if isinstance(evidence, dict) and isinstance(evidence.get("output"), dict) else {}
-        # legacy_only 只表示“不能自动修复”，后续仍会进入 locate 人工分析；
-        # 只有证据准备确实是最后一步时才能把它当成任务终态。
-        if evidence_output.get("legacy_only") and terminal.get("name") == "prepare_evidence":
-            terminal_name = "prepare_evidence"
-            reason = str(evidence_output.get("legacy_reason") or evidence.get("summary") or
-                         "证据准备确认该运输商只有旧框架实现，不能进入自动修复。")
-            result = "MANUAL"
-            next_action = "人工核对实际采集入口和调用链，确定迁移或兼容方案。"
-
-    if not reason and result in {"MANUAL", "INSUFFICIENT_EVIDENCE"}:
-        manual = next((item for item in reversed(ordered) if
-                       str(item.get("result") or "").upper() in {"MANUAL", "INSUFFICIENT_EVIDENCE"}
-                       or str((item.get("output") or {}).get("status") or "").upper() in {"MANUAL", "INSUFFICIENT_EVIDENCE"}), None)
-        if manual:
-            output = manual.get("output") if isinstance(manual.get("output"), dict) else {}
-            terminal_name = str(manual.get("name") or terminal_name)
-            gaps = output.get("evidence_gaps")
-            reason = str(output.get("legacy_reason") or output.get("reason") or output.get("summary") or
-                         manual.get("summary") or (("证据缺口：" + "；".join(map(str, gaps[:8]))) if isinstance(gaps, list) and gaps else "")).strip()
-            generic_locate = {
-                "定位输出不满足证据或路径契约，停止并转人工",
-                "定位输出不满足证据或路径契约，停止并转人工。",
-            }
-            if str(manual.get("name") or "") == "locate_agent" and reason in generic_locate and isinstance(gaps, list):
-                detail = next((str(item).strip() for item in gaps if str(item).strip()), "")
-                if detail:
-                    reason = "定位输出契约校验失败：" + detail[:1500]
-        reason = reason or "安全门禁要求人工介入，但历史步骤没有保存明确原因。"
-        next_action = next_action or "补齐缺失证据并由人工确认处理范围；证据充分前不要自动修改代码。"
-
-    if not reason and result in {"FAILED", "FAIL", "REJECTED"}:
-        failure = next((item for item in reversed(ordered) if item.get("status") == "failed"
-                        or str(item.get("result") or "").upper() in {"FAIL", "FAILED", "REJECTED"}), terminal)
-        error = failure.get("error") if isinstance(failure, dict) and isinstance(failure.get("error"), dict) else {}
-        terminal_name = str((failure or {}).get("name") or terminal_name)
-        reason = str(error.get("message") or (failure or {}).get("summary") or
-                     "历史任务未通过自动修复门禁，但没有保存更具体的失败原因。")
-        next_action = next_action or "检查失败节点的错误详情和产物，修复原因后再重试或转人工。"
-
-    if not reason:
-        if result in {"RUNNING", "PENDING", "WAITING_APPROVAL"}:
-            reason = "任务仍在执行或等待人工决策，尚未形成终态。"
-            next_action = next_action or "继续观察任务步骤；若等待审批，请进入审批页面处理。"
-        elif result in {"SUCCESS", "SUCCEEDED", "COMPLETED"}:
-            reason = "历史任务已结束，但没有保存终态报告；此结论仅基于已有步骤记录推导。"
-            next_action = next_action or "查看交付记录并按团队流程完成人工评审和合并。"
-        else:
-            reason = "历史任务缺少正式终态报告；现有步骤记录未提供更具体的结束原因。"
-            next_action = next_action or "检查最后一个已执行步骤的输入、输出和错误后确定处置方案。"
-
-    return {
-        "report_version": 0, "report_kind": "task_final",
-        "legacy_report": result not in {"RUNNING", "PENDING", "WAITING_APPROVAL"},
-        "task_id": task_id, "carrier": carrier, "biztype": biztype,
-        "result": result, "status": result, "terminal_status": result,
-        "terminal_step": terminal_name, "terminal_reason": reason,
-        "next_action": next_action or "检查终态步骤及关联产物，确认后续处置动作。",
-        "finished_at": final_output.get("finished_at") or terminal.get("finished_at") or "",
-        "elapsed_ms": round(sum(float(item.get("duration_ms") or 0) for item in ordered), 2),
-        "completed_steps": [str(item.get("name")) for item in ordered if item.get("status") in {"succeeded", "skipped"}],
-    }
-
-
 def _task_status(steps: list[dict[str, Any]], approval: dict[str, Any] | None) -> str:
     """活动状态优先于旧失败记录；只有终态收尾或停滞后才报告任务失败。"""
     if _approval_pending(approval):
@@ -513,11 +444,10 @@ def _all_run_ids(store: RecordStore) -> list[str]:
     )
 
 
-@router.get("/api/health")
-def health(_: None = Depends(_authorize)) -> dict[str, Any]:
+def _health_payload(_: None = Depends(_authorize)) -> dict[str, Any]:
     config = _config()
-    from app.workflow.steps.verify_issue.assessment import CONTRACT_VERSION
     from app.agents.review.contract import REVIEW_CONTRACT_VERSION
+    from app.agents.review.tools.verify_issue.assessment import CONTRACT_VERSION
     return {
         "status": "ok",
         "service": SERVICE_NAME,
@@ -532,42 +462,7 @@ def health(_: None = Depends(_authorize)) -> dict[str, Any]:
     }
 
 
-@router.get("/api/runs")
-def list_runs(
-    limit: int = Query(default=50, ge=1, le=200),
-    _: None = Depends(_authorize),
-) -> dict[str, Any]:
-    store = _store()
-    items = []
-    for run_id in _all_run_ids(store)[:limit]:
-        try:
-            payload = _run_payload(store, run_id)
-            items.append({
-                **{key: payload[key] for key in ("run_id", "status", "created_at", "updated_at", "summary")},
-                "tasks": [
-                    {
-                        "task_id": task["task_id"],
-                        "carrier": task["carrier"],
-                        "biztype": task["biztype"],
-                        "status": task["status"],
-                        "problem": task["problem"],                        "steps_count": len(task["steps"]),
-                        "approval_pending": task["approval_pending"],
-                    }
-                    for task in payload["tasks"]
-                ],
-            })
-        except (OSError, ValueError):
-            continue
-    return {"items": items, "total": len(items)}
-
-
-@router.get("/api/runs/{run_id}")
-def get_run(run_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
-    return _run_payload(_store(), _safe_id(run_id))
-
-
-@router.get("/api/approvals")
-def list_approvals(_: None = Depends(_authorize)) -> dict[str, Any]:
+def _pending_approvals(_: None = Depends(_authorize)) -> dict[str, Any]:
     store = _store()
     approvals = []
     for run_id in _all_run_ids(store):
@@ -589,64 +484,7 @@ def list_approvals(_: None = Depends(_authorize)) -> dict[str, Any]:
     return {"items": approvals, "total": len(approvals)}
 
 
-@router.post("/api/runs", status_code=202)
-def start_run(
-    request: StartRunRequest,
-    background: BackgroundTasks,
-    _: None = Depends(_authorize),
-) -> dict[str, Any]:
-    config = _config()
-    if config.source_repo is None:
-        raise HTTPException(status_code=409, detail="未配置 AI_REPAIR_SOURCE_URL 或 AI_REPAIR_SOURCE_REPO，不能启动生产工作流")
-    run_id = _safe_id(request.run_id or uuid.uuid4().hex)
-    with _RUN_LOCKS_GUARD:
-        if run_id in _STARTED_RUNS or _store().run_dir(run_id).joinpath("run.json").exists():
-            raise HTTPException(status_code=409, detail="该 run_id 已存在或已提交；请使用新的 run_id，禁止重复启动覆盖")
-        lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
-        if not lock.acquire(blocking=False):
-            raise HTTPException(status_code=409, detail="该 run 正在启动或恢复")
-        _STARTED_RUNS.add(run_id)
-    try:
-        # 旧 /api 入口复用 v1 的预创建、后台失败报告和生命周期锁；只保留旧响应形状。
-        from app.entrypoint import prepare_run
-        prepare_run(run_id, overrides={}, queued=True)
-    except Exception as exc:
-        lock.release()
-        with _RUN_LOCKS_GUARD:
-            _STARTED_RUNS.discard(run_id)
-        raise HTTPException(
-            status_code=503,
-            detail=public_exception(exc, prefix="初始化执行记录失败，工作流未启动"),
-        ) from exc
-    background.add_task(_run_workflow_background_v1, run_id, {}, lock)
-    return {"run_id": run_id, "status": "accepted", "message": "已提交后台执行；请在运行详情中观察节点进度"}
-
-
-@router.get("/api/runs/{run_id}/artifacts")
-def list_artifacts(
-    run_id: str,
-    task_id: str = "",
-    _: None = Depends(_authorize),
-) -> dict[str, Any]:
-    store = _store()
-    run = _run_payload(store, _safe_id(run_id))
-    selected = next((task for task in run["tasks"] if task["task_id"] == task_id), None) if task_id else None
-    records = selected["steps"] if selected else run["steps"]
-    artifacts = []
-    for step in records:
-        for ref in step.get("artifacts") or []:
-            artifacts.append({
-                "task_id": task_id or "",
-                "step": step.get("name", ""),
-                "name": ref.get("name", ""),
-                "path": ref.get("path", ""),
-                "size_bytes": None,
-            })
-    return {"items": artifacts, "total": len(artifacts)}
-
-
-@router.get("/api/runs/{run_id}/artifacts/content")
-def get_artifact_content(
+def _artifact_content(
     run_id: str,
     path: str = Query(..., min_length=1, max_length=500),
     task_id: str = "",
@@ -701,11 +539,10 @@ def download_artifact(run_id: str, path: str = Query(..., min_length=1, max_leng
     return FileResponse(target, filename=target.name, media_type="application/octet-stream")
 
 
-@router.post("/api/runs/{run_id}/tasks/{task_id}/approval")
-def decide_approval(
+def _submit_approval(
     run_id: str,
     task_id: str,
-    request: ApprovalRequest,
+    request: ApprovalDecision,
     background: BackgroundTasks,
     _: None = Depends(_authorize),
 ) -> dict[str, Any]:
@@ -730,7 +567,7 @@ def decide_approval(
         raise HTTPException(status_code=409, detail="该任务当前没有可恢复的人工决策中断；历史终态任务不能原地续跑")
 
     with _RUN_LOCKS_GUARD:
-        lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
+        lock = _run_lock(run_id)
     if not lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="该 run 正在执行恢复操作")
     try:
@@ -749,9 +586,6 @@ def decide_approval(
     return {"run_id": run_id, "task_id": task_id, "decision": decision, "status": "resume_requested"}
 
 # Versioned control-plane contract consumed by frontend/src/lib/api.ts.
-# Legacy /api routes remain available for existing local tooling.
-from hashlib import sha256
-from typing import Literal
 
 
 class V1StartRunRequest(BaseModel):
@@ -826,11 +660,6 @@ def _control_db():
             created_at TEXT NOT NULL
         );
     """)
-    # 旧版控制库原位升级；保留已有运行记录与取消请求。
-    columns = {row[1] for row in connection.execute("PRAGMA table_info(run_control)")}
-    if "pause_requested" not in columns:
-        connection.execute("ALTER TABLE run_control ADD COLUMN pause_requested INTEGER NOT NULL DEFAULT 0")
-        connection.commit()
     connection.commit()
     return connection
 
@@ -1004,8 +833,17 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
         terminal = True
     if status == "cancelled" and not summary.get("worker_active"):
         terminal = True
+    from app.workflow.contracts import WORKFLOW_VERSION
+    current = run_meta.get("workflow_version") == WORKFLOW_VERSION
+    controls = run_actions(
+        current=current, status=status, worker_active=bool(summary.get("worker_active")),
+        resumable=resumable, safe_startup=not payload.get("tasks") and
+        {step.get("name") for step in steps}.issubset({"sync_source_repo"}),
+    )
     return {
         **summary, "status": status, "terminal": terminal,
+        "read_only": not current,
+        "actions": {key: value.model_dump(mode="json") for key, value in controls.items()},
         "config": {
             **_config().run_parameters(run_meta),
         },
@@ -1042,7 +880,7 @@ def _checkpoint_projection(snapshot: Any) -> dict[str, Any]:
 
 @router.get("/api/v1/health")
 def v1_health(_: None = Depends(_authorize)) -> dict[str, Any]:
-    return health()
+    return _health_payload()
 
 
 @router.get("/api/v1/dashboard/summary")
@@ -1147,7 +985,7 @@ def v1_start_run(
         with _RUN_LOCKS_GUARD:
             if run_id in _STARTED_RUNS or _store().run_dir(run_id).exists():
                 raise HTTPException(status_code=409, detail="执行 ID 冲突，请重试")
-            run_lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
+            run_lock = _run_lock(run_id)
             if not run_lock.acquire(blocking=False):
                 raise HTTPException(status_code=409, detail="该执行已被另一个工作线程启动")
             lock_held = True
@@ -1398,7 +1236,7 @@ def _run_workflow_background_v1(
     from app.entrypoint import run_workflow
     if run_lock is None:
         with _RUN_LOCKS_GUARD:
-            run_lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
+            run_lock = _run_lock(run_id)
         if not run_lock.acquire(blocking=False):
             logger.warning("跳过重复启动的工作流 run_id=%s", run_id)
             return
@@ -1424,7 +1262,9 @@ def _run_workflow_background_v1(
         close_sessions(run_id)
         try:
             LifecycleStore(_store().root).update_run(run_id, worker_active=False)
-            from app.infrastructure.filesystem.workspace_gc import collect_configured_workspaces
+            from app.infrastructure.filesystem.workspace_gc import (
+                collect_configured_workspaces,
+            )
             collect_configured_workspaces(_config())
         except Exception:
             logger.exception("清理 Run 活动租约失败 run_id=%s", run_id)
@@ -1490,17 +1330,8 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
     source = next((item for item in payload.get("tasks", []) if item.get("task_id") == task_id), None)
     if source is None:
         raise HTTPException(status_code=404, detail="该执行中不存在此任务")
-    steps = list(source.get("steps") or [])
+    steps = [_formal_step_payload(store, run_id, task_id, step) for step in source.get("steps") or []]
     report = source.get("report") if isinstance(source.get("report"), dict) else {}
-    if not report:
-        last = steps[-1] if steps else {}
-        report = {
-            "result": source.get("status") or "INCOMPLETE",
-            "terminal_step": str(last.get("name") or "workflow"),
-            "terminal_reason": "历史任务没有持久化终态报告；请检查服务端日志和步骤产物。",
-            "next_action": "重新运行该任务以生成完整终态报告；如需排查旧记录，请检查步骤输入、输出和错误。",
-            "legacy_report": True,
-        }
     artifacts = []
     for step in steps:
         for ref in step.get("artifacts") or []:
@@ -1520,7 +1351,18 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
         })
     run_meta = _read_json(store.run_dir(run_id) / "run.json", {})
     run_error = payload.get("run_error") or {}
+    from app.workflow.contracts import WORKFLOW_VERSION
+    current = run_meta.get("workflow_version") == WORKFLOW_VERSION
+    retry = task_retry_action(
+        current=current, worker_active=bool(payload.get("worker_active")),
+        run_failed=(store.run_dir(run_id) / "reports/run_failure.json").is_file(),
+        run_status=_v1_run_summary(payload)["status"],
+        task={**source, "result": source.get("status"), "steps": steps},
+    )
     return {
+        "read_only": not current,
+        "actions": {"retry": retry.model_dump(mode="json")},
+        "delivery": delivery_view(steps).model_dump(mode="json"),
         "run_id": run_id,
         "run_status": _v1_run_summary(payload)["status"],
         "worker_active": bool(payload.get("worker_active")),
@@ -1574,7 +1416,7 @@ def v1_retry_run(run_id: str, background: BackgroundTasks, _: None = Depends(_au
     if detail["status"] != "failed":
         raise HTTPException(status_code=409, detail="只有终态失败的 Run 才能重试；活动执行请使用停止或暂停")
     with _RUN_LOCKS_GUARD:
-        lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
+        lock = _run_lock(run_id)
     if not lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="该 Run 仍被后台工作线程占用，状态正在收敛")
 
@@ -1584,6 +1426,16 @@ def v1_retry_run(run_id: str, background: BackgroundTasks, _: None = Depends(_au
         if checkpoint.get("resumable"):
             mode = "resume"
             worker = _resume_workflow_background
+            # 与 restart 模式同口径：请求即清掉上一轮失败的报告与生命周期错误，
+            # 恢复执行期间 UI 不能继续把旧失败当成当前状态显示。
+            reports = store.run_dir(run_id) / "reports"
+            (reports / "run_failure.json").unlink(missing_ok=True)
+            (reports / "final.json").unlink(missing_ok=True)
+            LifecycleStore(store.root).update_run(
+                run_id, status="retrying", phase="retry_queued", current_step="",
+                error={}, error_type="", error_message="", terminal_reason="",
+                next_action="", worker_active=True,
+            )
         else:
             steps = store.list_steps(run_id)
             raw_steps = _read_json(store.steps_path(run_id), {})
@@ -1646,7 +1498,7 @@ def v1_resume_run(run_id: str, background: BackgroundTasks, _: None = Depends(_a
     _require_current_workflow(run_id)
     run_id = _safe_id(run_id)
     with _RUN_LOCKS_GUARD:
-        lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
+        lock = _run_lock(run_id)
     if not lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="该执行正在进行其他控制操作")
 
@@ -1688,7 +1540,7 @@ def _resume_workflow_background(
 ) -> None:
     if run_lock is None:
         with _RUN_LOCKS_GUARD:
-            run_lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
+            run_lock = _run_lock(run_id)
         if not run_lock.acquire(blocking=False):
             logger.warning("跳过重复恢复的工作流 run_id=%s", run_id)
             return
@@ -1732,6 +1584,7 @@ def _resume_workflow_background(
         has_interrupt = any(getattr(task, "interrupts", ()) for task in (getattr(snapshot, "tasks", ()) or ()))
         if resume_payload is not None:
             from langgraph.types import Command
+
             from app.workflow.wiring import resume_task_approval
 
             task_id = str(resume_payload.get("task_id") or "")
@@ -1752,6 +1605,7 @@ def _resume_workflow_background(
                 final_state = graph.invoke(Command(resume=resume_payload), config=config)
         elif has_interrupt:
             from langgraph.types import Command
+
             from app.workflow.validation import assert_workflow_version
             assert_workflow_version(_store().load_run(run_id))
             final_state = graph.invoke(Command(resume={"control": "resume"}), config=config)
@@ -1765,10 +1619,12 @@ def _resume_workflow_background(
             failure_path.unlink()
         stale_run_report = store.run_dir(run_id) / "reports" / "final.json"
         stale_payload = _read_json(stale_run_report, {})
+        # 上一次终态的 FAILED 报告（含业务阶段失败）在本次恢复推进 checkpoint 后
+        # 全部作废：终态结束会被新报告覆盖，等待审批则不能让旧失败顶替当前状态。
         if (
             isinstance(stale_payload, dict)
-            and stale_payload.get("terminal_step") in {"workflow_startup", "approval_recovery", "workflow_resume", "sync_source_repo"}
-            and stale_payload.get("result") == "FAILED"
+            and str(stale_payload.get("result") or stale_payload.get("status") or "").upper()
+            in {"FAILED", "FAIL"}
         ):
             stale_run_report.unlink(missing_ok=True)
         from app.entrypoint import _write_run_report_if_terminal
@@ -1787,7 +1643,9 @@ def _resume_workflow_background(
             heartbeat_thread.join(timeout=1)
         try:
             LifecycleStore(_store().root).update_run(run_id, worker_active=False)
-            from app.infrastructure.filesystem.workspace_gc import collect_configured_workspaces
+            from app.infrastructure.filesystem.workspace_gc import (
+                collect_configured_workspaces,
+            )
             collect_configured_workspaces(_config())
         except Exception:
             logger.exception("清理恢复 Run 活动租约失败 run_id=%s", run_id)
@@ -1835,7 +1693,7 @@ def v1_cancel_run(
     paused_lock = None
     if detail["status"] == "paused":
         with _RUN_LOCKS_GUARD:
-            paused_lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
+            paused_lock = _run_lock(run_id)
         if not paused_lock.acquire(blocking=False):
             raise HTTPException(status_code=409, detail="执行正在恢复或仍未完全暂停，请稍后重试")
     try:
@@ -1873,11 +1731,11 @@ def v1_list_approvals(
     status: str = Query(default="pending", pattern="^(pending|approved|rejected|expired)$"),
     _: None = Depends(_authorize),
 ) -> dict[str, Any]:
-    legacy = list_approvals()
+    pending = _pending_approvals()
     store = _store()
     run_cache: dict[str, dict[str, Any]] = {}
     items = []
-    for item in legacy.get("items", []):
+    for item in pending.get("items", []):
         if status != "pending":
             continue
         step = item.get("approval_step") or {}
@@ -1927,7 +1785,21 @@ def v1_list_approvals(
             "rationale": str(plan.get("rationale") or summary),
             "edits": edits,
         }
+        candidate_steps = [_formal_step_payload(store, run_id, task_id, value) for value in steps
+                           if value.get("name") in {"prepare_delivery", "publish_delivery"}]
+        candidate = delivery_view(candidate_steps)
+        from app.workflow.contracts import WORKFLOW_VERSION
+        from workbench.view_models import ActionAvailability
+        metadata = store.load_run(run_id)
+        current = metadata.get("workflow_version") == WORKFLOW_VERSION
+        approve = ActionAvailability(
+            enabled=current and candidate.phase == "prepared" and bool(candidate.candidate_id),
+            reason="" if current and candidate.phase == "prepared" and candidate.candidate_id else "缺少有效本地候选或记录属于历史工作流",
+        )
+        reject = ActionAvailability(enabled=current, reason="" if current else "历史工作流只读，请创建新执行")
         items.append({
+            "delivery": candidate.model_dump(mode="json"),
+            "actions": {"approve": approve.model_dump(mode="json"), "reject": reject.model_dump(mode="json")},
             "approval_id": f"{run_id}:{task_id}", "run_id": run_id, "task_id": task_id,
             "carrier": item.get("carrier") or "", "biztype": item.get("biztype") or "",
             "scope": safe_plan["scope"], "status": "pending", "summary": summary,
@@ -1953,10 +1825,10 @@ def v1_decide_approval(
     _require_current_workflow(run_id)
     actor = "bearer-token" if authorization else "local-user"
     _audit_control(run_id, task_id, "approval." + request.decision, actor, request.reason)
-    return decide_approval(
+    return _submit_approval(
         run_id,
         task_id,
-        ApprovalRequest(
+        ApprovalDecision(
             decision=request.decision.upper(),
             reason=request.reason,
             retry_target=request.retry_target or "repair_agent",
@@ -1976,7 +1848,7 @@ def v1_artifact_content(
     run_id: str, path: str = Query(..., min_length=1, max_length=500), task_id: str = "",
     _: None = Depends(_authorize),
 ) -> JSONResponse:
-    return get_artifact_content(run_id, path, task_id)
+    return _artifact_content(run_id, path, task_id)
 
 
 @router.get("/api/v1/runs/{run_id}/model-calls")
@@ -2087,6 +1959,20 @@ def _load_model_calls(run_id: str, task_id: str | None = None) -> list[dict[str,
     return model_calls(_store().run_dir(run_id), task_id)
 
 
+def _formal_step_payload(store: RecordStore, run_id: str, task_id: str, record: dict) -> dict:
+    """任务、步骤和审批共享正式输出，禁止使用截断审计摘要推断候选身份。"""
+    from app.workflow.contracts import Handoff
+
+    name = str(record.get("name") or "")
+    root = store.task_dir(run_id, task_id) if task_id else store.run_dir(run_id)
+    if name and (root / f"workflow/outputs/{name}.json").is_file():
+        formal = Handoff.model_validate(store.read_artifact(run_id, f"workflow/outputs/{name}.json", task_id or None))
+        return {**record, "output": formal.outcome.output,
+                "execution": formal.outcome.execution.model_dump(mode="json"),
+                "assessment": formal.outcome.assessment.model_dump(mode="json")}
+    return record
+
+
 def _step_context(record: Any) -> dict[str, Any]:
     """步骤上下文白名单投影；不返回工作区绝对路径与完整输入输出。"""
     output = record.output if isinstance(record.output, dict) else {}
@@ -2153,11 +2039,12 @@ def v1_run_board(run_id: str, _: None = Depends(_authorize),
 
 def _reinvestigate_task(run_id: str, task_id: str, background: BackgroundTasks) -> dict[str, Any]:
     """为人工任务建立独立调查 Run，保留原报告、分支、回执和审批检查点。"""
-    from app.infrastructure.config import load_config
-    from app.workflow.wiring import build_graph, build_services
-    from app.workflow.routes import IDENTIFY
-    from app.application.audit import StepRecord
     import shutil
+
+    from app.application.audit import StepRecord
+    from app.infrastructure.config import load_config
+    from app.workflow.routes import IDENTIFY
+    from app.workflow.wiring import build_graph, build_services
 
     store = _store()
     config = load_config()
@@ -2208,30 +2095,18 @@ def v1_retry_task(
     run_id, task_id = _safe_id(run_id), _safe_id(task_id)
     store = _store()
     detail = _v1_detail(run_id)
-    if detail.get("worker_active"):
-        raise HTTPException(status_code=409, detail="只有已停止的 Run 才能重试单个任务")
-    if (store.run_dir(run_id) / "reports" / "run_failure.json").is_file():
-        raise HTTPException(status_code=409, detail="该 Run 存在运行级异常，请先使用 Run 级重试；不能只重跑其中一个 Task")
-
     task_detail = v1_get_task(run_id, task_id, None)
-    task_payload = task_detail.get("task") if isinstance(task_detail.get("task"), dict) else {}
+    task_payload = task_detail["task"]
+    action = task_detail["actions"]["retry"]
+    if not action["enabled"]:
+        raise HTTPException(status_code=409, detail=action["reason"])
     task_result = str(task_payload.get("result") or "").upper()
     if task_result in {"MANUAL", "INSUFFICIENT_EVIDENCE", "BLOCKED"}:
         return _reinvestigate_task(run_id, task_id, background)
-    if detail["status"] not in {"failed", "partial_failed", "succeeded"}:
-        raise HTTPException(status_code=409, detail="失败任务只能在 Run 停止后重试")
-    if task_result not in {"FAILED", "FAIL"}:
-        raise HTTPException(status_code=409, detail=f"当前 Task 结论为 {task_result or 'UNKNOWN'}，只允许重试终态失败任务")
-    if task_payload.get("approval_pending"):
-        raise HTTPException(status_code=409, detail="该 Task 仍有待审批决策，不能启动整任务重试")
     task_steps = list(task_payload.get("steps") or [])
-    if not any(step.get("name") == "finalize_execution" for step in task_steps):
-        raise HTTPException(status_code=409, detail="Task 尚未完成终态收尾，不能作为终态失败任务重试")
-    if any(step.get("name") == "prepare_delivery" for step in task_steps):
-        raise HTTPException(status_code=409, detail="该 Task 已进入 Git 交付阶段；为防止重复提交，请到失败节点详情重试 prepare_delivery")
 
     with _RUN_LOCKS_GUARD:
-        lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
+        lock = _run_lock(run_id)
     if not lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="该 Run 的后台线程仍持有执行锁，暂不能重试")
 
@@ -2420,7 +2295,9 @@ def v1_get_step(
     run_id, task_id, step_name = _safe_id(run_id), _safe_id(task_id), _safe_id(step_name)
     store = _store()
     _run_payload(store, run_id)
-    record = store.load(run_id, step_name, task_id) or store.load(run_id, step_name)
+    record = store.load(run_id, step_name, task_id)
+    step_scope = task_id if record is not None else ""
+    record = record or store.load(run_id, step_name)
     if record is None:
         raise HTTPException(status_code=404, detail="步骤记录不存在")
     # Agent 记录的 name 是 repair_agent，审计里的 agent_role 是 repair；两者都接受。
@@ -2439,10 +2316,32 @@ def v1_get_step(
             and moment >= started - timedelta(seconds=5)
             and (finished is None or moment <= finished + timedelta(seconds=5))
         ]
+    step_payload = _formal_step_payload(store, run_id, step_scope or "", record.model_dump(mode="json"))
+    from app.application.step_runner import StepRunner, StepRunnerError, StepRunRequest
+    from workbench.view_models import ActionAvailability
+    action = ActionAvailability(enabled=False)
+    try:
+        _require_current_workflow(run_id)
+        run_detail = _v1_detail(run_id)
+        if run_detail.get("worker_active"):
+            action = ActionAvailability(enabled=False, reason="后台仍在执行，请等待停止后重试")
+        else:
+            spec = StepRunner(store, run_status=lambda _: run_detail["status"]).validate(
+                StepRunRequest(run_id=run_id, task_id=task_id, step_name=step_name, confirm_write=True)
+            )
+            action = ActionAvailability(enabled=True, requires_confirmation=spec.requires_confirmation)
+    except StepRunnerError as exc:
+        action = ActionAvailability(enabled=False, reason=str(exc))
+    except HTTPException as exc:
+        action = ActionAvailability(enabled=False, reason=str(exc.detail))
+    continuation = action.model_copy()
+    if action.enabled and (store.run_dir(run_id) / "reports/run_failure.json").is_file():
+        continuation = ActionAvailability(enabled=False, reason="批次存在运行级异常，请先重试批次；当前仅允许执行单个步骤")
     return {
         "run_id": run_id,
         "task_id": task_id,
-        "step": record.model_dump(mode="json"),
+        "step": step_payload,
+        "actions": {"rerun": action.model_dump(mode="json"), "continue_after": continuation.model_dump(mode="json")},
         "artifacts": [ref.model_dump(mode="json") for ref in record.artifacts],
         "model_call_ids": [str(item.get("model_call_id") or "") for item in calls],
         "context": _step_context(record),
@@ -2457,7 +2356,7 @@ def v1_run_step(
 ) -> dict[str, Any]:
     """基于已落盘记录单步执行一个步骤或 Agent；写操作必须显式确认。"""
     _require_current_workflow(run_id)
-    from app.application.step_runner import StepRunRequest, StepRunner, StepRunnerError
+    from app.application.step_runner import StepRunner, StepRunnerError, StepRunRequest
 
     run_id, task_id, step_name = _safe_id(run_id), _safe_id(task_id), _safe_id(step_name)
     store = _store()
@@ -2473,15 +2372,19 @@ def v1_run_step(
 
     actor = "bearer-token" if authorization else "local-user"
     with _RUN_LOCKS_GUARD:
-        run_lock = _RUN_LOCKS.setdefault(run_id, threading.Lock())
+        run_lock = _run_lock(run_id)
     if not run_lock.acquire(blocking=False):
         message = "该执行正在被启动或重跑占用，请稍后重试"
         _audit_control(run_id, task_id, f"step.run.rejected:{step_name}", actor, message)
         raise HTTPException(status_code=409, detail={"code": "RUN_LOCKED", "message": message})
     def _continue(selected: StepRunRequest, payload: dict[str, Any]) -> None:
-        from app.workflow.wiring import continue_task_after_step, build_graph, build_services
-        from app.infrastructure.config import load_config, workflow_recursion_limit
         from app.entrypoint import _write_run_report_if_terminal
+        from app.infrastructure.config import load_config, workflow_recursion_limit
+        from app.workflow.wiring import (
+            build_graph,
+            build_services,
+            continue_task_after_step,
+        )
         runtime = load_config()
         services = build_services(config=runtime, source_repo=runtime.source_repo)
         lifecycle = LifecycleStore(store.root)

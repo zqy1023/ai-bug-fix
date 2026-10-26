@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
-from app.infrastructure.redaction import redact_output
+from app.infrastructure.redaction import redact_for_delivery
 
 
 def render_task_summary(report: Mapping[str, Any]) -> str:
@@ -17,7 +17,10 @@ def render_task_summary(report: Mapping[str, Any]) -> str:
 
     def text(value: Any, default: str = "未记录") -> str:
         raw = str(value).strip() if value is not None and str(value).strip() else default
-        return redact_output(raw)
+        # task_summary.md 会提交到修复分支，属于交付面：problem/root_cause 等
+        # 字段可能带回日志里的 URL 凭据、鉴权头，统一过交付脱敏后再渲染。
+        # 内部落盘的 final.json（records、artifacts）不经过这里，仍保留原值。
+        return redact_for_delivery(raw)
 
     outcome = text(report.get("result") or report.get("status"))
     lines = [

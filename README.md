@@ -1,217 +1,133 @@
 # AI 异常日志自动修复工作流
 
-项目按 `domain / application / workflow / agents / infrastructure / prompts` 分层。当前工作流版本为 **v5**，由确定性步骤插件、三个 Agent 和 LangGraph 编排组成。前端位于 `frontend/`，后端 API 位于 `workbench/api.py`，服务入口为根目录 `server.py`。
-
-仓库文档统一收敛在本文件；`app/`、`app/agents/`、`app/workflow/steps/`、`frontend/`、`workbench/` 不再单独维护 README。
-
-## 目录
-
-- [主流程](#主流程)
-- [代码结构](#代码结构)
-- [工作步骤](#工作步骤)
-- [验证与统一决策](#验证与统一决策)
-- [Agent 子图](#agent-子图)
-- [工作台后端](#工作台后端)
-- [前端](#前端)
-- [本地启动](#本地启动)
-- [真实数据单步调试](#真实数据单步调试)
-- [Docker 部署](#docker-部署)
-- [准生产目录](#准生产目录)
-- [日志查询范围](#日志查询范围)
+当前工作流版本为 **v7**。后端入口为 `server.py`，API 位于 `workbench/api.py`，前端位于 `frontend/`。
 
 ## 主流程
 
 ```text
-run 级（一次执行跑一遍）:
-sync_source_repo（同步源仓库）
-  -> discover_and_normalize（discover_logs -> normalize_error -> deduplicate_error）
-  -> identify_carrier
-  -> task_dispatch（串行游标，每次只放行一个任务）
-  -> 任务级子图（每个任务按 tasks 顺序串行执行）:
-     prepare_context
-       （prepare_source_snapshot -> repair_branch_preflight -> prepare_workspace -> prepare_evidence）
-     -> locate_agent
-     -> claim_repair_slot
-     -> repair_agent
-     -> validate_changes（check_changes -> syntax_regression）
-     -> plan_validation -> verify_issue -> run_regression
-     -> summarize_validation -> review_agent -> decide_validation
-        ├─ retry：经 retry_prepare 恢复对应验证或审查阶段
-        ├─ repair：经 retry_prepare 返回 repair_agent
-        ├─ blocked：finalize_execution，记录验证受阻
-        └─ deliver：prepare_delivery -> request_approval -> finalize_execution
-  -> task_collect（记下结论，推进游标）-> 回到 task_dispatch
+sync_source_repo
+→ discover_and_normalize（discover_logs → normalize_error → deduplicate_error）
+→ identify_carrier（biztype + carrier + 异常指纹建立任务）
+→ 串行任务分发
+  → prepare_context（repair_branch_preflight → prepare_source_snapshot → prepare_workspace → prepare_evidence）
+  → locate_agent
+  → define_acceptance → reproduce_baseline
+  → claim_repair_slot → repair_agent
+  → review_agent（内部执行：范围 → 语法 → 验证计划 → 原问题重放 → 真实请求 → 证据汇总 → 综合审查）
+  → decide_validation
+  → prepare_delivery（本地候选）→ request_approval → publish_delivery
+  → finalize_execution
 ```
 
-任务之间严格串行：前一个任务走到 `finalize_execution` 并记完汇总后，游标才推进到下一个。任务子图持有自己的状态（`WorkflowState`），父图只保留 run 级字段与结果汇总（`RunState`），所以 `changed_files`、`repair`、`locate` 这类任务局部通道不会跨任务累积。
+`review_agent` 是修复后的唯一审查入口；内部检查只记录在 `artifacts/review_agent/`，不再向主 `steps.json` 添加独立验证节点。`human` 模式仍从同一入口收集证据，但不调用审查模型，代码语义交由人工审查。Agent 模式不因单项请求失败直接判定修复失败。
+定位不确定、旧框架或非 carrier 修改范围走 `prepare_analysis → prepare_delivery → finalize_execution`；报告生成不提前释放资格或宣告任务完成。
 
-框架预检优先识别 `gathers/<Carrier>/main.py`，缺少新框架入口但存在 `spiders/<Carrier>/` 时保留旧框架证据标签；定位 Agent 继续只读分析，后续按根因范围和定位结论路由。旧框架或依赖旧实现的标签本身不会在预检阶段直接终止任务。缺少两类实现时步骤明确失败。
-
-上图是正常修复路径，定位结论、取消和交付失败等分支由 `definitions.py` 与 `routes.py` 决定。`review_mode=human` 只跳过 AI 审查：`summarize_validation → decide_validation`，仍要求完成两项业务验证后才能交付。
+任务有独立 checkpoint。任务执行串行；某个任务等待人工审批时，父图可继续处理后续任务。工作流不自动合并分支。
 
 ## 代码结构
 
-```text
-app/
-├── domain/                  models/, errors.py, policies.py, decisions.py
-├── application/             context.py, contracts.py, services.py, audit.py
-├── workflow/
-│   ├── graph.py             LangGraph run 级主图 + 任务子图
-│   ├── definitions.py       业务阶段组合与任务子图转移定义
-│   ├── routes.py            门禁路由
-│   ├── state.py             RunState（父图）与 WorkflowState（任务子图）
-│   ├── registry.py          步骤与 Agent 注册
-│   ├── runner.py            单步骤记录执行器
-│   ├── validation.py        v5 验证计划、事实汇总与统一决策契约
-│   └── steps/<step>/        19 个确定性步骤插件；__init__.py 导出 SPEC
-├── agents/                  common.py, policy.py, locate/, repair/, review/
-├── infrastructure/          es/, git/, filesystem/, claude/, commands/, records/
-├── prompts/                 templates/{common,locate,repair,review}.md, loader.py, renderer.py
-└── entrypoint.py            整图入口
-```
+| 模块 | 唯一职责 |
+|---|---|
+| `app/workflow/definitions.py` | 阶段组合、跳转和原子步骤依赖；前端阶段由后端投影生成 |
+| `app/workflow/contracts.py` | 步骤结果、验收断言、证据身份、分层状态快照和最终结论 |
+| `app/workflow/handoff.py` | 状态归属校验、下游失效、完整交接产物写入 |
+| `app/workflow/acceptance.py` | 修改前验收与完整基线身份核对 |
+| `app/workflow/validation_executor.py` | 隔离的基线与修复代码重放 |
+| `app/workflow/validation.py` | 补丁验证计划、断言汇总和统一决策 |
+| `app/workflow/runner.py` | 输入输出校验、执行状态、步骤记录 |
+| `app/workflow/agent_adapter.py` | 三个 Agent 子图的类型化输入与正式结果适配 |
+| `app/workflow/wiring.py` | 服务装配、图构建和 checkpoint 恢复 |
+| `app/application/step_runner.py` | 单步执行及完整状态恢复 |
 
-步骤包按复杂度拆分契约与执行器；小型平台步骤可以直接在 `__init__.py` 内定义，不要求每个目录都有 `models.py`、`node.py` 或 `__main__.py`。`plugin_loader.py` 显式注册步骤和 Agent，`definitions.py` 定义阶段组合与转移，阶段内部调用插件并分别写入记录。
-
-提供 `__main__.py` 的步骤可以通过模块 CLI 调试；所有单步执行均使用真实运行记录重建输入。`__init__.py` 是 Python 包入口，`__pycache__/` 是运行时字节码缓存，都不是额外步骤。
+插件 `SPEC` 只声明输入输出模型、执行器和输出适配，不再分别声明下一步和依赖。依赖来自 `STEP_DEPENDENCIES`；完整执行和单步续跑共用图定义。
 
 ## 工作步骤
 
-目录名、`SPEC.name` 与步骤记录名保持一致。组合阶段内部按顺序调用插件；阶段之间按路由推进。原始问题验证、真实请求回归即使未通过，也要把实际结果送入汇总与统一决策，不能在中间直接认定修复成功或转人工。
+v7 有 23 个确定性步骤插件，另有 Locate、Repair、Review 三个 Agent。
 
-### 工作流主节点
-
-| 主节点 | 内部执行 / 职责 | 通过后的下一阶段 |
-|---|---|---|
-| `sync_source_repo` | 同步远程源仓库，保存同步记录与 checkpoint | `discover_and_normalize` |
-| `discover_and_normalize` | `discover_logs → normalize_error → deduplicate_error` | `identify_carrier` |
-| `identify_carrier` | 按日志原始身份字段创建去重任务清单 | 串行任务分发 |
-| `prepare_context` | `prepare_source_snapshot → repair_branch_preflight → prepare_workspace → prepare_evidence` | `locate_agent` |
-| `locate_agent` | 只读定位；仅证据支持的 `LOCATED` 可继续 | `claim_repair_slot` |
-| `claim_repair_slot` | 原子领取本轮修复资格 | `repair_agent` |
-| `repair_agent` | 仅修改授权范围内的目标 carrier | `validate_changes` |
-| `validate_changes` | 范围与语法检查 | `plan_validation` |
-| `plan_validation` | 绑定补丁、基线、原始输入和检查策略，确定验收条件 | `verify_issue` |
-| `verify_issue` | 用原始录制正文比较修复前后行为 | `run_regression` |
-| `run_regression` | 真实请求经 server_dev.main 执行，保留原参数和代理 | `summarize_validation` |
-| `summarize_validation` | 汇总验证事实，检查证据是否过期 | `review_agent`；human 模式到 `decide_validation` |
-| `review_agent` | 只读审查实际代码与统一验证事实 | `decide_validation` |
-| `decide_validation` | 决定补证重试、代码回修、交付或验证受阻 | 对应恢复阶段、交付或收尾 |
-| `prepare_delivery` | 创建修复分支并按配置提交/推送；明确转分析报告的任务交付报告分支 | 源码交付后进入 `request_approval`；分析报告交付后结束 |
-| `request_approval` | 已交付源码分支的人工决策；拒绝进入有上限的回修循环 | `finalize_execution` 或回修 |
-| `finalize_execution` | 生成终态报告并收尾 | 结束 |
-
-`TASK_NODE_NAMES` 定义 15 个任务编排节点（含内部控制节点 `retry_prepare`）。这与插件目录数量不同：组合阶段会执行多个插件，三个 Agent 有各自的子图，部分步骤只在 run 级执行。run 级还包含源码同步、任务分发和汇总等编排节点。
-
-### 原子步骤
-
-`app/workflow/steps/` 共 **19 个正式步骤目录**：原有 16 个，加上 v5 的 `plan_validation`、`summarize_validation`、`decide_validation`。之前的“五个改造阶段”是实施顺序，不是运行时节点数。以下清单与 `plugin_loader.BUILTIN_STEPS` 对应。
-
-| 原子步骤 | 层级 | 输出责任 |
-|---|---|---|
-| `discover_logs` | run | 保存实际日志查询条件 |
-| `normalize_error` | run | 校验身份字段、拉取并规范化日志，写入代表问题产物 |
-| `deduplicate_error` | run | 过滤重复与忽略项 |
-| `identify_carrier` | run | 按 `(biztype, carrier)` 创建任务，并保留问题指纹 |
-| `prepare_source_snapshot` | task | 保存目标源码基线及哈希产物 |
-| `repair_branch_preflight` | task | 只读跳过已有未合并修复分支，不领取资格 |
-| `prepare_evidence` | task | 校验框架入口并准备有限源码证据 |
-| `claim_repair_slot` | task | 定位通过后原子领取本轮资格 |
-| `prepare_workspace` | task | 共享本轮 Git 干净树，只复制目标 carrier 的新旧框架目录 |
-| `check_changes` | task | 校验路径、范围、AST、敏感信息并保存完整 Diff |
-| `syntax_regression` | task | 独立编译变更的 Python 文件，使用临时 pycache，不代替业务验证 |
-| `plan_validation` | task | 确定验收条件并绑定当前证据版本 |
-| `verify_issue` | task | 比较原始异常在基线与补丁代码中的行为 |
-| `run_regression` | task | 经 `server_dev.main` 发起真实请求并逐项核对业务结果 |
-| `summarize_validation` | task | 汇总独立验证事实与证据有效性 |
-| `decide_validation` | task | 根据事实、审查结论和次数上限决定下一步 |
-| `request_approval` | task | 保存人工决策 |
-| `prepare_delivery` | task | 生成修复分支与交付结果 |
-| `finalize_execution` | task | 汇总该任务的步骤记录、状态和产物 |
-
-Locate、Repair、Review Agent 仍分别是独立 Agent 子图，不与确定性步骤合并。
-
-### 终态语义
-
-`status` 记录执行状态，原异常效果、真实请求结果、代码审查分别记录。`decide_validation` 统一决定交付、回修、有界恢复或 BLOCKED。BLOCKED 表示验证受阻，保留补丁和有效证据，不自动进入审批。
-
-human 模式（人工审查）与 agent 模式的差异只在审查环节：回归通过后同样交付修复分支并进入交付审批，由人工审查分支内容。终态按真实交付记录推导——没有真实提交（远端分支或源仓库本地分支可查）时不会记为 `SUCCESS`。
+| 步骤 | 正式产出 / 判断依据 |
+|---|---|
+| `discover_logs` | 日志查询条件 |
+| `normalize_error` | 规范化、去重后的原始问题产物及计数 |
+| `deduplicate_error` | 去重与忽略统计 |
+| `identify_carrier` | 完整任务清单，保留同 carrier 的不同异常 |
+| `repair_branch_preflight` | 已有修复分支检查，在源码快照之前执行 |
+| `prepare_source_snapshot` | 修复前源码、manifest、框架和基线路径 |
+| `prepare_workspace` | 隔离工作区 |
+| `prepare_evidence` | 候选文件、源码符号和框架证据 |
+| `locate_agent` | 根因、修改范围、证据和缺口 |
+| `define_acceptance` | 固定的 `AcceptanceContract` |
+| `reproduce_baseline` | `BaselineReproduction`，不运行修复后代码 |
+| `claim_repair_slot` | 修复资格 |
+| `repair_agent` | 修改说明和声明的改动清单；输入包含验收契约 |
+| `check_changes` | 平台扫描的实际改动、范围/安全门禁和 diff |
+| `syntax_regression` | 编译结果，使用临时 pycache |
+| `plan_validation` | `ValidationPlan`，绑定问题、完整基线、验收、补丁和策略 |
+| `verify_issue` | 同一原始正文在基线及补丁上的执行证据 |
+| `run_regression` | `server_dev.main` 真实请求及补充命令的业务结果 |
+| `summarize_validation` | 逐条断言结果、证据过期判断和维度汇总 |
+| `review_agent` | 修复后代码审查 Agent：语法、业务修复、影响范围及环境/官网状态说明 |
+| `decide_validation` | 重试、回修、准备交付或阻断 |
+| `prepare_analysis` | 分析报告，不产生任务终态 |
+| `prepare_delivery` | 本地候选提交，修复任务禁止在此推送 |
+| `request_approval` | 与候选、实际补丁及证据绑定的人工决定 |
+| `publish_delivery` | 正式交付同一候选提交，按配置推送 |
+| `finalize_execution` | 唯一终态报告及 `TaskResolution` |
 
 ## 验证与统一决策
 
-### 计划、事实与动作
+### 步骤结果
 
-| 节点 | 保存什么 | 用户需要核对什么 |
-|---|---|---|
-| `plan_validation` | `ValidationPlan`：补丁/基线哈希、输入指纹、检查策略版本、变更符号和验收条件 | 本次验证针对哪个问题、哪个补丁，需要证明什么 |
-| `summarize_validation` | `ValidationSummary`：原异常与真实请求分别为 `passed / failed / unverified`，附原因和报告路径 | 原问题是否复现并修复、实际请求是否完成、是否仍有证据缺口 |
-| `decide_validation` | `ValidationDecision`：下一动作、目标阶段、原因、恢复次数和代码回修次数 | 为什么继续、回修、交付或停止 |
+每步正式结果为：
 
-这三个节点不调用模型。修复 Agent 的 `validation_notes` 是建议，不直接成为硬性验收门槛；不执行模型构造的响应样本来证明业务修复。
-
-### 原始问题验证与真实请求回归
-
-`verify_issue` 在隔离的修复前、修复后代码副本中重放**同一份原始录制正文**。通过必须证明基线复现原异常，且补丁代码满足修复后的协议要求。没有原始正文或异常证据时记录未验证，不能拿后来请求得到的新正文替代原始问题证据。
-
-`run_regression` 在独立 Git 回归克隆内运行真实业务入口，不注入录制响应。生成脚本保留日志中的原始单号和请求字段，从异常上下文提取 `track_config`，包括 `proxy_channel_model`；不会把单号替换为 `***`。调用形式为：
-
-```python
-from server_dev import main
-from framework.models import (
-    TrackModel, TrackRequestItemModel, TrackRequestConfigModel, ProxyChannelModel,
-)
-
-reqs = [TrackRequestItemModel(number="CPBPQKZ0518229001")]
-res = main(TrackModel(
-    carrier="CouriersPlease",
-    requests=reqs,
-    track_config=TrackRequestConfigModel(
-        timeout=12000000,
-        proxy_channel_model=ProxyChannelModel(**{
-            "biz_ident": "packet_CouriersPlease",
-            "provider": "proxy_scrape",
-            "proxy_type": "datacenter",
-        }),
-    ),
-))
+```text
+execution: status + error(code, message, retryable)
+assessment: outcome + code + summary + findings
+output: 该步骤输出模型校验后的完整数据
+artifact_paths: 正式证据引用
 ```
 
-示例只说明调用形式，实际参数来自该任务日志；已有 `timeout` 保留，缺省时补 `12000000`。业务超时参数与执行器的进程超时是两层限制。
+- 执行状态：`succeeded / failed / waiting / cancelled`。
+- 业务结论：`passed / failed / inconclusive / not_applicable`。
+- 验证器正常运行发现代码错误：执行成功、业务失败；启动失败或超时：执行失败、结论无法确认。
+- 原有步骤 `status/result` 保留为列表及历史记录投影，不作为单步恢复的数据源。
 
-当前代理地址读取工作流服务进程环境变量 `PROXY_MANAGER_ADDRESS`。启动后端前设置：
+### 状态交接
+
+`workflow/state.json` 保存最后一次完整交接，`workflow/outputs/<step>.json` 保存该步骤完整结果。
+状态按 `identity / policy / control / context / artifacts / run / outcomes` 分层。LangGraph 的扁平通道是执行适配；持久化与恢复使用 `TaskSnapshot`。
+
+步骤只能更新所属产物。修复 Agent 无权改写基线或验收。重新定位使验收及下游失效；修改补丁使检查、验证、审查、候选和审批失效。恢复读取完整交接文件，禁止从截断的 `steps.json` 反向拼状态。
+
+### 验收与验证
+
+修改前固定验收契约，以**完整 baseline manifest**计算基线身份，不以改动文件子集计算。当前平台支持基线异常匹配、正文送达、修复后框架语义比较和真实请求四项断言。
+验收契约与修改后执行计划分开：补丁变化只重建执行计划；验收内容、原始问题或基线变化分别给出错误码。
+
+修复后代码审查 Agent 按语法检查、业务修复检查和影响范围检查三个维度综合判断。重放与真实请求保留为执行证据；请求失败需区分代码缺陷、环境网络/代理/依赖故障与官网状态，不自动触发回修。三项审查均通过、证据有效且覆盖充分后才能准备候选；证据不足则阻断待验证，确认代码缺陷才回修。人工模式仍要求原问题重放和真实请求通过。真实请求保持原始请求参数和代理渠道，调用 `server_dev.main`。补充命令配置沿用现有环境变量。
+
+代码缺陷进入回修；执行故障按阶段有限重试；证据失效重新检查；证据缺失或次数耗尽记录 `blocked`。代码回修次数和各阶段恢复次数分别累计。
+
+### 审批、交付与终态
+
+`prepare_delivery` 创建可审阅的本地候选，`request_approval` 绑定候选身份、提交及当前源码哈希；`publish_delivery` 只交付被批准的同一候选。操作收据和 Git anchor 使重试复用同一提交。
+分析报告可按配置直接交付报告分支，随后统一收尾。
+
+正式 `resolution.result` 为 `delivered / analysis_delivered / skipped / blocked / failed / rejected / cancelled`。
+等待审批属于运行状态。旧版任务只读；v7 不恢复旧版 checkpoint，需新建执行。
+工作流协议 v7 与独立的验证器/AI 审查协议版本分别维护。
+
+## 本地验证
 
 ```powershell
-$env:PROXY_MANAGER_ADDRESS = "192.168.25.201:31656"
-python server.py
+.venv/Scripts/python.exe -m unittest discover -s tests -v
+.venv/Scripts/python.exe -m compileall -q app workbench
+npm --prefix frontend run build
 ```
 
-回归环境准备阶段把该值写入隔离克隆的 `.env`：`proxy_manager_address="192.168.25.201:31656"`；真实请求还校验实际代理配置已生效。不要只配置开发机业务仓库的 `.env`，却遗漏运行工作流服务的进程环境。业务仓库的运输商脚本不为此改写。
+离线测试覆盖正式 Runner 和存储恢复、图路径、验收身份、状态失效、人工审查模式，以及临时 Git 仓库和 bare remote 上的候选/正式推送幂等性。测试不访问业务远程或调用真实模型。
 
-`server_dev.main` 可能只打印 `result:` 而返回 `None`，因此以实际业务结果和逐单匹配为准，不以 `res is None` 或进程退出码 0 判断成功。完整执行脚本、请求参数、stdout/stderr、业务结果和证据报告分别归档。
-
-| 结果 | 如何处理 |
-|---|---|
-| 有效 `Succeed` 或 `NotFound`，请求项完整匹配 | 请求验证通过；无轨迹不等于请求失败 |
-| 实际 `ProcessError` 或已捕获的业务处理错误 | 业务验证失败，进入代码回修判断 |
-| `WebError / ServiceError / TimeoutError` | 未验证；保留实际分类，不据此断言原异常修复无效或一定是代理故障 |
-| 进程超时、环境启动失败、结果缺失或无法解析 | 未验证，不伪造业务返回类型 |
-| 仅语法通过、未配置执行器或未执行真实请求 | 不能算业务验证通过 |
-
-### 恢复、回修与审批
-
-| 情况 | 统一决策 |
-|---|---|
-| 补丁、输入或检查策略变化，已有证据失效 | 重新检查并建立验证计划 |
-| 可恢复的执行故障或审查协议错误 | 只恢复对应验证/审查阶段 |
-| 业务验证确认失败或代码审查确认缺陷 | 返回修复 Agent |
-| 两项业务验证通过，AI 代码审查通过 | 进入交付及最终审批 |
-| 两项业务验证通过，用户明确选择 human 模式 | 交付分支，交由人工代码审查 |
-| 必需证据不可得、存在未解决判断或次数耗尽 | `BLOCKED`，显示“验证受阻”，保留补丁和有效证据 |
-
-恢复次数按目标阶段分别记录，与代码回修次数分开。`max_attempts` 默认 3，即每个恢复阶段最多追加 2 次自动恢复；代码修复最多 3 次尝试。已通过且输入、补丁一致的真实请求结果可复用，解析补证不必重复发请求。
-
-AI 审查协议为 v5：`verdict` 仅允许 `PASS / FAIL / MANUAL`，不接受旧 `result` 别名；另行记录 `code_verdict` 与 `coverage.reviewed_symbols`。AI 输出 PASS 只代表代码审查结论，交付资格由 `decide_validation` 产生。证据不足或 MANUAL 不会自动进入交付审批。
-
-v5 不恢复旧版执行：旧任务的续跑、单步重跑和审批被拒绝，不迁移检查点；历史记录保留可读，需要执行时新建当前版本任务。更新代码后需重启后端加载新逻辑，工作流不自动合并分支。
+后端专项回归按职责组织：`test_redaction.py` 检查交付脱敏，`test_delivery_reporting.py` 检查交付终态与报告，`test_request_regression.py` 检查请求回归，`test_workspace_boundaries.py` 检查文件过滤与权限，`test_step_inputs.py` 检查输入边界，`test_artifact_policy.py` 检查产物策略。工作流集成测试保留在 `test_workflow_v6.py`，API、日志采集与前端契约测试分别独立维护。新增用例应验证实际生产行为，避免仅比较别名或测试标准库本身。
 
 ## Agent 子图
 
@@ -241,6 +157,20 @@ Agent 子图的 `State` 使用 TypedDict：**新增字段必须显式声明**，
 
 唯一正式前端位于 `frontend/`，后端使用 FastAPI，执行引擎复用仓库现有 LangGraph 主图、步骤插件、RecordStore 与 checkpoint。已退役并删除的 `workbench/ui/` 不再作为启动或构建入口；旧 `/api` 启动入口复用 v1 的预创建、后台失败报告和生命周期锁。
 
+前端使用 `frontend/src/lib/workbenchQueries.ts` 统一任务、审批、批次和步骤的数据读取，页面只编排组件。
+`workbench/view_models.py` 输出操作许可和候选交付身份；GET 中的许可是读取时快照，POST 仍重新检查状态、锁、前置步骤和证据。
+任务、步骤、审批审阅使用完整 Handoff 输出；历史工作流只读。本地候选的 `prepared` 状态不表示正式交付，只有 `publish_delivery` 完成后才是 `published`。
+
+正式执行/业务评估、操作许可、交付投影类型和阶段列表从后端生成：
+
+```powershell
+.venv/Scripts/python.exe -m app.workflow.frontend_contracts
+npm --prefix frontend run build
+.venv/Scripts/python.exe -m unittest discover -s tests -p 'test_*.py' -q
+```
+
+设计与组件职责见 `frontend/DESIGN.md`。浏览器验收脚本为 `tests/frontend_workbench.cjs`，使用显式 API 样本，覆盖四个工作区和三种屏幕宽度；运行前启动前端，并提供 Playwright 模块（`PLAYWRIGHT_MODULE`）与浏览器通道（`UI_BROWSER_CHANNEL`，默认 msedge）。验收截图写入临时目录，不混入业务运行记录。
+
 工作台能力：
 
 - 运行创建、列表、详情、配置与任务进度。
@@ -252,7 +182,7 @@ Agent 子图的 `State` 使用 TypedDict：**新增字段必须显式声明**，
 - 单步骤重跑（`/runs/{run_id}/tasks/{task_id}/steps/{step_name}/run`）：仅在非活跃执行上允许，写步骤必须显式确认。
 - 产物读取限制在当前运行/任务目录，限制最大读取大小。
 
-工作台不提供知识案例或人工介入转派 API；人工决策只针对交付后的 `request_approval` 中断。旧 `apply_plan` 入口已退役，变更方案通过工作流的 `change_plan` 契约流转。
+工作台不提供知识案例或人工介入转派 API；人工决策只针对本地候选准备后的 `request_approval` 中断。旧 `apply_plan` 入口已退役，变更方案通过工作流的 `change_plan` 契约流转。
 
 模型调用审计文件写入 `<运行时目录>/runs/<run_id>/model_calls.jsonl`。历史运行不会补造缺失的模型调用记录。Token 等用量字段以 Provider 实际返回为准。
 
@@ -285,7 +215,7 @@ Agent 子图的 `State` 使用 TypedDict：**新增字段必须显式声明**，
 2. 任务是最小观察单元：Run 页只承载任务卡与状态，步骤 I/O 与单步操作全部收敛到 Task 页。
 3. 运行状态和业务结论分开展示。等待、失败、拒绝、证据不足、交付等状态不能混为一类。
 4. 前端只展示后端授权的数据；产物通过受控 API 获取，不直接读取磁盘、Git 仓库、steps.json 或 LangGraph checkpoint。
-5. 人工决策入口收敛到交付后的最终审批；`request_approval` 不提供单步执行入口。
+5. 人工决策入口收敛到正式交付前的候选审批；`request_approval` 不提供单步执行入口。
 6. 单步执行是写操作：必须持运行锁、写入控制审计，写步骤需要显式确认；活跃执行由服务端拒绝并返回 409。
 7. 令牌只保存在当前页面内存中。按钮状态不替代服务端的权限、状态机、输入校验、幂等和审计。
 
@@ -324,7 +254,7 @@ npm run build
 
 ## 真实数据单步调试
 
-单步命令必须使用整图执行产生的真实 `run_id` 和任务 `task_id`。步骤从 `runtime/runs/<run_id>/steps.json` 与 artifact 重建输入，不接收 fixture、stub 或手写问题数据；缺少通过的前置记录时直接拒绝。
+单步命令必须使用整图执行产生的真实 `run_id` 和任务 `task_id`。步骤从 `workflow/state.json` 与正式 artifact 恢复完整输入，`steps.json` 仅用于审计展示，不接收 fixture、stub 或手写问题数据；缺少通过的前置记录时直接拒绝。
 
 ```powershell
 .venv\Scripts\python.exe -m app.workflow.steps.normalize_error --run-id <real-run-id>
@@ -397,3 +327,5 @@ docker compose logs -f api frontend
 新建执行默认 `log_limit=0`，表示窗口内全量拉取，没有 1,000 / 10,000 条的隐藏截断，
 也没有扫描总时长截断；单次 ES 请求仍保留网络超时。
 前端不再显示日志条数限制输入，读取阶段会展示已扫描、可解析和独立问题计数。
+
+审查内部检查不再支持独立重跑；单步执行和审批驳回后的验证恢复统一进入 `review_agent`。内部检查的完整记录由审查节点产物引用访问。工作流拓扑升级至 v7，v6 历史运行保持只读，需新建批次使用新流程。

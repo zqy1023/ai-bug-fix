@@ -12,7 +12,7 @@ from langgraph.types import interrupt
 from app.application.context import StepContext
 from app.domain.errors import StepFailed
 from app.infrastructure.run_control import cancellation_requested, pause_requested
-from app.workflow.steps.deduplicate_error.node import _ignore_rules, write_groups
+from app.workflow.steps.deduplicate_error.node import ignore_rules, write_groups
 from app.workflow.steps.discover_logs.models import DiscoverInput
 from app.workflow.steps.discover_logs.node import iter_raw
 from app.workflow.steps.discover_logs.normalizer import normalize_error
@@ -86,7 +86,7 @@ def _normalize(record: Any, index: int) -> dict[str, Any]:
     # 上游日志常把 response / track_config 嵌在 req 对象里，而不是放在记录顶层。
     # 顶层优先，缺失时回退到 req 内部；两者都统一成 JSON 字符串，供重放使用。
     response = record.get("response") or request.get("response") or ""
-    from app.workflow.steps.verify_issue.replay_model import extract_track_config
+    from app.agents.review.tools.verify_issue.replay_model import extract_track_config
 
     track_config = extract_track_config(record)
     if not isinstance(response, str):
@@ -133,7 +133,7 @@ def run(ctx: StepContext, data: NormalizeErrorInput) -> NormalizeErrorOutput:
         groups = write_groups(
             iter_normalized(ctx, data, query, funnel, report, scan_state,
                             start_index=int(group_state.get("input_count") or 0)),
-            _ignore_rules(ctx), report, state=group_state,
+            ignore_rules(ctx), report, state=group_state,
         )
     except GraphInterrupt:
         ctx.store.write_artifact(ctx.run.run_id, checkpoint_path, {

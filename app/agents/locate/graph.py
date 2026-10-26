@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import ast
 import hashlib
 from pathlib import Path
 from typing import Any
+
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 
 from app.agents.common import audit_metadata, parse_result, raw_result, usage_of
 from app.agents.locate.config import LocateConfig
@@ -15,11 +17,8 @@ from app.agents.locate.provider import create_provider
 from app.agents.locate.state import LocateState
 from app.agents.policy import rules_text
 from app.infrastructure.filesystem.workspace import WorkspaceManager
-from app.infrastructure.redaction import redact_output
 from app.prompts import PromptRenderer
 from app.prompts.context import model_name, prompt_context
-from langgraph.graph import END, START, StateGraph
-from langgraph.graph.state import CompiledStateGraph
 
 
 def _evidence_target(
@@ -66,8 +65,6 @@ def _relative_file(root: Path, value: Any, *, must_exist: bool = True) -> str:
 def _read_roots(
     root: Path,
     carrier_dir: str,
-    rules: list[str],
-    legacy_carrier_dir: str = "",
     shared_root: Path | None = None,
 ) -> tuple[str, ...]:
     from app.agents.policy import carrier_read_paths
@@ -92,7 +89,7 @@ def _snapshot_prompt_context(
 
 def _locate_contract_summary(error: BaseException) -> str:
     """将契约失败的真实原因写入面向人工的摘要。"""
-    detail = redact_output(" ".join(str(error).split())) or type(error).__name__
+    detail = " ".join(str(error).split()) or type(error).__name__
     return f"定位输出契约校验失败：{detail[:500]}；停止自动修复并转人工。"
 
 
@@ -158,12 +155,7 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
         if not any(candidate.is_relative_to(directory) for directory in candidate_roots):
             return _manual(f"候选文件不属于当前运输商 {incoming.carrier} 的新旧实现目录：{relative}；停止定位，请重新生成候选文件")
 
-    rules = WorkspaceManager.readable_rule_paths(root)
-    legacy_root = WorkspaceManager.find_carrier_dir(root, "spiders", incoming.carrier)
-    legacy_carrier_dir = (
-        legacy_root.relative_to(root).as_posix() if legacy_root is not None else ""
-    )
-    roots = _read_roots(root, carrier_dir, rules, legacy_carrier_dir, shared_root)
+    roots = _read_roots(root, carrier_dir, shared_root)
     from app.agents.policy import retry_read_paths
     roots = (*roots, *(str(path) for path in retry_read_paths(root, incoming.run_id, incoming.task_id)))
     project_rules = rules_text(root, *([shared_root] if shared_root else []))
@@ -246,7 +238,7 @@ def locate(state: LocateState, runtime: Any) -> dict[str, Any]:
         output.source_evidence = _safe_source_evidence(
             root, roots, output.source_evidence, shared_root
         )
-        detail = redact_output(" ".join(str(error).split())) or type(error).__name__
+        detail = " ".join(str(error).split()) or type(error).__name__
         if detail not in output.evidence_gaps:
             output.evidence_gaps.append(detail[:500])
         contract_summary = _locate_contract_summary(error)

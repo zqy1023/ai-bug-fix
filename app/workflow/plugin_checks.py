@@ -6,11 +6,11 @@
 
 from __future__ import annotations
 
-from app.workflow.registry import PluginError, resolve
-from app.workflow.spec import AgentSpec, StepSpec
 from pydantic import BaseModel
 
-_GRAPH_TARGETS = {"task_dispatch", ""}
+from app.workflow.registry import PluginError, resolve
+from app.workflow.spec import AgentSpec, StepSpec
+
 _AGENT_KINDS = {"locate", "repair", "review"}
 
 
@@ -39,6 +39,8 @@ def _known(name: str) -> bool:
 
 def _check_task_topology() -> list[str]:
     """任务图拓扑必须引用已声明的节点，且所有任务插件必须在主流程中有位置。"""
+    from langgraph.graph import END, START
+
     from app.workflow.definitions import (
         PHASE_COMPOSITIONS,
         RUN_PHASES,
@@ -46,7 +48,6 @@ def _check_task_topology() -> list[str]:
         TASK_NODE_NAMES,
         TASK_STATIC_TRANSITIONS,
     )
-    from langgraph.graph import END, START
 
     problems: list[str] = []
     declared = set(TASK_NODE_NAMES)
@@ -86,7 +87,9 @@ def _check_task_topology() -> list[str]:
             problems.append(f"任务流程边的源节点未声明: {source}")
         if target not in {START, END} and target not in declared:
             problems.append(f"任务流程边的目标节点未声明: {target}")
-    conditional_sources = [source for source, _router, _targets in TASK_CONDITIONAL_TRANSITIONS]
+    conditional_sources = [
+        source for source, _router, _targets in TASK_CONDITIONAL_TRANSITIONS
+    ]
     if len(conditional_sources) != len(set(conditional_sources)):
         problems.append("任务流程同一节点声明了多组条件路由")
     return problems
@@ -94,7 +97,10 @@ def _check_task_topology() -> list[str]:
 
 def _check_models(spec: StepSpec | AgentSpec) -> list[str]:
     problems: list[str] = []
-    for label, model in (("input_model", spec.input_model), ("output_model", spec.output_model)):
+    for label, model in (
+        ("input_model", spec.input_model),
+        ("output_model", spec.output_model),
+    ):
         if not isinstance(model, type) or not issubclass(model, BaseModel):
             problems.append(f"{spec.name}.{label} 不是 pydantic 模型")
     return problems
@@ -108,21 +114,14 @@ def _check_depends_on(spec: StepSpec | AgentSpec) -> list[str]:
     ]
 
 
-def _check_next_step(spec: StepSpec | AgentSpec) -> list[str]:
-    """下一步必须指向注册插件或唯一任务分发节点。"""
-    if spec.next_step in _GRAPH_TARGETS or _known(spec.next_step):
-        return []
-    return [f"{spec.name}.next_step 指向未注册插件: {spec.next_step}"]
-
-
 def _check_step(spec: StepSpec) -> list[str]:
     if not callable(spec.runner):
         return [f"{spec.name}.runner 不可调用"]
-    return _check_models(spec) + _check_depends_on(spec) + _check_next_step(spec)
+    return _check_models(spec) + _check_depends_on(spec)
 
 
 def _check_agent(spec: AgentSpec) -> list[str]:
-    problems = _check_models(spec) + _check_depends_on(spec) + _check_next_step(spec)
+    problems = _check_models(spec) + _check_depends_on(spec)
     if spec.kind not in _AGENT_KINDS:
         problems.append(f"{spec.name}.kind 没有对应子图实现: {spec.kind}")
     return problems

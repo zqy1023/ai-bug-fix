@@ -1,0 +1,43 @@
+/* JSON 查看器:全部取值来自 --wb-* 语义令牌,明暗自动生效。 */
+.viewer {
+  padding: 10px 12px; border: 1px solid var(--wb-line-soft); border-radius: 8px;
+  background: var(--wb-canvas); font-size: 12px; line-height: 1.65; overflow: auto; max-height: 460px;
+}
+.line { white-space: pre-wrap; word-break: break-word; }
+.toggle {
+  display: flex; align-items: center; gap: 4px; width: 100%; border: 0; padding: 0;
+  background: none; text-align: left; color: var(--wb-ink); font-family: var(--wb-mono); cursor: pointer;
+}
+.toggle:hover { color: var(--wb-primary); }
+.caret { width: 10px; color: var(--wb-ink-faint); font-size: 9px; }
+.key { color: var(--wb-primary); }
+.string { color: var(--wb-success); word-break: break-all; }
+.number { color: var(--wb-warning); }
+.boolean { color: var(--wb-primary); }
+.nullValue { color: var(--wb-ink-faint); }
+.bracket { color: var(--wb-ink-muted); }
+.collapsed { color: var(--wb-ink-faint); font-size: 11px; }
+.empty {
+  padding: 12px; border: 1px dashed var(--wb-line); border-radius: 8px;
+  color: var(--wb-ink-faint); font-size: 12px; text-align: center;
+}
+.primitive {
+  margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--wb-canvas);
+  border: 1px solid var(--wb-line-soft); font-size: 12px; white-space: pre-wrap; word-break: break-word;
+}
+.longValue {
+  display: inline-block; vertical-align: top; max-width: min(100%, 760px); margin-left: 6px;
+  color: var(--wb-ink-faint); font-size: 10.5px; line-height: 1.5;
+}
+.longValue summary {
+  display: inline-block; padding: 1px 5px; border: 1px solid var(--wb-line-soft); border-radius: 4px;
+  background: var(--wb-surface-muted); cursor: pointer; user-select: none;
+}
+.longValue summary:hover { color: var(--wb-primary); border-color: var(--wb-primary); }
+.longValue pre {
+  max-width: min(72vw, 860px); max-height: 280px; overflow: auto; margin: 5px 0; padding: 8px 10px;
+  border: 1px solid var(--wb-line-soft); border-radius: 6px; background: var(--wb-surface);
+  color: var(--wb-ink); font-family: var(--wb-mono); font-size: 11px; line-height: 1.65;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.primitive .longValue { display: block; margin: 6px 0 0; }

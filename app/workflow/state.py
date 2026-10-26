@@ -6,9 +6,8 @@
 任务子图的 :class:`WorkflowState` 里，不进入父图 :class:`RunState`。这样切分有两个
 必须的理由：
 
-1. 任务之间不能互相污染。``changed_files`` 在单个任务内要用 ``_union`` 合并
-   "修复 Agent 的改动"与"获批共享层落盘的改动"，但跨任务必须归零；若放在父图，
-   第二个任务会继承第一个任务的改动清单，门禁和交付都会算错。
+1. 任务之间不能互相污染。改动清单属于当前补丁，由平台实际扫描结果覆盖。
+   每次回修清空旧清单，不能将不同尝试的路径做并集。
 2. 交付是按任务做的。每个任务在自己的子图里走完交付，父图只汇总结论。
 """
 
@@ -20,25 +19,14 @@ from typing import Annotated, Any
 from typing_extensions import TypedDict
 
 
-def _merge(current: dict[str, Any] | None, update: dict[str, Any] | None) -> dict[str, Any]:
-    """字典通道按键覆盖。"""
-    merged = dict(current or {})
-    merged.update(update or {})
-    return merged
-
-
-def _union(current: list[str] | None, update: list[str] | None) -> list[str]:
-    """路径清单按出现顺序去重合并，后写入的清单不能抹掉先写入的。"""
-    # seen：该状态字段供工作流节点传递结构化执行数据。
-    seen: dict[str, None] = {}
-    for item in [*(current or []), *(update or [])]:
-        text = str(item).replace("\\", "/").strip()
-        if text:
-            seen.setdefault(text, None)
-    return list(seen)
-
-
 class WorkflowState(TypedDict, total=False):
+    resolution: dict[str, Any]
+    step_outcomes: dict[str, Any]
+    acceptance_contract: dict[str, Any]
+    baseline_reproduction: dict[str, Any]
+    delivery_candidate: dict[str, Any]
+    approval_result: dict[str, Any]
+    analysis_report: dict[str, Any]
     workflow_version: int
     validation_plan: dict[str, Any]
     validation_summary: dict[str, Any]
@@ -95,19 +83,10 @@ class WorkflowState(TypedDict, total=False):
     review: dict[str, Any]
     # evidence：确定性预检与源码证据。
     evidence: dict[str, Any]
-    # check_passed：变更安全门禁是否通过。
-    check_passed: bool
-    syntax_passed: bool
     syntax_result: dict[str, Any]
-    # verify_passed：问题修复验证是否通过。
-    verify_passed: bool
-    # business_verification_status：verified / unverified。
-    business_verification_status: str
     # manual_confirmation_required：未完成业务验证或 AI 无法独立关闭审查时置 true。
     manual_confirmation_required: bool
     manual_confirmation_reasons: list[str]
-    # regression_passed：准生产回归是否通过。
-    regression_passed: bool
     # decision：当前审批决定。
     decision: str
     # last_result：最近节点的内部路由结论。
@@ -131,7 +110,6 @@ class WorkflowState(TypedDict, total=False):
     # repair_slot_claimed：本任务是否已经领取过修复资格，重新定位后不得重复领取。
     repair_slot_claimed: bool
     # 审查结论与审批状态，交付门禁只认这两个字段，不从步骤记录里回读。
-    review_decision: str
     # approval_granted：人工审批是否通过。
     approval_granted: bool
     # 最终交付与审批清理状态。
@@ -149,6 +127,7 @@ class WorkflowState(TypedDict, total=False):
 
 
 class RunState(TypedDict, total=False):
+    step_outcomes: dict[str, Any]
     workflow_version: int
     """父图状态：run 级步骤、任务分发游标与各任务结果汇总。
 

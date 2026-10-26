@@ -7,6 +7,9 @@ type RunEventHandlers = {
   onState?: (state: StreamState, detail?: string) => void;
 };
 
+/** 连接阶段失败时附加 HTTP status，供 catch 分支判断鉴权错误。 */
+type StreamError = Error & { status?: number };
+
 /**
  * 订阅持久化运行快照。服务端在终态主动关闭流，因此正常结束不重连；
  * 只有网络/连接错误才按 3s 退避重连，避免终态后无限重连。
@@ -27,7 +30,10 @@ export function subscribeRunEvents(runId: string, handlers: RunEventHandlers): (
         signal: controller.signal,
       });
       if (!response.ok || !response.body) {
-        throw new Error(`运行事件流连接失败（HTTP ${response.status}）`);
+        throw Object.assign(
+          new Error(`运行事件流连接失败（HTTP ${response.status}）`),
+          { status: response.status },
+        ) as StreamError;
       }
       attempts = 0;
       handlers.onState?.('open');
@@ -54,8 +60,10 @@ export function subscribeRunEvents(runId: string, handlers: RunEventHandlers): (
       handlers.onSnapshot();
     } catch (error) {
       if (controller.signal.aborted || disposed) return;
-      attempts += 1;
       handlers.onState?.('error', error instanceof Error ? error.message : '运行事件流连接失败');
+      // 401/403 属于鉴权失败，退避重连也无法恢复；停止订阅，避免无限重试循环。
+      if ((error as StreamError).status === 401 || (error as StreamError).status === 403) return;
+      attempts += 1;
       retryTimer = window.setTimeout(() => void connect(), Math.min(3000 * attempts, 15000));
     }
   };

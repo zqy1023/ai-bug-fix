@@ -10,7 +10,7 @@ from app.agents.repair.contract import RepairVerdict, judge
 from app.agents.repair.graph import build
 from app.agents.repair.models import RepairInput, RepairView
 from app.agents.repair.provider import PROVIDERS, create_provider
-from app.workflow.spec import AgentSpec, Dependency, RecordView
+from app.workflow.spec import AgentSpec, RecordView
 
 SPEC = AgentSpec(
     name="repair_agent",
@@ -19,15 +19,6 @@ SPEC = AgentSpec(
     input_model=RepairInput,
     output_model=RepairView,
     requires_confirmation=True,
-    depends_on=(
-        Dependency("identify_carrier", "run"),
-        Dependency("claim_repair_slot", "task"),
-        Dependency("prepare_evidence", "task"),
-        Dependency("locate_agent", "task"),
-        Dependency("prepare_source_snapshot", "task"),
-        Dependency("prepare_workspace", "task"),
-    ),
-    next_step="check_changes",
     # analysis 是修复核心依据；证据输入只保存候选路径与门禁结论。
     input_record=RecordView(
         trim=(

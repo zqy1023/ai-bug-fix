@@ -49,7 +49,7 @@ def _clone_repo(git_root: Path, target: Path, *, sparse: str = "") -> Repo:
     if sparse:
         options.append("--sparse")
     try:
-        repo = Repo.clone_from(str(git_root), str(target), local=True, multi_options=options)
+        repo = Repo.clone_from(str(git_root), str(target), local=True, multi_options=options, allow_unsafe_options=True)
     except Exception as local_error:
         if target.exists():
             # 半成品克隆里可能已有只读的 .git/objects，裸 rmtree 会静默失败，
@@ -59,7 +59,7 @@ def _clone_repo(git_root: Path, target: Path, *, sparse: str = "") -> Repo:
             except OSError:
                 pass
         try:
-            repo = Repo.clone_from(str(git_root), str(target), multi_options=options)
+            repo = Repo.clone_from(str(git_root), str(target), multi_options=options, allow_unsafe_options=True)
         except Exception:
             raise local_error from None
     if sparse:
@@ -105,6 +105,20 @@ class WorkspaceManager:
     )
     _SENSITIVE_SUFFIXES = (".pem", ".key", ".crt")
     _BUILD_ARTIFACT_SUFFIXES = (".pyc", ".pyo", ".pyd")
+    # I-3 收敛后的精确凭据名单：带扩展名的文件只有整体命中这里（或命中
+    # _SENSITIVE_SUFFIXES）才被剔除，不再走名字前缀匹配。
+    _EXACT_SENSITIVE_NAMES = frozenset(
+        {
+            ".env",
+            ".env.local",
+            ".env.production",
+            "credentials",
+            "credentials.json",
+            "id_rsa",
+            "id_dsa",
+            "id_ed25519",
+        }
+    )
     _SKIP_DIRS = {
         ".git",
         ".idea",
@@ -122,7 +136,8 @@ class WorkspaceManager:
     }
 
     # 修改过滤行为时递增版本；名单内容本身也参与缓存键。
-    _SHARED_FILTER_VERSION = 1
+    # v2：_is_sensitive 收敛——带扩展名的文件不再因名字前缀被剔除。
+    _SHARED_FILTER_VERSION = 2
     _SHARED_SUFFIXES = {
         ".py", ".json", ".js", ".csv", ".txt", ".xml", ".html", ".htm", ".yaml", ".yml",
     }
@@ -140,10 +155,6 @@ class WorkspaceManager:
             self._root = self._config.root_dir or Path(tempfile.mkdtemp(prefix="ai-repair-"))
         shared = self._root / "shared"
         with shared_cache_lock(shared):
-            # 历史 checkpoint 继续使用原路径，不移动或重写旧任务的基线。
-            legacy = shared / self._safe_name(run_id)
-            if legacy.is_dir() and ((legacy / "gathers").is_dir() or (legacy / "spiders").is_dir()):
-                return legacy.resolve()
             reference = shared / "refs" / f"{self._safe_name(run_id)}.json"
             rules = {
                 "version": self._SHARED_FILTER_VERSION,
@@ -752,34 +763,56 @@ class WorkspaceManager:
         return any(lowered == item.casefold() for item in cls._SKIP_DIRS)
 
     @classmethod
+    def is_skipped_dir(cls, name: str) -> bool:
+        """公共包装：判断目录是否属于跳过名单，供类外调用方使用。"""
+        return cls._is_skipped_dir(name)
+
+    @classmethod
+    def is_sensitive(cls, name: str) -> bool:
+        """公共包装：判断文件名是否属于凭据/敏感配置，供类外调用方使用。"""
+        return cls._is_sensitive(name)
+
+    @classmethod
     def _is_sensitive(cls, name: str) -> bool:
-        """判断文件名属于凭据/敏感配置、认证/供应商 CSV 或编译产物。"""
+        """判断文件名属于凭据/敏感配置、认证/供应商 CSV 或编译产物。
+
+        行为收敛（I-3）：名字前缀匹配（``token*``、``auth*``、``password*`` 等）
+        只对**无扩展名**的文件生效；带扩展名的文件是正常业务代码（如
+        ``token.py``、``auth.py``），不再因前缀被剔除——除非文件名整体精确命中
+        ``_EXACT_SENSITIVE_NAMES``，或后缀是 *.pem/*.key/*.crt。认证/供应商 CSV
+        与编译产物的判定保持不变。
+        """
         lowered = name.lower()
         stem = lowered[:-4] if lowered.endswith(".csv") else ""
         sensitive_csv = bool(stem) and any(
             marker in stem
             for marker in ("provider", "auth", "token", "credential", "secret", "password")
         )
-        return (
+        if (
             sensitive_csv
+            or lowered in cls._EXACT_SENSITIVE_NAMES
             or lowered.endswith(cls._SENSITIVE_SUFFIXES)
             or lowered.endswith(cls._BUILD_ARTIFACT_SUFFIXES)
-            or any(
-                (
-                    lowered.startswith(item)
-                    if item.endswith(".")
-                    else lowered == item
-                    if item.startswith(".")
-                    else (
-                        lowered == item
-                        or lowered.startswith(item + "_")
-                        or lowered.startswith(item + "-")
-                        or lowered.startswith(item + ".")
-                    )
+        ):
+            return True
+        if Path(name).suffix:
+            # 带扩展名的文件不再走前缀匹配，避免误删 token.py 这类业务源码。
+            return False
+        return any(
+            (
+                lowered.startswith(item)
+                if item.endswith(".")
+                else lowered == item
+                if item.startswith(".")
+                else (
+                    lowered == item
+                    or lowered.startswith(item + "_")
+                    or lowered.startswith(item + "-")
+                    or lowered.startswith(item + ".")
                 )
-                for item in cls._SENSITIVE_NAMES
-                if not item.startswith(".") or item in {".env", ".env."}
             )
+            for item in cls._SENSITIVE_NAMES
+            if not item.startswith(".") or item in {".env", ".env."}
         )
 
     @staticmethod
@@ -809,5 +842,10 @@ class WorkspaceManager:
             char if char.isalnum() or char in "-_" or char == "." else f"%{ord(char):02X}"
             for char in str(value).casefold()
         )
+
+    @staticmethod
+    def safe_name(value: str) -> str:
+        """公共别名：retry 归档逻辑需要与 prepare_workspace 相同的任务目录命名。"""
+        return WorkspaceManager._safe_name(value)
 
 

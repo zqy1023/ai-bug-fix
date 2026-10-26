@@ -25,11 +25,9 @@ class RunParameters(TypedDict):
 
 
 def log_hours_from_values(values: Mapping[str, Any], *, default: int) -> int:
-    """优先读取小时数，兼容旧记录的天数，缺失时使用调用方的有效默认值。"""
+    """只读取当前小时配置，缺失时使用有效默认值。"""
     if values.get("log_hours") is not None:
         return int(values["log_hours"])
-    if values.get("log_days") is not None:
-        return int(values["log_days"]) * 24
     return default
 
 
@@ -125,7 +123,7 @@ class RuntimeConfig:
     git_username: str = field(repr=False)
     # git_password：HTTPS 拉取/推送密码或令牌；不进入 repr。
     git_password: str = field(repr=False)
-    # git_fetch_timeout_seconds：克隆与拉取源仓库的超时秒数。
+    # git_fetch_timeout_seconds：已有镜像拉取与检出操作的超时秒数。
     git_fetch_timeout_seconds: int
     # git_push：是否自动推送。
     git_push: bool
@@ -143,6 +141,15 @@ class RuntimeConfig:
     claude: ClaudeConfig
     # workspace_gc_interval_seconds：服务运行期间定时回收间隔。
     workspace_gc_interval_seconds: int = 3600
+    # 首次克隆单独限时，避免大仓库反复在 fetch 的短超时内重下。
+    git_clone_timeout_seconds: int = 1800
+    # git_committer_name：修复分支提交者名；容器内没有全局 git 身份，缺省会提交失败。
+    git_committer_name: str = "ai-bug-fixer"
+    # git_committer_email：修复分支提交者邮箱。
+    git_committer_email: str = "ai-bug-fixer@localhost"
+    # proxy_manager_address：run_regression 真实请求回归所需的本地代理地址；
+    # 未配置时该步骤按业务规则直接失败，不写入半生效的回归环境。
+    proxy_manager_address: str = ""
 
     @property
     def workspace_root(self) -> Path:
@@ -203,11 +210,10 @@ def load_config() -> RuntimeConfig:
     review_mode = os.getenv("AI_REPAIR_REVIEW_MODE", settings.default_review_mode).strip().lower()
     if review_mode not in ("agent", "human"):
         raise ValueError("AI_REPAIR_REVIEW_MODE 只能是 agent 或 human")
-    # 小时配置优先；旧的天数变量仅在显式设置时用于兼容已有部署。
+    # 日志窗口仅接受小时配置。
     raw_log_hours = os.getenv("LOG_PULL_HOURS", "").strip()
-    raw_log_days = os.getenv("LOG_PULL_DAYS", "").strip()
     log_hours = log_hours_from_values(
-        {"log_hours": raw_log_hours or None, "log_days": raw_log_days or None},
+        {"log_hours": raw_log_hours or None},
         default=settings.default_log_hours,
     )
     return RuntimeConfig(
@@ -289,6 +295,7 @@ def load_config() -> RuntimeConfig:
         or settings.default_git_remote,
         git_username=raw_git_username,
         git_password=raw_git_password,
+        git_clone_timeout_seconds=max(30, int(os.getenv("AI_REPAIR_GIT_CLONE_TIMEOUT_SECONDS", "1800"))),
         git_fetch_timeout_seconds=max(
             1,
             int(
@@ -330,6 +337,10 @@ def load_config() -> RuntimeConfig:
         workspace_gc_interval_seconds=max(1, int(os.getenv(
             "AI_REPAIR_WORKSPACE_GC_INTERVAL_SECONDS", str(settings.workspace_gc_interval_seconds),
         ))),
+        # 提交者身份与代理地址按需覆盖；缺失时使用上面的安全默认值/空值。
+        git_committer_name=os.getenv("GIT_COMMITTER_NAME", "").strip() or "ai-bug-fixer",
+        git_committer_email=os.getenv("GIT_COMMITTER_EMAIL", "").strip() or "ai-bug-fixer@localhost",
+        proxy_manager_address=os.getenv("PROXY_MANAGER_ADDRESS", "").strip(),
         claude=ClaudeConfig(
             auth_token=os.getenv("ANTHROPIC_AUTH_TOKEN", ""),
             base_url=os.getenv("ANTHROPIC_BASE_URL", ""),

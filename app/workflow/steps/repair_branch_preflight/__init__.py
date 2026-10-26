@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.workflow.spec import Dependency, StepSpec
-from app.workflow.steps.repair_branch_preflight.models import PreflightInput, PreflightOutput
+from app.workflow.spec import StepSpec
+from app.workflow.steps.repair_branch_preflight.models import (
+    PreflightInput,
+    PreflightOutput,
+)
 from app.workflow.steps.repair_branch_preflight.node import run
 
 
@@ -33,8 +36,6 @@ SPEC = StepSpec(
     output_model=PreflightOutput,
     input_builder=_input,
     output_patch=_patch,
-    depends_on=(Dependency("identify_carrier", "run"), Dependency("prepare_source_snapshot", "task")),
-    next_step="prepare_workspace",
 )
 
 __all__ = ["SPEC"]

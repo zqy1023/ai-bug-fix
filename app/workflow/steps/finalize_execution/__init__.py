@@ -16,28 +16,20 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
     evidence = dict(state.get("evidence") or {})
     carrier = WorkspaceManager.safe_carrier_name(str(task.get("carrier") or ""))
     locate = dict(state.get("locate") or {})
-    legacy_reference = any(
-        str(item.get("path") or "").replace("\\", "/").startswith("spiders/")
-        for item in locate.get("source_evidence") or []
-        if isinstance(item, dict)
-    ) or any(
-        str(item).replace("\\", "/").startswith("spiders/")
-        for item in locate.get("candidate_files") or []
-    )
-    report_framework = (
-        "spiders"
-        if evidence.get("legacy_only") or evidence.get("legacy_dependency") or legacy_reference
-        else str(state.get("framework") or "gathers")
-    )
+    # 旧框架判定与 prepare_delivery 共用同一实现，避免口径漂移。
+    from app.workflow.steps.prepare_delivery.legacy import report_dir, report_framework
+
+    report_framework_name = report_framework(evidence, locate, state.get("framework"))
     # 优先使用证据中的真实 carrier 目录（保留源码大小写）；没有证据时才回退到
     # safe_carrier_name。Linux 上两者不同会写出一个模型从未修改过的目录。
-    report_dir = str(evidence.get("carrier_dir") or "").replace("\\", "/").strip("/") or (
-        f"{report_framework}/{carrier}"
-    )
+    report_directory = report_dir(evidence, report_framework_name, carrier)
     # 只有明确的分析报告任务需要把 final.json 复制到 AI 工作区供交付；
     # 修复任务若也写入该路径，重试 check_changes 时会被误认为源码新增文件。
     from app.workflow.routes import _analysis_only_task
-    report_destination = f"{report_dir}/final.json" if _analysis_only_task(state) else ""
+
+    report_destination = (
+        f"{report_directory}/final.json" if _analysis_only_task(state) else ""
+    )
     return {
         "task_id": str(state.get("task_id") or ""),
         "carrier": str(task.get("carrier") or ""),
@@ -55,7 +47,7 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
 
 def _patch(output: dict[str, Any]) -> dict[str, Any]:
     """把终态结论交回父图，作为本轮任务的结果汇总条目。"""
-    return {"task_summary": dict(output)}
+    return {"task_summary": dict(output), "resolution": output.get("resolution")}
 
 
 SPEC = StepSpec(

@@ -16,8 +16,10 @@ from __future__ import annotations
 
 from typing import Any, Literal, get_args
 
-from app.workflow.spec import FrozenModel, RecordView
 from pydantic import BaseModel, Field, model_validator
+
+from app.workflow.contracts import Assessment, ExecutionResult
+from app.workflow.spec import FrozenModel, RecordView
 
 # 执行状态。原 ``passed`` 改名 ``succeeded``：消歧的是``passed``被执行状态和业务
 # 结论共用这件事，不是大小写。
@@ -78,7 +80,9 @@ def project(value: Any, view: "RecordView | None", step_name: str = "") -> Any:
         for dotted, keys in view.trim:
             result = _trim(result, dotted.split("."), keys)
     if step_name not in _RUN_LEVEL_KEEP and isinstance(result, dict):
-        result = {key: item for key, item in result.items() if key not in RUN_LEVEL_FIELDS}
+        result = {
+            key: item for key, item in result.items() if key not in RUN_LEVEL_FIELDS
+        }
     return brief_value(result)
 
 
@@ -98,7 +102,9 @@ def _trim(value: Any, parts: list[str], keys: tuple[str, ...]) -> Any:
         return {
             **value,
             head: [
-                {key: item[key] for key in keys if key in item} if isinstance(item, dict) else item
+                {key: item[key] for key in keys if key in item}
+                if isinstance(item, dict)
+                else item
                 for item in inner
             ],
         }
@@ -212,8 +218,16 @@ def _business_result(output: dict[str, Any] | None) -> str | None:
         return "UNVERIFIED"
     allowed = {
         "UNVERIFIED",
-        "LOCATED", "INSUFFICIENT_EVIDENCE", "MANUAL", "PASS", "FAIL",
-        "REJECTED", "SKIPPED", "DELIVERED", "SUCCESS", "FAILED",
+        "LOCATED",
+        "INSUFFICIENT_EVIDENCE",
+        "MANUAL",
+        "PASS",
+        "FAIL",
+        "REJECTED",
+        "SKIPPED",
+        "DELIVERED",
+        "SUCCESS",
+        "FAILED",
     }
     for key in ("verdict", "delivery_status", "status"):
         value = output.get(key)
@@ -262,6 +276,8 @@ class StepError(FrozenModel):
 
 
 class StepRecord(FrozenModel):
+    execution: ExecutionResult | None = None
+    assessment: Assessment | None = None
     """一个步骤的完整记录，写入 ``steps.json``。"""
 
     # name：该模型字段用于承载对应契约中的结构化数据。

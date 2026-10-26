@@ -6,10 +6,18 @@ from typing import Any
 
 
 def run_error(failure: dict[str, Any], lifecycle: dict[str, Any]) -> dict[str, Any]:
-    """优先使用正式失败报告；文件缺失时保留生命周期中的诊断。"""
+    """优先使用正式失败报告；文件缺失时保留生命周期中的诊断。
+
+    失败报告只在运行确实处于失败终态时展示：运行已成功、取消或正在重试恢复
+    （lifecycle 已转为活动状态）时，旧失败文件不能继续当成当前错误返回，
+    否则重试成功的批次仍会显示第一次的报错。
+    """
+    status = str(lifecycle.get("status") or "").lower()
+    if status not in {"", "failed", "partial_failed"}:
+        return {}
     if failure:
         return failure
-    if lifecycle.get("status") != "failed":
+    if status != "failed":
         return {}
     return {
         "status": "FAILED", "error_type": lifecycle.get("error_type"),

@@ -10,6 +10,7 @@ from app.workflow.steps.discover_logs.models import DiscoverInput, DiscoverOutpu
 from app.workflow.steps.discover_logs.node import run
 from config.settings import settings
 
+
 def _input(state: dict[str, Any]) -> dict[str, Any]:
     """记录并传递本轮实际查询条件。"""
     return {
@@ -30,7 +31,6 @@ SPEC = StepSpec(
     output_model=DiscoverOutput,
     input_builder=_input,
     task_level=False,
-    next_step="normalize_error",
 )
 
 __all__ = ["SPEC"]

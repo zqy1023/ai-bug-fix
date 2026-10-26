@@ -31,9 +31,9 @@ class FrozenModel(BaseModel):
 class Dependency:
     """单步调试的前置步骤：``run`` 是执行级，``task`` 是任务级。"""
 
-    # name：该模型字段用于承载对应契约中的结构化数据。
+    # name：前置步骤的插件名。
     name: str
-    # level：该模型字段用于承载对应契约中的结构化数据。
+    # level：该前置属于 run 级还是 task 级记录。
     level: Level = "run"
 
 
@@ -50,9 +50,9 @@ class RecordView:
     ``("tasks.problem", (...))`` 则逐层下去裁。
     """
 
-    # keep：该模型字段用于承载对应契约中的结构化数据。
+    # keep：落盘记录的顶层字段白名单；空元组表示不筛选。
     keep: tuple[str, ...] = ()
-    # trim：该模型字段用于承载对应契约中的结构化数据。
+    # trim：按点路径裁剪落盘记录，(路径, 该路径保留的字段元组)。
     trim: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
     def is_empty(self) -> bool:
@@ -70,31 +70,35 @@ class StepSpec:
     ``input_record`` / ``output_record`` 只影响 steps.json 的落盘内容。
     """
 
-    # name：该模型字段用于承载对应契约中的结构化数据。
+    # name：插件名；同时是步骤记录键与图节点名。
     name: str
-    # title：该模型字段用于承载对应契约中的结构化数据。
+    # title：工作台展示用的中文标题。
     title: str
-    # runner：该模型字段用于承载对应契约中的结构化数据。
+    # runner：步骤执行函数 (StepContext, input_model) -> output_model。
     runner: Runner
-    # input_model：该模型字段用于承载对应契约中的结构化数据。
+    # input_model：本步输入的 Pydantic 模型，由 input_builder 的产出校验而来。
     input_model: type[BaseModel]
-    # output_model：该模型字段用于承载对应契约中的结构化数据。
+    # output_model：本步输出的 Pydantic 模型。
     output_model: type[BaseModel]
-    # input_builder：该模型字段用于承载对应契约中的结构化数据。
+    # input_builder：从主图状态字典构造本步输入的函数。
     input_builder: InputBuilder
-    # task_level：该模型字段用于承载对应契约中的结构化数据。
+    # task_level：True 表示每个任务各有一条记录，False 表示 run 级单条记录。
     task_level: bool = True
-    # requires_confirmation：该模型字段用于承载对应契约中的结构化数据。
+    # requires_confirmation：执行前是否需要人工确认（写类步骤）。
     requires_confirmation: bool = False
-    # output_patch：该模型字段用于承载对应契约中的结构化数据。
+    # output_patch：把本步输出回写主图通道的函数；缺省不回写。
     output_patch: OutputPatch | None = None
-    # depends_on：该模型字段用于承载对应契约中的结构化数据。
-    depends_on: tuple[Dependency, ...] = ()
-    # next_step：该模型字段用于承载对应契约中的结构化数据。
-    next_step: str = ""
-    # input_record：该模型字段用于承载对应契约中的结构化数据。
+
+    # depends_on：单步调试时必须先就绪的前置步骤，取自 definitions 的依赖表。
+    @property
+    def depends_on(self) -> tuple[Dependency, ...]:
+        from app.workflow.definitions import dependencies_for
+
+        return dependencies_for(self.name)
+
+    # input_record：输入在 steps.json 里的落盘投影。
     input_record: RecordView | None = None
-    # output_record：该模型字段用于承载对应契约中的结构化数据。
+    # output_record：输出在 steps.json 里的落盘投影。
     output_record: RecordView | None = None
 
     def patch(self, output: dict[str, Any]) -> dict[str, Any]:
@@ -106,28 +110,34 @@ class StepSpec:
 class AgentSpec:
     """一个 agent 子图的自描述。子图本身仍由各自 ``graph.build`` 编译。"""
 
-    # name：该模型字段用于承载对应契约中的结构化数据。
+    # name：插件名；同时是任务图节点名与 agent 记录键。
     name: str
-    # title：该模型字段用于承载对应契约中的结构化数据。
+    # title：工作台展示用的中文标题。
     title: str
-    # kind：该模型字段用于承载对应契约中的结构化数据。
+    # kind：agent 种类（locate/repair/review），用于装配层选择运行时覆盖。
     kind: str
-    # input_model：该模型字段用于承载对应契约中的结构化数据。
+    # input_model：agent 输入的 Pydantic 模型。
     input_model: type[BaseModel]
-    # output_model：该模型字段用于承载对应契约中的结构化数据。
+    # output_model：agent 输出的 Pydantic 模型。
     output_model: type[BaseModel]
-    # task_level：该模型字段用于承载对应契约中的结构化数据。
+    # task_level：当前恒为 True；agent 记录都属于任务级。
     task_level: bool = True
-    # requires_confirmation：该模型字段用于承载对应契约中的结构化数据。
+    # requires_confirmation：预留的执行前确认开关。
     requires_confirmation: bool = False
-    # depends_on：该模型字段用于承载对应契约中的结构化数据。
-    depends_on: tuple[Dependency, ...] = ()
-    # next_step：该模型字段用于承载对应契约中的结构化数据。
-    next_step: str = ""
-    # input_record：该模型字段用于承载对应契约中的结构化数据。
+
+    # depends_on：单步调试时必须先就绪的前置步骤，取自 definitions 的依赖表。
+    @property
+    def depends_on(self) -> tuple[Dependency, ...]:
+        from app.workflow.definitions import dependencies_for
+
+        return dependencies_for(self.name)
+
+    # input_record：输入在 steps.json 里的落盘投影。
     input_record: RecordView | None = None
-    # output_record：该模型字段用于承载对应契约中的结构化数据。
+    # output_record：输出在 steps.json 里的落盘投影。
     output_record: RecordView | None = None
+
+
 PluginSpec = StepSpec | AgentSpec
 
 __all__ = [

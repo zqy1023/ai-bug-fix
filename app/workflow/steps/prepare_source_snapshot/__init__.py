@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.workflow.spec import Dependency, RecordView, StepSpec
+from app.workflow.spec import RecordView, StepSpec
 from app.workflow.steps.prepare_source_snapshot.models import (
     SourceSnapshotInput,
     SourceSnapshotOutput,
@@ -38,8 +38,6 @@ SPEC = StepSpec(
     output_model=SourceSnapshotOutput,
     input_builder=_input,
     output_patch=_patch,
-    depends_on=(Dependency("identify_carrier", "run"),),
-    next_step="prepare_workspace",
     # baseline_manifest 必须留在记录里：它是本步的正式输出字段，短路复用时
     # runner 要拿投影后的 output 重新过 SourceSnapshotOutput 校验，缺了就直接报错。
     output_record=RecordView(

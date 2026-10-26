@@ -12,23 +12,9 @@ from typing import Any
 
 from app.application.step_runner import (
     StepRunnerError,
-    default_store,
-    dependencies_missing,
     execute_once,
-    state_from_records,
 )
-from app.infrastructure.records.store import RecordStore
 from app.workflow.spec import AgentSpec, StepSpec
-
-
-def _store() -> RecordStore:
-    return default_store()
-
-
-def require_predecessors(store: RecordStore, run_id: str, spec: StepSpec | AgentSpec, task_id: str) -> None:
-    missing = dependencies_missing(store, run_id, spec, task_id)
-    if missing:
-        raise SystemExit(f"{spec.name} 缺少已通过的前置步骤: {', '.join(missing)}")
 
 
 def _print_result(result: dict[str, Any], record: Any) -> None:
@@ -115,4 +101,4 @@ def main_agent(spec: AgentSpec) -> None:
     )
 
 
-__all__ = ["debug_agent", "debug_step", "main", "main_agent", "require_predecessors", "state_from_records"]
+__all__ = ["debug_agent", "debug_step", "main", "main_agent"]

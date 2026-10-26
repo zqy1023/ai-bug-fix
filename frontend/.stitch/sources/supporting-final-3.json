@@ -1,0 +1,24 @@
+{
+  "content": [
+    {
+      "text": "{\"name\":\"projects/12538434318285344375/screens/1a6e644c94a24f159f2b944b51e7897e\",\"title\":\"交付审批 (语义校准版)\",\"screenshot\":{\"name\":\"projects/12538434318285344375/files/cc49fb8172b046ea825e1baeb19acdf8\",\"downloadUrl\":\"https://lh3.googleusercontent.com/aida/AEtjO1UbhxWRFRkSgpMRZ1sNftWFaEBHk9JHCitp2VYY__QUpWcW2oomM900EwZGLHQtfsoOnIwYiFTABb3yXBxmMBPpG-xw7qrfidv5XFUDE6v69Ou82RyLW8_axlrHfbBtuhy3tw3zxTlvQ9vZEcR2OEi2nJgJ04lrCyY2W8MuGR0Yw33yZ1tR7gTe5CAx623UuYW1DR6vEI1K5_cyVD1UzXR9ifzcWDFFnvJwODI7c1cPrQmiG-y5MKN4fHg\"},\"htmlCode\":{\"name\":\"projects/12538434318285344375/files/15ce7eaa888d4f1e99e913c2aac0c0cd\",\"downloadUrl\":\"https://contribution.usercontent.google.com/download?c=CgthaWRhX2NvZGVmeBJ7Eh1hcHBfY29tcGFuaW9uX2dlbmVyYXRlZF9maWxlcxpaCiVodG1sXzg3MWZlNzEzOWRkNzRmY2NiNDI5YmE2NGNkYTc5NDAzEgoSBhCB-O2AAhgBkgEkCgpwcm9qZWN0X2lkEhZCFDEyNTM4NDM0MzE4Mjg1MzQ0Mzc1&filename=&opi=96797242\",\"mimeType\":\"text/html\"},\"width\":\"2560\",\"height\":\"2048\",\"deviceType\":\"DESKTOP\"}",
+      "type": "text"
+    }
+  ],
+  "structuredContent": {
+    "deviceType": "DESKTOP",
+    "height": "2048",
+    "htmlCode": {
+      "downloadUrl": "https://contribution.usercontent.google.com/download?c=CgthaWRhX2NvZGVmeBJ7Eh1hcHBfY29tcGFuaW9uX2dlbmVyYXRlZF9maWxlcxpaCiVodG1sXzg3MWZlNzEzOWRkNzRmY2NiNDI5YmE2NGNkYTc5NDAzEgoSBhCB-O2AAhgBkgEkCgpwcm9qZWN0X2lkEhZCFDEyNTM4NDM0MzE4Mjg1MzQ0Mzc1&filename=&opi=96797242",
+      "mimeType": "text/html",
+      "name": "projects/12538434318285344375/files/15ce7eaa888d4f1e99e913c2aac0c0cd"
+    },
+    "name": "projects/12538434318285344375/screens/1a6e644c94a24f159f2b944b51e7897e",
+    "screenshot": {
+      "downloadUrl": "https://lh3.googleusercontent.com/aida/AEtjO1UbhxWRFRkSgpMRZ1sNftWFaEBHk9JHCitp2VYY__QUpWcW2oomM900EwZGLHQtfsoOnIwYiFTABb3yXBxmMBPpG-xw7qrfidv5XFUDE6v69Ou82RyLW8_axlrHfbBtuhy3tw3zxTlvQ9vZEcR2OEi2nJgJ04lrCyY2W8MuGR0Yw33yZ1tR7gTe5CAx623UuYW1DR6vEI1K5_cyVD1UzXR9ifzcWDFFnvJwODI7c1cPrQmiG-y5MKN4fHg",
+      "name": "projects/12538434318285344375/files/cc49fb8172b046ea825e1baeb19acdf8"
+    },
+    "title": "交付审批 (语义校准版)",
+    "width": "2560"
+  }
+}

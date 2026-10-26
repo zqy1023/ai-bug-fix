@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.workflow.spec import Dependency, StepSpec
+from app.workflow.spec import StepSpec
 from app.workflow.steps.prepare_workspace.models import WorkspaceInput, WorkspaceOutput
 from app.workflow.steps.prepare_workspace.node import run
 
@@ -32,11 +32,6 @@ SPEC = StepSpec(
     output_model=WorkspaceOutput,
     input_builder=_input,
     output_patch=_patch,
-    depends_on=(
-        Dependency("identify_carrier", "run"),
-        Dependency("prepare_source_snapshot", "task"),
-    ),
-    next_step="prepare_evidence",
 )
 
 __all__ = ["SPEC"]

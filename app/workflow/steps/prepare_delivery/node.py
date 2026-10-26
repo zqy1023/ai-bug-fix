@@ -6,36 +6,72 @@ import logging
 import traceback
 from pathlib import Path
 
-from app.domain.errors import StepFailed
 from app.application.context import StepContext
-from app.workflow.steps.prepare_delivery.models import DeliveryInput, DeliveryOutput
+from app.domain.errors import StepFailed
 from app.infrastructure.redaction import public_exception
+from app.workflow.steps.prepare_delivery.models import DeliveryInput, DeliveryOutput
 
 logger = logging.getLogger(__name__)
 
 
 def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
     """把通过审查的修复交付到修复分支。交付前检查必要的门禁条件。"""
-    if data.review_decision.upper() in {"MANUAL", "HUMAN"} and not data.manual_confirmation_required:
-        data = data.model_copy(update={
-            "manual_confirmation_required": True,
-            "manual_confirmation_reasons": list(data.manual_confirmation_reasons)
-            or [data.review_summary or "本次候选需要人工审查确认"],
-        })
+    from app.workflow.evidence_version import evidence_version
+    from app.workflow.validation import fingerprint
+
+    candidate_id = fingerprint(
+        {
+            "binding": data.binding.model_dump(mode="json") if data.binding else None,
+            "branch": data.repair_branch,
+            "files": sorted(data.changed_files),
+        }
+    )
+    if not data.analysis_only:
+        if data.binding is None:
+            raise StepFailed("交付缺少验证证据身份")
+        current = evidence_version(data.ai_workspace_path, data.changed_files)
+        if current["patch_id"] != data.binding.revision_id:
+            raise StepFailed("补丁已变化，候选及审批已失效")
+        if data.publish and data.approved_candidate_id != candidate_id:
+            raise StepFailed("审批未绑定当前候选，禁止正式交付")
+    if (
+        data.review_decision.upper() in {"MANUAL", "HUMAN"}
+        and not data.manual_confirmation_required
+    ):
+        data = data.model_copy(
+            update={
+                "manual_confirmation_required": True,
+                "manual_confirmation_reasons": list(data.manual_confirmation_reasons)
+                or [data.review_summary or "本次候选需要人工审查确认"],
+            }
+        )
 
     if data.analysis_only:
         if not data.report_paths:
-            raise StepFailed("分析任务交付失败：缺少最终报告", {"reason": "report_missing"})
+            raise StepFailed(
+                "分析任务交付失败：缺少最终报告", {"reason": "report_missing"}
+            )
     else:
-        if data.legacy_analysis_required or any(str(path).replace("\\", "/").casefold().startswith("spiders/") for path in data.changed_files):
-            raise StepFailed("旧框架只允许分析报告交付，不允许提交脚本变更", {"reason": "legacy_analysis_only"})
+        from app.workflow.steps.prepare_delivery.legacy import is_legacy_changed_path
+
+        if data.legacy_analysis_required or any(
+            is_legacy_changed_path(path) for path in data.changed_files
+        ):
+            raise StepFailed(
+                "旧框架只允许分析报告交付，不允许提交脚本变更",
+                {"reason": "legacy_analysis_only"},
+            )
         if not data.delivery_eligible:
-            raise StepFailed("交付已阻断：尚未取得允许交付的有效审查结论", {"reason": "review_not_eligible"})
-        # 源码交付必须有实际改动。PASS 表示 AI 审查通过；MANUAL 表示 AI
-        # 明确要求人工复核。两者都要先提交候选分支，再由最终审批决定保留或删除。
-        # HUMAN 则表示配置为人工审查模式，因此跳过 AI 审查。
+            raise StepFailed(
+                "交付已阻断：尚未取得允许交付的有效审查结论",
+                {"reason": "review_not_eligible"},
+            )
+        # 候选只写入本地分支；人工审批通过后才正式交付同一提交。
         if not data.changed_files:
-            raise StepFailed("交付失败：没有实际变更文件", {"changed_files": [], "reason": "no_changes"})
+            raise StepFailed(
+                "交付失败：没有实际变更文件",
+                {"changed_files": [], "reason": "no_changes"},
+            )
         review_decision = str(data.review_decision or "").upper()
         if review_decision not in ("PASS", "HUMAN"):
             raise StepFailed(
@@ -44,7 +80,6 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
                 result="failed",
             )
 
-
     # 执行交付
     if ctx.services.delivery is None:
         raise StepFailed("交付服务未装配")
@@ -52,7 +87,10 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
     receipt_path = "delivery/operation.json"
     receipt: dict[str, object] = {}
     store = getattr(ctx, "store", None)
-    if store is not None and (store.task_dir(ctx.run.run_id, data.task_id) / receipt_path).is_file():
+    if (
+        store is not None
+        and (store.task_dir(ctx.run.run_id, data.task_id) / receipt_path).is_file()
+    ):
         receipt = store.read_artifact(ctx.run.run_id, receipt_path, data.task_id)
 
     def persist_delivery(value: dict[str, object]) -> None:
@@ -67,33 +105,59 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
 
             report_path = "delivery/final.json"
             if (store.task_dir(ctx.run.run_id, data.task_id) / report_path).is_file():
-                repair_report = store.read_artifact(ctx.run.run_id, report_path, data.task_id)
+                repair_report = store.read_artifact(
+                    ctx.run.run_id, report_path, data.task_id
+                )
                 from app.workflow.evidence_version import evidence_version
-                recorded_patch = (((repair_report.get("validation") or {}).get("verify_issue") or {})
-                                  .get("evidence_version") or {}).get("patch_id")
-                current_patch = evidence_version(data.ai_workspace_path, list(data.changed_files)).get("patch_id")
-                if (repair_report.get("review_decision") != data.review_decision
-                    or repair_report.get("manual_confirmation_required") != data.manual_confirmation_required
-                    or repair_report.get("manual_confirmation_reasons") != list(data.manual_confirmation_reasons)
-                    or recorded_patch != current_patch):
+
+                recorded_patch = (
+                    (
+                        (repair_report.get("validation") or {}).get("verify_issue")
+                        or {}
+                    ).get("evidence_version")
+                    or {}
+                ).get("patch_id")
+                current_patch = evidence_version(
+                    data.ai_workspace_path, list(data.changed_files)
+                ).get("patch_id")
+                if (
+                    repair_report.get("review_decision") != data.review_decision
+                    or repair_report.get("manual_confirmation_required")
+                    != data.manual_confirmation_required
+                    or repair_report.get("manual_confirmation_reasons")
+                    != list(data.manual_confirmation_reasons)
+                    or recorded_patch != current_patch
+                ):
                     repair_report = {}
             if not repair_report:
-                repair_report = build_report(ctx, FinalizeInput(
-                    task_id=data.task_id, carrier=data.carrier,
-                    biztype=str(getattr(getattr(ctx, "task", None), "biztype", "")),
-                    terminal_status="", report_destination="",
-                ))
+                repair_report = build_report(
+                    ctx,
+                    FinalizeInput(
+                        task_id=data.task_id,
+                        carrier=data.carrier,
+                        biztype=str(getattr(getattr(ctx, "task", None), "biztype", "")),
+                        terminal_status="",
+                        report_destination="",
+                    ),
+                )
                 repair_report.update(
-                    report_kind="repair_report", result="WAITING_APPROVAL", status="WAITING_APPROVAL",
-                    terminal_status="", terminal_step="request_approval", finished_at=None,
-                    terminal_reason="候选修复已准备，交付后等待人工审批；验证情况见 validation。",
+                    report_kind="repair_report",
+                    result="WAITING_APPROVAL",
+                    status="WAITING_APPROVAL",
+                    terminal_status="",
+                    terminal_step="request_approval",
+                    finished_at=None,
+                    terminal_reason="候选修复已准备，等待人工审批，通过后正式交付；验证情况见 validation。",
                     next_action="审阅修复代码和验证记录后完成人工审批。",
-                    review_decision=data.review_decision, review_summary=data.review_summary,
+                    review_decision=data.review_decision,
+                    review_summary=data.review_summary,
                     manual_confirmation_required=data.manual_confirmation_required,
                     manual_confirmation_reasons=list(data.manual_confirmation_reasons),
                     repair_branch=data.repair_branch,
                 )
-                store.write_artifact(ctx.run.run_id, report_path, repair_report, data.task_id)
+                store.write_artifact(
+                    ctx.run.run_id, report_path, repair_report, data.task_id
+                )
         result = ctx.services.delivery.deliver(
             {
                 "run_id": ctx.run.run_id,
@@ -109,8 +173,12 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
                 "analysis_only": data.analysis_only,
                 "report_paths": list(data.report_paths),
                 "delivery_status": "ANALYSIS_ONLY" if data.analysis_only else "REPAIR",
-                "allow_push": data.allow_push,
-                "require_push": data.require_push,
+                "allow_push": data.allow_push
+                if data.publish or data.analysis_only
+                else False,
+                "require_push": data.require_push
+                if data.publish or data.analysis_only
+                else False,
                 "error": data.error,
                 "repair_analysis": data.repair_analysis,
                 "repair_summary": data.repair_summary,
@@ -126,7 +194,9 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
         # 以免日志未接入工作台时只剩一个 AttributeError，无法定位具体调用点。
         logger.exception(
             "修复分支交付异常 run_id=%s task_id=%s carrier=%s",
-            ctx.run.run_id, data.task_id, data.carrier,
+            ctx.run.run_id,
+            data.task_id,
+            data.carrier,
         )
         reason = public_exception(error, prefix="交付失败")
         frames = traceback.extract_tb(error.__traceback__)
@@ -151,6 +221,13 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
         ) from error
 
     return DeliveryOutput(
+        candidate_id=candidate_id,
+        binding=data.binding,
+        delivery_status="ANALYSIS_ONLY"
+        if data.analysis_only
+        else "DELIVERED"
+        if data.publish
+        else "PREPARED",
         repair_branch=str(result.get("repair_branch") or data.repair_branch),
         commit=str(result.get("commit") or ""),
         pushed=bool(result.get("pushed")),
@@ -158,5 +235,3 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
         manual_confirmation_required=data.manual_confirmation_required,
         manual_confirmation_reasons=list(data.manual_confirmation_reasons),
     )
-
-

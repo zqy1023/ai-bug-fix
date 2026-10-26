@@ -1,11 +1,2 @@
-/* 样式入口：按视图拆分，统一由 base.css 的 token 驱动。 */
+/* 样式入口:全局仅剩设计基座;组件样式一律同名 module.css。 */
 @import './styles/base.css';
-@import './styles/shell.css';
-@import './styles/runs.css';
-@import './styles/run.css';
-@import './styles/task.css';
-@import './styles/task-overview.css';
-@import './styles/agent.css';
-@import './styles/approvals.css';
-@import './styles/diff-viewer.css';
-@import './styles/operations.css';

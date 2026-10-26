@@ -1,4 +1,4 @@
-"""运行输出原样保留；旧函数名仅用于兼容既有调用点。"""
+"""运行产物与正式交付的错误呈现和敏感信息处理。"""
 
 from __future__ import annotations
 
@@ -12,20 +12,65 @@ from app.domain.errors import DeliveryError, StepFailed
 _MAX_PUBLIC_MESSAGE_CHARS = 500
 
 
-def mask_secrets(text: str) -> str:
-    """按项目设置原样保留日志及交付说明。"""
-    return text
-
-
-def redact_output(text: str) -> str:
-    """兼容旧调用点；新运行原样保存输出，不替换单号或凭据。"""
-    return text
-
-
 def redact_value(value: Any) -> Any:
     """保留结构和值，避免重写 JSON 破坏转义。"""
     from copy import deepcopy
     return deepcopy(value)
+
+
+# ---------------------------------------------------------------------------
+# 交付脱敏（两级管线的外圈）。
+#
+# 内部审计产物（records、artifacts、完整回归报告）仍走 原样
+# 落盘，便于排查；只有会出现在 Git 上的交付面（commit message、task_summary.md）
+# 走 ``redact_for_delivery``。这里刻意保守：只覆盖凭据几乎必然出现的几种形态，
+# 不做内网地址、单号之类的替换，避免误伤正文导致交付内容不可读。
+# ---------------------------------------------------------------------------
+
+_DELIVERY_MASK = "***"
+
+# URL userinfo：https://user:pass@host → https://***@host。
+_DELIVERY_URL_USERINFO = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]+@")
+
+# 鉴权头：Authorization / Proxy-Authorization 的值整段掩掉（含 Bearer/Basic/Token 前缀）。
+_DELIVERY_AUTH_HEADER = re.compile(
+    r"(?i)\b(?P<header>authorization|proxy-authorization)\s*:\s*"
+    r"(?:(?P<scheme>bearer|basic|token|digest)\s*)?[^\s\"']+"
+)
+
+# Cookie 头的值整段掩掉（同样命中 set-cookie 的值部分）。
+_DELIVERY_COOKIE_HEADER = re.compile(r"(?i)\b(?P<header>cookie)\s*:\s*[^\r\n]+")
+
+# 查询参数：access_token=... / token=... 等令牌参数的值。
+_DELIVERY_QUERY_TOKEN = re.compile(
+    r"(?i)(?P<lead>[?&#])(?P<name>access_token|auth_token|id_token|refresh_token|api_key|apikey|token)"
+    r"=(?P<value>[^&\s\"']+)"
+)
+
+# AWS 风格长密钥：仅在明确的 key 名前缀后掩 20+ 位 base64/hex 连续串。
+_DELIVERY_LONG_KEY = re.compile(
+    r"(?i)\b(?P<name>(?:aws[_-]?)?(?:access[_-]?key[_-]?id|secret[_-]?access[_-]?key"
+    r"|access[_-]?key|secret[_-]?key|api[_-]?key|apikey))\s*[=:]\s*[\"']?"
+    r"(?P<value>[A-Za-z0-9/+]{20,})"
+)
+
+
+def redact_for_delivery(text: str) -> str:
+    """掩掉交付面上几乎必然是凭据的片段；其余文本原样保留。
+
+    与内部审计的 ``redact_output``（原文保留）不同，本函数只用于离开本系统的
+    交付面。覆盖：URL userinfo、Bearer/Token 鉴权头、Cookie 头、令牌型查询参数、
+    明确 key 名前缀后的 AWS 风格长密钥。掩码统一为 ``***``。
+    """
+    raw = str(text or "")
+    if not raw:
+        return raw
+    raw = _DELIVERY_URL_USERINFO.sub(r"\g<scheme>***@", raw)
+    raw = _DELIVERY_AUTH_HEADER.sub(lambda m: f"{m.group('header')}: {_DELIVERY_MASK}", raw)
+    raw = _DELIVERY_COOKIE_HEADER.sub(lambda m: f"{m.group('header')}: {_DELIVERY_MASK}", raw)
+    raw = _DELIVERY_QUERY_TOKEN.sub(lambda m: f"{m.group('lead')}{m.group('name')}={_DELIVERY_MASK}", raw)
+    raw = _DELIVERY_LONG_KEY.sub(lambda m: f"{m.group('name')}={_DELIVERY_MASK}", raw)
+    return raw
 
 
 def public_exception(error: BaseException, *, prefix: str) -> str:
@@ -102,4 +147,4 @@ def _validation_detail(error: BaseException) -> str:
     return "；".join(parts)
 
 
-__all__ = ["mask_secrets", "public_exception", "redact_output"]
+__all__ = ["mask_secrets", "public_exception", "redact_for_delivery", "redact_output"]

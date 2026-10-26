@@ -1,6 +1,5 @@
 **/*.log
 **/nacos-data/
-**/*__pycache__
 **/*.pyc
 /venv/
 **/*.vscode/

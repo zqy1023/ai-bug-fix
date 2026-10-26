@@ -10,20 +10,21 @@ import ast
 from pathlib import Path
 from typing import Any
 
-from app.infrastructure.filesystem.workspace import WorkspaceManager
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
+
+from app.agents.common import audit_metadata, parse_result, raw_result, usage_of
 from app.agents.context import build_context
-from app.agents.review.contract import judge, slim_review
 from app.agents.review.config import ReviewConfig
-from app.application.plans import plan_of
+from app.agents.review.contract import judge, slim_review
 from app.agents.review.models import ReviewView
 from app.agents.review.provider import create_provider
 from app.agents.review.state import ReviewState
-from app.agents.common import audit_metadata, parse_result, raw_result, usage_of
+from app.application.plans import plan_of
 from app.infrastructure.filesystem.diff import file_changes
+from app.infrastructure.filesystem.workspace import WorkspaceManager
 from app.prompts import PromptRenderer
 from app.prompts.context import model_name, prompt_context
-from langgraph.graph import END, START, StateGraph
-from langgraph.graph.state import CompiledStateGraph
 
 
 def _lines(value: Any) -> list[str]:
@@ -224,23 +225,6 @@ def _evidence_block(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     return "\n".join(lines), {"secret_warnings": secret_warnings}
 
 
-def _bounded_evidence(text: str, max_chars: int) -> str:
-    """按行裁剪审查证据，保留明确截断标记，避免把超大 diff 重复塞进 Prompt。"""
-    if len(text) <= max_chars:
-        return text
-    marker = "\n- [证据预算限制] 后续差异未全部注入模型上下文；不得推断未展示内容。"
-    budget = max(256, max_chars - len(marker))
-    lines: list[str] = []
-    used = 0
-    for line in text.splitlines():
-        cost = len(line) + (1 if lines else 0)
-        if used + cost > budget:
-            break
-        lines.append(line)
-        used += cost
-    return "\n".join(lines) + marker
-
-
 def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
     """只读审查。"""
     workspace = str(state["ai_workspace_path"])
@@ -255,9 +239,10 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
     config = getattr(runtime, "config", None)
     config = config if isinstance(config, ReviewConfig) else ReviewConfig.load()
     changed_files = [str(item) for item in state.get("changed_files", [])]
-    from app.workflow.evidence_version import evidence_version
     import hashlib
-    from app.workflow.steps.check_changes import verification
+
+    from app.workflow.evidence_version import evidence_version
+    from app.agents.review.tools.check_changes import verification
     current_version = evidence_version(workspace, changed_files, str(state.get("baseline_dir") or ""))
     current_policy = hashlib.sha256(Path(verification.__file__).read_bytes()).hexdigest()
     for name in ("gate_result", "verify_result", "regression_result"):
@@ -271,7 +256,10 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
     evidence_text, evidence_meta = _evidence_block(
         {**state, "ai_workspace_path": workspace, "changed_files": changed_files}
     )
-    from app.agents.review.boundaries import datetime_reset_risks, not_found_guard_changes
+    from app.agents.review.boundaries import (
+        datetime_reset_risks,
+        not_found_guard_changes,
+    )
     classification_boundaries = not_found_guard_changes(workspace, str(state.get("baseline_dir") or ""), changed_files)
     datetime_boundaries = datetime_reset_risks(workspace, str(state.get("baseline_dir") or ""), changed_files)
     full_diff_summary = str(state.get("diff_summary") or "")
@@ -321,7 +309,7 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
         verification_results=dict(state.get("verify_result") or {}),
         regression_results=dict(state.get("regression_result") or {}),
         allowed_scope=(carrier_dir,),
-        stop_conditions=("必需验证证据缺失", "真实 diff 与声明不一致", "发现未授权范围"),
+        stop_conditions=("证据与补丁版本不一致", "真实 diff 与声明不一致", "发现未授权范围"),
         source_project_path=str(shared_root) if shared_root else "",
     )
     request = PromptRenderer().request(
@@ -377,6 +365,9 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
     findings = _lines(slim.get("findings"))
     required = _lines(slim.get("required_changes"))
     checked = judge(payload)
+    if checked.passed and (not state.get("syntax_passed") or not state.get("check_passed")):
+        from app.agents.review.contract import ReviewVerdict
+        checked = ReviewVerdict(False, False, "确定性语法或修改范围门禁未通过，不能批准补丁")
     from app.agents.review.contract import result_of
     result = result_of(payload)
     verdict = "MANUAL" if checked.valid and result == "MANUAL" else ("PASS" if checked.passed else "FAIL")
@@ -389,7 +380,8 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
         code_verdict = "UNKNOWN"
     if checked.valid and code_verdict == "FAIL":
         verdict = "FAIL"
-    checks = review_checks(state, code_verdict, coverage)
+    dimensions = dict(slim.get("dimensions") or {}) if checked.valid else {}
+    checks = review_checks(state, code_verdict, coverage, dimensions)
     next_action = "由统一决策节点根据验证事实和代码审查决定下一步"
     view = ReviewView(
         verdict=verdict,
@@ -399,6 +391,9 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
         evidence_version=current_version,
         code_verdict=code_verdict,
         coverage=coverage,
+        dimensions=dimensions,
+        environment_assessment=str(slim.get("environment_assessment") or ""),
+        upstream_assessment=str(slim.get("upstream_assessment") or ""),
         checks=checks,
         next_action=next_action,
         review_notes=str(slim.get("summary") or ""),

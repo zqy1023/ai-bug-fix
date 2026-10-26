@@ -33,7 +33,7 @@ class IdentifyCarrierInput(FrozenModel):
 
 
 class IdentifyCarrierOutput(FrozenModel):
-    """单个 ``(biztype, carrier)`` 任务及被排除记录的数量。"""
+    """按 ``(biztype, carrier)`` 建立任务及被排除记录的数量；每组只留一个代表异常。"""
 
     # tasks：字段说明见该模型文档与工作流契约。
     tasks: list[TaskRef] = Field(default_factory=list)

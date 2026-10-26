@@ -7,13 +7,17 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from app.workflow.spec import FrozenModel
-from app.application.plans import ChangePlan
-from app.workflow.steps.prepare_evidence.models import EvidenceOutput
 from pydantic import Field
+
+from app.application.plans import ChangePlan
+from app.workflow.contracts import AcceptanceContract, BaselineReproduction
+from app.workflow.spec import FrozenModel
+from app.workflow.steps.prepare_evidence.models import EvidenceOutput
 
 
 class RepairInput(FrozenModel):
+    acceptance_contract: AcceptanceContract
+    baseline_reproduction: BaselineReproduction
     """05 的输入：定位 + 上一轮驳回原因，不含提示词全文。"""
 
     # task_id：字段说明见该模型文档与工作流契约。

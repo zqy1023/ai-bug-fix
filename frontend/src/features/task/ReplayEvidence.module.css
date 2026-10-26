@@ -1,0 +1,68 @@
+/* 文本证据查看器与重放对照卡;颜色全部走语义令牌。 */
+.textEvidence { min-width: 0; }
+.toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--wb-surface-muted);
+  border-bottom: 1px solid var(--wb-line-soft);
+}
+.toolbar > span { flex: 1; font-size: 12px; color: var(--wb-ink-muted); font-variant-numeric: tabular-nums; }
+.toolbar :global(.ant-input) { width: 170px; }
+.note {
+  color: var(--wb-ink-muted);
+  line-height: 1.7;
+  padding: 8px 14px;
+  overflow-wrap: anywhere;
+}
+.code {
+  flex: 1 1 auto;
+  min-height: 120px;
+  max-height: 60vh;
+  margin: 0;
+  padding: 16px;
+  background: var(--wb-canvas);
+  color: var(--wb-ink);
+  font: 12px/1.85 var(--wb-mono);
+  overflow: auto;
+  white-space: pre;
+  tab-size: 4;
+  scrollbar-gutter: stable;
+}
+.wrapped { white-space: pre-wrap; overflow-wrap: anywhere; }
+.textEvidence mark { background: var(--wb-warning-soft); color: var(--wb-ink); }
+
+.warning {
+  padding: 12px 16px;
+  border-left: 3px solid var(--wb-warning);
+  border-radius: 6px;
+  background: var(--wb-warning-soft);
+  color: var(--wb-warning);
+  line-height: 1.7;
+  margin: 10px 0;
+  overflow-wrap: anywhere;
+}
+
+.resultGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 14px 0; }
+.resultCard {
+  padding: 14px;
+  border: 1px solid var(--wb-line);
+  border-radius: 8px;
+  background: var(--wb-surface-muted);
+  min-width: 0;
+}
+.resultCard strong { display: block; font-size: 13px; margin-bottom: 8px; }
+.resultCard p { margin: 6px 0; line-height: 1.6; font-size: 12px; overflow-wrap: anywhere; }
+.resultCard code { font-family: var(--wb-mono); overflow-wrap: anywhere; }
+.location { display: block; margin-top: 5px; color: var(--wb-ink-muted); overflow-wrap: anywhere; }
+.resultPreview {margin:12px 0 0;padding:14px;border:1px solid var(--wb-line);background:var(--wb-canvas);border-radius:6px;max-height:180px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.75 var(--wb-mono);}
+
+.technical { margin-top: 14px; border: 1px solid var(--wb-line); border-radius: 8px; overflow: hidden; background: var(--wb-surface); }
+.technical > summary, .technical details > summary { padding: 12px 14px; cursor: pointer; font-weight: 600; }
+
+@media (max-width: 700px) {
+  .resultGrid { grid-template-columns: 1fr; }
+  .toolbar :global(.ant-input) { width: 100%; }
+}

@@ -1,5 +1,7 @@
 import type { StepRecord, TaskDetailResponse } from '../../lib/types';
 import { StatusBadge } from '../../components/StatusBadge';
+import { Panel } from '../../components/ui';
+import styles from './TaskConclusion.module.css';
 
 export type AgentAnalysis = {
   step: StepRecord;
@@ -53,56 +55,58 @@ export function TaskConclusion({ task }: { task: TaskDetailResponse['task'] }) {
   const result = String(task.result || '').toUpperCase();
 
   return (
-    <section className="conclusion-card">
-      <header className="conclusion-card-head">
-        <h3>任务结论</h3>
-        <StatusBadge kind="task" value={task.result} compact />
-        {report?.terminal_step && <code>终态步骤 {report.terminal_step}</code>}
-        {analysis && analysis.step.name !== report?.terminal_step && <code>{analysis.step.name}</code>}
-      </header>
-
+    <Panel
+      title="任务结论"
+      extra={(
+        <>
+          <StatusBadge kind="task" value={task.result} compact />
+          {report?.terminal_step && <code className={styles.headCode}>终态步骤 {report.terminal_step}</code>}
+          {analysis && analysis.step.name !== report?.terminal_step && <code className={styles.headCode}>{analysis.step.name}</code>}
+        </>
+      )}
+    >
       {!analysis ? (
-        <p className="conclusion-empty">
+        <p className={styles.empty}>
           {['RUNNING', 'PENDING', 'WAITING_APPROVAL'].includes(result)
             ? '分析 Agent 尚未产出结论（步骤可能仍在执行）。'
             : '该任务没有分析 Agent 结论（未进入定位或审查阶段）。'}
         </p>
       ) : (
         <>
-          <div className="conclusion-fields">
+          <div className={styles.fields}>
             {analysis.rootCause && (
-              <div className="conclusion-field">
+              <div className={styles.field}>
                 <span>根因</span>
                 <p>{analysis.rootCause}</p>
               </div>
             )}
             {analysis.summary && (
-              <div className="conclusion-field">
+              <div className={styles.field}>
                 <span>摘要</span>
                 <p>{analysis.summary}</p>
               </div>
             )}
           </div>
-          <div className="conclusion-tags">
-            {analysis.category && <span className="conclusion-tag">category {analysis.category}</span>}
-            {analysis.scope && <span className="conclusion-tag">建议范围 {analysis.scope}</span>}
+          <div className={styles.tags}>
+            {analysis.category && <span className={styles.tag}>category {analysis.category}</span>}
+            {analysis.scope && <span className={styles.tag}>建议范围 {analysis.scope}</span>}
           </div>
           {(analysis.findings.length > 0 || analysis.gaps.length > 0 || analysis.facts.length > 0) && (
-            <div className="conclusion-drawers">
+            <div className={styles.drawers}>
               {analysis.findings.length > 0 && (
-                <details className="conclusion-details">
+                <details className={styles.details}>
                   <summary>审查发现 ({analysis.findings.length})</summary>
                   <ul>{analysis.findings.map((item) => <li key={item}>{item}</li>)}</ul>
                 </details>
               )}
               {analysis.gaps.length > 0 && (
-                <details className="conclusion-details">
+                <details className={styles.details}>
                   <summary>证据缺口 ({analysis.gaps.length})</summary>
                   <ul>{analysis.gaps.map((item) => <li key={item}>{item}</li>)}</ul>
                 </details>
               )}
               {analysis.facts.length > 0 && (
-                <details className="conclusion-details">
+                <details className={styles.details}>
                   <summary>证据事实 ({analysis.facts.length})</summary>
                   <ul>{analysis.facts.map((item) => <li key={item}>{item}</li>)}</ul>
                 </details>
@@ -111,6 +115,6 @@ export function TaskConclusion({ task }: { task: TaskDetailResponse['task'] }) {
           )}
         </>
       )}
-    </section>
+    </Panel>
   );
 }

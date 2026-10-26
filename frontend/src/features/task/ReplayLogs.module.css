@@ -1,0 +1,25 @@
+/* 验证证据抽屉入口与抽屉内布局。 */
+.entry {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  border-top: 1px solid var(--wb-line);
+  margin-top: 18px;
+  padding-top: 16px;
+}
+.entry > div { flex: 1; min-width: 240px; display: grid; gap: 6px; }
+.entry > div strong { font-size: 12.5px; }
+.entry > div span { font-size: 11px; color: var(--wb-ink-muted); }
+
+.drawer :global(.ant-tabs) { flex: 0 0 auto; padding: 0 18px; }
+.drawer :global(.ant-tabs-nav) { margin: 0; }
+.pane { padding: 18px 8px 28px; }
+.pane > p { margin: 0 0 6px; line-height: 1.7; overflow-wrap: anywhere; }
+.note {
+  color: var(--wb-ink-muted);
+  line-height: 1.7;
+  padding: 8px 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}

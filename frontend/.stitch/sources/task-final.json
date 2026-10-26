@@ -1,0 +1,24 @@
+{
+  "content": [
+    {
+      "text": "{\"name\":\"projects/12538434318285344375/screens/42671027aaf64179b7719d9f11b3e7cf\",\"title\":\"修复工作台 - 任务审批工作区 (布局修复版)\",\"screenshot\":{\"name\":\"projects/12538434318285344375/files/f6fedf498c69479a9bc7b840a9c652b4\",\"downloadUrl\":\"https://lh3.googleusercontent.com/aida/AEtjO1UUo_RtaSuiJkahNQ3tXHvcj-HIRK-hksIzeC_uuKADEBXp3FsJvc-yy4iyo7f6yK_JZEFGl9up_icBh0ytijLb6pqI4mg79Xfw9kc7lRtfd4gVV1CHAbDWfHbfz8ekk1blgFC6l7Kmyga8sD3eImnqXmDyR9XKOQaHjg1lmmirN9keIQFe_6sF85Gf3bJETQMA6LUr1zEGIIOq2zUhCV_V7ZpPvuQTngU7PwtHyb-sQqZ3iaIaeM58ct0\"},\"htmlCode\":{\"name\":\"projects/12538434318285344375/files/948974b897b14b62b761ef257b0a1ccd\",\"downloadUrl\":\"https://contribution.usercontent.google.com/download?c=CgthaWRhX2NvZGVmeBJ7Eh1hcHBfY29tcGFuaW9uX2dlbmVyYXRlZF9maWxlcxpaCiVodG1sX2E4MWJkNjFiZmM3NTQxODZiOGNjNjUwNmI4ZjgzOGY3EgoSBhCB-O2AAhgBkgEkCgpwcm9qZWN0X2lkEhZCFDEyNTM4NDM0MzE4Mjg1MzQ0Mzc1&filename=&opi=96797242\",\"mimeType\":\"text/html\"},\"width\":\"2560\",\"height\":\"2048\",\"deviceType\":\"DESKTOP\"}",
+      "type": "text"
+    }
+  ],
+  "structuredContent": {
+    "deviceType": "DESKTOP",
+    "height": "2048",
+    "htmlCode": {
+      "downloadUrl": "https://contribution.usercontent.google.com/download?c=CgthaWRhX2NvZGVmeBJ7Eh1hcHBfY29tcGFuaW9uX2dlbmVyYXRlZF9maWxlcxpaCiVodG1sX2E4MWJkNjFiZmM3NTQxODZiOGNjNjUwNmI4ZjgzOGY3EgoSBhCB-O2AAhgBkgEkCgpwcm9qZWN0X2lkEhZCFDEyNTM4NDM0MzE4Mjg1MzQ0Mzc1&filename=&opi=96797242",
+      "mimeType": "text/html",
+      "name": "projects/12538434318285344375/files/948974b897b14b62b761ef257b0a1ccd"
+    },
+    "name": "projects/12538434318285344375/screens/42671027aaf64179b7719d9f11b3e7cf",
+    "screenshot": {
+      "downloadUrl": "https://lh3.googleusercontent.com/aida/AEtjO1UUo_RtaSuiJkahNQ3tXHvcj-HIRK-hksIzeC_uuKADEBXp3FsJvc-yy4iyo7f6yK_JZEFGl9up_icBh0ytijLb6pqI4mg79Xfw9kc7lRtfd4gVV1CHAbDWfHbfz8ekk1blgFC6l7Kmyga8sD3eImnqXmDyR9XKOQaHjg1lmmirN9keIQFe_6sF85Gf3bJETQMA6LUr1zEGIIOq2zUhCV_V7ZpPvuQTngU7PwtHyb-sQqZ3iaIaeM58ct0",
+      "name": "projects/12538434318285344375/files/f6fedf498c69479a9bc7b840a9c652b4"
+    },
+    "title": "修复工作台 - 任务审批工作区 (布局修复版)",
+    "width": "2560"
+  }
+}

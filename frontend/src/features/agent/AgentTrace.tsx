@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Divider, Select, Skeleton } from 'antd';
+import { Select, Skeleton } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../lib/api';
 import { queryKeys } from '../../lib/queryKeys';
@@ -8,6 +8,7 @@ import { EmptyState } from '../../components/EmptyState';
 import { PromptViewer } from './PromptViewer';
 import { ToolCallTimeline } from './ToolCallTimeline';
 import { ModelOutputPanel } from './ModelOutputPanel';
+import styles from './AgentTrace.module.css';
 
 function callStatusLabel(status: string): string {
   return ({
@@ -78,15 +79,15 @@ export function AgentTrace({
   const currentAttempt = selected?.attempt ?? attempt ?? attempts[0];
 
   return (
-    <div className="agent-trace">
-      <div className="agent-trace-head">
-        <div className="agent-call-switch">
-          <span className="agent-call-label">调用记录</span>
+    <div className={styles.trace}>
+      <div className={styles.head}>
+        <div className={styles.switch}>
+          <span className={styles.label}>调用记录</span>
           {calls.map((call) => (
             <button
               key={call.model_call_id}
               type="button"
-              className={'agent-call-chip' + (call.model_call_id === selected?.model_call_id ? ' is-active' : '')}
+              className={`${styles.chip}${call.model_call_id === selected?.model_call_id ? ` ${styles.chipActive}` : ''}`}
               onClick={() => setSelectedId(call.model_call_id)}
               title={call.model_call_id}
             >
@@ -114,30 +115,30 @@ export function AgentTrace({
         <EmptyState title="调用详情读取失败" description="调用记录已找到，但提示词和工具事件无法加载。" compact />
       ) : (
         <>
-          <div className="agent-call-summary">
+          <div className={styles.summary}>
             <span>调用 #{shortId(selected.model_call_id, 6)}</span>
             <span>第 {selected.attempt} 次</span>
             <span>{agentRoleLabel(role)}</span>
             <span>{formatTokens(selected.total_tokens)} Token</span>
             <span>{formatDuration(selected.duration_ms)}</span>
-            <span className={selected.status === 'succeeded' ? 'text-success' : selected.status === 'failed' ? 'text-danger' : ''}>
+            <span className={selected.status === 'succeeded' ? styles.statusOk : selected.status === 'failed' ? styles.statusBad : ''}>
               {callStatusLabel(selected.status)}
             </span>
           </div>
-          <div className="agent-section">
+          <div className={styles.section}>
             <h4>提示词</h4>
             <PromptViewer snapshot={detail.data?.prompt_snapshot} />
           </div>
-          <Divider />
-          <div className="agent-section">
+          <div className={styles.sep} />
+          <div className={styles.section}>
             <h4>工具执行轨迹 <small>{selected.tool_call_count ?? '未知'} 次尝试</small></h4>
             <ToolCallTimeline
               events={detail.data?.events ?? selected.events ?? []}
               expectedCount={typeof selected.tool_call_count === 'number' ? selected.tool_call_count : undefined}
             />
           </div>
-          <Divider />
-          <div className="agent-section">
+          <div className={styles.sep} />
+          <div className={styles.section}>
             <h4>模型输出</h4>
             <ModelOutputPanel call={detail.data?.call ?? selected}
               fullOutput={detail.data?.events.filter(event => event.type === 'assistant').find(event => event.final)?.text} />

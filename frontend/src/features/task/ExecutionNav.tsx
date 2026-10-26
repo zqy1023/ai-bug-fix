@@ -1,36 +1,69 @@
-import { useState } from 'react';
-import { Input, Segmented } from 'antd';
-import { SearchOutlined } from '@ant-design/icons';
+import { useEffect, useRef } from 'react';
 import type { StepRecord, WorkflowStage } from '../../lib/types';
-import { StatusBadge } from '../../components/StatusBadge';
-import { formatDuration } from '../../lib/format';
-import { FAILED_RESULTS, TASK_STAGES } from './stages';
+import { TASK_STAGES } from './stages';
+import { FAILED_RESULTS } from './stages';
+import styles from './ExecutionNav.module.css';
 
-export function ExecutionNav({ steps, selected, onSelect, stages = TASK_STAGES }: {
-  steps: StepRecord[]; selected: string; onSelect: (name: string) => void; stages?: WorkflowStage[];
-}) {
-  const [search, setSearch] = useState('');
-  const [filter, setFilter] = useState('all');
-  const abnormal = (item: StepRecord) => item.status === 'failed' || item.status === 'waiting'
+/** 服务端阶段优先；旧记录使用生成的契约，多步骤阶段可循环查看成员。 */
+export interface ExecutionNavProps {
+  readonly steps: StepRecord[];
+  readonly selected: string;
+  readonly onSelect: (name: string) => void;
+  readonly stages?: WorkflowStage[];
+}
+export function ExecutionNav({ steps, selected, onSelect, stages }: ExecutionNavProps) {
+  const nav = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const rail = nav.current;
+    const current = rail?.querySelector<HTMLElement>('[aria-current]');
+    if (rail && current) rail.scrollLeft = current.offsetLeft - rail.offsetLeft - (rail.clientWidth - current.offsetWidth) / 2;
+  }, [selected, stages]);
+  const byName = new Map(steps.map((item) => [item.name, item]));
+  // 业务判定失败/证据不足与执行失败同档标红;判定色只做辅助编码。
+  const abnormal = (item: StepRecord) => item.assessment?.outcome === 'failed' || item.assessment?.outcome === 'inconclusive'
+    || item.status === 'failed'
     || FAILED_RESULTS.has(String(item.result || '').toUpperCase());
-  const visible = steps.filter((item) => (filter === 'all' || abnormal(item))
-    && `${item.title} ${item.name}`.toLowerCase().includes(search.trim().toLowerCase()));
-  return <nav className="execution-nav" aria-label="执行节点">
-    <div className="execution-nav-tools">
-      <Input size="small" prefix={<SearchOutlined />} allowClear placeholder="搜索节点" aria-label="搜索执行节点" value={search} onChange={(event) => setSearch(event.target.value)} />
-      <Segmented block size="small" value={filter} onChange={setFilter} options={[{ value: 'all', label: `全部 ${steps.length}` }, { value: 'issues', label: `需关注 ${steps.filter(abnormal).length}` }]} />
-    </div>
-    <ol className="execution-node-list">
-      {visible.map((item) => <li key={item.name}>
-        <button type="button" aria-current={selected === item.name ? 'step' : undefined} className={selected === item.name ? 'is-selected' : ''} onClick={() => onSelect(item.name)}>
-          <span className="execution-node-number">{String(steps.indexOf(item) + 1).padStart(2, '0')}</span>
-          <div><strong>{item.title || item.name}</strong><small>{stages.find((stage) => stage.members.includes(item.name))?.title || '执行步骤'} · {formatDuration(item.duration_ms)}</small></div>
-          {['UNVERIFIED', 'MANUAL', 'INSUFFICIENT_EVIDENCE'].includes(String(item.result || '').toUpperCase()) || FAILED_RESULTS.has(String(item.result || '').toUpperCase())
-            ? <StatusBadge kind="task" value={String(item.result)} compact />
-            : <StatusBadge kind="step" value={item.status} stepName={item.name} compact />}
-        </button>
-      </li>)}
-    </ol>
-    {!visible.length && <p className="execution-nav-empty">没有匹配节点</p>}
-  </nav>;
+
+  return (
+    <nav ref={nav} className={styles.nav} aria-label="执行阶段">
+      {(stages?.length ? stages : TASK_STAGES).map((stage, index) => {
+        const records = stage.members
+          .map((name) => byName.get(name))
+          .filter((item): item is StepRecord => Boolean(item));
+        const failedRecord = records.find(abnormal);
+        const activeRecord = records.find((item) => item.status === 'running' || item.status === 'waiting');
+        const done = !failedRecord && records.length > 0
+          && records.every((item) => item.status === 'succeeded' || item.status === 'skipped');
+        const representative = failedRecord ?? activeRecord ?? records[0];
+        const target = representative?.name ?? stage.members[0];
+        const isCurrent = stage.members.includes(selected);
+        const memberIndex = Math.max(0, stage.members.indexOf(selected));
+        const stateClass = failedRecord ? styles.stageFailed : activeRecord?.status === 'waiting' ? styles.stageWaiting : done ? styles.stageDone : '';
+        return (
+          <button
+            key={stage.key}
+            type="button"
+            title={stage.members.join(' → ')}
+            aria-current={isCurrent ? 'step' : undefined}
+            className={`${styles.stage} ${stateClass}${isCurrent ? ` ${styles.stageCurrent}` : ''}`}
+            onClick={() => {
+              if (isCurrent && stage.members.length > 1) {
+                onSelect(stage.members[(memberIndex + 1) % stage.members.length]);
+              } else {
+                onSelect(target);
+              }
+            }}
+          >
+            <span className={styles.dot} aria-hidden="true">{done ? '✓' : activeRecord?.status === 'waiting' ? '◷' : index + 1}</span>
+            {stage.title}
+            {stage.members.length > 1 && (
+              <span className={styles.count}>
+                {(isCurrent ? memberIndex : Math.max(0, stage.members.indexOf(target))) + 1}/{stage.members.length}
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </nav>
+  );
 }

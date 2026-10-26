@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.workflow.spec import Dependency, RecordView, StepSpec
-from app.workflow.steps.identify_carrier.models import IdentifyCarrierInput, IdentifyCarrierOutput
+from app.workflow.spec import RecordView, StepSpec
+from app.workflow.steps.identify_carrier.models import (
+    IdentifyCarrierInput,
+    IdentifyCarrierOutput,
+)
 from app.workflow.steps.identify_carrier.node import run
 
 
@@ -26,14 +29,19 @@ SPEC = StepSpec(
     input_builder=_input,
     output_patch=_patch,
     task_level=False,
-    depends_on=(Dependency("deduplicate_error", "run"),),
-    next_step="task_dispatch",
     # 步骤记录只存分类字段和错误摘要；代表请求留在 run 级 normalized_records 产物里。
     output_record=RecordView(
         trim=(
             (
                 "tasks",
-                ("task_id", "biztype", "carrier", "service_name", "problem_key", "problem"),
+                (
+                    "task_id",
+                    "biztype",
+                    "carrier",
+                    "service_name",
+                    "problem_key",
+                    "problem",
+                ),
             ),
             ("tasks.problem", ("carrier", "error", "service_name", "biztype")),
         )

@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable
 import json
-import re
 import threading
 import time
 import uuid
 from pathlib import Path
-
-_AUDIT_LOCK = threading.Lock()
+from typing import Any, Callable
 
 from app.domain.json_text import loads_object
-from config.settings import settings
-from app.infrastructure.records.policy import debug_artifacts
 from app.infrastructure.records.database import RecordDatabase
+from app.infrastructure.records.policy import debug_artifacts
+from config.settings import settings
+
+_AUDIT_LOCK = threading.Lock()
 
 
 def parse_result(raw: dict[str, Any], role: str) -> dict[str, Any]:
@@ -338,6 +337,7 @@ def _persist_prompt_snapshot(record: dict[str, Any], request: Any) -> str:
         reference = (context.get("evidence") or {}).get("full_context") or {}
         if reference.get("path"):
             import hashlib
+
             from app.prompts.budget import readable_context
             full_path = Path(reference["path"]).resolve()
             owned = readable_context(Path(request.workspace).resolve(), run_id, task_id, request.agent_role)
@@ -391,16 +391,6 @@ def _snapshot_text(value: str, roots: list[str], limit: int) -> tuple[str, bool]
 def _audit_text(value: Any, limit: int) -> str:
     """预览可限长，原始值不脱敏。"""
     return str(value or "")[:limit]
-
-
-_SAFE_TOOL_INPUT_KEYS = frozenset({
-    "file_path", "notebook_path", "path", "pattern", "glob", "description", "skill", "url", "query",
-})
-
-
-def _safe_tool_input(value: Any) -> dict[str, Any]:
-    """保留完整公开工具入参。"""
-    return dict(value) if isinstance(value, dict) else {}
 
 
 def _audit_events(value: Any) -> list[dict[str, Any]]:

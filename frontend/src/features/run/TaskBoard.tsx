@@ -9,6 +9,8 @@ import { queryKeys } from '../../lib/queryKeys';
 import { formatDuration } from '../../lib/format';
 import { StatusBadge } from '../../components/StatusBadge';
 import { EmptyState } from '../../components/EmptyState';
+import { Panel } from '../../components/ui';
+import styles from './TaskBoard.module.css';
 
 interface TaskBoardProps { runId: string; stages?: WorkflowStage[]; onOpen: (task: BoardTask) => void }
 const FILTERS = [
@@ -18,7 +20,7 @@ const FILTERS = [
 const ACTIVE = new Set(['RUNNING', 'RETRYING', 'PENDING', 'QUEUED']);
 
 function state(task: BoardTask): string {
-  return task.approval_pending ? 'WAITING_APPROVAL' : String(task.lifecycle?.status || task.result || 'PENDING').toUpperCase();
+  return String(task.result || 'PENDING').toUpperCase();
 }
 
 export const TaskBoard: FC<TaskBoardProps> = ({ runId, stages = [], onOpen }) => {
@@ -47,31 +49,71 @@ export const TaskBoard: FC<TaskBoardProps> = ({ runId, stages = [], onOpen }) =>
   const currentPage = query.data?.page ?? page;
   if (query.isError) return <Alert type="error" showIcon message="任务列表加载失败" action={<Button onClick={() => void query.refetch()}>重试</Button>} />;
   return (
-    <section className="task-register" aria-label="任务列表">
-      <div className="task-register-toolbar">
-        <div className="task-register-filters" role="group" aria-label="任务状态筛选">
-          {FILTERS.map(([key, label]) => <button key={key} type="button" aria-pressed={filter === key} className={filter === key ? 'is-selected' : ''} onClick={() => update({ result: key, page: '1' })}>{label}<span>{counts[key] ?? 0}</span></button>)}
-        </div>
-        <Input allowClear prefix={<SearchOutlined />} aria-label="搜索运输商或错误" placeholder="搜索运输商、业务类型或错误…" maxLength={160} value={search} onChange={(event) => setSearch(event.target.value)} />
+    <Panel
+      title={<>问题任务<span className={styles.headNote}>按问题查看定位、验收与交付结果</span></>}
+      extra={
+        <Input
+          allowClear
+          size="small"
+          prefix={<SearchOutlined />}
+          aria-label="搜索运输商或错误"
+          placeholder="搜索运输商、业务类型或错误…"
+          maxLength={160}
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          className={styles.search}
+        />
+      }
+      flush
+    >
+      <div className={styles.filters} role="group" aria-label="任务状态筛选">
+        {FILTERS.map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            aria-pressed={filter === key}
+            className={filter === key ? `${styles.filter} ${styles.filterOn}` : styles.filter}
+            onClick={() => update({ result: key, page: '1' })}
+          >
+            {label}<span>{counts[key] ?? 0}</span>
+          </button>
+        ))}
       </div>
-      {query.isLoading ? <Skeleton active paragraph={{ rows: 6 }} /> : visible.length ? <div className="task-register-scroll"><table className="task-register-table">
-        <thead><tr><th>运输商 / 业务</th><th>状态</th><th>当前阶段 / 停止点</th><th>执行摘要</th><th>操作</th></tr></thead>
-        <tbody>{visible.map((task) => {
-          const status = state(task);
-          const failed = ['FAILED', 'FAIL', 'REJECTED', 'PARTIAL_FAILED'].includes(status);
-          return <tr key={task.task_id} className={failed ? 'needs-attention' : ''}>
-            <td><button type="button" className="task-register-name" onClick={() => onOpen(task)}>{task.carrier || '未识别运输商'}</button><small>{task.biztype || '未知业务类型'}</small></td>
-            <td><StatusBadge kind="task" value={status} /></td>
-            <td><span title={task.current_step || task.terminal_step}>{stages.find((stage) => stage.members.includes(task.current_step || task.terminal_step))?.title || task.current_step || task.terminal_step || '等待分派'}</span><small>{task.steps_count} 个步骤 · {formatDuration(task.duration_ms)}{(task.attempt ?? 0) > 1 ? ` · 第 ${task.attempt} 次尝试` : ''}</small></td>
-            <td className="task-register-reason"><span title={task.terminal_reason}>{ACTIVE.has(status) ? '自动流程正在推进' : task.terminal_reason || task.next_action || '等待生成执行结论'}</span></td>
-            <td><Button type={failed || task.approval_pending ? 'primary' : 'text'} size="small" icon={<ArrowRightOutlined />} iconPosition="end" onClick={() => onOpen(task)}>{failed ? '排查失败' : task.approval_pending ? '查看审批' : '查看任务'}</Button></td>
-          </tr>;
-        })}</tbody>
-      </table></div> : <EmptyState title="没有匹配的任务" description="尝试修改筛选条件或搜索内容。" compact />}
-      <footer className="task-register-footer">
+      {query.isLoading ? (
+        <div className={styles.loading}><Skeleton active paragraph={{ rows: 6 }} /></div>
+      ) : visible.length ? (
+        <div className={styles.tableWrap}>
+          <table className={styles.table}>
+            <thead><tr><th>运输商 / 业务</th><th>状态</th><th>当前阶段 / 停止点</th><th>执行摘要</th><th>操作</th></tr></thead>
+            <tbody>{visible.map((task) => {
+              const status = state(task);
+              const failed = ['FAILED', 'FAIL', 'REJECTED', 'PARTIAL_FAILED'].includes(status);
+              return <tr key={task.task_id}>
+                <td>
+                  <button type="button" className={styles.name} onClick={() => onOpen(task)}>{task.carrier || '未识别运输商'}</button>
+                  <small className={styles.cellSmall}>{task.biztype || '未知业务类型'}</small>
+                </td>
+                <td><StatusBadge kind="task" value={status} /></td>
+                <td>
+                  <span title={task.current_step || task.terminal_step}>{stages.find((stage) => stage.members.includes(task.current_step || task.terminal_step))?.title || task.current_step || task.terminal_step || '等待分派'}</span>
+                  <small className={styles.cellSmall}>
+                    <span className={styles.num}>{task.steps_count}</span> 个步骤 · <span className={styles.num}>{formatDuration(task.duration_ms)}</span>
+                    {(task.attempt ?? 0) > 1 ? <> · 第 <span className={styles.num}>{task.attempt}</span> 次尝试</> : null}
+                  </small>
+                </td>
+                <td className={styles.reason}><span title={task.terminal_reason}>{ACTIVE.has(status) ? '自动流程正在推进' : task.terminal_reason || task.next_action || '等待生成执行结论'}</span></td>
+                <td><Button type={failed || task.approval_pending ? 'primary' : 'text'} size="small" icon={<ArrowRightOutlined />} iconPosition="end" onClick={() => onOpen(task)}>{failed ? '排查失败' : task.approval_pending ? '查看审批' : '查看任务'}</Button></td>
+              </tr>;
+            })}</tbody>
+          </table>
+        </div>
+      ) : (
+        <div className={styles.loading}><EmptyState title="没有匹配的任务" description="尝试修改筛选条件或搜索内容。" compact /></div>
+      )}
+      <footer className={styles.footer}>
         <span>{query.isFetching ? '同步中 · ' : ''}共 {query.data?.total ?? 0} 项匹配 · 批次 {counts.all} 项</span>
         <Pagination current={currentPage} pageSize={pageSize} total={query.data?.total ?? 0} showSizeChanger showQuickJumper pageSizeOptions={[10, 20, 50, 100]} onChange={(next, size) => update({ page: String(size !== pageSize ? 1 : next), size: String(size) })} />
       </footer>
-    </section>
+    </Panel>
   );
 };

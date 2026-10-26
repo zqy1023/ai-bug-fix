@@ -5,6 +5,7 @@ import type {
 } from './types';
 
 const API_BASE = '/api/v1';
+const REQUEST_TIMEOUT_MS = 60_000;
 let apiToken = '';
 
 export function setApiToken(token: string) { apiToken = token.trim(); }
@@ -35,8 +36,26 @@ function errorFrom(body: ErrorBody | null, status: number): ApiError {
   return new ApiError(message, status, body?.code ?? 'API_ERROR');
 }
 
+function isTimeoutError(error: unknown): boolean {
+  return error instanceof DOMException && (error.name === 'TimeoutError' || error.name === 'AbortError');
+}
+
+/** 统一请求超时：与调用方已有 signal 合并；超时中断时抛出可识别的 ApiError（SSE 订阅不使用）。 */
+async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: init.signal ? AbortSignal.any([init.signal, timeout]) : timeout,
+    });
+  } catch (error) {
+    if (isTimeoutError(error)) throw new ApiError('请求超时', 0, 'API_TIMEOUT');
+    throw error;
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(API_BASE + path, {
+  const response = await fetchWithTimeout(API_BASE + path, {
     ...init,
     credentials: 'same-origin',
     headers: {
@@ -59,12 +78,15 @@ function encode(value: string) { return encodeURIComponent(value); }
 export const api = {
   artifactDownload: async (runId: string, taskId: string, path: string) => {
     const query = new URLSearchParams({ path, task_id: taskId });
-    const response = await fetch(API_BASE + '/runs/' + encode(runId) + '/artifacts/download?' + query, { headers: authorizationHeaders(), credentials: 'same-origin' });
+    const response = await fetchWithTimeout(
+      API_BASE + '/runs/' + encode(runId) + '/artifacts/download?' + query,
+      { headers: authorizationHeaders(), credentials: 'same-origin' },
+    );
     if (!response.ok) throw new ApiError('下载产物失败', response.status);
     return response.blob();
   },
   health: async () => {
-    const response = await fetch(API_BASE + '/health', {
+    const response = await fetchWithTimeout(API_BASE + '/health', {
       headers: { Accept: 'application/json', ...authorizationHeaders() },
       credentials: 'same-origin',
     });

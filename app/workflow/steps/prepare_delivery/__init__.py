@@ -8,8 +8,8 @@ from app.domain.keys import repair_branch
 from app.infrastructure.filesystem.workspace import WorkspaceManager
 from app.workflow.spec import StepSpec
 from app.workflow.steps.prepare_delivery.models import DeliveryInput, DeliveryOutput
-from config.settings import settings
 from app.workflow.steps.prepare_delivery.node import run
+from config.settings import settings
 
 
 def _input(state: dict[str, Any]) -> dict[str, Any]:
@@ -30,32 +30,28 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         review_decision = "HUMAN"
     evidence = dict(state.get("evidence") or {})
     locate_payload = dict(state.get("locate") or {})
-    legacy_reference = any(
-        str(item.get("path") or "").replace("\\", "/").startswith("spiders/")
-        for item in locate_payload.get("source_evidence") or []
-        if isinstance(item, dict)
-    ) or any(
-        str(item).replace("\\", "/").startswith("spiders/")
-        for item in locate_payload.get("candidate_files") or []
-    )
-    report_framework = (
-        "spiders"
-        if evidence.get("legacy_only") or evidence.get("legacy_dependency") or legacy_reference
-        else str(state.get("framework") or "gathers")
-    )
+    # 旧框架判定与 finalize_execution 共用同一实现，避免口径漂移。
+    from app.workflow.steps.prepare_delivery.legacy import report_dir, report_framework
+
+    report_framework_name = report_framework(evidence, locate_payload, state.get("framework"))
     report_carrier = WorkspaceManager.safe_carrier_name(str(task.get("carrier") or ""))
     # 源码目录可能保留原始大小写（gathers/Airpak）。必须用证据里的真实路径，
     # 否则在大小写敏感的文件系统上会交付一个与 final.json 实际位置不同的路径。
-    report_dir = str(evidence.get("carrier_dir") or "").replace("\\", "/").strip("/") or (
-        f"{report_framework}/{report_carrier}"
-    )
+    report_directory = report_dir(evidence, report_framework_name, report_carrier)
     from app.workflow.routes import _analysis_only_task
+
     analysis_only = _analysis_only_task(state)
+    if not analysis_only:
+        from app.workflow.validation import summarize
+        if summarize(state)["stale"]:
+            raise ValueError("CANDIDATE_EVIDENCE_STALE: 验证证据已过期，需要重新检查")
     from app.domain.repair_scope import legacy_analysis_required
     from app.workflow.confirmation import confirmation
+
     manual_required, manual_reasons = confirmation(state)
     return {
         "task_id": task_id,
+        "binding": (state.get("validation_plan") or {}).get("binding"),
         "carrier": str(task.get("carrier") or ""),
         "repair_branch": str(
             task.get("repair_branch")
@@ -78,10 +74,13 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         "repair_summary": str(repair_payload.get("summary") or ""),
         "review_summary": str(review_payload.get("summary") or ""),
         "review_decision": review_decision,
-        "delivery_eligible": (state.get("validation_decision") or {}).get("delivery_eligible") is True,
+        "delivery_eligible": (state.get("validation_decision") or {}).get(
+            "delivery_eligible"
+        )
+        is True,
         "legacy_analysis_required": legacy_analysis_required(state),
         "analysis_only": analysis_only,
-        "report_paths": [f"{report_dir}/final.json"] if analysis_only else [],
+        "report_paths": [f"{report_directory}/final.json"] if analysis_only else [],
         "allow_push": bool(state.get("allow_push", state.get("git_push", False))),
         "require_push": bool(state.get("require_push", False)),
         "manual_confirmation_required": manual_required,
@@ -91,25 +90,28 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
 
 def _patch(output: dict[str, Any]) -> dict[str, Any]:
     return {
-        "delivery": dict(output),
+        "delivery_candidate": dict(output),
         "repair_branch": str(output.get("repair_branch") or ""),
         "delivery_pushed": bool(output.get("pushed")),
         "delivery_local_branch": bool(output.get("local_branch")),
         "delivery_commit": str(output.get("commit") or ""),
-        "manual_confirmation_required": bool(output.get("manual_confirmation_required")),
-        "manual_confirmation_reasons": list(output.get("manual_confirmation_reasons") or []),
+        "manual_confirmation_required": bool(
+            output.get("manual_confirmation_required")
+        ),
+        "manual_confirmation_reasons": list(
+            output.get("manual_confirmation_reasons") or []
+        ),
     }
 
 
 SPEC = StepSpec(
     name="prepare_delivery",
-    title="创建修复分支",
+    title="准备本地修复候选",
     runner=run,
     input_model=DeliveryInput,
     output_model=DeliveryOutput,
     input_builder=_input,
     output_patch=_patch,
-    next_step="finalize_execution",
 )
 
 __all__ = ["SPEC"]

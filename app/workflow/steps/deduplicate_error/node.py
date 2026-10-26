@@ -17,7 +17,7 @@ from app.workflow.steps.deduplicate_error.models import (
 )
 
 
-def _ignore_rules(ctx: StepContext) -> tuple[str, ...]:
+def ignore_rules(ctx: StepContext) -> tuple[str, ...]:
     configured = ctx.services.ignore_errors
     if not isinstance(configured, list) or any(
         not isinstance(value, str) or not value.strip() for value in configured
@@ -165,4 +165,4 @@ def run(ctx: StepContext, data: DeduplicateErrorInput) -> DeduplicateErrorOutput
     )
 
 
-__all__ = ["consume", "run", "write_groups"]
+__all__ = ["consume", "ignore_rules", "run", "write_groups"]

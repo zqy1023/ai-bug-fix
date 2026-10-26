@@ -1,72 +1,77 @@
+import { theme } from 'antd';
 import type { ThemeConfig } from 'antd';
 
-/** 浅色企业蓝：与 styles.css 中的 CSS 变量保持同源。 */
-export const palette = {
-  primary: '#1B4DD8',
-  primaryHover: '#2E63F0',
-  primarySoft: '#E8F0FF',
-  canvas: '#F5F7FA',
-  surface: '#FFFFFF',
-  surfaceMuted: '#EFF2F6',
-  ink: '#0F172A',
-  inkMuted: '#475569',
-  inkFaint: '#94A3B8',
-  success: '#16A34A',
-  danger: '#DC2626',
-  warning: '#D97706',
-  neutral: '#6B7280',
-} as const;
+import { fontFamily, semantic, type ThemeMode } from './tokens';
+export { palette } from './tokens';
 
-/** 结果分类色调：Task 是最高优先级观察对象，颜色只做辅助编码。 */
+/** 结果分类色调:Task 是最高优先级观察对象,颜色只做辅助编码。 */
 export type Tone = 'running' | 'waiting' | 'success' | 'danger' | 'manual' | 'neutral' | 'pending';
 
-export const toneColor: Record<Tone, string> = {
-  running: palette.primary,
-  waiting: palette.warning,
-  success: palette.success,
-  danger: palette.danger,
-  manual: palette.neutral,
-  neutral: palette.inkFaint,
-  pending: palette.inkFaint,
+/** tone → 语义令牌键(StatusDot / StatusBadge 共用)。 */
+export const toneVar: Record<Tone, string> = {
+  running: 'primary',
+  waiting: 'warning',
+  success: 'success',
+  danger: 'danger',
+  manual: 'ink-faint',
+  neutral: 'ink-faint',
+  pending: 'ink-faint',
 };
 
-export const workbenchTheme: ThemeConfig = {
-  token: {
-    colorPrimary: palette.primary,
-    colorInfo: palette.primary,
-    colorSuccess: palette.success,
-    colorWarning: palette.warning,
-    colorError: palette.danger,
-    colorTextBase: palette.ink,
-    colorText: palette.ink,
-    colorTextSecondary: palette.inkMuted,
-    colorTextTertiary: palette.inkFaint,
-    colorBgLayout: palette.canvas,
-    colorBgContainer: palette.surface,
-    colorBorder: '#E2E8F0',
-    colorBorderSecondary: '#EDF1F6',
-    borderRadius: 8,
-    borderRadiusLG: 10,
-    borderRadiusSM: 6,
-    fontFamily: '"PingFang SC", "Microsoft YaHei", Inter, system-ui, sans-serif',
-    fontSize: 13,
-    controlHeight: 34,
-    wireframe: false,
-  },
-  components: {
-    Table: {
-      headerBg: '#F8FAFC',
-      headerColor: palette.inkMuted,
-      headerSplitColor: 'transparent',
-      rowHoverBg: '#F5F8FF',
-      cellPaddingBlock: 10,
-      cellPaddingInline: 12,
-      fontSize: 12,
-    },
-    Tabs: { itemSelectedColor: palette.primary, inkBarColor: palette.primary, titleFontSize: 13 },
-    Button: { fontWeight: 500, primaryShadow: 'none', defaultShadow: 'none' },
-    Card: { paddingLG: 16 },
-    Drawer: { paddingLG: 16 },
-    Descriptions: { labelBg: '#F8FAFC' },
-  },
+/** tone → AntD 图标色(少数必须内联色值的场景)。 */
+export const toneColor: Record<Tone, string> = {
+  running: semantic.light.primary,
+  waiting: semantic.light.warning,
+  success: semantic.light.success,
+  danger: semantic.light.danger,
+  manual: semantic.light.inkFaint,
+  neutral: semantic.light.inkFaint,
+  pending: semantic.light.inkFaint,
 };
+
+export function getAntdTheme(mode: ThemeMode): ThemeConfig {
+  const s = semantic[mode];
+  return {
+    algorithm: mode === 'dark' ? theme.darkAlgorithm : theme.defaultAlgorithm,
+    token: {
+      colorPrimary: s.accent,
+      colorInfo: s.accent,
+      colorSuccess: s.success,
+      colorWarning: s.warning,
+      colorError: s.danger,
+      colorTextBase: s.ink,
+      colorText: s.ink,
+      colorTextSecondary: s.inkMuted,
+      colorTextTertiary: s.inkFaint,
+      colorBgLayout: s.canvas,
+      colorBgContainer: s.surface,
+      colorBorder: s.line,
+      colorBorderSecondary: s.lineSoft,
+      borderRadius: 6,
+      borderRadiusLG: 8,
+      borderRadiusSM: 6,
+      fontFamily,
+      fontSize: 13,
+      controlHeight: 34,
+      wireframe: false,
+    },
+    components: {
+      Table: {
+        headerBg: s.surfaceMuted,
+        headerColor: s.inkMuted,
+        headerSplitColor: 'transparent',
+        rowHoverBg: s.surfaceHover,
+        cellPaddingBlock: 17,
+        cellPaddingInline: 18,
+        fontSize: 12,
+      },
+      Tabs: { itemSelectedColor: s.primary, inkBarColor: s.primary, titleFontSize: 13 },
+      Button: { fontWeight: 500, primaryShadow: 'none', defaultShadow: 'none' },
+      Card: { paddingLG: 16 },
+      Drawer: { paddingLG: 16 },
+      Descriptions: { labelBg: s.surfaceMuted },
+    },
+  };
+}
+
+export const workbenchTheme = getAntdTheme('light');

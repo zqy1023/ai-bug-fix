@@ -7,6 +7,7 @@ import { ReviewResult } from './ReviewResult';
 import { ValidationResult } from './ValidationResult';
 import { ReplayLogs } from './ReplayLogs';
 import { evidenceWarning, ReplayComparison, TextEvidence } from './ReplayEvidence';
+import styles from './StepOutcome.module.css';
 
 type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): ObjectValue => value && typeof value === 'object' && !Array.isArray(value) ? value as ObjectValue : {};
@@ -24,11 +25,17 @@ const descriptions: Record<string, string> = {
   run_regression: '将日志请求和代理渠道传入 server_dev.main，核对实际业务结果，并执行配置的补充命令。',
   review_agent: '独立审查差异、验证证据及剩余风险。',
   prepare_delivery: '提交业务修改与本轮任务概要，记录分支与提交。',
-  request_approval: '由人工复核已交付的分支并决定是否保留。',
+  request_approval: '审阅本地修复候选；批准后才正式推送修复分支。',
+  define_acceptance: '修改前固定验收断言，并绑定原始问题和完整基线。',
+  reproduce_baseline: '只运行未修改代码，确认原始异常能够复现。',
+  prepare_analysis: '生成分析报告，交付完成后统一收尾。',
+  publish_delivery: '将人工批准的同一提交正式交付，按配置推送。',
   finalize_execution: '汇总任务结果、停止原因和后续处理要求。',
 };
 const labels: Record<string, string> = {
   root_cause: '根因分析', summary: '执行结论', reason: '处理说明', analysis: '修复分析',
+  contract_id: '验收契约标识', assertions: '验收断言', candidate_id: '候选标识',
+  binding: '证据身份', report_path: '证据报告',
   terminal_reason: '结束原因', blocked_reason: '阻断原因', next_action: '下一步',
   facts: '事实依据', source_evidence: '源码证据', evidence_gaps: '证据缺口',
   changed_files: '修改文件', checked_files: '已检查文件', candidates: '调查文件',
@@ -40,7 +47,7 @@ const labels: Record<string, string> = {
 
 export function outcomeText(step: StepRecord): string {
   const output = object(step.output);
-  return String(step.error?.message || output.reason || output.summary || output.terminal_reason
+  return String(step.error?.message || step.assessment?.summary || output.reason || output.summary || output.terminal_reason
     || output.root_cause || step.summary || descriptions[step.name] || '该步骤已记录，查看详情核对输出。');
 }
 
@@ -50,17 +57,17 @@ export function StepOutcome({ step }: { step: StepRecord }) {
   const output = object(step.output);
   const entries = Object.entries(output).filter(([key, value]) => key in labels && value !== '' && value !== null
     && (!Array.isArray(value) || value.length > 0));
-  return <div className="step-outcome">
-    <details className="step-function-note"><summary>节点职责</summary><p>{descriptions[step.name] || '查看本步骤实际输入、处理结果及输出证据。'}</p></details>
-    {step.error && <div className="step-error-message"><strong>{step.error.code}</strong><p>{step.error.message}</p></div>}
-    {entries.length ? entries.map(([key, value]) => <section className="outcome-field" key={key}>
+  return <div className={styles.outcome}>
+    <details className={styles.functionNote}><summary>节点职责</summary><p>{descriptions[step.name] || '查看本步骤实际输入、处理结果及输出证据。'}</p></details>
+    {step.error && <div className={styles.errorMessage}><strong>{step.error.code}</strong><p>{step.error.message}</p></div>}
+    {entries.length ? entries.map(([key, value]) => <section className={styles.field} key={key}>
       <h4>{labels[key]}</h4>
       {typeof value === 'string' || typeof value === 'number' ? <p>{String(value)}</p>
         : Array.isArray(value) && value.every((item) => typeof item === 'string')
           ? <ul>{value.map((item, index) => <li key={index}>{String(item)}</li>)}</ul>
           : <JsonViewer value={value} defaultExpandDepth={2} />}
-    </section>) : !step.error && <p className="outcome-description">{typeof output.passed === 'boolean' ? (output.passed ? '检查通过' : '检查未通过') : step.summary || '该节点没有单独记录结论，可查看原始输出。'}</p>}
-    <div className="outcome-state">执行状态：{step.status} · 业务结果：{step.result || String(output.status || output.mode || '未单独声明')}</div>
+    </section>) : !step.error && <p className={styles.stateDescription}>{typeof output.passed === 'boolean' ? (output.passed ? '检查通过' : '检查未通过') : step.summary || '该节点没有单独记录结论，可查看原始输出。'}</p>}
+    <div className={styles.state}>执行状态：{step.execution?.status ?? step.status} · 业务结论：{step.assessment?.outcome ?? step.result ?? String(output.status || '未声明')}</div>
   </div>;
 }
 
@@ -94,7 +101,7 @@ export function VerificationEvidence({ runId, taskId, step }: { runId: string; t
   const verdictLabel = ({ exception_handled: '原异常已改为受控处理，待审查业务归类依据', fixed: '原异常消除，已返回业务结果',
     not_fixed: '仍复现原异常', new_error: '出现其他错误', regression: '发现行为回退', not_reproduced: '未复现原问题',
     input_not_verified: '输入送达未验证', missing_evidence: '缺少原始证据', environment: '执行环境受阻' } as Record<string, string>)[verdict] || verdict;
-  return <section className="verification-evidence">
+  return <section className={styles.verification}>
     <h4>{step.name === 'verify_issue' ? '问题重放 · 实际结果' : '回归验证 · 实际执行'}</h4>
     {query.isLoading && <p>正在加载验证证据…</p>}
     {query.isError && <p role="alert">验证产物加载失败，请在产物页重试。</p>}
@@ -103,7 +110,7 @@ export function VerificationEvidence({ runId, taskId, step }: { runId: string; t
       <p>输入来源：{({ recorded: '已录制的原始响应', live: '在线请求（响应不固定）', missing_response: '缺少录制响应' } as Record<string, string>)[inputMode] || inputMode} · 判定：{warning ? '证据失效，需重新验证' : verdictLabel}</p>
       {assertions.length > 0 && <ul>{assertions.map((item) => <li key={String(item.key)}>{String(item.label)}：{warning ? '需重跑确认' : ({ passed: '通过', failed: '未通过', unverified: '未验证' } as Record<string, string>)[String(item.status)] || String(item.status)}</li>)}</ul>}
       <ReplayComparison replay={replay} />
-      <p className="replay-result-reason">{warning ? '历史判定原因' : '判定原因'}：{String(report.reason || replay.reason || '尚无判定说明')}</p>
+      <p className={styles.reason}>{warning ? '历史判定原因' : '判定原因'}：{String(report.reason || replay.reason || '尚无判定说明')}</p>
       {limitations.length > 0 && <div><strong>本次覆盖边界</strong><ul>{limitations.map((value) => <li key={value}>{value}</li>)}</ul></div>}
     </>}
     {step.name === 'run_regression' && Boolean(request.entrypoint) && <section>
@@ -127,7 +134,7 @@ export function VerificationEvidence({ runId, taskId, step }: { runId: string; t
       {Boolean(object(supplemental.sample_source).sha256) && <p>样本 SHA256：<code>{String(object(supplemental.sample_source).sha256)}</code></p>}
       <p>完整前后结果及输入证据见产物 supplemental_verification_report.json。</p>
     </section>}
-    {commands.map((command, index) => <details className="command-evidence" key={index}>
+    {commands.map((command, index) => <details className={styles.command} key={index}>
       <summary>执行记录 {index + 1} · 退出码 {String(command.returncode ?? '未知')} · 查看命令和完整输出</summary>
       <div><strong>命令 {index + 1}</strong><span>退出码 {String(command.returncode ?? '未知')}</span></div>
       <details><summary>命令原文</summary><TextEvidence text={JSON.stringify(command.command, null, 2) || ''} name={`command-${index + 1}.json`} /></details>

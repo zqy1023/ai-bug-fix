@@ -8,9 +8,9 @@
 
 from __future__ import annotations
 
-import logging
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -20,25 +20,17 @@ from collections.abc import Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
-from app.infrastructure.filesystem.workspace import WorkspaceError, WorkspaceManager
-from app.infrastructure.redaction import mask_secrets, redact_output
-from app.infrastructure.git.task_summary import render_task_summary
-from app.domain.errors import DeliveryError
 from git import Repo
+
+from app.domain.errors import DeliveryError
+from app.infrastructure.filesystem.workspace import WorkspaceError, WorkspaceManager
+from app.infrastructure.git.task_summary import render_task_summary
+from app.infrastructure.redaction import (
+    redact_for_delivery,
+)
 from config.settings import settings
-
-
-class DeliveryPort(Protocol):
-    """修复分支交付能力的最小接口。"""
-
-    def deliver(self, state: Mapping[str, Any]) -> dict[str, Any]:
-        """创建分支并交付本轮代码。"""
-
-    def discard_branch(self, state: Mapping[str, Any]) -> dict[str, Any]:
-        """删除最终审批拒绝的修复分支。"""
-
 
 # 提交说明采用简短摘要；原始运行证据保留原值。
 _MAX_COMMENT_CHARS = settings.max_commit_comment_chars
@@ -106,6 +98,7 @@ def _clone_repo(git_root: Path, target: Path) -> Repo:
         return Repo.clone_from(
             str(git_root), str(target), local=True,
             multi_options=["--config=core.longpaths=true"],
+            allow_unsafe_options=True,  # 仅允许本函数固定的 longpaths 配置。
         )
     except Exception as local_error:
         if target.exists():
@@ -114,6 +107,7 @@ def _clone_repo(git_root: Path, target: Path) -> Repo:
             return Repo.clone_from(
                 str(git_root), str(target),
                 multi_options=["--config=core.longpaths=true"],
+            allow_unsafe_options=True,  # 仅允许本函数固定的 longpaths 配置。
             )
         except Exception:
             raise local_error from None
@@ -130,7 +124,7 @@ def _one_line(value: Any, limit: int = _MAX_COMMENT_CHARS) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
-    text = mask_secrets(text)
+    text = text
     # 换行会把段落写乱，一行一段地压平；多空格也会让正文看起来参差不齐。
     text = " ".join(text.split())
     if len(text) > limit:
@@ -154,10 +148,28 @@ class GitDeliveryConfig:
     workspace_manager: WorkspaceManager | None = None
 
 
+def _committer_identity() -> dict[str, str]:
+    """修复分支提交者身份；与 RuntimeConfig.git_committer_* 读同一组环境变量。
+
+    容器内通常没有全局 ``user.name``/``user.email``，缺身份时 ``git commit`` 直接
+    报 "Please tell me who you are"，交付在最后一步失败。默认值与 config.py 保持
+    一致，部署方通过 GIT_COMMITTER_NAME / GIT_COMMITTER_EMAIL 覆盖。
+    """
+    name = os.getenv("GIT_COMMITTER_NAME", "").strip() or "ai-bug-fixer"
+    email = os.getenv("GIT_COMMITTER_EMAIL", "").strip() or "ai-bug-fixer@localhost"
+    return {
+        "GIT_AUTHOR_NAME": name,
+        "GIT_AUTHOR_EMAIL": email,
+        "GIT_COMMITTER_NAME": name,
+        "GIT_COMMITTER_EMAIL": email,
+    }
+
+
 def _git_environment(repo: Repo, env: Mapping[str, str] | None):
-    """按需为 Git 子进程注入 HTTPS 凭据环境；凭据不写入仓库配置。"""
-    if env:
-        return repo.git.custom_environment(**env)
+    """按需为 Git 子进程注入 HTTPS 凭据与提交者身份；凭据不写入仓库配置。"""
+    merged = {**_committer_identity(), **dict(env or {})}
+    if merged:
+        return repo.git.custom_environment(**merged)
     return nullcontext()
 
 
@@ -337,8 +349,10 @@ class GitBranchDelivery:
                 ]
                 if not staged:
                     raise DeliveryError(f"修复文件未能进入暂存区: {git_paths[0]}")
-                delivery_repo.git.commit("-m", self._commit_message(state),
-                                         "-m", f"AI-Delivery-Fingerprint: {fingerprint}", "--", *staged)
+                # commit 单独注入提交者身份：临时克隆里没有全局 git config。
+                with _git_environment(delivery_repo, self._config.git_env):
+                    delivery_repo.git.commit("-m", self._commit_message(state),
+                                             "-m", f"AI-Delivery-Fingerprint: {fingerprint}", "--", *staged)
                 commit = delivery_repo.head.commit
             except Exception as error:
                 raise DeliveryError(
@@ -780,7 +794,15 @@ class GitBranchDelivery:
             if valid_final_json:
                 relative = relative.with_name("task_summary.md")
                 destination = destination_root / relative
-                report = json.loads(source.read_text(encoding="utf-8"))
+                try:
+                    report = json.loads(source.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, UnicodeDecodeError, OSError) as error:
+                    # 损坏的 final.json 渲染不出可核对的交付文档；静默跳过会让
+                    # 分支看起来交付成功却没有摘要，必须显式失败转人工。
+                    raise DeliveryError(
+                        f"交付报告损坏，无法渲染 task_summary: {source} ({type(error).__name__})",
+                        status="MANUAL",
+                    ) from error
                 if repair_branch:
                     report["repair_branch"] = repair_branch
                 destination.write_text(render_task_summary(_redact_report(report)), encoding="utf-8")
@@ -829,7 +851,7 @@ class GitBranchDelivery:
                     suffix=".audit",
                     delete=False,
                 ) as output:
-                    output.write(redact_output(content))
+                    output.write(content)
                     temporary = Path(output.name)
                 shutil.copyfile(temporary, destination)
             except OSError as error:
@@ -861,7 +883,7 @@ class GitBranchDelivery:
             if reasons:
                 lines.append("  reasons: " + "; ".join(reasons[:5]))
 
-        error = _one_line(state.get("error"))
+        error = _one_line(redact_for_delivery(str(state.get("error") or "")))
         if error:
             lines += ["", f"error: {error}"]
 

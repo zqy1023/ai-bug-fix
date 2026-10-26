@@ -99,10 +99,10 @@ def run(ctx: StepContext, data: SourceSnapshotInput) -> SourceSnapshotOutput:
                 relative_parts = source.relative_to(source_dir).parts
                 if (
                     any(
-                        WorkspaceManager._is_skipped_dir(part) or WorkspaceManager._is_sensitive(part)
+                        WorkspaceManager.is_skipped_dir(part) or WorkspaceManager.is_sensitive(part)
                         for part in relative_parts[:-1]
                     )
-                    or WorkspaceManager._is_sensitive(source.name)
+                    or WorkspaceManager.is_sensitive(source.name)
                 ):
                     continue
                 resolved = source.resolve()

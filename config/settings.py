@@ -6,12 +6,18 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    """读取布尔环境变量；兼容 1/true/yes/on 写法，默认关闭。"""
+    return os.getenv(name, str(default).lower()).strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass(frozen=True)
@@ -23,7 +29,7 @@ class Settings:
     artifact_dir_name: str = ".ai-bug-tasks"
     # source_mirror_dir_name：远程源仓库在运行时目录下的镜像目录名。
     source_mirror_dir_name: str = "source-repo"
-    # git_fetch_timeout_seconds：克隆与拉取源仓库的超时秒数。
+    # git_fetch_timeout_seconds：已有镜像拉取与检出操作的超时秒数。
     git_fetch_timeout_seconds: int = 300
     # default_service_name：默认日志服务名。
     default_service_name: str = "gather.py.track"
@@ -55,6 +61,10 @@ class Settings:
     workflow_checkpoint_busy_timeout_ms: int = 30000
     # workbench_host：工作台服务监听地址。
     workbench_host: str = "0.0.0.0"
+    # workbench_allow_insecure：未配置 WORKBENCH_API_TOKEN 时是否允许绑定非回环地址。
+    # 读取环境变量 WORKBENCH_ALLOW_INSECURE（1/true 视为开启），默认 False；
+    # 未豁免时 server.py 启动会把监听地址回落为 127.0.0.1。
+    workbench_allow_insecure: bool = _env_bool("WORKBENCH_ALLOW_INSECURE")
     # workbench_api_port：工作台服务监听端口。
     workbench_api_port: int = 8000
     # workbench_cors_origins：允许跨域访问的来源。

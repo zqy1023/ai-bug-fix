@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.workflow.contracts import StepOutcome
+
 AgentRole = Literal["locate", "repair", "review"]
 
 
@@ -84,20 +86,36 @@ class StepAudit(BaseModel):
 
 
 class StepResult(BaseModel):
-    """Uniform outcome returned by the step execution boundary."""
+    """正式执行结果；兼容属性只用于旧插件适配，不写入产物。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
-
-    # status：该模型字段用于承载对应契约中的结构化数据。
-    status: StepStatus
-    # output：该模型字段用于承载对应契约中的结构化数据。
-    output: dict[str, Any]
-    # failure：该模型字段用于承载对应契约中的结构化数据。
-    failure: StepFailure | None = None
-    # next_action：该模型字段用于承载对应契约中的结构化数据。
-    next_action: str | None = None
-    # audit：该模型字段用于承载对应契约中的结构化数据。
+    outcome: StepOutcome
     audit: StepAudit
+
+    @property
+    def output(self) -> dict[str, Any]:
+        return self.outcome.output
+
+    @property
+    def status(self) -> str:
+        value = self.outcome.assessment.outcome
+        if value == "not_applicable":
+            return "skipped"
+        if value == "inconclusive":
+            return "failed" if self.failure else "manual"
+        return "passed" if value == "passed" else "failed"
+
+    @property
+    def failure(self) -> StepFailure | None:
+        error = self.outcome.execution.error
+        return (
+            StepFailure(
+                code=error.code, reason=error.message, recoverable=error.retryable
+            )
+            if error
+            else None
+        )
+
 
 __all__ = [
     "AgentRequest",
