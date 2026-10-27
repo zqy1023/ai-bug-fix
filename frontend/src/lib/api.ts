@@ -164,6 +164,8 @@ export const api = {
         }),
       },
     ),
+  setTaskPolicy: (runId: string, taskId: string, overrides: Record<string, unknown>) =>
+    request('/runs/' + encode(runId) + '/tasks/' + encode(taskId) + '/policy', { method: 'PUT', body: JSON.stringify({ overrides }) }),
   startRun: (payload: Partial<RunParameters>) =>
     request<{ run_id: string; status: string }>('/runs', {
       method: 'POST',

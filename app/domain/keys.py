@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 _VOLATILE = re.compile(
@@ -69,3 +70,8 @@ def repair_branch(
     if fingerprint:
         carrier_name = f"{carrier_name}-{safe_name(fingerprint)[:8]}"
     return f"{prefix}/{branch_segment(biztype)}/{carrier_name}"
+
+
+def utc_now() -> str:
+    """返回带时区的 ISO 时间戳，用于步骤记录。"""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")

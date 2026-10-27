@@ -256,7 +256,12 @@ class RecordStore:
         record = self.load(run_id, "finalize_execution", task_id)
         if record is None:
             raise StepFailed("任务子图退出但缺少终态步骤记录")
-        from app.workflow.steps.finalize_execution.node import refresh_completed_report
+        try:
+            from app.workflow.steps.report.finalize_execution.node import refresh_completed_report
+        except ModuleNotFoundError as error:
+            if error.name != "app.workflow.steps.finalize_execution":
+                raise
+            from app.workflow.steps.finalize_execution.node import refresh_completed_report
         refresh_completed_report(self, run_id, task_id)
         self._update_lifecycle(run_id, task_id, record)
         if str(record.output.get("delivery_status") or "").upper() == "BLOCKED":

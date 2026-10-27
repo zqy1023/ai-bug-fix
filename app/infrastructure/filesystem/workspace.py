@@ -311,6 +311,12 @@ class WorkspaceManager:
             restored += 1
         if not restored:
             raise WorkspaceError("快照没有可恢复的 carrier 目录")
+        for name in ("common", "framework", "gathers_base", "gather_providers"):
+            source = baseline / name
+            if source.is_dir():
+                if (root / name).exists():
+                    cls._force_remove(root / name)
+                shutil.copytree(source, root / name, symlinks=False)
 
     @classmethod
     def _sanitize_shared_tree(cls, root: Path) -> None:

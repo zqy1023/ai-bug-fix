@@ -8,6 +8,12 @@ from typing_extensions import TypedDict
 
 
 class LocateState(TypedDict, total=False):
+    agent_policy: dict[str, Any]
+    analysis_checks: dict[str, Any]
+    fault_origin: str
+    repair_goal: str
+    preserved_rules: list[str]
+    acceptance_criteria: list[str]
     """定位节点输入及其结构化结论、调用审计。"""
 
     # run_id：该模型字段用于承载对应契约中的结构化数据。

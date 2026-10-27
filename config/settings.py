@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +35,9 @@ def env_bool(name: str, default: bool = False) -> bool:
     运行配置里所有布尔开关都走这一个口径：各写各的解析时，写成 ``1`` 会被
     静默当成关闭（工作区回收、自动推送的方向都与意图相反且无任何提示）。
     """
+    # Settings must remain import-time constants. Environment lookup belongs to
+    # app.infrastructure.config after .env has been loaded.
+    import os
     return parse_bool(os.getenv(name), default)
 
 
@@ -50,6 +52,8 @@ class Settings:
     source_mirror_dir_name: str = "source-repo"
     # git_fetch_timeout_seconds：已有镜像拉取与检出操作的超时秒数。
     git_fetch_timeout_seconds: int = 300
+    # git_clone_timeout_seconds：首次克隆远端镜像的总超时秒数。
+    git_clone_timeout_seconds: int = 1800
     # default_service_name：默认日志服务名。
     default_service_name: str = "gather.py.track"
     # default_log_limit：默认日志条数上限。
@@ -81,9 +85,9 @@ class Settings:
     # workbench_host：工作台服务监听地址。
     workbench_host: str = "0.0.0.0"
     # workbench_allow_insecure：未配置 WORKBENCH_API_TOKEN 时是否允许绑定非回环地址。
-    # 读取环境变量 WORKBENCH_ALLOW_INSECURE（1/true 视为开启），默认 False；
-    # 未豁免时 server.py 启动会把监听地址回落为 127.0.0.1。
-    workbench_allow_insecure: bool = env_bool("WORKBENCH_ALLOW_INSECURE")
+    # 运行时由 app.infrastructure.config 读取 WORKBENCH_ALLOW_INSECURE；
+    # Settings 只提供默认值，避免在 .env 加载前固化环境结果。
+    workbench_allow_insecure: bool = False
     # workbench_api_port：工作台服务监听端口。
     workbench_api_port: int = 8000
     # workbench_cors_origins：允许跨域访问的来源。
@@ -127,6 +131,12 @@ class Settings:
     repair_branch_prefix: str = "ai-bug-tasks"
     # default_git_push：是否默认推送。
     default_git_push: bool = False
+    # git_committer_name：修复分支默认提交者名称。
+    git_committer_name: str = "ai-bug-fixer"
+    # git_committer_email：修复分支默认提交者邮箱。
+    git_committer_email: str = "ai-bug-fixer@localhost"
+    # proxy_manager_address：真实请求回归代理地址；空值表示未配置。
+    proxy_manager_address: str = ""
     # default_review_mode：默认审查模式。
     default_review_mode: str = "agent"
     # default_ignore_errors：默认忽略错误清单。

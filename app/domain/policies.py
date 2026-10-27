@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 from pathlib import Path
 
@@ -10,6 +11,7 @@ class ServiceRegistryError(ValueError):
     """服务注册配置无法读取或校验。"""
 
 
+@functools.lru_cache(maxsize=1)
 def registered_services() -> frozenset[str]:
     """读取并校验 ``config/services/*.json`` 服务登记。"""
     directory = Path(__file__).resolve().parents[2] / "config" / "services"

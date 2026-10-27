@@ -1,3 +1,5 @@
+import type { AgentPolicy } from './workflow.generated';
+export type { AgentPolicy } from './workflow.generated';
 import type { ExecutionResult, Assessment, ActionAvailability, DeliveryView } from './workflow.generated';
 export type { ExecutionResult, Assessment, ActionAvailability, DeliveryView } from './workflow.generated';
 
@@ -11,6 +13,7 @@ export type BusinessResult =
   | 'SKIPPED' | 'DELIVERED' | 'SUCCESS' | 'FAILED' | null;
 
 export interface RunParameters {
+  agent_policy: AgentPolicy;
   log_hours: number;
   log_limit: number;
   review_mode: 'agent' | 'human';
@@ -20,6 +23,22 @@ export interface RunParameters {
 export interface RunConfig {
   defaults: RunParameters;
   limits: { max_log_hours: number; max_attempts: number };
+  models: {
+    analysis: ModelOption[];
+    repair: ModelOption[];
+    review: ModelOption[];
+  };
+  model_catalog?: ModelOption[];
+}
+
+export interface ModelOption {
+  key: string;
+  model_id: string;
+  label: string;
+  roles: Array<'analysis' | 'repair' | 'review'>;
+  available: boolean;
+  reason?: string | null;
+  is_default?: boolean;
 }
 
 export interface DashboardSummary {
@@ -124,6 +143,7 @@ export interface TaskSummary {
 }
 
 export interface TaskDetailResponse {
+  policy?: { values: AgentPolicy; sources: Record<string, string>; frozen: boolean };
   read_only?: boolean;
   actions?: { retry: ActionAvailability };
   delivery?: DeliveryView;

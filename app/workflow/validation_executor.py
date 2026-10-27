@@ -110,7 +110,7 @@ def independent_verify(
         normalized_log.get("error") or normalized_log.get("raw_error") or ""
     )
     from app.agents.review.tools.verify_issue.replay_model import request_numbers
-    from app.agents.review.tools.verify_issue.replay_runner import run_replay
+    from app.agents.review.tools.verify_issue.replay_runner import REPLAY_TEMPLATE_ID, run_replay
     from app.agents.review.tools.verify_issue.semantic_compare import ReplayOutcome, compare
 
     if not (carrier and req_data and request_numbers(req_data)):
@@ -346,6 +346,7 @@ def independent_verify(
         "replay_input_mode": "live" if not response_data else "recorded",
         "replay_comparison": comparison.details,
         "replay_baseline_output": baseline_result.output,
+        "template_id": REPLAY_TEMPLATE_ID,
         "replay_output": fixed_result.output,
         "replay_full_output": True,
         "replay_baseline_stdout": getattr(baseline_result, "stdout", ""),

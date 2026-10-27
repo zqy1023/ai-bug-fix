@@ -325,9 +325,12 @@ class GitBranchDelivery:
             outside_carrier = self._outside_carrier(
                 delivery_project, str(state.get("carrier", "")), relative_files
             )
-            if outside_carrier:
+            from app.agents.policy import carrier_write_paths
+            approved = carrier_write_paths(source_root, str(state.get("carrier", "")), state.get("agent_policy"))
+            denied = {item for item in outside_carrier if not any((source_root / item).resolve().is_relative_to(path) for path in approved)}
+            if denied:
                 raise DeliveryError(
-                    f"禁止提交目标 carrier 之外的文件: {sorted(outside_carrier)[0]}"
+                    f"禁止提交策略授权范围之外的文件: {sorted(denied)[0]}"
                 )
 
             # 先切到明确基准再建分支，然后才复制文件。

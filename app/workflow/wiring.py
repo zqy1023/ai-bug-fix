@@ -503,7 +503,7 @@ def resume_task_approval(
     if not any(task.interrupts for task in snapshot.tasks):
         raise StepFailed("该任务检查点没有待恢复的审批")
     if snapshot.values.get("repair_slot_claimed"):
-        from app.workflow.steps.claim_repair_slot.node import renew_claim
+        from app.workflow.steps.access.claim_repair_slot.node import renew_claim
 
         renew_claim(store.root, run_id=run_id, task_id=task_id)
     result = invoke_task(graph, Command(resume=payload), checkpoint_config)

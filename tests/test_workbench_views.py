@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from app.infrastructure.records.store import RecordStore
 from app.application.audit import StepRecord
-from app.workflow.contracts import Assessment, ExecutionResult, Handoff, StepOutcome, TaskSnapshot
+from app.workflow.contracts import Assessment, ExecutionResult, Handoff, StepOutcome, TaskSnapshot, WORKFLOW_VERSION
 from workbench import api
 from workbench.view_models import delivery_view, run_actions, task_retry_action
 
@@ -50,7 +50,7 @@ class WorkbenchViewTests(unittest.TestCase):
             root = store.run_dir("run")
             root.mkdir(parents=True, exist_ok=True)
             metadata = root / "run.json"
-            metadata.write_text(json.dumps({"workflow_version": 7}), encoding="utf-8")
+            metadata.write_text(json.dumps({"workflow_version": WORKFLOW_VERSION}), encoding="utf-8")
             output = {"candidate_id": "complete-candidate", "commit": "complete-commit", "repair_branch": "fix"}
             handoff = Handoff(step="prepare_delivery", state=TaskSnapshot.from_graph({"run_id": "run", "task_id": "task"}),
                               outcome=StepOutcome(execution=ExecutionResult(status="succeeded"),
@@ -86,7 +86,7 @@ class WorkbenchViewTests(unittest.TestCase):
             store = RecordStore(Path(directory))
             root = store.run_dir("run")
             root.mkdir(parents=True, exist_ok=True)
-            (root / "run.json").write_text(json.dumps({"workflow_version": 7}), encoding="utf-8")
+            (root / "run.json").write_text(json.dumps({"workflow_version": WORKFLOW_VERSION}), encoding="utf-8")
             store.save("run", StepRecord(name="request_approval", title="人工审批", status="waiting"), "task")
             app = FastAPI()
             app.include_router(api.router)

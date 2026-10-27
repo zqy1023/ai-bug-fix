@@ -12,7 +12,7 @@ from pydantic import Field
 from app.application.plans import ChangePlan
 from app.workflow.contracts import AcceptanceContract, BaselineReproduction
 from app.workflow.spec import FrozenModel
-from app.workflow.steps.prepare_evidence.models import EvidenceOutput
+from app.workflow.steps.context.prepare_evidence.models import EvidenceOutput
 
 
 class RepairInput(FrozenModel):

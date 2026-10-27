@@ -8,6 +8,7 @@ from typing_extensions import TypedDict
 
 
 class ReviewState(TypedDict, total=False):
+    agent_policy: dict[str, Any]
     """审查子图自己的状态。"""
 
     # run_id：该模型字段用于承载对应契约中的结构化数据。

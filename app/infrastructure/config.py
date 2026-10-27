@@ -41,12 +41,8 @@ class ClaudeConfig:
     base_url: str
     # model：默认模型标识。
     model: str
-    # default_haiku_model：快速任务模型标识。
-    default_haiku_model: str
-    # default_opus_model：复杂任务模型标识。
-    default_opus_model: str
-    # default_sonnet_model：标准任务模型标识。
-    default_sonnet_model: str
+    # models：可选模型声明；实际可用性仍以 provider /v1/models 探测为准。
+    models: tuple[str, ...] = ()
 
     def as_env(self) -> dict[str, str]:
         """返回 SDK 所需的非空环境变量。"""
@@ -54,9 +50,7 @@ class ClaudeConfig:
             "ANTHROPIC_AUTH_TOKEN": self.auth_token,
             "ANTHROPIC_BASE_URL": self.base_url,
             "ANTHROPIC_MODEL": self.model,
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL": self.default_haiku_model,
-            "ANTHROPIC_DEFAULT_OPUS_MODEL": self.default_opus_model,
-            "ANTHROPIC_DEFAULT_SONNET_MODEL": self.default_sonnet_model,
+            "ANTHROPIC_MODELS": ",".join(self.models),
         }
         return {key: value for key, value in values.items() if value}
 
@@ -144,16 +138,16 @@ class RuntimeConfig:
     # claude：模型网关配置。
     claude: ClaudeConfig
     # workspace_gc_interval_seconds：服务运行期间定时回收间隔。
-    workspace_gc_interval_seconds: int = 3600
+    workspace_gc_interval_seconds: int = settings.workspace_gc_interval_seconds
     # 首次克隆单独限时，避免大仓库反复在 fetch 的短超时内重下。
-    git_clone_timeout_seconds: int = 1800
+    git_clone_timeout_seconds: int = settings.git_clone_timeout_seconds
     # git_committer_name：修复分支提交者名；容器内没有全局 git 身份，缺省会提交失败。
-    git_committer_name: str = "ai-bug-fixer"
+    git_committer_name: str = settings.git_committer_name
     # git_committer_email：修复分支提交者邮箱。
-    git_committer_email: str = "ai-bug-fixer@localhost"
+    git_committer_email: str = settings.git_committer_email
     # proxy_manager_address：run_regression 真实请求回归所需的本地代理地址；
     # 未配置时该步骤按业务规则直接失败，不写入半生效的回归环境。
-    proxy_manager_address: str = ""
+    proxy_manager_address: str = settings.proxy_manager_address
 
     @property
     def workspace_root(self) -> Path:
@@ -283,8 +277,7 @@ def load_config() -> RuntimeConfig:
         ),
         workbench_host=os.getenv("WORKBENCH_BIND_HOST", settings.workbench_host).strip()
         or settings.workbench_host,
-        # 必须在 load_dotenv 之后读：settings 的默认值在 import 期就固化了，
-        # .env 里的 WORKBENCH_ALLOW_INSECURE 在本地根本不生效，容器里却生效。
+        # 在 load_dotenv 之后读取，保证 .env 与进程环境使用同一优先级规则。
         workbench_allow_insecure=env_bool(
             "WORKBENCH_ALLOW_INSECURE", settings.workbench_allow_insecure
         ),
@@ -309,7 +302,15 @@ def load_config() -> RuntimeConfig:
         or settings.default_git_remote,
         git_username=raw_git_username,
         git_password=raw_git_password,
-        git_clone_timeout_seconds=max(30, int(os.getenv("AI_REPAIR_GIT_CLONE_TIMEOUT_SECONDS", "1800"))),
+        git_clone_timeout_seconds=max(
+            30,
+            int(
+                os.getenv(
+                    "AI_REPAIR_GIT_CLONE_TIMEOUT_SECONDS",
+                    str(settings.git_clone_timeout_seconds),
+                )
+            ),
+        ),
         git_fetch_timeout_seconds=max(
             1,
             int(
@@ -345,17 +346,23 @@ def load_config() -> RuntimeConfig:
         workspace_gc_interval_seconds=max(1, int(os.getenv(
             "AI_REPAIR_WORKSPACE_GC_INTERVAL_SECONDS", str(settings.workspace_gc_interval_seconds),
         ))),
-        # 提交者身份与代理地址按需覆盖；缺失时使用上面的安全默认值/空值。
-        git_committer_name=os.getenv("GIT_COMMITTER_NAME", "").strip() or "ai-bug-fixer",
-        git_committer_email=os.getenv("GIT_COMMITTER_EMAIL", "").strip() or "ai-bug-fixer@localhost",
-        proxy_manager_address=os.getenv("PROXY_MANAGER_ADDRESS", "").strip(),
+        # 提交者身份与代理地址统一遵循：进程环境 > .env > Settings 默认值。
+        git_committer_name=os.getenv("GIT_COMMITTER_NAME", settings.git_committer_name).strip()
+        or settings.git_committer_name,
+        git_committer_email=os.getenv("GIT_COMMITTER_EMAIL", settings.git_committer_email).strip()
+        or settings.git_committer_email,
+        proxy_manager_address=os.getenv(
+            "PROXY_MANAGER_ADDRESS", settings.proxy_manager_address
+        ).strip(),
         claude=ClaudeConfig(
             auth_token=os.getenv("ANTHROPIC_AUTH_TOKEN", ""),
             base_url=os.getenv("ANTHROPIC_BASE_URL", ""),
             model=os.getenv("ANTHROPIC_MODEL", ""),
-            default_haiku_model=os.getenv("ANTHROPIC_DEFAULT_HAIKU_MODEL", ""),
-            default_opus_model=os.getenv("ANTHROPIC_DEFAULT_OPUS_MODEL", ""),
-            default_sonnet_model=os.getenv("ANTHROPIC_DEFAULT_SONNET_MODEL", ""),
+            models=tuple(
+                item.strip()
+                for item in os.getenv("ANTHROPIC_MODELS", "").split(",")
+                if item.strip()
+            ),
         ),
     )
 

@@ -1,7 +1,6 @@
 import type { StepRecord } from '../../lib/types';
 import { JsonViewer } from '../../components/JsonViewer';
 import { ReviewResult } from './ReviewResult';
-import { ValidationResult } from './ValidationResult';
 import styles from './StepOutcome.module.css';
 
 type ObjectValue = Record<string, unknown>;
@@ -17,9 +16,7 @@ const descriptions: Record<string, string> = {
   review_agent: '内部执行范围、语法和业务验证，按三个维度综合判定修复效果。',
   prepare_delivery: '提交业务修改与本轮任务概要，记录分支与提交。',
   request_approval: '审阅本地修复候选；批准后才正式推送修复分支。',
-  define_acceptance: '修改前固定验收断言，并绑定原始问题和完整基线。',
-  reproduce_baseline: '只运行未修改代码，确认原始异常能够复现。',
-  prepare_analysis: '生成分析报告，交付完成后统一收尾。',
+  generate_report: '生成任务报告，汇总分析、修复、审查和验证结论。',
   publish_delivery: '将人工批准的同一提交正式交付，按配置推送。',
   finalize_execution: '汇总任务结果、停止原因和后续处理要求。',
   plan_validation: '固定本次验证的覆盖范围、原始响应可用性与验收断言。',
@@ -45,9 +42,6 @@ export function outcomeText(step: StepRecord): string {
 }
 
 export function StepOutcome({ step }: { step: StepRecord }) {
-  if (step.name === 'decide_validation') return <ValidationResult step={step} />;
-  // 审查内部验证步骤同样用统一结论渲染，缺失数据时给出明确的不可用态。
-  if (step.name === 'plan_validation' || step.name === 'summarize_validation') return <ValidationResult step={step} />;
   if (step.name === 'review_agent') return <ReviewResult step={step} />;
   const output = object(step.output);
   const entries = Object.entries(output).filter(([key, value]) => key in labels && value !== '' && value !== null
