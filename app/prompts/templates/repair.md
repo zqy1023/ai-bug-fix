@@ -3,6 +3,8 @@
 
 ## 任务范围
 
+缺少原始 response 或基线标记为 missing_response 时，继续根据原始报错、定位证据和源码修复；只在 analysis 中注明业务回归未验证，不因此停止修改，也不声称业务验证通过。
+
 1. 每轮只修当前 `biztype + carrier` 的一种错误，优先只改一个业务文件。
 2. 任务身份取运行时上下文；小包采集 `service_name` 必须为 `gather.py.track`。
 3. 只读 `allowed_read_roots`，只写 `allowed_write_roots`。读权限不等于写权限。

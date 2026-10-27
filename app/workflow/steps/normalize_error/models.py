@@ -32,6 +32,7 @@ class NormalizedLog(FrozenModel):
     track_config: str = Field(default="")  # 可选，用于 response 重放验证
     # raw_error：字段说明见该模型文档与工作流契约。
     raw_error: str
+    message: str = ""
     # normalized_error：字段说明见该模型文档与工作流契约。
     normalized_error: str = Field(min_length=1)
 

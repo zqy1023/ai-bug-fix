@@ -95,6 +95,7 @@ export interface WorkflowReport {
   elapsed_ms?: number;
   tokens?: number;
   change_summary?: string;
+  root_cause?: string;
   completed_steps?: string[];
   legacy_report?: boolean;
 }

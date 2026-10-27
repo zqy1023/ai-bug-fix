@@ -141,6 +141,7 @@ def reproduce(ctx: Any, data: ReproductionInput) -> BaselineReproduction:
     return BaselineReproduction(
         problem_id=contract.problem_id,
         baseline_id=contract.baseline_id,
+        reason_code="missing_response" if result.get("replay_input_mode") == "missing_response" else "",
         status="passed" if result.get("passed") is True else "unverified",
         retryable=result.get("retryable") is True
         or result.get("replay_verdict") == "environment",

@@ -84,8 +84,12 @@ def cancelled(state: WorkflowState) -> bool:
 
 
 def route_baseline(state: WorkflowState) -> str:
+    from app.workflow.validation import missing_response_only
+
     if cancelled(state):
         return FINALIZE
+    if missing_response_only(state):
+        return CLAIM
     if state.get("last_result") == "passed":
         return CLAIM
     counts = (state.get("validation_recovery_counts") or {}).get(

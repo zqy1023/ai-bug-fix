@@ -102,6 +102,7 @@ def _normalize(record: Any, index: int) -> dict[str, Any]:
         response=response,
         track_config=track_config,
         raw_error=raw_error,
+        message=str(record.get("message") or ""),
         normalized_error=normalized,
     ).model_dump()
 

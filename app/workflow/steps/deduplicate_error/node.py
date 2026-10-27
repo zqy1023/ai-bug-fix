@@ -101,7 +101,7 @@ def consume(
             },
         }
         # 保留可选 response/track_config，供 verify_issue 执行真实重放。
-        for optional in ("response", "track_config"):
+        for optional in ("response", "track_config", "message"):
             if optional in record and record.get(optional):
                 grouped[key]["problem"][optional] = record[optional]
         return "new"

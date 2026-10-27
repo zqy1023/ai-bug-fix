@@ -86,6 +86,12 @@ def fingerprint(value: Any) -> str:
     ).hexdigest()
 
 
+def missing_response_only(state: dict[str, Any]) -> bool:
+    """录制正文缺失只限制业务重放，不阻断代码修复和审查。"""
+    baseline = state.get("baseline_reproduction") or {}
+    return baseline.get("status") == "unverified" and baseline.get("reason_code") == "missing_response"
+
+
 def make_plan(state: dict[str, Any]) -> dict[str, Any]:
     from pathlib import Path
 
@@ -112,7 +118,7 @@ def make_plan(state: dict[str, Any]) -> dict[str, Any]:
     contract = validate_acceptance(state)
     reproduction = state.get("baseline_reproduction") or {}
     if (
-        reproduction.get("status") != "passed"
+        (reproduction.get("status") != "passed" and not missing_response_only(state))
         or reproduction.get("problem_id") != contract.problem_id
         or reproduction.get("baseline_id") != contract.baseline_id
     ):
@@ -361,8 +367,16 @@ def decide(state: dict[str, Any]) -> dict[str, Any]:
             target, reason = "review_agent", "需要取得当前补丁的三维代码审查结论"
         elif review.get("code_verdict") == "FAIL":
             action, target, reason = "repair", "repair_agent", str(review.get("summary") or "代码审查确认修复存在缺陷")
-        elif checked.passed:
+        elif checked.passed or (
+            missing_response_only(state)
+            and review.get("code_verdict") == "PASS"
+            and all((review.get("dimensions") or {}).get(key, {}).get("status") == "passed" for key in ("syntax", "scope"))
+            and (review.get("dimensions") or {}).get("business", {}).get("status") == "unverified"
+            and all(item.get("status") != "failed" for item in dimensions.values())
+        ):
             action, reason = "deliver", "修复后代码审查通过，交付修复分支后进入人工复核"
+            if missing_response_only(state):
+                reason = "代码审查通过；缺少原始 response，业务回归未验证，交付后由人工复核"
         else:
             reason = str(review.get("summary") or "审查证据不足或存在待判断事项，不能确认修复成功")
     elif any(item.get("status") == "failed" for item in dimensions.values()):
@@ -377,7 +391,9 @@ def decide(state: dict[str, Any]) -> dict[str, Any]:
             for key, item in dimensions.items()
             if item.get("status") != "passed"
         ]
-        if pending:
+        if missing_response_only(state):
+            action, reason = "deliver", "缺少原始 response，业务回归未验证，交付修复分支后进入人工复核"
+        elif pending:
             key, item = pending[0]
             target = (
                 "review_agent"

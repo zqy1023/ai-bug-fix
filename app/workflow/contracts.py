@@ -240,6 +240,7 @@ class Handoff(ContractModel):
 
 class BaselineReproduction(ContractModel):
     retryable: bool = False
+    reason_code: str = ""
     problem_id: str
     baseline_id: str
     status: Literal["passed", "failed", "unverified"]

@@ -134,7 +134,7 @@ def independent_verify(
             "mode": "response_replay",
             "replay_input_mode": "missing_response",
             "replay_verdict": "missing_evidence",
-            "reason": "没有录制响应，未发起不稳定的在线请求；需补充原始响应或人工确认，语法检查不能代替业务验证",
+            "reason": "缺少原始 response，无法完成录制样本的业务回归验证；继续代码修复、审查和交付，业务验证保留为未验证",
         }
     from app.agents.review.tools.verify_issue.replay_runner import resolve_interpreter
 

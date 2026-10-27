@@ -240,7 +240,9 @@ def _analysis_only_task(state: WorkflowState) -> bool:
     # 基线未建立时不再把任务记为验证受阻：只交付定位分析和建议验收标准，
     # 由人工完成修复与验证。
     baseline = state.get("baseline_reproduction") or {}
-    if str(baseline.get("status") or "").lower() == "unverified":
+    from app.workflow.validation import missing_response_only
+
+    if str(baseline.get("status") or "").lower() == "unverified" and not missing_response_only(state):
         return True
     if legacy_analysis_required(state):
         return True

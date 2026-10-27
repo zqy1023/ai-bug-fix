@@ -192,6 +192,7 @@ class ESLogAdapter:
             "service_name": service_name,
             "biztype": biztype,
             **parsed,
+            "message": message,
         }
 
     @staticmethod

@@ -26,6 +26,19 @@ def _hit(hit_id: str, message: str) -> dict[str, Any]:
     }
 
 
+def test_full_message_survives_normalization_and_deduplication():
+    from app.workflow.steps.normalize_error.node import _normalize
+    from app.workflow.steps.deduplicate_error.node import write_groups
+
+    message = _message(tail="error: boom\nTraceback: complete original detail")
+    parsed = ESLogAdapter.parse_hit(_hit("full-message", message))
+    assert parsed["message"] == message
+    normalized = _normalize(parsed, 0)
+    assert normalized["message"] == message
+    grouped = write_groups(iter([normalized]), ())
+    assert grouped["records"][0]["problem"]["message"] == message
+
+
 class _FakeHits:
     """模拟 elasticsearch scan 返回的可关闭迭代器。"""
 

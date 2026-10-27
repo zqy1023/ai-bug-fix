@@ -83,12 +83,14 @@ export function TaskWorkspace() {
   return (
     <div className={`page ${styles.root}`}>
       <TaskHeader detail={task.data} />
-      <div className={styles.utility}><span>先查看修复结论，需要时再展开执行证据。</span><div><Button size="small" onClick={() => setQueueOpen(true)}>同批次任务</Button><Button size="small" onClick={() => setMetadataOpen(true)}>任务信息</Button><Dropdown trigger={['click']} menu={{items:[{key:'flow',label:'编排状态机'},{key:'dossier',label:'完整案卷'}],onClick:({key})=>{const next=new URLSearchParams(searchParams);next.set('view',key);setSearchParams(next,{replace:true});}}}><Button size="small">更多记录</Button></Dropdown></div></div>
+      <div className={styles.commandBar}>
+        <TaskOperations detail={task.data} onInspect={() => selectStep(defaultStep(steps))} onRefresh={() => void task.refetch()} refreshing={task.isFetching} />
+        <div className={styles.utility}><Button onClick={() => setQueueOpen(true)}>同批次任务</Button><Button onClick={() => setMetadataOpen(true)}>任务信息</Button><Dropdown trigger={['click']} menu={{items:[{key:'flow',label:'编排状态机'},{key:'dossier',label:'完整案卷'}],onClick:({key})=>{const next=new URLSearchParams(searchParams);next.set('view',key);setSearchParams(next,{replace:true});}}}><Button>更多记录</Button></Dropdown></div>
+      </div>
       {task.data.read_only && <Alert type="info" showIcon message="历史工作流只读" description="可以查看全部记录和证据；如需重新执行，请创建新批次。" />}
-      <div className={styles.workspace}>
+      <div className={`${styles.workspace} ${executionOpen ? styles.executionLayout : ''}`}>
       <WorkbenchDrawer title="同批次任务" open={queueOpen} onClose={() => setQueueOpen(false)} width="min(400px, 100vw)" styles={{body:{padding:0}}}><TaskSiblings runId={runId} taskId={taskId} /></WorkbenchDrawer>
       <div className={styles.center}>
-      {executionOpen && <ExecutionNav steps={steps} selected={selected} stages={task.data.stages} onSelect={selectStep} />}
       <Tabs
         className={styles.tabs}
         activeKey={tab}
@@ -112,6 +114,8 @@ export function TaskWorkspace() {
         </header>
         {approvalRecoveryFailed && <Alert type="error" showIcon message="审批恢复失败" description={task.data.run_error?.message || '请在交付审批页重新提交决策'} />}
 
+        <div className={styles.executionGrid}>
+        <aside className={styles.stageRail}><h3>执行阶段</h3><ExecutionNav vertical steps={steps} selected={selected} stages={task.data.stages} onSelect={selectStep} /></aside>
         {steps.length ? (
           <div className={styles.execBody}>
             {detail.isError && <Alert type="error" showIcon message="步骤详情暂时无法加载" description={detail.error instanceof Error ? detail.error.message : '请刷新重试'} action={<Button size="small" onClick={() => void detail.refetch()}>重试加载</Button>} />}
@@ -141,13 +145,14 @@ export function TaskWorkspace() {
           />
         )}
 
+        </div>
         <footer className={styles.foot}>
           <span>已记录 {steps.length} 个步骤{steps.length ? ` · ${executedCount} 个已开始或已结束` : ''}</span>
           {terminalStep && <span>业务停止点：{terminalStep}</span>}
         </footer>
       </section>}
-      <TaskOperations detail={task.data} onInspect={() => selectStep(defaultStep(steps))} onRefresh={() => void task.refetch()} refreshing={task.isFetching} />
       </div>
+      {!executionOpen && <div className={styles.sideContext}><TaskMetadata detail={task.data} /></div>}
       <WorkbenchDrawer title="任务信息与最近记录" open={metadataOpen} onClose={() => setMetadataOpen(false)} width="min(440px, 100vw)"><TaskMetadata detail={task.data} /></WorkbenchDrawer>
       </div>
     </div>

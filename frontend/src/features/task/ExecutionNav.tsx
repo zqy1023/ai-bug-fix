@@ -10,8 +10,9 @@ export interface ExecutionNavProps {
   readonly selected: string;
   readonly onSelect: (name: string) => void;
   readonly stages?: WorkflowStage[];
+  readonly vertical?: boolean;
 }
-export function ExecutionNav({ steps, selected, onSelect, stages }: ExecutionNavProps) {
+export function ExecutionNav({ steps, selected, onSelect, stages, vertical }: ExecutionNavProps) {
   const nav = useRef<HTMLElement>(null);
   useEffect(() => {
     const rail = nav.current;
@@ -25,7 +26,7 @@ export function ExecutionNav({ steps, selected, onSelect, stages }: ExecutionNav
     || FAILED_RESULTS.has(String(item.result || '').toUpperCase());
 
   return (
-    <nav ref={nav} className={styles.nav} aria-label="执行阶段">
+    <nav ref={nav} className={`${styles.nav} ${vertical ? styles.vertical : ''}`} aria-label="执行阶段">
       {(stages?.length ? stages : TASK_STAGES).map((stage, index) => {
         const records = stage.members
           .map((name) => byName.get(name))

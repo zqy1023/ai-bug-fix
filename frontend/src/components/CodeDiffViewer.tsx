@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type RefObject } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { Empty, Tag } from 'antd';
 import { CodeOutlined } from '@ant-design/icons';
 import styles from './CodeDiffViewer.module.css';
@@ -331,6 +331,7 @@ export function CodeDiffViewer({
   const activeRows = activeFile ? fileRows.get(activeFile.path) ?? [] : [];
   const oldScrollRef = useRef<HTMLDivElement>(null);
   const newScrollRef = useRef<HTMLDivElement>(null);
+  const touchedRef = useRef(false);
   const syncOldToNew = () => {
     const oldPane = oldScrollRef.current;
     const newPane = newScrollRef.current;
@@ -341,6 +342,42 @@ export function CodeDiffViewer({
     const newPane = newScrollRef.current;
     if (oldPane && newPane && oldPane.scrollTop !== newPane.scrollTop) oldPane.scrollTop = newPane.scrollTop;
   };
+
+  // 打开文件时直接定位到第一处修改并居中，两侧同步；无修改时保留顶部。
+  // 局部容器的高度可能晚于首帧才稳定（抽屉、标签页），用 ResizeObserver 重试；
+  // 用户一旦自己滚动就不再自动定位。
+  useLayoutEffect(() => {
+    touchedRef.current = false;
+    const index = activeRows.findIndex((row) => row.kind !== 'same');
+    const panes = [oldScrollRef.current, newScrollRef.current].filter((pane): pane is HTMLDivElement => Boolean(pane));
+    const center = () => {
+      if (touchedRef.current) return;
+      panes.forEach((pane) => {
+        const row = index < 0 ? undefined : pane.children[index] as HTMLElement | undefined;
+        if (!row) { pane.scrollTop = 0; return; }
+        // offsetTop 相对最近定位祖先，不一定是滚动容器；用视口坐标换算内容位置。
+        const rowTop = row.getBoundingClientRect().top - pane.getBoundingClientRect().top + pane.scrollTop;
+        pane.scrollTop = Math.max(0, rowTop - (pane.clientHeight - row.offsetHeight) / 2);
+      });
+    };
+    center();
+    const observer = new ResizeObserver(center);
+    const touch = () => { touchedRef.current = true; };
+    panes.forEach((pane) => {
+      observer.observe(pane);
+      pane.addEventListener('wheel', touch, { passive: true });
+      pane.addEventListener('pointerdown', touch);
+      pane.addEventListener('keydown', touch);
+    });
+    return () => {
+      observer.disconnect();
+      panes.forEach((pane) => {
+        pane.removeEventListener('wheel', touch);
+        pane.removeEventListener('pointerdown', touch);
+        pane.removeEventListener('keydown', touch);
+      });
+    };
+  }, [activeRows]);
 
   const select = (path: string) => {
     setInternalPath(path);

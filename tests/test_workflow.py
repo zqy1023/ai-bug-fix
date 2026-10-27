@@ -291,6 +291,37 @@ class WorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "BASELINE_NOT_REPRODUCED"):
             make_plan(self.state)
 
+    def test_missing_response_continues_repair_and_delivery_without_fake_verification(self):
+        from app.workflow.definitions import route_baseline
+        from app.workflow.routes import _analysis_only_task
+
+        self.state["problem"].pop("response")
+        contract = define_acceptance(AcceptanceInput(
+            problem=self.state["problem"], baseline_dir=str(self.baseline),
+            baseline_manifest=self.state["baseline_manifest"], diagnosis=self.state["locate"],
+        ))
+        self.state["acceptance_contract"] = contract.model_dump(mode="json")
+        self.state["baseline_reproduction"] = {
+            "status": "unverified", "reason_code": "missing_response",
+            "problem_id": contract.problem_id, "baseline_id": contract.baseline_id,
+        }
+        self.assertEqual(route_baseline(self.state), "claim_repair_slot")
+        self.assertFalse(_analysis_only_task(self.state))
+        plan = make_plan(self.state)
+        self.state["validation_plan"] = plan
+        self.state["verify_result"] = {"status": "unverified", "reason": "缺少 response", "evidence_version": plan["evidence_version"]}
+        self.state["regression_result"] = {"status": "not_executed", "evidence_version": plan["evidence_version"]}
+        self.assertEqual(summarize(self.state)["dimensions"]["issue"]["status"], "unverified")
+        self.assertEqual(decide(self.state)["action"], "deliver")
+        self.state["review_mode"] = "agent"
+        review = self.review_report()
+        review.update(verdict="MANUAL", passed=False, code_verdict="PASS")
+        review["dimensions"]["business"]["status"] = "unverified"
+        self.state["review"] = review
+        self.assertEqual(decide(self.state)["action"], "deliver")
+        self.state["regression_result"] = {"status": "failed", "failure_kind": "execution", "evidence_version": plan["evidence_version"]}
+        self.assertNotEqual(decide(self.state)["action"], "deliver")
+
     def test_human_mode_requires_validation_but_not_ai_review(self):
         self.assertEqual(decide(self.state)["action"], "deliver")
         self.state["regression_result"]["status"] = "not_configured"
@@ -385,7 +416,9 @@ class WorkflowTests(unittest.TestCase):
                     result.update(
                         last_result="manual",
                         baseline_reproduction={
+                            **state["baseline_reproduction"],
                             "status": "unverified",
+                            "reason_code": "missing_response" if baseline_failure == "missing_response" else "",
                             "reason": "没有录制响应，未发起不稳定的在线请求",
                         },
                         terminal_status="",
@@ -470,6 +503,13 @@ class WorkflowTests(unittest.TestCase):
         self.assertLess(
             trace.index("prepare_analysis"), trace.index("prepare_delivery")
         )
+        self.assertEqual(trace.count("finalize_execution"), 1)
+
+    def test_missing_response_graph_runs_repair_review_and_delivery(self):
+        trace = self.graph_trace(baseline_failure="missing_response")
+        for step in ("claim_repair_slot", "repair_agent", "review_agent", "prepare_delivery"):
+            self.assertIn(step, trace)
+        self.assertNotIn("prepare_analysis", trace)
         self.assertEqual(trace.count("finalize_execution"), 1)
 
     def test_reproduce_baseline_unverified_is_not_blocked(self):

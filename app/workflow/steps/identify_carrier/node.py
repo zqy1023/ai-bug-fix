@@ -63,6 +63,8 @@ def run(ctx: StepContext, data: IdentifyCarrierInput) -> IdentifyCarrierOutput:
             for key in ("service_name", "biztype", "carrier", "req", "error")
         }
         # 透传可选字段用于 response 重放验证
+        if "message" in source_problem:
+            problem["message"] = source_problem["message"]
         if "response" in source_problem:
             problem["response"] = source_problem["response"]
         if "track_config" in source_problem:

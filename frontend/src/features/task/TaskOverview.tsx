@@ -1,9 +1,10 @@
 import { WorkbenchDrawer } from '../../components/ui/WorkbenchDrawer';
+import { OriginalException } from './OriginalException';
 import { STOP_KIND_LABELS, stepStopKind, toneForStep, type StepTone as Tone } from '../../lib/stepPresentation';
 import { useMemo, useState } from 'react';
 import { App, Button,  Empty, Skeleton, Tag, Tooltip } from 'antd';
 import {
-  ArrowRightOutlined, CopyOutlined, DiffOutlined, GitlabOutlined, WarningOutlined,
+  ArrowRightOutlined, CopyOutlined, DiffOutlined, GitlabOutlined,
 } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import type { StepRecord, TaskDetailResponse } from '../../lib/types';
@@ -92,10 +93,6 @@ function strings(value: unknown): string[] {
   return Array.isArray(value)
     ? value.map((item) => String(item ?? '').trim()).filter((item) => item && !placeholders.has(item.toLowerCase()))
     : [];
-}
-
-function rawString(value: unknown): string {
-  return typeof value === 'string' ? value : '';
 }
 
 function shortText(value: string, maxChars = 220): string {
@@ -278,7 +275,6 @@ export function TaskOverview({
   const task = detail.task;
   const steps = task.steps ?? [];
   const problem = dict(task.problem);
-  const originalError = rawString(problem.error).trim() || rawString(problem.raw_error).trim();
   const report = dict(task.report);
   const result = String(task.result || getText(report, 'result', 'status') || '').toUpperCase();
   const lifecycle = dict(task.lifecycle);
@@ -458,7 +454,6 @@ export function TaskOverview({
     : terminalReason || (
       [...steps].reverse().find((step) => step.status === 'failed')?.error?.message || ''
     );
-  const originalErrorPreview = originalError.split(/\r?\n/)[0] || originalError;
   const terminalRecord = terminalStep ? stepOf(steps, terminalStep) : undefined;
 
   // 差异产物可能挂在变更核验步骤上，也可能挂在审查步骤上，两处都要认。
@@ -661,18 +656,7 @@ export function TaskOverview({
           )}
           extra={category && !['carrier', 'unknown', 'none', 'null', '-'].includes(category.toLowerCase()) ? <Tag>{category}</Tag> : undefined}
         >
-          {originalError && (
-            <div className={styles.pad}>
-              <details className={styles.foldWarn}>
-                <summary>
-                  <WarningOutlined /> 原始 Error
-                  <span className={styles.origPreview}>{originalErrorPreview}</span>
-                  <span className={styles.origExpand}>查看全文</span>
-                </summary>
-                <pre className={styles.origText}>{originalError}</pre>
-              </details>
-            </div>
-          )}
+          <div className={styles.pad}><OriginalException problem={problem} /></div>
           {rootCause || analysisSummary || facts.length > 0 || evidence.length > 0 || evidenceGaps.length > 0 ? (
             <div className={styles.pad}>
               <div className={styles.rootCause}>

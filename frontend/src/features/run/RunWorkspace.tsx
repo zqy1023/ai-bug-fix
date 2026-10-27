@@ -31,6 +31,25 @@ const PHASE_STATUS_TEXT: Record<string, string> = {
   failed: '执行失败', running: '正在执行', succeeded: '已完成', skipped: '未执行', pending: '等待执行', waiting: '等待处理',
 };
 
+const PROGRESS_TITLE: Record<string, string> = {
+  sync_source_repo: '源码下载进度',
+  normalize_error: '日志扫描进度',
+};
+
+/** 各节点上报的计数键不同，只展示当前节点实际写入的指标。 */
+function progressDetail(step: string, counts: Record<string, number>): string {
+  if (step === 'sync_source_repo') {
+    return `已用 ${counts.elapsed_seconds ?? 0} 秒 / 超时 ${counts.timeout_seconds ?? '未记录'} 秒`;
+  }
+  if (step !== 'normalize_error') return '';
+  const items: Array<[string, number | undefined]> = [
+    ['ES 命中', counts.es_hits], ['可解析', counts.parsed], ['已规范化', counts.normalized_count],
+    ['去重后', counts.unique_count], ['忽略', counts.ignored_count], ['无法解析', counts.unparseable],
+  ];
+  return items.filter((item) => item[1] !== undefined)
+    .map(([label, value]) => `${label} ${value}`).join(' · ');
+}
+
 export function RunWorkspace() {
   const { runId = '' } = useParams();
   const navigate = useNavigate();
@@ -99,6 +118,10 @@ export function RunWorkspace() {
   };
   const views = [{ key: 'tasks', label: `问题任务 · ${runView.task_count}` }, { key: 'overview', label: '执行案卷' }, { key: 'checkpoints', label: '恢复记录' }, { key: 'audit', label: '操作审计' }];
   const attentionTasks = runView.failed_tasks + runView.blocked_tasks + runView.manual_tasks;
+  const progress = runView.run_lifecycle?.progress;
+  const activeStep = runView.run_lifecycle?.current_step || runView.phase || '';
+  // 进度只属于当前执行节点；节点切换后旧进度立即收起，避免一直停在源码下载。
+  const liveProgress = !runView.terminal && progress?.step === activeStep ? progress : undefined;
   const phaseToneClass: Record<string, string> = {
     succeeded: styles.phaseSucceeded, failed: styles.phaseFailed, running: styles.phaseRunning,
     waiting: styles.phaseWaiting, skipped: styles.phasePending, pending: styles.phasePending,
@@ -129,9 +152,9 @@ export function RunWorkspace() {
 
       {tab === 'tasks' && runView.run_error?.message && <Banner tone="warn" extra={<Button size="small" onClick={() => changeTab('overview')}>查看执行案卷</Button>}>{readableRunFailure(runView.run_error.message, runView.run_error.terminal_step === 'sync_source_repo' || model.focus === 'source')}</Banner>}
 
-      {!runView.terminal && runView.run_lifecycle?.progress?.step === 'sync_source_repo' && (
-        <Banner tone="info" extra={`已用 ${runView.run_lifecycle.progress.counts.elapsed_seconds ?? 0} 秒 / 超时 ${runView.run_lifecycle.progress.counts.timeout_seconds ?? '未记录'} 秒`}>
-          源码下载进度 · {runView.run_lifecycle.progress.message}
+      {liveProgress && (
+        <Banner tone="info" extra={progressDetail(liveProgress.step, liveProgress.counts || {}) || undefined}>
+          {PROGRESS_TITLE[liveProgress.step] || '执行进度'} · {liveProgress.message}
         </Banner>
       )}
 
