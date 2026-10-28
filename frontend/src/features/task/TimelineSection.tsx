@@ -22,7 +22,7 @@ import { TASK_STAGES } from './stages';
 import { Section as TaskSection, ToneTag } from '../../components/section/Section';
 import styles from './TaskSections.module.css';
 
-const MODEL_STEPS = new Set(['locate_agent', 'repair_agent', 'review_agent']);
+const MODEL_STEPS = new Set(['locate_agent', 'repair_agent', 'review_agent', 'unified_fixer_agent']);
 const TONE_CLASS: Record<StepTone, string> = {
   success: 'dotOk', danger: 'dotBad', running: 'dotRun', waiting: 'dotWait', manual: 'dotWait',
   neutral: 'dotOk', pending: 'dotPend', skipped: 'dotPend', cancelled: 'dotMute',
@@ -40,7 +40,7 @@ const TONE_TAG: Record<StepTone, { tone: 'ok' | 'bad' | 'warn' | 'info' | 'muted
 };
 
 /**
- * 执行时间线：公开阶段 + 审查内部工具在同一条线上，
+ * 执行时间线：展示主工作流阶段，历史审查工具保留在归档中，
  * 失败节点在顶部做成快跳入口，点击任意节点打开步骤抽屉。
  */
 export function TimelineSection({ detail, view, runActive, approvalPending, onOpenStep }: {
@@ -57,12 +57,14 @@ export function TimelineSection({ detail, view, runActive, approvalPending, onOp
   const internalTools = useMemo(() => {
     const reviewStep = [...steps].reverse().find((step) => step.name === 'review_agent');
     const substeps = reviewSubsteps(reviewStep?.output);
-    return substeps.filter((item) => (REVIEW_TOOL_NAMES as readonly string[]).includes(item.name)
-      && !steps.some((step) => step.name === item.name));
+    return [...new Map([...substeps, ...steps]
+      .filter((item) => (REVIEW_TOOL_NAMES as readonly string[]).includes(item.name))
+      .map((item) => [item.name, item])).values()];
   }, [steps]);
 
   const rows = useMemo(() => {
-    const main = [...steps].filter((step) => step.status !== 'pending' || step.name === view.activeStep);
+    const main = steps.filter((step) => !(REVIEW_TOOL_NAMES as readonly string[]).includes(step.name)
+      && (step.status !== 'pending' || step.name === view.activeStep));
     const internal = internalTools.map((item) => item.name);
     // 按工作流阶段顺序排；没有时间戳或同一阶段的记录保持原始相对次序，
     // 避免“等待中”的节点因为缺时间被排到最前。
@@ -98,7 +100,7 @@ export function TimelineSection({ detail, view, runActive, approvalPending, onOp
     >
       {rows.internal.length > 0 && (
         <div className={styles.pad}>
-          <div className={styles.hint}>审查内部工具（{rows.internal.length}）记录在审查归档中，点击对应阶段可在抽屉里核对。</div>
+          <div className={styles.hint}>历史审查内部记录（{rows.internal.length}）记录在审查归档中，点击对应阶段可在抽屉里核对。</div>
         </div>
       )}
       {failed && (
@@ -186,6 +188,7 @@ function StepDrawer({
     queryKey: queryKeys.step(runId, taskId, step.name),
     queryFn: () => api.step(runId, taskId, step.name),
     enabled: Boolean(runId && taskId && step.name),
+    refetchInterval: 5000,
   });
   const current: StepRecord = detail.data?.step.name === step.name ? detail.data.step : step;
 

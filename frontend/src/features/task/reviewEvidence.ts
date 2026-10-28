@@ -1,16 +1,18 @@
 import type { ArtifactRef, Assessment, BusinessResult, ExecutionResult, StepRecord, StepStatus } from '../../lib/types';
 
-/**
- * 审查 Agent 的内部工具。
- * 名单对应后端 app/workflow/definitions.py 的 REVIEW_EVIDENCE_STEPS；
- * 这些工具不是任务子图节点，正常情况下不出现在 steps.json 主表里。
- */
+/** 历史审查脚本名称，仅用于归档兼容；新流程由审查 Agent 独立检查。 */
 export const REVIEW_TOOL_NAMES = [
   'check_changes', 'syntax_regression', 'plan_validation',
   'verify_issue', 'run_regression', 'summarize_validation',
 ] as const;
 
 export type ReviewToolName = (typeof REVIEW_TOOL_NAMES)[number];
+
+/** 主工作流记录不包含历史审查内部脚本。 */
+export function workflowSteps(steps: StepRecord[]): StepRecord[] {
+  return steps.filter(step => !(REVIEW_TOOL_NAMES as readonly string[]).includes(step.name));
+}
+
 
 /** review_agent 输出里的内部工具摘要；字段与后端 ReviewView.substeps 对应。 */
 export interface ReviewSubstep {

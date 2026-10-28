@@ -23,11 +23,7 @@ export interface RunParameters {
 export interface RunConfig {
   defaults: RunParameters;
   limits: { max_log_hours: number; max_attempts: number };
-  models: {
-    analysis: ModelOption[];
-    repair: ModelOption[];
-    review: ModelOption[];
-  };
+  models: Record<string, ModelOption[]>;
   model_catalog?: ModelOption[];
 }
 
@@ -35,7 +31,7 @@ export interface ModelOption {
   key: string;
   model_id: string;
   label: string;
-  roles: Array<'analysis' | 'repair' | 'review'>;
+  roles: Array<string>;
   available: boolean;
   reason?: string | null;
   is_default?: boolean;
@@ -213,12 +209,16 @@ export interface CheckpointHistoryResponse {
 }
 
 export type ApprovalRetryTarget =
-  | 'locate_agent'
-  | 'repair_agent'
+  | 'unified_fixer_agent'
   | 'review_agent'
-  | 'prepare_delivery';
+  | 'generate_report';
 
 export interface ApprovalItem {
+  problem?: Record<string, unknown>;
+  business_recovery?: {
+    status: 'verified' | 'unverified' | 'failed' | 'not_executed';
+    reason: string;
+  };
   delivery?: DeliveryView;
   actions?: { approve: ActionAvailability; reject: ActionAvailability };
   approval_id: string;

@@ -1,7 +1,13 @@
-"""服务入口。
+"""系统主入口文件与统一 Web 服务。
 
-    python server.py
+启动方式：
+    python server.py                      # 执行一次，推进到审批或终态
+    python server.py --web                # 同时启动后端 API
+    python server.py --frontend           # 同时启动前后端
+    python server.py --serve-only         # 仅启动 API
 """
+
+from __future__ import annotations
 
 import logging
 import os
@@ -15,26 +21,21 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from yq_common.fastapi_utils.fastapi_utils import FastAPIUtils
 
-from app.infrastructure.config import load_config
-from app.infrastructure.filesystem.workspace_gc import start_workspace_collector
-from workbench.api import SERVICE_VERSION, router
+from infrastructure.llm.config import load_config
+from infrastructure.workspace.workspace_gc import start_workspace_collector
+from config.nacos import nacos_get
+from config.settings import settings
+from server.routes import SERVICE_VERSION, router
 
 logger = logging.getLogger(__name__)
 config = load_config()
 
-PROJECT_NAME = "py.ai.bug.fixer"
+PROJECT_NAME = settings.project_name
 
-_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+_LOOPBACK_HOSTS = set(settings.loopback_hosts)
 
 
 def _ensure_writable_home() -> None:
-    """HOME 必须可写，否则 Claude Agent SDK 在运行中途以怪异错误失败。
-
-    SDK 要在 ``~/.claude`` 下落会话与配置。容器里 compose 用
-    ``APP_UID/APP_GID`` 覆盖运行用户，而镜像内 ``/home/app`` 的属主是固定的
-    10001；一旦改了 ``APP_UID``，$HOME 就不可写。启动期自检一次，不可写就把
-    HOME 落到运行目录下的 home——运行目录本来就要求对 APP_UID 可写。
-    """
     home = Path(os.path.expanduser("~"))
     if home.is_dir() and os.access(home, os.W_OK):
         return
@@ -52,36 +53,12 @@ def _ensure_writable_home() -> None:
 
 
 def _prepare_log_dir(project_name: str) -> None:
-    """把 yq_common 的日志目录先建好。
-
-    该库在 Linux 下把日志固定写到 ``/var/log/yqtrack/<project>``，并且用裸
-    ``except`` 吞掉 ``os.makedirs`` 的 PermissionError，随后 RotatingFileHandler
-    因目录不存在抛 FileNotFoundError——异常在 import 期逃出，进程直接退出，
-    容器陷入无限重启。建不出来时不阻断启动，由下面的兜底分支接管。
-    """
     if platform.system().lower() in {"windows", "darwin"}:
         return
     try:
-        (Path("/var/log/yqtrack") / project_name).mkdir(parents=True, exist_ok=True)
+        (Path(settings.linux_log_base_dir) / project_name).mkdir(parents=True, exist_ok=True)
     except OSError as error:
-        logger.warning("无法创建 /var/log/yqtrack/%s：%s", project_name, error)
-
-
-def _build_app() -> FastAPI:
-    """构建 FastAPI 应用。
-
-    框架的 setup_fastapi_server 会顺带初始化文件日志；日志目录不可写时它会
-    直接崩在 import 期，容器因此永远起不来。这里保留框架的标准装配，只在它
-    失败时降级为最小可用应用（日志走 stderr）：宁可少一个日志文件，也不能
-    让整个工作台不可用。
-    """
-    _ensure_writable_home()
-    _prepare_log_dir(PROJECT_NAME)
-    try:
-        return FastAPIUtils.setup_fastapi_server(PROJECT_NAME)
-    except Exception:
-        logger.exception("框架初始化失败，降级为最小应用")
-        return _minimal_app()
+        logger.warning("无法创建 %s/%s：%s", settings.linux_log_base_dir, project_name, error)
 
 
 def _minimal_app() -> FastAPI:
@@ -91,7 +68,7 @@ def _minimal_app() -> FastAPI:
     app = FastAPI()
 
     @app.exception_handler(Exception)
-    async def _unhandled(request, exc):  # noqa: ANN001 - 框架回调签名
+    async def _unhandled(request, exc):  # noqa: ANN001
         logger.exception("请求处理异常 url:%s", getattr(request, "url", ""))
         return JSONResponse(
             status_code=500, content={"message": "Internal Server Error"}
@@ -100,14 +77,18 @@ def _minimal_app() -> FastAPI:
     return app
 
 
-def _secure_bind_host(host: str) -> str:
-    """未配置 WORKBENCH_API_TOKEN 时收敛绑定地址，避免未鉴权 API 暴露到非回环网络。
+def _build_app() -> FastAPI:
+    _ensure_writable_home()
+    _prepare_log_dir(PROJECT_NAME)
+    try:
+        return FastAPIUtils.setup_fastapi_server(PROJECT_NAME)
+    except Exception:
+        logger.exception("框架初始化失败，降级为最小应用")
+        return _minimal_app()
 
-    _authorize 在未配置 token 时 fail-open（本地开发依赖该行为），因此启动阶段
-    必须兜底：token 缺失且监听地址不是回环地址时，回落为 127.0.0.1 并打印显著
-    warning；仅当 WORKBENCH_ALLOW_INSECURE 显式豁免时保留原地址。
-    """
-    token = os.getenv("WORKBENCH_API_TOKEN", "").strip()
+
+def _secure_bind_host(host: str) -> str:
+    token = nacos_get("WORKBENCH_API_TOKEN", "").strip()
     if token or host in _LOOPBACK_HOSTS or config.workbench_allow_insecure:
         return host
     warning = (
@@ -119,9 +100,9 @@ def _secure_bind_host(host: str) -> str:
     logger.warning("%s", warning)
     return "127.0.0.1"
 
+
 @asynccontextmanager
 async def workspace_lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """接入框架已有 lifespan；启动回收、定时回收及退出停止共用生命周期。"""
     previous = _original_lifespan(app)
     async with previous:
         collector = start_workspace_collector(config) if config.workspace_gc_enabled else None
@@ -131,7 +112,6 @@ async def workspace_lifespan(app: FastAPI) -> AsyncIterator[None]:
             if collector is not None:
                 stop, thread = collector
                 stop.set()
-                # 删除工作区可能耗时；不在事件循环中等待磁盘操作。
                 import asyncio
                 await asyncio.to_thread(thread.join, 5)
 
@@ -151,10 +131,93 @@ app.add_middleware(
 )
 app.include_router(router)
 
+
+def _arguments(argv=None):
+    import argparse
+
+    parser = argparse.ArgumentParser(description="执行一次修复审批流，可同时启动工作台")
+    parser.add_argument("--web", action="store_true", help="同时启动后端 API，供人工审批")
+    parser.add_argument("--frontend", action="store_true", help="同时启动前端和后端")
+    parser.add_argument("--serve-only", action="store_true", help="仅启动服务，不新建流程")
+    parser.add_argument("--run-id", help="本次新运行的唯一 ID，不用于恢复已有运行")
+    args = parser.parse_args(argv)
+    if args.serve_only and args.run_id:
+        parser.error("--serve-only 不能与 --run-id 同时使用")
+    return args
+
+
+def _start_once(run_id=None):
+    from workflow.engine.graph import prepare_run
+    from server.lifecycle import _run_workflow_background_v1
+
+    resolved, _, _ = prepare_run(run_id, overrides={}, queued=True)
+    print(f"run_id={resolved}，流程将执行到人工审批或终态", flush=True)
+    _run_workflow_background_v1(resolved, {})
+    return resolved
+
+
+def main(argv=None) -> int:
+    import shutil
+    import subprocess
+    import threading
+
+    args = _arguments(argv)
+    frontend = None
+    worker = None
+    startup_failed = threading.Event()
+    if args.frontend:
+        node = shutil.which("node")
+        vite = Path(__file__).resolve().parent / "frontend/node_modules/vite/bin/vite.js"
+        if not node or not vite.is_file():
+            raise RuntimeError("前端依赖未安装，请先在 frontend 执行 npm install")
+        frontend_env = dict(os.environ)
+        api_host = config.workbench_host
+        if api_host in {"0.0.0.0", "::"}:
+            api_host = "127.0.0.1"
+        frontend_env["WORKBENCH_API_ORIGIN"] = f"http://{api_host}:{config.workbench_api_port}"
+        frontend = subprocess.Popen(
+            [node, str(vite), "--host", "127.0.0.1"], cwd=str(vite.parents[3]), env=frontend_env,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+    try:
+        if args.web or args.frontend or args.serve_only:
+            server = uvicorn.Server(uvicorn.Config(
+                app=app, host=_secure_bind_host(config.workbench_host),
+                port=config.workbench_api_port, access_log=True,
+            ))
+            if not args.serve_only:
+                def launch():
+                    import time
+                    while not server.started:
+                        if server.should_exit:
+                            return
+                        time.sleep(0.1)
+                    try:
+                        if frontend is not None and frontend.poll() is not None:
+                            raise RuntimeError("前端启动失败，未启动新流程")
+                        _start_once(args.run_id)
+                    except Exception:
+                        startup_failed.set()
+                        logger.exception("启动审批流失败")
+                        server.should_exit = True
+                worker = threading.Thread(target=launch, name="startup-workflow", daemon=True)
+                worker.start()
+            server.run()
+            return 1 if startup_failed.is_set() else 0
+        resolved = _start_once(args.run_id)
+        from infrastructure.storage.lifecycle import LifecycleStore
+        status = LifecycleStore(config.runtime_dir).read_run(resolved).get("status")
+        print(f"run_id={resolved} status={status}；待审批流程可用 --serve-only 打开工作台继续", flush=True)
+        return 1 if status == "failed" else 0
+    finally:
+        if frontend is not None:
+            frontend.terminate()
+            try:
+                frontend.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                frontend.kill()
+                frontend.wait()
+
+
 if __name__ == "__main__":
-    uvicorn.run(
-        app=app,
-        host=_secure_bind_host(config.workbench_host),
-        port=config.workbench_api_port,
-        access_log=True,
-    )
+    raise SystemExit(main())

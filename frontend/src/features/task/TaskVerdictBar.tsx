@@ -1,6 +1,5 @@
 import { useMemo } from 'react';
 import { AlertOutlined, ArrowRightOutlined, RobotOutlined, DiffOutlined, GitlabOutlined, SafetyCertificateOutlined, ExperimentOutlined } from '@ant-design/icons';
-import { StatusBadge } from '../../components/StatusBadge';
 import { formatDuration } from '../../lib/format';
 import { buildHeroTiles, type HeroTileKey, type VerdictTone, type TaskView } from './taskVerdict';
 import styles from './TaskVerdictBar.module.css';
@@ -44,14 +43,14 @@ export function TaskVerdictBar({
         <h2 className={styles.title}>{view.active
           ? view.verdict.badge === '执行中' && String(view.result) === 'RETRYING' ? '任务重试中' : verdict.headline
           : verdict.headline}</h2>
-        <StatusBadge kind="task" value={view.active ? 'RUNNING' : view.paused ? 'PAUSED' : view.recoveryFailed ? 'FAILED' : view.delivery.finalApprovalPending ? 'WAITING_APPROVAL' : view.result} />
+
         <span className={styles.meta}>
           <span>耗时 <b>{formatDuration(view.durationMs)}</b></span>
           <span>步骤 <b>{view.stepCount} 条</b></span>
           {view.attempt > 0 && <span>尝试 <b>第 {view.attempt} 次</b></span>}
         </span>
       </div>
-      <p className={styles.desc}>{runningLine}</p>
+      {(view.active || view.paused) && <p className={styles.desc}>{runningLine}</p>}
 
       {verdict.stopReason && (
         <div className={`${styles.notice} ${view.recoveryFailed || view.result === 'FAILED' || view.result === 'FAIL' || view.verification.qualityFailed ? styles.noticeBad : styles.noticeMuted}`} role="status">
@@ -77,7 +76,7 @@ export function TaskVerdictBar({
           >
             <span className={styles.tileLabel}>{TILE_ICON[tile.key]}{tile.label}</span>
             <span className={`${styles.tileValue} ${toneClass(tile.tone)}`}>{tile.value}</span>
-            <span className={styles.tileSub}>{tile.sub}</span>
+
           </button>
         ))}
       </div>

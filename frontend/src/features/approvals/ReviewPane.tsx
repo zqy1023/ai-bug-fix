@@ -1,16 +1,18 @@
+import { OriginalException } from '../../components/OriginalException';
 import { WorkbenchDrawer } from '../../components/ui/WorkbenchDrawer';
 import { workbenchQueries } from '../../lib/workbenchQueries';
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Button,  Empty, Skeleton, Tag } from 'antd';
+import { App, Button, Empty, Skeleton, Tag } from 'antd';
 import {
-  CheckCircleOutlined, CodeOutlined, DiffOutlined, WarningOutlined,
+  AlertOutlined, CheckCircleOutlined, CodeOutlined, DiffOutlined, WarningOutlined,
 } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import type { ApprovalItem, StepRecord } from '../../lib/types';
 import { api } from '../../lib/api';
 import { queryKeys } from '../../lib/queryKeys';
 import { formatTime } from '../../lib/format';
+import { useProblemLog } from '../../hooks/useProblemLog';
 import { CodeDiffViewer } from '../../components/CodeDiffViewer';
 import { VerificationChecklist } from '../../components/VerificationChecklist';
 import { KeyValueList, Panel } from '../../components/ui';
@@ -56,14 +58,6 @@ function stringField(source: Dict, ...keys: string[]): string {
   return '';
 }
 
-function rawStringField(source: Dict, ...keys: string[]): string {
-  for (const key of keys) {
-    const value = source[key];
-    if (typeof value === 'string' && value.length > 0) return value;
-  }
-  return '';
-}
-
 function shortText(value: string, maxChars = 200): string {
   const normalized = value.replace(/\s+/g, ' ').trim();
   return normalized.length > maxChars
@@ -77,6 +71,7 @@ function stepOf(steps: StepRecord[], name: string): StepRecord | undefined {
 
 /** 审阅面板：将原始异常、确定性文件差异和审批方案放在同一处核验。 */
 export function ReviewPane({ item }: { item: ApprovalItem }) {
+  const { message } = App.useApp();
   const navigate = useNavigate();
   const [diffOpen, setDiffOpen] = useState(false);
   const [selectedDiffPath, setSelectedDiffPath] = useState('');
@@ -121,10 +116,9 @@ export function ReviewPane({ item }: { item: ApprovalItem }) {
 
   const diffPayload = diffQuery.data?.content;
 
-  const problem = asObject(task?.problem);
-  // identify_carrier preserves the error field from the normalized ES record as the original log text.
-  const originalError = rawStringField(problem, 'error', 'raw_error');
-  const serviceName = stringField(problem, 'service_name');
+  const log = useProblemLog(taskDetail, item.problem, item.run_id);
+  const problem = asObject(task?.problem ?? item.problem);
+  const serviceName = stringField(problem, 'service_name') || text(item.problem?.service_name);
   const totalAdded = changedFiles.reduce((sum, file) => sum + (Number(file.added) || 0), 0);
   const totalRemoved = changedFiles.reduce((sum, file) => sum + (Number(file.removed) || 0), 0);
   const fileProblems = changedFiles.flatMap((file) => {
@@ -216,34 +210,22 @@ export function ReviewPane({ item }: { item: ApprovalItem }) {
         </div>
       </Panel>
       <Panel
-        title={<span className={styles.checkMain}><WarningOutlined /> 原始 Error</span>}
-        extra="原文保留，不用根因摘要替代"
+        title={<span className={styles.checkMain}><AlertOutlined /> 原始异常日志</span>}
+        extra={(
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            {serviceName && <code>{serviceName}</code>}
+            {log.message && (
+              <Button
+                size="small"
+                onClick={() => void navigator.clipboard.writeText(log.message).then(() => message.success('已复制完整日志')).catch(() => {})}
+              >
+                复制日志
+              </Button>
+            )}
+          </span>
+        )}
       >
-        {taskQuery.isLoading ? (
-          <Skeleton active title={false} paragraph={{ rows: 2 }} />
-        ) : originalError ? (
-          <details className={styles.origFold}>
-            <summary>
-              <span>展开原始日志</span>
-              <code>{shortText(originalError.split(/\r?\n/)[0] || originalError, 160)}</code>
-            </summary>
-            <pre className={styles.origText}>{originalError}</pre>
-          </details>
-        ) : (
-          <p className={styles.inlineEmpty}>
-            未记录原始 error 字段。
-            <Button
-              type="link"
-              size="small"
-              onClick={() => navigate(`/runs/${encodeURIComponent(item.run_id)}/tasks/${encodeURIComponent(item.task_id)}`)}
-            >
-              查看任务详情
-            </Button>
-          </p>
-        )}
-        {taskQuery.isError && (
-          <div className={styles.inlineError}>任务详情读取失败，无法展示原始日志。</div>
-        )}
+        <OriginalException message={log.message} loading={taskQuery.isLoading || log.loading} failed={taskQuery.isError || log.failed} />
       </Panel>
 
       <Panel title="方案说明">

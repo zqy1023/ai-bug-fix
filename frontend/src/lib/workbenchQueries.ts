@@ -10,14 +10,15 @@ export const workbenchQueries = {
   task: (runId: string, taskId: string) => queryOptions({
     queryKey: queryKeys.task(runId, taskId), queryFn: () => api.task(runId, taskId),
     enabled: Boolean(runId && taskId),
-    refetchInterval: (query) => query.state.data?.run_terminal && !query.state.data.worker_active ? false : 5000,
+    refetchInterval: 5000,
   }),
   run: (runId: string) => queryOptions({
     queryKey: queryKeys.run(runId), queryFn: () => api.run(runId), enabled: Boolean(runId),
-    refetchInterval: (query) => query.state.data?.terminal ? false : 5000,
+    refetchInterval: 5000,
   }),
   step: (runId: string, taskId: string, name: string) => queryOptions({
     queryKey: queryKeys.step(runId, taskId, name), queryFn: () => api.step(runId, taskId, name),
+    refetchInterval: 5000,
     enabled: Boolean(runId && taskId && name),
   }),
 };

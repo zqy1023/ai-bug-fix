@@ -5,10 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "prebuild": "node -e \"const fs=require('fs'),cp=require('child_process');if(!fs.existsSync('../app/workflow/frontend_contracts.py')){console.log('frontend_contracts: app/ unavailable, using committed workflow.generated.ts');process.exit(0)}const r=cp.spawnSync('python',['-m','app.workflow.frontend_contracts'],{cwd:'..',stdio:'inherit'});process.exit(r.status===0?0:1)\"",
-    "build": "tsc -b && vite build",
+    "prebuild": "node -e \"const fs=require('fs'),cp=require('child_process');if(!fs.existsSync('../workflow/engine/handoff.py')){console.log('frontend_contracts: workflow/ unavailable, using committed workflow.generated.ts');process.exit(0)}const r=cp.spawnSync('python',['-m','workflow.engine.handoff'],{cwd:'..',stdio:'inherit'});process.exit(r.status===0?0:1)\"",
+    "build": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json && vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "typecheck": "tsc -b",
+    "typecheck": "tsc --noEmit -p tsconfig.app.json",
     "test:e2e": "node tests/e2e/frontend_redesign.cjs"
   },
   "dependencies": {

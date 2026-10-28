@@ -1,4 +1,4 @@
-import type { ActionAvailability } from '../../lib/types';
+import type { StepDetailResponse, TaskDetailResponse, ActionAvailability } from '../../lib/types';
 import { useState } from 'react';
 import { App, Button, Checkbox, Modal } from 'antd';
 import { PlayCircleOutlined } from '@ant-design/icons';
@@ -27,6 +27,16 @@ export function StepActionBar({
   const mutation = useMutation({
     mutationFn: () => api.runStep(runId, taskId, stepName, risky ? confirmed : false, continueAfter),
     onSuccess: async () => {
+      const runningStep = (step: TaskDetailResponse['task']['steps'][number]) => ({
+        ...step, status: 'running' as const, execution: null, assessment: null,
+        result: null, error: null, finished_at: '', summary: '', output: {},
+      });
+      queryClient.setQueryData<StepDetailResponse>(queryKeys.step(runId, taskId, stepName),
+        (old) => old ? { ...old, step: runningStep(old.step) } : old);
+      queryClient.setQueryData<TaskDetailResponse>(queryKeys.task(runId, taskId),
+        (old) => old ? { ...old, task: { ...old.task, result: 'RUNNING',
+          steps: old.task.steps.map((step) => step.name === stepName ? runningStep(step) : step),
+        } } : old);
       message.success(`${stepName} 已开始执行${continueAfter ? '，完成后将继续后续流程' : ''}`);
       setOpen(false);
       setConfirmed(false);

@@ -28,3 +28,7 @@
 .more summary {cursor:pointer;}
 
 .card {position:sticky;bottom:0;z-index:15;padding:12px 20px;border:0;border-top:1px solid var(--wb-line);border-radius:0;margin-top:auto;background:var(--wb-surface);box-shadow:0 -3px 12px color-mix(in srgb,var(--wb-ink) 3%,transparent);}.card .head {gap:10px;}.card .head strong {font-size:11px;}.card .buttons {flex-wrap:wrap;}.card .buttons :global(.ant-btn){font-size:11px;height:30px;}.card .more {margin-top:8px;}@media(max-width:900px){.card{position:static;padding:14px;}}
+
+.card {position:static;z-index:auto;margin-top:4px;border:1px solid var(--wb-line);border-radius:10px;padding:18px 20px;box-shadow:none;}
+.card .head strong {font-size:13px;}
+.card .buttons :global(.ant-btn) {font-size:12px;height:32px;}

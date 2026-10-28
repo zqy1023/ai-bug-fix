@@ -2,7 +2,8 @@ import { AlertOutlined, BranchesOutlined, DiffOutlined, ExperimentOutlined, Safe
 import { Tag } from 'antd';
 import { formatTime } from '../../lib/format';
 import type { ApprovalItem } from '../../lib/types';
-import { Fold, ToneTag } from '../../components/section/Section';
+import { OriginalException } from '../../components/OriginalException';
+import { ToneTag } from '../../components/section/Section';
 import type { ApprovalView } from './useApprovalView';
 import styles from './ApprovalVerdictBar.module.css';
 
@@ -87,22 +88,7 @@ export function ApprovalVerdictBar({ item, view }: { item: ApprovalItem; view: A
           <span>原始异常日志</span>
           {view.serviceName && <code className={styles.exceptionService}>{view.serviceName}</code>}
         </div>
-        {view.loading ? (
-          <p className={styles.exceptionEmpty}>任务详情读取中…</p>
-        ) : view.originalMessage ? (
-          <>
-            <pre className={styles.exceptionFull}>{view.originalMessage}</pre>
-            {view.originalError && view.originalError !== view.originalMessage && (
-              <Fold summary="查看从日志中提取的 error 字段">
-                <pre className={styles.exceptionFull}>{view.originalError}</pre>
-              </Fold>
-            )}
-          </>
-        ) : view.failed ? (
-          <p className={styles.exceptionEmpty}>任务详情读取失败，无法显示原始日志。</p>
-        ) : (
-          <p className={styles.exceptionEmpty}>该任务没有记录原始日志 message；可在任务详情中核对完整日志。</p>
-        )}
+        <OriginalException message={view.originalMessage} loading={view.loading} failed={view.failed} />
       </div>
     </section>
   );

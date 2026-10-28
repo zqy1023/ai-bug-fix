@@ -1,7 +1,7 @@
 import type { StepRecord, TaskDetailResponse } from '../../lib/types';
 import { taskIsActive } from '../../lib/lifecycle';
 import { toneForStep } from '../../lib/stepPresentation';
-import { EVIDENCE_STATE_LABELS, type EvidenceState } from './reviewEvidence';
+import { EVIDENCE_STATE_LABELS, workflowSteps, type EvidenceState } from './reviewEvidence';
 import { STEP_LABELS } from './stages';
 
 export type Dict = Record<string, unknown>;
@@ -329,7 +329,8 @@ function verificationOf(evidence: EvidenceResolution): VerificationView {
 
 function changesOf(detail: TaskDetailResponse, evidence: EvidenceResolution): ChangeView {
   const steps = detail.task.steps ?? [];
-  const repair = dict(latestStep(steps, 'repair_agent')?.output);
+  const repairStep = latestStep(steps, 'unified_fixer_agent') ?? latestStep(steps, 'repair_agent');
+  const repair = dict(repairStep?.output);
   const gate = dict(evidence.checkStep?.output);
   const gateFiles = objects(gate.files).filter((file) => text(file.path) && text(file.status) !== 'truncated');
   const fileByPath = new Map<string, Dict>(gateFiles.map((file) => [text(file.path), file] as const));
@@ -486,7 +487,7 @@ export function buildTaskView(detail: TaskDetailResponse, evidence: EvidenceReso
     paused,
     recoveryFailed,
     attempt,
-    stepCount: steps.length,
+    stepCount: workflowSteps(steps).length,
     durationMs: Number(report.elapsed_ms ?? task.duration_ms) || undefined,
     terminalStep,
     activeStep,
@@ -496,8 +497,8 @@ export function buildTaskView(detail: TaskDetailResponse, evidence: EvidenceReso
     delivery,
     verification,
     review: reviewView,
-    locateStep: latestStep(steps, 'locate_agent'),
-    repairStep: latestStep(steps, 'repair_agent'),
+    locateStep: latestStep(steps, 'unified_fixer_agent') ?? latestStep(steps, 'locate_agent'),
+    repairStep: latestStep(steps, 'unified_fixer_agent') ?? latestStep(steps, 'repair_agent'),
     reviewStep: evidence.reviewStep,
     deliveryStep: delivery.step,
   };

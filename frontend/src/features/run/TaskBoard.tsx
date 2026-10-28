@@ -102,7 +102,7 @@ export const TaskBoard: FC<TaskBoardProps> = ({ runId, stages = [], onOpen }) =>
                 : task.terminal_reason || task.next_action || (approvalWaiting ? '等待人工审批' : '等待生成执行结论');
               return <tr key={task.task_id}>
                 <td>
-                  <button type="button" className={styles.name} onClick={() => onOpen(task)}>{task.carrier || '未识别运输商'}</button>
+                  <span className={styles.name}>{task.carrier || '未识别运输商'}</span>
                   <small className={styles.cellSmall}>{task.biztype || '未知业务类型'}</small>
                 </td>
                 <td><StatusBadge kind="task" value={status} /></td>

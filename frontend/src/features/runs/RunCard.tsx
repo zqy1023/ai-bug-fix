@@ -1,9 +1,11 @@
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { DownOutlined, RightOutlined, ArrowRightOutlined } from '@ant-design/icons';
 import type { RunSummary } from '../../lib/types';
-import { formatBatchTime, shortId } from '../../lib/format';
+import { formatBatchTime, formatDuration, formatTime, shortId } from '../../lib/format';
 import { workbenchQueries } from '../../lib/workbenchQueries';
 import { RunProgress } from '../../components/RunProgress';
+import { runActivity } from './runActivity';
 import styles from './RunCard.module.css';
 
 export interface RunCardProps {
@@ -22,12 +24,16 @@ const STATUS = {
 export function RunCard({ run, expanded, onToggle, onOpen }: RunCardProps) {
   const detail = useQuery({ ...workbenchQueries.run(run.run_id), enabled: expanded });
   const view = detail.data;
-  const latestStep = view?.steps?.at(-1);
-  const currentTask = !run.terminal && view?.tasks?.find((task) => task.task_id === view.run_lifecycle?.current_task_id);
-  const terminalMessage = view?.run_report?.terminal_reason || view?.run_error?.message || view?.run_lifecycle?.terminal_reason;
-  const latest = (run.terminal ? terminalMessage : view?.run_lifecycle?.progress?.message)
-    || terminalMessage || latestStep?.assessment?.summary || latestStep?.summary
-    || (run.waiting_tasks ? `${run.waiting_tasks} 个任务等待人工交付审批` : run.task_count === 0 ? '尚未派发问题任务，查看执行案卷了解当前进展' : `${run.task_count} 个任务的执行记录已同步`);
+  const activity = view ? runActivity(view) : undefined;
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (!expanded || !activity?.nodeRunning) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [expanded, activity?.nodeRunning, activity?.step?.started_at]);
+  const started = Date.parse(activity?.step?.started_at || '');
+  const elapsed = activity?.nodeRunning && Number.isFinite(started) ? Math.max(0, now - started) : activity?.step?.duration_ms;
   const [label, tone] = STATUS[run.status] || ['状态未知', 'neutral'];
   return <><tr className={`${styles.row}${expanded ? ` ${styles.selected}` : ''}`}>
     <td><div className={styles.identity}>
@@ -42,7 +48,24 @@ export function RunCard({ run, expanded, onToggle, onOpen }: RunCardProps) {
   </tr>{expanded && <tr className={styles.expandedRow}><td colSpan={6}>
     <div className={styles.latest} id={`run-latest-${run.run_id}`}>
       <span className={styles.latestLabel}>最近动作</span>
-      <span className={styles.latestText}>{detail.isLoading ? '正在读取批次最新记录…' : detail.isError ? '最新记录读取失败' : latest}{currentTask && <> · 当前任务 <code>{currentTask.task_id}</code></>}</span>
+      <div className={styles.activity} aria-live="polite" aria-label="当前执行进度">
+        {detail.isLoading ? <span>正在读取批次最新记录…</span> : detail.isError ? <span>最新记录读取失败</span> : activity && <>
+          <div className={styles.activityHead}>
+            <span className={activity.nodeRunning ? styles.live : styles.idle}>{activity.status}</span>
+            {activity.task && <strong>{activity.task.carrier || activity.task.task_id} · {activity.task.biztype || '问题任务'}</strong>}
+            <span className={styles.node}>{activity.nodeLabel}</span>
+            {elapsed != null && <span className={styles.activityMeta}>节点耗时 {formatDuration(elapsed)}</span>}
+          </div>
+          <p className={styles.activityMessage}>{activity.message}</p>
+          {activity.progressText && <p className={styles.activityMessage} aria-label="步骤执行进度">{activity.progressText}</p>}
+          <div className={styles.activityFoot}>
+            {activity.task && <code>{activity.task.task_id}</code>}
+            {activity.recorded > 0 && <span>本次已记录步骤：{activity.completed} / {activity.recorded} 已完成</span>}
+            {activity.step?.attempt && <span>第 {activity.step.attempt} 次尝试</span>}
+            {activity.updatedAt && <time>更新于 {formatTime(activity.updatedAt)}</time>}
+          </div>
+        </>}
+      </div>
       {detail.isError ? <button className={styles.open} onClick={() => void detail.refetch()}>重试</button> : <button type="button" className={styles.open} onClick={onOpen}>进入批次详情 <ArrowRightOutlined /></button>}
     </div>
   </td></tr>}</>;

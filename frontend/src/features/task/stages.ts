@@ -28,7 +28,7 @@ function deriveStepLabels(): Record<string, string> {
 
 export const STEP_LABELS: Record<string, string> = deriveStepLabels();
 
-export const AGENT_STEPS = new Set(['locate_agent', 'repair_agent', 'review_agent']);
+export const AGENT_STEPS = new Set(['locate_agent', 'repair_agent', 'review_agent', 'unified_fixer_agent']);
 
 export type VisibleStage = {
   stage: TaskStage;

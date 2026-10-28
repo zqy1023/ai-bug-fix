@@ -3,7 +3,8 @@ import { AlertOutlined, ArrowRightOutlined } from '@ant-design/icons';
 import { Button } from 'antd';
 import type { TaskDetailResponse } from '../../lib/types';
 import { dict, getText, objects, shortText, strings, stepSummary, type TaskView } from './taskVerdict';
-import { Fold, Section as TaskSection, SectionEmpty, ToneTag } from '../../components/section/Section';
+import { Fold, Section as TaskSection, ToneTag } from '../../components/section/Section';
+import { OriginalException } from '../../components/OriginalException';
 import { useProblemLog } from '../../hooks/useProblemLog';
 import styles from './TaskSections.module.css';
 
@@ -29,15 +30,14 @@ export function RootCauseSection({ detail, view, onOpenStep }: {
   return (
     <TaskSection
       title="根因分析"
-      subtitle="先看结论，证据按需展开"
       extra={category && !['carrier', 'unknown', 'none', 'null', '-'].includes(category.toLowerCase()) ? <ToneTag tone="info">{category}</ToneTag> : undefined}
     >
       <div className={styles.rootGrid}>
         <div className={styles.rootMain}>
-          {rootCause || summary || findingCount > 0 ? (
+          {(rootCause || summary || findingCount > 0) && !(findingCount === 0 && (rootCause || summary) === view.verdict.stopReason) ? (
             <>
               <p className={styles.rootCause}>{shortText(rootCause || summary || '尚未生成根因结论。', 400)}</p>
-              {(rootCause || summary) && (rootCause.length > 400 || summary !== rootCause || findingCount > 0) && (
+              {(rootCause || summary) && (rootCause.length > 400 || (Boolean(summary) && summary !== rootCause) || findingCount > 0) && (
                 <Fold summary="查看完整分析与证据" count={`${findingCount} 项`}>
                   {rootCause.length > 400 && (
                     <div className={styles.block}><label>完整根因</label><p>{rootCause}</p></div>
@@ -66,14 +66,11 @@ export function RootCauseSection({ detail, view, onOpenStep }: {
               )}
               <div className={styles.footRow}>
                 {scope && <ToneTag tone="muted">建议范围 · {SCOPE_LABELS[scope.toLowerCase()] || scope}</ToneTag>}
-                {step && <Button size="small" type="link" onClick={() => onOpenStep('locate_agent')}>查看定位步骤 <ArrowRightOutlined /></Button>}
+                {step && <Button size="small" type="link" onClick={() => onOpenStep(step.name)}>查看定位步骤 <ArrowRightOutlined /></Button>}
               </div>
             </>
           ) : (
-            <SectionEmpty
-              title={step ? '定位步骤已执行，但没有产出根因结论' : '定位步骤未执行'}
-              body={step ? '该步骤的输入输出中没有 root_cause 或 summary 字段。' : '本任务没有进入定位阶段，因此没有定位记录。'}
-            />
+            <p className={styles.paragraph}>尚未生成根因结论，请先核对下方原始异常与执行节点。</p>
           )}
         </div>
 
@@ -92,24 +89,13 @@ function ExceptionRows({ detail }: { detail: TaskDetailResponse }) {
   const log = useProblemLog(detail);
   const service = typeof problem.service_name === 'string' ? problem.service_name : '';
   const biztype = typeof problem.biztype === 'string' ? problem.biztype : '';
-  if (!log.message && !service) {
-    return <p className={styles.exceptionEmpty}>该任务没有保存原始异常信息。</p>;
-  }
   return (
     <>
+      <div className={styles.exceptionContext}>
       {service && <div className={styles.exceptionRow}><b>服务</b><code>{service}</code></div>}
       {biztype && <div className={styles.exceptionRow}><b>业务</b><span>{biztype}</span></div>}
-      {log.message && (
-        <div className={styles.exceptionRow}>
-          <b>日志</b>
-          <pre className={styles.exceptionText}>{log.message}</pre>
-        </div>
-      )}
-      {log.extracted && log.extracted !== log.message && (
-        <Fold summary="从日志中提取的 error 字段" tone="warn">
-          <pre className={styles.exceptionText}>{log.extracted}</pre>
-        </Fold>
-      )}
+      </div>
+      <OriginalException message={log.message} loading={log.loading} failed={log.failed} />
     </>
   );
 }

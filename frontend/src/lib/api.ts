@@ -151,7 +151,7 @@ export const api = {
     approvalId: string,
     decision: 'approve' | 'reject',
     reason: string,
-    retryTarget: ApprovalRetryTarget = 'repair_agent',
+    retryTarget: ApprovalRetryTarget = 'unified_fixer_agent',
   ) =>
     request<{ run_id: string; task_id: string; decision: string; status: string }>(
       '/approvals/' + encode(approvalId) + '/decision',

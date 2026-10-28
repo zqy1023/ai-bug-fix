@@ -84,7 +84,7 @@ export function useApprovalView(item: ApprovalItem): ApprovalView {
   const detail = taskQuery.data;
   const steps = detail?.task.steps ?? [];
   // 原始日志统一从共享 Hook 取：历史任务会回读 run 级去重产物。
-  const log = useProblemLog(detail);
+  const log = useProblemLog(detail, item.problem, item.run_id);
   const reviewStep = latestStep(steps, 'review_agent');
   const checkStep = latestStep(steps, 'check_changes');
   const payload = dict(reviewStep?.output?.payload ?? reviewStep?.output);
@@ -171,14 +171,14 @@ export function useApprovalView(item: ApprovalItem): ApprovalView {
       recoveryText: recovery ? RECOVERY_LABELS[recovery.status] ?? '未记录' : '未记录',
       recoveryTone,
       scopeText: item.scope === 'carrier' ? '运输商范围' : '项目 / 共享范围',
-      // 完整日志：本任务记录优先，历史任务回读归档；提取的 error 只作最后兜底。
-      originalMessage: log.message || log.extracted,
+      // 完整原始日志 message：只有真实完整的 message，严禁用提取出的 error 冒充
+      originalMessage: log.message,
       originalError: log.extracted,
-      serviceName: text(problem.service_name),
+      serviceName: text(problem.service_name) || text(item.problem?.service_name),
       diffArtifactPath: diffArtifact?.path ?? '',
       steps,
-      loading: taskQuery.isLoading,
-      failed: taskQuery.isError,
+      loading: taskQuery.isLoading || Boolean(log.loading),
+      failed: taskQuery.isError || Boolean(log.failed),
       recoveryFailure,
     } satisfies ApprovalView;
   }, [claim, detail, edits, gateEvidence, gateFilesRaw, item, log, payload, reviewStep, steps, taskQuery.isError, taskQuery.isLoading]);

@@ -14,9 +14,11 @@ import { latestStep, type EvidenceResolution } from './taskVerdict';
  * 先从 review_agent 输出读出内部工具清单，再按需取回归档的正式记录；
  * 取不到时明确区分“未执行”与“数据未回传”，不推断结论。
  */
-export function useTaskEvidence(detail: TaskDetailResponse): EvidenceResolution {
-  const steps = detail.task.steps ?? [];
+export function useTaskEvidence(detail?: TaskDetailResponse | null): EvidenceResolution {
+  const steps = detail?.task?.steps ?? [];
   const reviewStep = latestStep(steps, 'review_agent');
+  const runId = detail?.run_id ?? '';
+  const taskId = detail?.task?.task_id ?? '';
 
   const substeps = useMemo(() => reviewSubsteps(reviewStep?.output), [reviewStep?.output]);
   const substepByName = useMemo(
@@ -30,11 +32,11 @@ export function useTaskEvidence(detail: TaskDetailResponse): EvidenceResolution 
   }), [steps, substepByName]);
 
   const internal = useQuery({
-    queryKey: [...queryKeys.artifactContent(detail.run_id, '', detail.task.task_id), { internal: missingToolPaths }],
+    queryKey: [...queryKeys.artifactContent(runId, '', taskId), { internal: missingToolPaths }],
     queryFn: async () => {
       const entries = await Promise.all(missingToolPaths.map(async ({ name, path }) => {
         try {
-          const response = await api.artifactContent(detail.run_id, path, detail.task.task_id);
+          const response = await api.artifactContent(runId, path, taskId);
           return [name, toStepRecord(response.content)] as const;
         } catch {
           // 归档缺失时保持空值，由证据区显示“未回传”，不伪造结果。
@@ -43,7 +45,7 @@ export function useTaskEvidence(detail: TaskDetailResponse): EvidenceResolution 
       }));
       return new Map(entries);
     },
-    enabled: missingToolPaths.length > 0,
+    enabled: Boolean(runId && taskId && missingToolPaths.length > 0),
     staleTime: 60_000,
   });
 

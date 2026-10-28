@@ -1,1 +1,0 @@
-"""ElasticSearch log sources."""

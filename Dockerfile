@@ -9,9 +9,13 @@ COPY requirements.txt ./requirements.txt
 # 在此之前不得删除 --trusted-host n.17track.net，否则 HTTP 源会因证书校验被拒绝。
 # 不要改为 --require-hashes：那会要求全部传递依赖也提供哈希，当前仓库无法满足。
 RUN python -m pip install --upgrade pip && python -m pip install --trusted-host n.17track.net -r requirements.txt
-COPY app ./app
+COPY core ./core
+COPY infrastructure ./infrastructure
+COPY agents ./agents
+COPY workflow ./workflow
+COPY server ./server
 COPY config ./config
-COPY workbench ./workbench
+# workbench merged into server
 COPY server.py ./server.py
 COPY __init__.py ./__init__.py
 # uid 10001 与 docker-compose 的 APP_UID 默认值一致；HOME 必须显式指向 app 用户的

@@ -122,3 +122,23 @@
   .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .tileValue { white-space: normal; }
 }
+
+.bar {padding:24px 26px;gap:14px;border-radius:12px;}.title {font-size:21px;letter-spacing:-.025em;}
+.desc {font-size:13px;line-height:1.85;max-width:100ch;}
+.tiles {gap:0;margin:8px -26px -24px;border-top:1px solid var(--wb-line);background:var(--wb-canvas);}
+.tile {border:0;border-right:1px solid var(--wb-line);border-radius:0;padding:18px 22px;background:transparent;gap:7px;transition:background .15s;}
+.tile:last-child {border-right:0;}.tile:hover {background:var(--wb-primary-soft);}
+.tileLabel {font-size:12px;}.tileValue {font-size:14px;line-height:1.6;white-space:normal;}.tileSub {font-size:11px;}
+@media(max-width:1100px){.tiles{grid-template-columns:repeat(5,minmax(0,1fr));}.tile{padding:16px 14px;}}
+@media(max-width:767px){.bar{padding:18px;}.title{font-size:18px;}.tiles{grid-template-columns:repeat(2,minmax(0,1fr));margin:4px -18px -18px;}.tile{border-bottom:1px solid var(--wb-line-soft);}.tile:last-child{grid-column:1 / -1;}.meta{gap:12px;}}
+.bar {padding:16px 18px;gap:10px;border-radius:6px;}
+.bar::before {width:3px;}
+.title {font-size:15px;line-height:1.6;letter-spacing:0;}
+.head {gap:12px;}.meta{font-size:11px;gap:16px;}
+.notice {background:transparent;padding:0;border-radius:0;font-size:12px;line-height:1.7;}
+.noticeInfo {color:var(--wb-ink-muted);}.notice b {font-weight:500;}
+.desc {font-size:12px;}
+.tiles {display:flex;flex-wrap:wrap;gap:6px 20px;margin:2px 0 0;padding-top:10px;border-top:1px solid var(--wb-line-soft);background:transparent;}
+.tile {display:flex;flex-direction:row;align-items:center;gap:7px;padding:3px 0;border:0;background:transparent;border-radius:0;}
+.tile:hover{background:transparent;color:var(--wb-primary);}.tileLabel{font-size:11px;color:var(--wb-ink-faint);}.tileValue{font-size:11px;font-weight:500;line-height:1.6;}
+@media(max-width:767px){.bar{padding:14px;}.tiles{margin:0;gap:6px 14px;}.tile:last-child{grid-column:auto;}.title{font-size:14px;}.meta{width:auto;margin-left:0;}}

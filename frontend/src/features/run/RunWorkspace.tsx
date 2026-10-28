@@ -99,6 +99,7 @@ export function RunWorkspace() {
   };
   const views = [{ key: 'tasks', label: `问题任务 · ${runView.task_count}` }, { key: 'overview', label: '执行案卷' }, { key: 'checkpoints', label: '恢复记录' }, { key: 'audit', label: '操作审计' }];
   const attentionTasks = runView.failed_tasks + runView.blocked_tasks + runView.manual_tasks;
+  const runningTasks = Math.max(0, runView.task_count - runView.succeeded_tasks - attentionTasks - runView.waiting_tasks - (runView.inactive_tasks || 0));
   const phaseToneClass: Record<string, string> = {
     succeeded: styles.phaseSucceeded, failed: styles.phaseFailed, running: styles.phaseRunning,
     waiting: styles.phaseWaiting, skipped: styles.phasePending, pending: styles.phasePending,
@@ -115,6 +116,7 @@ export function RunWorkspace() {
 
       <header className={styles.batchHeader}>
         <div className={styles.batchIdentity}>
+          <span className={styles.kicker}>RUN WORKSPACE / BATCH DETAIL</span>
           <div className={styles.batchTitle}><h1>自动修复批次</h1><code title={runId}>{shortId(runId, 24)}</code><StatusBadge kind="run" value={runView.status} /></div>
           <p>创建于 {formatTime(runView.started_at)}<span>·</span>{runView.read_only ? '历史工作流 · 只读' : runView.worker_active ? '批次持续推进中' : runView.terminal ? '本轮执行已结束' : '状态自动同步'}</p>
         </div>
@@ -174,6 +176,13 @@ export function RunWorkspace() {
       )}
 
       {tab === 'tasks' && <>
+        <section className={styles.summaryStrip} aria-label="批次摘要">
+          <div className={styles.summaryLead}><span>批次进度</span><strong>{runView.succeeded_tasks} <small>/ {runView.task_count} 已完成</small></strong></div>
+          <div className={styles.summaryMetric}><span>执行中</span><strong>{runningTasks}</strong></div>
+          <div className={styles.summaryMetric}><span>待审批</span><strong className={runView.waiting_tasks ? styles.metricWarning : undefined}>{runView.waiting_tasks}</strong></div>
+          <div className={styles.summaryMetric}><span>需关注</span><strong className={attentionTasks ? styles.metricDanger : undefined}>{attentionTasks}</strong></div>
+          <div className={styles.summaryMeta}>{runView.worker_active ? '实时同步中' : runView.terminal ? '已归档' : '等待工作线程'}</div>
+        </section>
         {runView.waiting_tasks > 0 && <section className={styles.approvalNotice} aria-label="批次待审批提示">
           <div><strong>{runView.waiting_tasks} 个任务等待审批{runView.worker_active ? '，批次继续执行' : ''}</strong><p>当前候选等待工程师核对，批准后恢复对应任务的交付流程。</p></div>
           <Button type="primary" onClick={() => navigate(`/approvals?run=${encodeURIComponent(runId)}`)}>前往审批（{runView.waiting_tasks}）</Button>

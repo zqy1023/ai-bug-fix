@@ -2,7 +2,7 @@ import type { RunDetail, StepRecord, StepStatus } from '../../lib/types';
 
 const phaseDefinitions = [
   { key: 'source', title: '同步源码', description: '建立本轮源码基线', members: ['sync_source_repo'] },
-  { key: 'discovery', title: '发现问题', description: '采集、规范化与去重', members: ['discover_logs', 'normalize_error', 'deduplicate_error'] },
+  { key: 'discovery', title: '发现问题', description: '采集、规范化与去重', members: ['discover_logs', 'normalize_error', 'deduplicate_error', 'discover_and_normalize'] },
   { key: 'identify', title: '识别任务', description: '确定承运商与处理范围', members: ['identify_carrier'] },
   { key: 'tasks', title: '修复与验证', description: '进入任务工作区核验每个问题', members: [] },
   { key: 'collect', title: '汇总结果', description: '记录本轮最终处理结果', members: [] },

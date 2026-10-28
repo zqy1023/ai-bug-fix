@@ -21,26 +21,26 @@ const REJECTION_REASONS: Array<{
   {
     value: 'root_cause',
     label: '根因定位不准确',
-    retryTarget: 'locate_agent',
+    retryTarget: 'unified_fixer_agent',
     help: '重新运行根因定位，再根据新的定位结论进入修复链路。',
   },
   {
     value: 'code_change',
     label: '代码修改有误或不完整',
-    retryTarget: 'repair_agent',
+    retryTarget: 'unified_fixer_agent',
     help: '恢复目标 carrier 的干净基线后重新执行代码修复。',
   },
   {
     value: 'validation',
     label: '问题验证不足',
     retryTarget: 'review_agent',
-    help: '保留当前候选代码，重新执行修复后代码审查及其内部验证。',
+    help: '保留当前候选代码，重新执行修复后代码审查并独立核对证据。',
   },
   {
     value: 'regression',
     label: '回归验证不足',
     retryTarget: 'review_agent',
-    help: '保留当前候选代码，重新执行修复后代码审查及其内部请求验证。',
+    help: '保留当前候选代码，重新执行修复后代码审查并独立核对业务证据。',
   },
   {
     value: 'review',
@@ -51,7 +51,7 @@ const REJECTION_REASONS: Array<{
   {
     value: 'delivery',
     label: '交付分支或提交信息有误',
-    retryTarget: 'prepare_delivery',
+    retryTarget: 'generate_report',
     help: '保留已审查代码和审查结论，重新准备本地候选。',
   },
   {
@@ -62,10 +62,9 @@ const REJECTION_REASONS: Array<{
 ];
 
 const TARGET_LABELS: Record<ApprovalRetryTarget, string> = {
-  locate_agent: '根因定位',
-  repair_agent: '代码修复',
+  unified_fixer_agent: '统一分析修复',
   review_agent: 'AI 审查',
-  prepare_delivery: 'Git 分支交付',
+  generate_report: '生成报告与交付物',
 };
 
 type DecisionInput = {
@@ -110,7 +109,7 @@ export function DecisionBar({ item, onDecided }: { item: ApprovalItem; onDecided
       setReason('');
       onDecided();
       if (variables.decision === 'approve') {
-        message.success('批准请求已受理，后台将正式交付本次候选；请在任务详情查看交付结果');
+        message.success('确认请求已受理，请在任务详情查看复核结果');
         navigate(`/runs/${encodeURIComponent(item.run_id)}/tasks/${encodeURIComponent(item.task_id)}`);
       } else {
         // API only confirms that the async checkpoint resume was accepted. It cannot
@@ -137,16 +136,16 @@ export function DecisionBar({ item, onDecided }: { item: ApprovalItem; onDecided
       return;
     }
     const submission: DecisionInput = decision === 'approve'
-      ? { decision, reason: reason.trim(), retryTarget: 'repair_agent' }
+      ? { decision, reason: reason.trim(), retryTarget: 'unified_fixer_agent' }
       : { decision, reason: rejectReason, retryTarget: retryTarget as ApprovalRetryTarget };
 
     setPending(decision);
     modal.confirm({
-      title: decision === 'approve' ? '批准这次交付？' : '驳回本地候选并回修？',
+      title: decision === 'approve' ? '确认保留本次交付？' : '打回并撤回本次交付？',
       content: decision === 'approve'
-        ? '将对本次候选提交重新核验，并按运行配置交付修复分支；系统不会自动合并。'
-        : `系统将使当前候选失效，再从「${retryTarget ? TARGET_LABELS[retryTarget] : '未选择阶段'}」重新执行。当前尝试次数达到上限时，任务会按工作流规则终止。`,
-      okText: decision === 'approve' ? '确认批准' : '确认驳回并重跑',
+        ? '将核对本次交付并确认保留报告或修复分支；系统不会自动合并。'
+        : `系统将撤回当前交付，再从「${retryTarget ? TARGET_LABELS[retryTarget] : '未选择阶段'}」重新执行。当前尝试次数达到上限时，任务会按工作流规则终止。`,
+      okText: decision === 'approve' ? '确认保留' : '确认打回并重跑',
       okButtonProps: { danger: decision === 'reject' },
       cancelText: '返回',
       onOk: async () => {
@@ -213,27 +212,27 @@ export function DecisionBar({ item, onDecided }: { item: ApprovalItem; onDecided
       </details>
       {!item.actions?.approve.enabled && <p className={styles.warning}>{item.actions?.approve.reason || '服务未提供操作许可，暂不能提交审批'}</p>}
       <div className={styles.actions}>
-        <p>批准后核验并交付候选提交<br /><span>系统不会自动合并</span></p>
+        <p>确认后保留已提交的报告或修复<br /><span>系统不会自动合并</span></p>
         <Button
           danger
-          aria-label="驳回并回修"
+          aria-label="打回并撤回"
           icon={<StopOutlined />}
           disabled={Boolean(pending) || !item.actions?.reject.enabled || !reasonCode || (reasonCode === 'other' && (!retryTargetOverride || !reason.trim()))}
           loading={decide.isPending && pending === 'reject'}
           onClick={() => run('reject')}
         >
-          驳回并回修
+          打回并撤回
         </Button>
         <Button
           type="primary"
-          aria-label="批准并交付"
+          aria-label="确认保留"
           icon={<CheckOutlined />}
           disabled={Boolean(pending) || !item.actions?.approve.enabled}
           title={item.actions?.approve.reason || (!item.actions ? '服务未提供操作许可' : undefined)}
           loading={decide.isPending && pending === 'approve'}
           onClick={() => run('approve')}
         >
-          批准并交付
+          确认保留
         </Button>
       </div>
     </footer>

@@ -25,6 +25,7 @@ function agentRoleLabel(role: string): string {
     locate: '定位 Agent',
     repair: '修复 Agent',
     review: '审查 Agent',
+    unified_fixer: '统一分析修复 Agent',
   } as Record<string, string>)[role] || role;
 }
 
@@ -68,8 +69,8 @@ export function AgentTrace({
       <EmptyState
         title="该步骤没有 Agent 调用记录"
         description={stepName.includes('agent')
-          ? '调用尚未发生，或旧运行没有 Provider 审计。'
-          : '只有 locate / repair / review 三个 Agent 步骤会产生模型调用。'}
+          ? '本次尝试没有可用调用审计。历史旧框架任务可能直接生成固定报告，未调用模型，因此无法补回提示词或过程。'
+          : '只有 Agent 步骤会产生模型调用。'}
         compact
       />
     );
