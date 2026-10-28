@@ -1,0 +1,60 @@
+
+import asyncio
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+
+def load_module(path):
+    """按文件路径加载请求还原模块，不污染业务项目的 import 路径。
+
+    业务项目根下也有 config.py，工具根一旦先入 sys.path 就会顶掉它。
+    """
+    spec = importlib.util.spec_from_file_location(Path(path).stem, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def main():
+    payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+    gather_main_path = Path(payload["gather_main_path"]).resolve()
+    sys.path.insert(0, str(gather_main_path.parent.parent))
+    # server_dev 导入即完成 LogUtils/Prometheus 初始化。这里不调用它的
+    # override_config：它会把状态规则换成联网加载的 MySqlLoader 并写死本地代理，
+    # 与生产（FileLoader + py_rules_new.zip）不一致，重放结果不可比。
+    import server_dev  # noqa: F401
+    from framework.track_server import TrackServer
+
+    model_runtime = load_module(payload["model_path"])
+    model = model_runtime.build_track_model(payload)
+    model_runtime.prepare_request_runtime(model, recorded=bool(payload["response"]))
+    runtime = load_module(payload["runtime_path"])
+    # 事件循环和 TrackServer 初始化涉及本机 socket；网络守卫在协程
+    # 进入后启用，不阻断事件循环自身的唤醒，不改业务框架的异常映射。
+    server = TrackServer()
+    observer = load_module(payload["observation_path"])
+    with observer.observe_business_errors() as business_observation:
+        result = asyncio.run(runtime.replay_track(server, model, recorded=bool(payload["response"])))
+    result["replay_business_observation"] = business_observation
+    print(json.dumps({
+        "success": True,
+        "result": result,
+        # 上游原始响应：录制的重放输入不会被改写，实时重放则是本次实际取到的正文。
+        # 解析结果只有对照原文才能判断归类对错，所以原样带回，不在这里做裁剪。
+        "response": model.response,
+    }, ensure_ascii=False, default=str))
+
+
+try:
+    main()
+except Exception as error:
+    import traceback
+    print(json.dumps({
+        "success": False,
+        "exception_type": type(error).__name__,
+        "error": str(error),
+        "traceback": traceback.format_exc(),
+    }, ensure_ascii=False), file=sys.stderr)
+    sys.exit(1)
