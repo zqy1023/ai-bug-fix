@@ -18,7 +18,7 @@ from infrastructure.llm.config import load_config
 from infrastructure.storage.store import RecordStore
 from infrastructure.storage.redaction import public_exception
 
-logger = logging.getLogger("workbench.context")
+logger = logging.getLogger("server.context")
 
 SERVICE_NAME = "ai-repair-workbench"
 SERVICE_VERSION = "1.0.0"
@@ -91,7 +91,7 @@ def _parse_time(value: Any) -> datetime | None:
         return None
 
 def _require_current_workflow(run_id: str, store: RecordStore | None = None) -> None:
-    from workflow.engine.validation import assert_workflow_version
+    from workflow.engine.routes import assert_workflow_version
     s = store or _store()
     try:
         assert_workflow_version(s.load_run(run_id))

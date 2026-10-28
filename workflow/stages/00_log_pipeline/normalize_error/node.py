@@ -86,7 +86,7 @@ def _normalize(record: Any, index: int) -> dict[str, Any]:
     # 上游日志常把 response / track_config 嵌在 req 对象里，而不是放在记录顶层。
     # 顶层优先，缺失时回退到 req 内部；两者都统一成 JSON 字符串，供重放使用。
     response = record.get("response") or request.get("response") or ""
-    from agents.review.gates.verify_issue.replay_model import extract_track_config
+    from infrastructure.es.request_context import extract_track_config
 
     track_config = extract_track_config(record)
     if not isinstance(response, str):

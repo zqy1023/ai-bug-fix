@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import ast
 import json
 import os
 from collections.abc import Mapping
@@ -187,7 +186,6 @@ class ReviewAgentOutput(FrozenModel):
 class ReviewInput(FrozenModel):
     """审查输入：只给审查需要的结论，不给修复侧内部状态。"""
 
-    validation_summary: dict[str, Any] = Field(default_factory=dict)
     task_id: str
     ai_workspace_path: str = ""
     attempt: int = 1
@@ -196,14 +194,6 @@ class ReviewInput(FrozenModel):
     changed_files: list[str] = Field(default_factory=list)
     baseline_dir: str = ""
     diff_summary: str = ""
-    gate_result: dict[str, Any] = Field(default_factory=dict)
-    verify_result: dict[str, Any] = Field(default_factory=dict)
-    regression_result: dict[str, Any] = Field(default_factory=dict)
-    check_passed: bool = False
-    syntax_passed: bool = False
-    verify_passed: bool = False
-    business_verification_status: str = "unknown"
-    regression_passed: bool = False
 
 
 class ReviewView(ReviewAgentOutput):
@@ -211,16 +201,14 @@ class ReviewView(ReviewAgentOutput):
 
     model_config = ConfigDict(extra="ignore")
 
+    diff_files: list[dict[str, Any]] = Field(default_factory=list)
     delivery_eligible: bool = False
     checks: list[dict[str, str]] = Field(default_factory=list)
     review_notes: str = ""
     contract_error: str = ""
-    validation_summary: dict[str, Any] = Field(default_factory=dict)
     evidence_version: dict[str, Any] = Field(default_factory=dict)
     next_action: str = ""
     review_contract_version: int = REVIEW_CONTRACT_VERSION
-    substeps: list[dict[str, Any]] = Field(default_factory=list)
-    review_report_path: str = ""
 
 
 class ReviewState(TypedDict, total=False):
@@ -242,22 +230,14 @@ class ReviewState(TypedDict, total=False):
     changed_files: list[str]
     baseline_dir: str
     diff_summary: str
-    gate_result: dict[str, Any]
-    verify_result: dict[str, Any]
-    regression_result: dict[str, Any]
-    check_passed: bool
-    syntax_passed: bool
-    verify_passed: bool
-    business_verification_status: str
-    regression_passed: bool
     verdict: Literal["PASS", "FAIL", "MANUAL"]
     passed: bool
     delivery_eligible: bool
     review_contract_version: int
     contract_error: str
     evidence_version: dict[str, Any]
+    diff_files: list[dict[str, Any]]
     checks: list[dict[str, str]]
-    validation_summary: dict[str, Any]
     next_action: str
     review_notes: str
     code_verdict: str
@@ -438,90 +418,8 @@ def review_checks(
     return rows
 
 
-def not_found_guard_changes(workspace: str, baseline: str, files: list[str]) -> list[str]:
-    if not workspace or not baseline:
-        return []
-
-    def guards(root: str, relative: str) -> dict[str, list[ast.expr]]:
-        base = Path(root).resolve()
-        path = (base / relative).resolve()
-        if not path.is_relative_to(base) or not path.is_file():
-            return {}
-        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
-        found: dict[str, list[ast.expr]] = {}
-        for function in ast.walk(tree):
-            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            for node in ast.walk(function):
-                if isinstance(node, ast.If) and any(
-                    isinstance(value, ast.Attribute) and value.attr in {"NotFound", "not_found"}
-                    for statement in node.body for value in ast.walk(statement)
-                ):
-                    found.setdefault(function.name, []).append(node.test)
-        return found
-
-    changed = []
-    for relative in files:
-        if not relative.endswith(".py"):
-            continue
-        before, after = guards(baseline, relative), guards(workspace, relative)
-        for name in sorted(before.keys() | after.keys()):
-            old, new = before.get(name, []), after.get(name, [])
-            def terms(node: ast.expr) -> int:
-                return len(node.values) if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And) else 1
-            weakened = len(old) != len(new) or any(
-                ast.dump(left) != ast.dump(right) and terms(right) < terms(left)
-                for left, right in zip(old, new)
-            )
-            if weakened:
-                changed.append(f"{relative}:{name} 的 NotFound 条件变化：需核对明确无单字段、正常状态及状态冲突边界；单个异常样本通过不足以批准")
-    return changed
 
 
-def datetime_reset_risks(workspace: str, baseline: str, files: list[str]) -> list[str]:
-    if not workspace or not baseline:
-        return []
-
-    def resets(root: str, relative: str) -> set[str]:
-        base = Path(root).resolve()
-        path = (base / relative).resolve()
-        if not path.is_relative_to(base) or not path.is_file():
-            return set()
-        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
-        found: set[str] = set()
-        for function in ast.walk(tree):
-            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            parsed = {
-                target.id for node in ast.walk(function) if isinstance(node, ast.Assign)
-                and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Attribute)
-                and node.value.func.attr == "parser_datetime" for target in node.targets if isinstance(target, ast.Name)
-            }
-            for node in ast.walk(function):
-                if not isinstance(node, ast.If):
-                    continue
-                cleared: dict[str, set[str]] = {}
-                for statement in node.body:
-                    if not (isinstance(statement, ast.Assign) and isinstance(statement.value, ast.Constant)
-                            and statement.value.value in (None, "")):
-                        continue
-                    for target in statement.targets:
-                        if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id in parsed:
-                            cleared.setdefault(target.value.id, set()).add(target.attr)
-                found.update(
-                    f"{function.name}:{name}" for name, fields in cleared.items()
-                    if {"datetime", "format"} <= fields and "raw" not in fields
-                )
-        return found
-
-    risks = []
-    for relative in files:
-        if relative.endswith(".py"):
-            risks.extend(
-                f"{relative}:{name} 清空 datetime/format 但保留 raw：须核对真实 formatter 及目标时间错误，现有材料不能确认代码通过"
-                for name in sorted(resets(workspace, relative) - resets(baseline, relative))
-            )
-    return risks
 
 
 __all__ = [
@@ -541,9 +439,7 @@ __all__ = [
     "ReviewState",
     "ReviewVerdict",
     "ReviewView",
-    "datetime_reset_risks",
     "judge",
-    "not_found_guard_changes",
     "result_of",
     "review_checks",
     "slim_review",

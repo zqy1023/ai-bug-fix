@@ -30,7 +30,7 @@ from server.context import (
 )
 from server.control_store import _audit_control, _control_db
 
-logger = logging.getLogger("workbench.lifecycle")
+logger = logging.getLogger("server.lifecycle")
 
 def _start_lifecycle_heartbeat(run_id: str) -> tuple[threading.Event, threading.Thread]:
     """Keep an explicit lease while a worker owns the run lock, including long Agent calls."""
@@ -393,21 +393,21 @@ def _resume_workflow_background(
             # task.interrupts 上。审批接口已校验当前任务处于待决状态且持有 run 锁，因此
             # 必须直接把决定交给 checkpoint；绝不能因快照未显示 interrupt 而重新 invoke(None)。
             if detached:
-                from workflow.engine.validation import assert_workflow_version
+                from workflow.engine.routes import assert_workflow_version
                 assert_workflow_version(_store().load_run(run_id))
                 final_state = graph.invoke(None, config=config) if snapshot.next else dict(snapshot.values)
             else:
-                from workflow.engine.validation import assert_workflow_version
+                from workflow.engine.routes import assert_workflow_version
                 assert_workflow_version(_store().load_run(run_id))
                 final_state = graph.invoke(Command(resume=resume_payload), config=config)
         elif has_interrupt:
             from langgraph.types import Command
 
-            from workflow.engine.validation import assert_workflow_version
+            from workflow.engine.routes import assert_workflow_version
             assert_workflow_version(_store().load_run(run_id))
             final_state = graph.invoke(Command(resume={"control": "resume"}), config=config)
         else:
-            from workflow.engine.validation import assert_workflow_version
+            from workflow.engine.routes import assert_workflow_version
             assert_workflow_version(_store().load_run(run_id))
             final_state = graph.invoke(None, config=config)
         # 本次恢复已成功推进 checkpoint；清理之前后台异常写入的失败标记，避免 UI 继续把已恢复运行判为 FAILED。

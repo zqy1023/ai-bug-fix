@@ -44,15 +44,10 @@ class WorkflowState(TypedDict, total=False):
 
     resolution: dict[str, Any]
     step_outcomes: dict[str, Any]
-    acceptance_contract: dict[str, Any]
-    baseline_reproduction: dict[str, Any]
     delivery_candidate: dict[str, Any]
     approval_result: dict[str, Any]
     analysis_report: dict[str, Any]
     workflow_version: int
-    validation_plan: dict[str, Any]
-    validation_summary: dict[str, Any]
-    validation_decision: dict[str, Any]
     validation_recovery_counts: dict[str, int]
 
     # 身份与执行参数
@@ -85,15 +80,11 @@ class WorkflowState(TypedDict, total=False):
     locate: dict[str, Any]
     review: dict[str, Any]
     evidence: dict[str, Any]
-    syntax_result: dict[str, Any]
     manual_confirmation_required: bool
     manual_confirmation_reasons: list[str]
     decision: str
     last_result: str
     next_step: str
-    gate_result: dict[str, Any]
-    verify_result: dict[str, Any]
-    regression_result: dict[str, Any]
     terminal_status: str
     change_plan: dict[str, Any]
     blocked_reason: str
@@ -170,78 +161,20 @@ def evidence_version(workspace: str, files: list[str], baseline_dir: str = "") -
 # 3. 产物交付与通道交接 (Handoff & State Owners)
 # ---------------------------------------------------------------------------
 
-VALIDATION_KEYS = (
-    "validation_plan",
-    "validation_summary",
-    "validation_decision",
-    "verify_result",
-    "regression_result",
-    "review",
-)
 CANDIDATE_KEYS = ("delivery_candidate", "approval_result", "delivery")
-
 INVALIDATES = {
-    "prepare_source_snapshot": (
-        "unified_fixer",
-        "locate",
-        "repair",
-        *VALIDATION_KEYS,
-        *CANDIDATE_KEYS,
-    ),
-    "unified_fixer_agent": (
-        "gate_result",
-        "syntax_result",
-        *VALIDATION_KEYS,
-        *CANDIDATE_KEYS,
-    ),
-    "check_changes": ("syntax_result", *VALIDATION_KEYS, *CANDIDATE_KEYS),
-    "plan_validation": (
-        "validation_summary",
-        "validation_decision",
-        "verify_result",
-        "regression_result",
-        "review",
-        *CANDIDATE_KEYS,
-    ),
-    "verify_issue": (
-        "validation_summary",
-        "validation_decision",
-        "review",
-        *CANDIDATE_KEYS,
-    ),
-    "run_regression": (
-        "validation_summary",
-        "validation_decision",
-        "review",
-        *CANDIDATE_KEYS,
-    ),
-    "review_agent": ("validation_decision", *CANDIDATE_KEYS),
+    "prepare_source_snapshot": ("unified_fixer", "locate", "repair", "review", *CANDIDATE_KEYS),
+    "unified_fixer_agent": ("review", *CANDIDATE_KEYS),
+    "review_agent": CANDIDATE_KEYS,
     "generate_report": ("approval_result", "delivery"),
 }
-
 STATE_OWNERS = {
-    "baseline_dir": "prepare_source_snapshot",
-    "baseline_manifest": "prepare_source_snapshot",
-    "unified_fixer": "unified_fixer_agent",
-    "locate": "unified_fixer_agent",
-    "repair": "unified_fixer_agent",
-    "gate_result": "check_changes",
-    "syntax_result": "syntax_regression",
-    "validation_plan": "plan_validation",
-    "verify_result": "verify_issue",
-    "regression_result": "run_regression",
-    "validation_summary": "summarize_validation",
-    "validation_decision": "decide_validation",
-    "review": "review_agent",
-    "delivery_candidate": "generate_report",
-    "approval_result": "request_approval",
-    "delivery": "submit_changes",
-    "repair_branch": "generate_report",
-    "delivery_pushed": "submit_changes",
-    "delivery_local_branch": "submit_changes",
-    "delivery_commit": "submit_changes",
-    "task_summary": "finalize_execution",
-    "resolution": "finalize_execution",
+    "baseline_dir": "prepare_source_snapshot", "baseline_manifest": "prepare_source_snapshot",
+    "unified_fixer": "unified_fixer_agent", "locate": "unified_fixer_agent", "repair": "unified_fixer_agent",
+    "review": "review_agent", "delivery_candidate": "generate_report", "approval_result": "request_approval",
+    "delivery": "submit_changes", "repair_branch": "generate_report", "delivery_pushed": "submit_changes",
+    "delivery_local_branch": "submit_changes", "delivery_commit": "submit_changes",
+    "task_summary": "finalize_execution", "resolution": "finalize_execution",
 }
 
 STATE_CO_WRITERS = {
@@ -457,10 +390,6 @@ def capture_retry_context(
                 "repair",
                 "change_plan",
                 "review",
-                "gate_result",
-                "syntax_result",
-                "verify_result",
-                "regression_result",
             )
         },
     }
@@ -535,10 +464,6 @@ def capture_retry_context(
         "repair",
         "change_plan",
         "review",
-        "gate_result",
-        "syntax_result",
-        "verify_result",
-        "regression_result",
     ):
         value = _compact(payload[key])
         encoded = json.dumps(value, ensure_ascii=False, default=str)
@@ -554,10 +479,6 @@ def capture_retry_context(
             "repair",
             "change_plan",
             "review",
-            "gate_result",
-            "syntax_result",
-            "verify_result",
-            "regression_result",
         ):
             encoded = json.dumps(context[key], ensure_ascii=False, default=str)
             if len(encoded) > 700:
@@ -660,7 +581,6 @@ __all__ = [
     "RunState",
     "STATE_CO_WRITERS",
     "STATE_OWNERS",
-    "VALIDATION_KEYS",
     "WorkflowState",
     "apply_step_result",
     "capture_retry_context",

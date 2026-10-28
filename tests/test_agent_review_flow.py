@@ -27,6 +27,16 @@ def verdict():
 
 
 class AgentReviewFlowTests(unittest.TestCase):
+    def test_old_artifact_fields_are_not_restored_into_current_state(self):
+        from core.contracts import TaskArtifacts
+        artifacts = TaskArtifacts.model_validate({'gate_result': {'passed': True},
+                                                  'validation_plan': {'obsolete': True},
+                                                  'review': verdict()})
+        current = artifacts.model_dump()
+        self.assertNotIn('gate_result', current)
+        self.assertNotIn('validation_plan', current)
+        self.assertEqual(current['review']['verdict'], 'PASS')
+
     def test_agent_runs_without_legacy_scripts_and_delivery_binds_review(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -53,13 +63,17 @@ class AgentReviewFlowTests(unittest.TestCase):
                 'gate_result': {'passed': False, 'evidence_version': {'patch_id': 'old'}},
                 'syntax_result': {'passed': False},
             }
-            with patch('agents.review.gates.registry.resolve_tool', side_effect=AssertionError('旧脚本被调用')):
+            with patch.dict('sys.modules', {'agents.review.gates': None}):
                 result = build_agent_node(SPEC, store, runtime=runtime)(state)
             self.assertEqual(len(requests), 1)
             self.assertEqual(result['review']['verdict'], 'PASS')
             self.assertTrue(all(row['status'] == 'passed' for row in result['review']['checks']))
             self.assertEqual([step.name for step in store.list_steps('run', 'task')], ['review_agent'])
-            self.assertEqual(result['review']['substeps'], [])
+            self.assertNotIn('substeps', result['review'])
+            self.assertEqual(result['review']['diff_files'][0]['path'], 'gathers/TEST/main.py')
+            diff = store.read_artifact('run', 'artifacts/diff.json', 'task')
+            self.assertEqual(diff['files'][0]['before'], 'value = 1\n')
+            self.assertEqual(diff['files'][0]['after'], 'value = 2\n')
             self.assertEqual(result['review']['review_contract_version'], REVIEW_CONTRACT_VERSION)
             combined = {**state, **result}
             data = _input(combined)
@@ -67,6 +81,29 @@ class AgentReviewFlowTests(unittest.TestCase):
             (workspace / 'gathers/TEST/main.py').write_text('value = 3\n', encoding='utf-8')
             with self.assertRaises(StepFailed):
                 _input(combined)
+
+    def test_approval_checks_version_without_running_review_again(self):
+        from workflow.engine.handoff import evidence_version
+        from workflow.stages.request_approval.approval import final_gate
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / 'main.py'
+            target.write_text('value = 1\n')
+            state = {'candidate_id': 'candidate', 'ai_workspace_path': directory,
+                     'changed_files': ['main.py'], 'baseline_dir': '',
+                     'evidence_version': evidence_version(directory, ['main.py'])}
+            self.assertTrue(final_gate(state)['passed'])
+            target.write_text('value = 2\n')
+            self.assertFalse(final_gate(state)['passed'])
+
+    def test_run_projection_only_reads_primary_steps(self):
+        from core.contracts import StepRecord
+        from server.run_service import _run_payload
+        with tempfile.TemporaryDirectory() as directory:
+            store = RecordStore(directory)
+            store.save('run', StepRecord(name='review_agent', title='Agent review', status='succeeded'), 'task')
+            (store.run_dir('run') / 'run.json').write_text(json.dumps({'workflow_version': WORKFLOW_VERSION}))
+            result = _run_payload(store, 'run')
+            self.assertEqual([step['name'] for step in result['tasks'][0]['steps']], ['review_agent'])
 
     def test_source_change_during_agent_call_invalidates_review(self):
         from agents.review.graph import review

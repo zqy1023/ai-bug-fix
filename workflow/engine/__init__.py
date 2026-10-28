@@ -21,15 +21,11 @@ __all__ = ["graph", "handoff", "routes", "runner"]
 _LEGACY_MODULE_MAP = {
     # routes 承载
     "workflow.engine.definitions": routes,
-    "workflow.engine.acceptance": routes,
-    "workflow.engine.validation": routes,
-    "workflow.engine.validation_context": routes,
     "workflow.engine.confirmation": routes,
     # graph 承载
     "workflow.engine.wiring": graph,
     "workflow.engine.entrypoint": graph,
     "workflow.engine.adapter": graph,
-    "workflow.engine.validation_executor": graph,
     # runner 承载
     "workflow.engine.step_runner": runner,
     "workflow.engine.loader": runner,

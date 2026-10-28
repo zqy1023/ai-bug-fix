@@ -201,45 +201,12 @@ class EvidenceBinding(ContractModel):
     policy_id: str
 
 
-class AcceptanceAssertion(ContractModel):
-    assertion_id: str
-    description: str
-    required: bool = True
-    method: Literal["baseline_replay", "fixed_replay", "live_request", "code_review"]
-    verifier: str
-    expected: dict[str, Any]
 
 
-class AcceptanceContract(ContractModel):
-    contract_id: str
-    problem_id: str
-    baseline_id: str
-    diagnosis_id: str
-    assertions: list[AcceptanceAssertion]
-
-    @model_validator(mode="after")
-    def unique_assertions(self) -> AcceptanceContract:
-        ids = [item.assertion_id for item in self.assertions]
-        if not ids or len(ids) != len(set(ids)):
-            raise ValueError("验收断言必须非空且标识唯一")
-        return self
 
 
-class AssertionResult(ContractModel):
-    assertion_id: str
-    status: Literal["passed", "failed", "unverified"]
-    reason_code: str
-    summary: str
-    report_path: str = ""
-    actual: dict[str, Any] = Field(default_factory=dict)
-    failure_origin: (
-        Literal["code", "environment", "input", "verifier", "unknown"] | None
-    ) = None
 
 
-class ValidationReport(ContractModel):
-    binding: EvidenceBinding
-    results: list[AssertionResult]
 
 
 class TaskIdentity(ContractModel):
@@ -297,19 +264,12 @@ class SourceContext(ContractModel):
 
 class TaskArtifacts(ContractModel):
     """每个正式产物一个槽位；具体内容在步骤边界按其输出模型校验。"""
+    # 历史快照可能包含已经停用的产物；读取时忽略，不重新引入执行状态。
+    model_config = ConfigDict(extra="ignore", frozen=True)
     unified_fixer: dict[str, Any] = Field(default_factory=dict)
     locate: dict[str, Any] = Field(default_factory=dict)
-    acceptance_contract: dict[str, Any] = Field(default_factory=dict)
-    baseline_reproduction: dict[str, Any] = Field(default_factory=dict)
     repair: dict[str, Any] = Field(default_factory=dict)
     change_plan: dict[str, Any] = Field(default_factory=dict)
-    gate_result: dict[str, Any] = Field(default_factory=dict)
-    syntax_result: dict[str, Any] = Field(default_factory=dict)
-    validation_plan: dict[str, Any] = Field(default_factory=dict)
-    verify_result: dict[str, Any] = Field(default_factory=dict)
-    regression_result: dict[str, Any] = Field(default_factory=dict)
-    validation_summary: dict[str, Any] = Field(default_factory=dict)
-    validation_decision: dict[str, Any] = Field(default_factory=dict)
     review: dict[str, Any] = Field(default_factory=dict)
     delivery_candidate: dict[str, Any] = Field(default_factory=dict)
     approval_result: dict[str, Any] = Field(default_factory=dict)
@@ -385,13 +345,6 @@ class Handoff(ContractModel):
     state: TaskSnapshot
 
 
-class BaselineReproduction(ContractModel):
-    retryable: bool = False
-    problem_id: str
-    baseline_id: str
-    status: Literal["passed", "failed", "unverified"]
-    reason: str
-    report_path: str
 
 
 class TaskResolution(ContractModel):

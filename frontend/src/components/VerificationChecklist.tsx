@@ -18,7 +18,7 @@ type Dimension = { status?: string; reason?: string };
 export function VerificationChecklist({ steps, onOpenStep, layout = 'list' }: VerificationChecklistProps) {
   const record = [...steps].reverse().find((step) => step.name === 'review_agent');
   const payload = (record?.output?.payload || record?.output || {}) as Record<string, unknown>;
-  const repair = [...steps].reverse().find((step) => step.name === 'repair_agent');
+  const repair = [...steps].reverse().find((step) => step.name === 'unified_fixer_agent');
   const stale = Boolean(payload.stale || (record && repair && Date.parse(repair.started_at || '') > Date.parse(record.started_at || '')));
   const current = Number(payload.review_contract_version) >= 6 && !payload.contract_error;
   const dimensions = (current ? payload.dimensions || {} : {}) as Record<string, Dimension>;

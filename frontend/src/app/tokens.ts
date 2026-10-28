@@ -74,18 +74,6 @@ export function applyDesignTokens(mode: ThemeMode) {
   root.dataset.theme = mode;
 }
 
-/** 兼容旧样式文件的别名:只有"新语义集中不存在"的旧名才需要映射;
- *  其余旧名与新键同名,applyDesignTokens 已直接写入,禁止在此覆写(会形成自引用失效)。 */
-const LEGACY_ALIASES: Record<string, string> = {
-  '--wb-ink-ghost': 'ink-faint',
-  '--wb-neutral': 'ink-faint',
-};
 
-export function applyLegacyAliases() {
-  const root = document.documentElement;
-  for (const [legacy, key] of Object.entries(LEGACY_ALIASES)) {
-    root.style.setProperty(legacy, `var(--wb-${key})`);
-  }
-}
 
 export type { SemanticSet };

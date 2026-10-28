@@ -91,10 +91,6 @@ class RuntimeConfig:
     excluded_messages: list[str]
     # command_timeout_seconds：固定验证命令超时秒数。
     command_timeout_seconds: int
-    # replay_timeout_seconds：response 重放超时秒数。
-    replay_timeout_seconds: int
-    # replay_python：跑业务代码的重放解释器路径。
-    replay_python: str
     # workbench_sqlite_timeout_seconds：控制库连接等待秒数。
     workbench_sqlite_timeout_seconds: int
     # workbench_sqlite_busy_timeout_ms：控制库忙等待毫秒数。
@@ -115,8 +111,6 @@ class RuntimeConfig:
     source_url: str
     # project_subdir：仓库内项目子目录。
     project_subdir: Path | None
-    # verify_commands：验证命令数组。
-    verify_commands: list[list[str]]
     # git_remote：Git 远程名。
     git_remote: str
     # git_username：HTTPS 拉取/推送用户名；不进入 repr。
@@ -147,10 +141,6 @@ class RuntimeConfig:
     git_committer_name: str = "ai-bug-fixer"
     # git_committer_email：修复分支提交者邮箱。
     git_committer_email: str = "ai-bug-fixer@localhost"
-    # proxy_manager_address：run_regression 真实请求回归所需的本地代理地址；
-    # 未配置时该步骤按业务规则直接失败，不写入半生效的回归环境。
-    proxy_manager_address: str = ""
-
     @property
     def workspace_root(self) -> Path:
         """共享 AI 工作区、验证和回归工作区的根目录。"""
@@ -178,16 +168,6 @@ def load_config() -> RuntimeConfig:
     load_dotenv(root / ".env", override=False)
     raw_ignore = nacos_get("LOG_PULL_IGNORE_ERRORS", "")
     raw_excluded_messages = nacos_get("LOG_PULL_EXCLUDED_MESSAGES", "")
-    raw_commands = nacos_get("AI_REPAIR_VERIFY_COMMANDS", "")
-    try:
-        verify_commands = json.loads(raw_commands) if raw_commands else []
-    except json.JSONDecodeError:
-        verify_commands = [shlex.split(raw_commands)] if raw_commands else []
-    if not isinstance(verify_commands, list) or any(
-        not isinstance(command, list) or not all(isinstance(item, str) for item in command)
-        for command in verify_commands
-    ):
-        raise ValueError("AI_REPAIR_VERIFY_COMMANDS 必须是字符串数组的 JSON")
     raw_repo = nacos_get("AI_REPAIR_SOURCE_REPO", "").strip()
     raw_source_url = nacos_get("AI_REPAIR_SOURCE_URL", "").strip()
     raw_git_username = nacos_get("AI_REPAIR_GIT_USERNAME", "").strip()
@@ -248,16 +228,6 @@ def load_config() -> RuntimeConfig:
                 )
             ),
         ),
-        replay_timeout_seconds=max(
-            1,
-            int(
-                nacos_get(
-                    "AI_REPAIR_REPLAY_TIMEOUT_SECONDS",
-                    "30",
-                )
-            ),
-        ),
-        replay_python=nacos_get("AI_REPAIR_REPLAY_PYTHON", "").strip(),
         workbench_sqlite_timeout_seconds=max(
             1,
             int(
@@ -298,7 +268,6 @@ def load_config() -> RuntimeConfig:
         source_repo=source_repo,
         source_url=raw_source_url,
         project_subdir=Path(raw_project_subdir) if raw_project_subdir else None,
-        verify_commands=verify_commands,
         git_remote=nacos_get("AI_REPAIR_GIT_REMOTE", settings.default_git_remote).strip()
         or settings.default_git_remote,
         git_username=raw_git_username,
@@ -352,9 +321,6 @@ def load_config() -> RuntimeConfig:
         or "ai-bug-fixer",
         git_committer_email=nacos_get("GIT_COMMITTER_EMAIL", "ai-bug-fixer@localhost").strip()
         or "ai-bug-fixer@localhost",
-        proxy_manager_address=nacos_get(
-            "PROXY_MANAGER_ADDRESS", ""
-        ).strip(),
         claude=ClaudeConfig(
             auth_token=nacos_get("ANTHROPIC_AUTH_TOKEN", ""),
             base_url=nacos_get("ANTHROPIC_BASE_URL", ""),

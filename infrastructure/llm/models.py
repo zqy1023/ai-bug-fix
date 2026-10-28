@@ -40,12 +40,6 @@ class PromptContext(BaseModel):
     changed_files: tuple[str, ...]
     # diff_summary：字段说明见该模型文档与工作流契约。
     diff_summary: str
-    # gate_results：字段说明见该模型文档与工作流契约。
-    gate_results: dict[str, Any]
-    # verification_results：字段说明见该模型文档与工作流契约。
-    verification_results: dict[str, Any]
-    # regression_results：字段说明见该模型文档与工作流契约。
-    regression_results: dict[str, Any]
     # allowed_scope：字段说明见该模型文档与工作流契约。
     allowed_scope: tuple[str, ...]
     # stop_conditions：字段说明见该模型文档与工作流契约。

@@ -57,7 +57,7 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
     if not analysis_only:
         from agents.review.contract import REVIEW_CONTRACT_VERSION, judge
         from workflow.engine.evidence_version import evidence_version
-        from workflow.engine.validation import fingerprint
+        from workflow.engine.routes import fingerprint
 
         version = evidence_version(
             str(state.get("ai_workspace_path") or ""),

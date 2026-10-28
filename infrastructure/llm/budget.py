@@ -52,15 +52,6 @@ def bounded_context(context: PromptContext, workspace: str) -> PromptContext:
     manifest = snapshot.pop("baseline_manifest", None)
     if isinstance(manifest, dict):
         snapshot["baseline_file_count"] = len(manifest)
-    for key in ("verification_results", "regression_results"):
-        report = value[key]
-        bulky = {"replay", "commands", "script", "response", "stdout", "stderr"}
-        removed = [name for name in report if name in bulky]
-        for name in removed:
-            report.pop(name)
-        if removed:
-            report["full_evidence"] = {"path": str(target), "json_path": key, "fields": removed}
-
     def size() -> int:
         # Renderer omits agent_role and adds a small Markdown wrapper.
         return len(json.dumps(value, ensure_ascii=False, separators=(",", ":"))) + 40
@@ -79,14 +70,14 @@ def bounded_context(context: PromptContext, workspace: str) -> PromptContext:
                     return item
                 return {k: compact(v, f"{pointer}.{k}") for k, v in item.items()}
             return item
-        for key in ("problem", "evidence", "gate_results", "verification_results", "regression_results"):
+        for key in ("problem", "evidence"):
             # Top-level role/identity/permissions and required protocol fields stay exact.
             value[key] = compact(value[key], key)
         if len(value["diff_summary"]) > threshold:
             value["diff_summary"] = f"完整差异见 {target} 的 diff_summary；必须核对全部变更"
     # 大量短字段/逐项收据也可能超预算；缩短长字符串无法解决结构体积。
     # 整份结构仍在上述带哈希的只读文件中，保留状态摘要和精确 JSON 路径。
-    for key in sorted(("verification_results", "regression_results", "gate_results", "evidence"),
+    for key in sorted(("evidence",),
                       key=lambda k: len(json.dumps(value[k], ensure_ascii=False)), reverse=True):
         if size() <= limit:
             break

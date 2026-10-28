@@ -27,7 +27,7 @@ export type ApprovalCheck = {
 };
 
 export interface ApprovalView {
-  /** 确定性门禁是否给出了文件级证据；false 时文件清单只是方案声明。 */
+  /** 基线差异是否给出了文件级证据；false 时文件清单只是方案声明。 */
   gateEvidence: boolean;
   files: ApprovalFile[];
   added: number;
@@ -86,18 +86,9 @@ export function useApprovalView(item: ApprovalItem): ApprovalView {
   // 原始日志统一从共享 Hook 取：历史任务会回读 run 级去重产物。
   const log = useProblemLog(detail, item.problem, item.run_id);
   const reviewStep = latestStep(steps, 'review_agent');
-  const checkStep = latestStep(steps, 'check_changes');
   const payload = dict(reviewStep?.output?.payload ?? reviewStep?.output);
-  const gate = dict(checkStep?.output?.payload ?? checkStep?.output);
-  const gateFilesRaw = Array.isArray(gate.files) ? gate.files.map(dict) : null;
-  const claim = dict(reviewStep?.output?.claim ?? gate.claim);
-  const gateScope = dict(gate.scope);
-  // 与任务详情页同一条判据：有 actual 清单且基线可比较，才算确定性门禁证据。
-  const gateEvidence = Boolean(
-    checkStep && Array.isArray(claim.actual)
-    && (gateScope.diffable === true || Number(gateScope.baseline_files || 0) > 0),
-  );
-
+  const gateFilesRaw = Array.isArray(payload.diff_files) ? payload.diff_files.map(dict) : null;
+  const gateEvidence = Boolean(gateFilesRaw && dict(payload.evidence_version).baseline_id);
   const edits = item.change_plan?.edits ?? [];
   const view = useMemo(() => {
     const editNote = (path: string) => edits.find((edit) => edit.path === path)?.note || '';
@@ -106,7 +97,7 @@ export function useApprovalView(item: ApprovalItem): ApprovalView {
       .map((file) => [text(file.path), file] as const));
 
     const candidates: string[] = gateEvidence
-      ? (Array.isArray(claim.actual) ? strings(claim.actual) : [])
+      ? (gateFilesRaw ?? []).map(file => text(file.path))
       : item.changed_files ?? [];
     const fallback = candidates.length ? candidates
       : (gateFilesRaw ?? [])
@@ -181,7 +172,7 @@ export function useApprovalView(item: ApprovalItem): ApprovalView {
       failed: taskQuery.isError || Boolean(log.failed),
       recoveryFailure,
     } satisfies ApprovalView;
-  }, [claim, detail, edits, gateEvidence, gateFilesRaw, item, log, payload, reviewStep, steps, taskQuery.isError, taskQuery.isLoading]);
+  }, [detail, edits, gateEvidence, gateFilesRaw, item, log, payload, reviewStep, steps, taskQuery.isError, taskQuery.isLoading]);
 
   return view;
 }

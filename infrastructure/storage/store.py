@@ -256,12 +256,7 @@ class RecordStore:
         record = self.load(run_id, "finalize_execution", task_id)
         if record is None:
             raise StepFailed("任务子图退出但缺少终态步骤记录")
-        try:
-            from workflow.stages.finalize.node import refresh_completed_report
-        except ModuleNotFoundError as error:
-            if error.name != "app.workflow.steps.finalize_execution":
-                raise
-            from workflow.stages.finalize.node import refresh_completed_report
+        from workflow.stages.finalize.node import refresh_completed_report
         refresh_completed_report(self, run_id, task_id)
         self._update_lifecycle(run_id, task_id, record)
         if str(record.output.get("delivery_status") or "").upper() == "BLOCKED":
@@ -285,12 +280,6 @@ class RecordStore:
         with self._lock:
             payload = self._read_steps(run_id)
         body = _step_body(payload, step_name, task_id)
-        if body is None and task_id:
-            from workflow.engine.definitions import REVIEW_EVIDENCE_STEPS
-            if step_name in REVIEW_EVIDENCE_STEPS:
-                relative = f"artifacts/review_agent/steps/{step_name}.json"
-                if (self.task_dir(run_id, task_id) / relative).is_file():
-                    body = self.read_artifact(run_id, relative, task_id)
         if body is None:
             return None
         return _validated(body, run_id, step_name)
@@ -298,11 +287,19 @@ class RecordStore:
     def list_steps(self, run_id: str, task_id: str = "") -> list[StepRecord]:
         """返回已落盘的步骤记录。任务级只返回该任务，run 级不含 tasks。
 
-        审查 Agent 的内部工具记录不进这里：它们是单个 Agent 的内部证据，
-        由 list_review_substeps() 单独按需读取。
+        仅返回主工作流步骤；历史产物通过通用归档接口读取。
         """
+        return self.list_steps_from_snapshot(run_id, self.steps_snapshot(run_id), task_id)
+
+    def steps_snapshot(self, run_id: str) -> dict[str, Any]:
+        """一次读取主步骤记录，供批次投影复用同一快照。"""
         with self._lock:
-            payload = self._read_steps(run_id)
+            return self._read_steps(run_id)
+
+    def list_steps_from_snapshot(
+        self, run_id: str, payload: dict[str, Any], task_id: str = ""
+    ) -> list[StepRecord]:
+        """从已读取的主步骤快照提取记录，不加载检查脚本或其归档。"""
         if task_id:
             tasks = payload.get("tasks")
             slot = next(
@@ -316,45 +313,6 @@ class RecordStore:
         for value in source.values():
             if isinstance(value, dict) and isinstance(value.get("name"), str):
                 records.append(_validated(value, run_id, str(value.get("name") or "")))
-        return records
-
-    def list_review_substeps(self, run_id: str, task_id: str) -> list[StepRecord]:
-        """审查 Agent 内部工具的记录（来自 artifacts/review_agent/steps/）。
-
-        这些工具是 review_agent 的内部步骤，刻意不进 steps.json 主表；
-        工作台要展示它们的执行证据时用这个方法，并按各工具自己声明的
-        RecordView 投影后再返回，避免把过程量原样送到前端。
-        """
-        from agents.review.gates.registry import resolve_tool
-        from workflow.engine.definitions import REVIEW_EVIDENCE_STEPS
-
-        if not task_id:
-            return []
-        records: list[StepRecord] = []
-        for name in REVIEW_EVIDENCE_STEPS:
-            relative = f"artifacts/review_agent/steps/{name}.json"
-            if not (self.task_dir(run_id, task_id) / relative).is_file():
-                continue
-            try:
-                body = self.read_artifact(run_id, relative, task_id)
-            except Exception:
-                continue
-            if not isinstance(body, dict):
-                continue
-            try:
-                record = _validated(body, run_id, name)
-            except ValueError:
-                continue
-            try:
-                spec = resolve_tool(name)
-            except Exception:
-                records.append(record)
-                continue
-            projected = record.public(spec.input_record, spec.output_record)
-            try:
-                records.append(StepRecord.model_validate(projected))
-            except Exception:
-                records.append(record)
         return records
 
     def _base(self, run_id: str, task_id: str) -> Path:

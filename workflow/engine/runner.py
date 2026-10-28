@@ -56,7 +56,6 @@ from workflow.engine.routes import (
     REPORT,
     RETRY,
     REVIEW,
-    REVIEW_EVIDENCE_STEPS,
     RUN_PHASES,
     SUBMIT,
     TASK_CONDITIONAL_TRANSITIONS,
@@ -85,11 +84,9 @@ class WorkflowServices:
 
     source_repo: Path | None = None
     project_subdir: Path | None = None
-    verify_commands: list[list[str]] = field(default_factory=list)
     git_push: bool = False
     git_remote: str = settings.default_git_remote
     command_timeout_seconds: int = 600
-    replay_timeout_seconds: int = 30
     workspaces: WorkspaceManager | None = None
     delivery: GitBranchDelivery | None = None
     log_source: ESLogAdapter | None = None
@@ -504,10 +501,6 @@ def _retry_target_for_step(step_name: str) -> str:
         "prepare_evidence",
     }:
         return PREPARE_CONTEXT
-    if step_name in {"check_changes", "syntax_regression", "verify_issue"}:
-        return UNIFIED_FIXER
-    if step_name == "run_regression":
-        return REVIEW
     if step_name == "generate_report":
         return REPORT
     if step_name == "submit_changes":
@@ -590,13 +583,6 @@ def bind(
                 patch["retry_reason"] = retry_reason
         else:
             patch = _failure_route_patch(result)
-            if spec.name in {"verify_issue", "run_regression"}:
-                payload = {"passed": False, "status": "unverified", **result.output}
-                if "reason" not in payload:
-                    payload["reason"] = str(
-                        result.failure.reason if result.failure else "步骤未产出结果"
-                    )
-                patch.update(spec.patch(payload))
             if result.failure is not None and result.failure.recoverable:
                 target = _retry_target_for_step(spec.name)
                 if target:
@@ -654,19 +640,6 @@ def _save_fail(
         output=output,
         output_model=spec.output_model,
     )
-    if (
-        (
-            spec.name in {"verify_issue", "run_regression"}
-            and output.get("status") == "failed"
-        )
-        or (
-            spec.name == "check_changes"
-            and "checks" in output
-            and output.get("passed") is False
-        )
-        or error.code == "SYNTAX_INVALID"
-    ):
-        status, business = "succeeded", "FAIL"
     record.status = status
     record.result = business
     record.summary = summary_of(output) or public_exception(
@@ -948,8 +921,6 @@ def execute_once(
 ) -> tuple[int, StepRecord | None, dict[str, Any]]:
     """同步执行一个步骤或 Agent，返回 (退出码, 步骤记录, 节点结果)。"""
     _require_identity(spec, run_id, task_id)
-    if spec.name in REVIEW_EVIDENCE_STEPS:
-        raise StepRunnerError("该检查已收归修复后代码审查 Agent，请执行 review_agent", code="INTERNAL_REVIEW_STEP")
     _require_write_confirmation(spec, confirm_write)
     store = default_store()
     missing = dependencies_missing(store, run_id, spec, task_id)

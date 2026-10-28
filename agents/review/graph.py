@@ -7,20 +7,19 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from core.contracts import AgentRequest, StepRecord, plan_of
+from core.contracts import AgentRequest, plan_of
 from core.policy import ToolPolicy
 from infrastructure.llm import PromptRenderer
 from infrastructure.llm.common import audit_metadata, invoke_with_audit, parse_result, raw_result, usage_of
 from infrastructure.llm.context import build_context, model_name, prompt_context
 from infrastructure.llm.session import ClaudeSession, resolve_tools, run_agent_once
-from infrastructure.storage.store import RecordStore
 from infrastructure.workspace.diff import file_changes
 from infrastructure.workspace.workspace import WorkspaceManager
 from agents.review.contract import (
@@ -33,69 +32,6 @@ from agents.review.contract import (
     review_checks,
     slim_review,
 )
-
-REPORT_PATH = "artifacts/review_agent/substeps.json"
-REVIEW_EVIDENCE_STEPS = (
-    "check_changes",
-    "syntax_regression",
-    "plan_validation",
-    "verify_issue",
-    "run_regression",
-    "summarize_validation",
-)
-
-
-# =========================================================================
-# 1. 内部检查存储与审查流水线 (原 pipeline.py)
-# =========================================================================
-
-class _ReviewStore:
-    """将内部检查记录写入审查产物，不向主 steps.json 添加节点。"""
-
-    def __init__(self, store: RecordStore) -> None:
-        self.store = store
-        self.records: dict[str, StepRecord] = {}
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.store, name)
-
-    def summaries(self) -> list[dict[str, Any]]:
-        return [
-            {
-                "name": record.name,
-                "title": record.title,
-                "status": record.status,
-                "summary": record.summary,
-                "execution": record.execution.model_dump(mode="json") if record.execution else None,
-                "assessment": record.assessment.model_dump(mode="json") if record.assessment else None,
-                "record_path": f"artifacts/review_agent/steps/{record.name}.json",
-            }
-            for record in self.records.values()
-        ]
-
-    def save(self, run_id: str, record: StepRecord, task_id: str = "", **views: Any) -> Any:
-        if record.name not in REVIEW_EVIDENCE_STEPS:
-            return self.store.save(run_id, record, task_id, **views)
-        self.records[record.name] = record.model_copy(deep=True)
-        path = f"artifacts/review_agent/steps/{record.name}.json"
-        self.store.write_artifact(run_id, path, record.model_dump(mode="json"), task_id)
-        self.store.write_artifact(run_id, REPORT_PATH, {"substeps": self.summaries()}, task_id)
-        parent = self.store.load(run_id, "review_agent", task_id)
-        if parent is not None:
-            parent.summary = f"内部检查：{record.title}"
-            parent.output = {"substeps": self.summaries(), "review_report_path": REPORT_PATH}
-            self.store.save(run_id, parent, task_id)
-        return self.store.task_dir(run_id, task_id) / path
-
-
-def build_review_pipeline(
-    store: RecordStore,
-    services: Any,
-    model_node: Callable[[dict[str, Any]], dict[str, Any]],
-) -> Callable[[dict[str, Any]], dict[str, Any]]:
-    """兼容旧入口；检查完全由审查 Agent 执行，不自动调用历史脚本。"""
-    return model_node
-
 
 # =========================================================================
 # 2. 模型通道 Provider (原 provider.py)
@@ -336,9 +272,6 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
         },
         changed_files=tuple(changed_files),
         diff_summary=full_diff_summary,
-        gate_results={},
-        verification_results={},
-        regression_results={},
         allowed_scope=(carrier_dir,),
         stop_conditions=("证据与补丁版本不一致", "真实 diff 与声明不一致", "发现未授权范围"),
         source_project_path=str(shared_root) if shared_root else "",
@@ -421,6 +354,7 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
         delivery_eligible=False,
         contract_error="" if checked.valid else checked.reason,
         evidence_version=current_version,
+        diff_files=file_changes(str(state["baseline_dir"]), workspace, changed_files) if state.get("baseline_dir") else [],
         code_verdict=code_verdict,
         coverage=coverage,
         dimensions=dimensions,
@@ -465,11 +399,8 @@ __all__ = [
     "ClaudeSessionProvider",
     "ManualProvider",
     "PROVIDERS",
-    "REPORT_PATH",
     "ReviewProvider",
-    "_ReviewStore",
     "build",
-    "build_review_pipeline",
     "create_provider",
     "create_provider_from_env",
     "review",

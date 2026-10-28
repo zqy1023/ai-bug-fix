@@ -119,7 +119,7 @@ async def workspace_lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = _build_app()
 _original_lifespan = app.router.lifespan_context
 app.router.lifespan_context = workspace_lifespan
-app.title = "AI Repair Workbench API"
+app.title = "AI Bug Fixer Server API"
 app.version = SERVICE_VERSION
 app.description = "Run/task/step/artifact observability and human approval API."
 app.add_middleware(

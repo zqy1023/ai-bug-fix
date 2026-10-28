@@ -16,6 +16,7 @@ class ApprovalInput(FrozenModel):
 
     # task_id：字段说明见该模型文档与工作流契约。
     candidate_id: str
+    evidence_version: dict = Field(default_factory=dict)
     task_id: str
     # decision：字段说明见该模型文档与工作流契约。
     decision: Literal["PENDING", "APPROVE", "REJECT"] = "PENDING"

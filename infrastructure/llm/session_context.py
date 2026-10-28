@@ -51,7 +51,7 @@ def _invoke_session(
     # 身份、当前差异及验证每轮重发；只省略未变化的背景字段。
     always = {
         "run_id", "task_id", "attempt", "framework", "carrier", "biztype", "service_name",
-        "changed_files", "diff_summary", "gate_results", "verification_results", "regression_results",
+        "changed_files", "diff_summary",
         "allowed_read_roots", "allowed_write_roots", "allowed_scope", "budget", "retry_feedback",
     }
     if isinstance(previous, dict) and all(previous.get(k) == current.get(k) for k in ("run_id", "task_id")):

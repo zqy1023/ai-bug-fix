@@ -17,7 +17,6 @@ export function ReviewResult({ step }: { step: StepRecord }) {
   const title = contractError ? '审查输出异常' : ({ PASS: '代码审查通过', FAIL: '代码审查未通过', MANUAL: '代码审查存在待判断事项' }[verdict] || '尚无审查结论');
   const dimensions = (output.dimensions || {}) as Record<string, { evidence?: string[] }>;
   const patch = (output.evidence_version || {}) as Record<string, string>;
-  const substeps = Array.isArray(output.substeps) ? output.substeps as Array<{name: string; title: string; status: string; summary: string; assessment?: {outcome?: string}}> : [];
   return <div className={styles.result}>
     <header className={`${styles.verdict} ${styles[VERDICT_CLASS[verdict.toLowerCase()] ?? 'verdict']}`}>
       <div><strong>{title}</strong><p>{String(output.summary || step.summary || '等待审查结束')}</p></div>
@@ -31,15 +30,10 @@ export function ReviewResult({ step }: { step: StepRecord }) {
       </div>)}
     </div> : <p className={styles.legacyNote}>旧记录没有分项结果，无法从长段总结可靠推断各项是否通过。重新审查后生成检查表。</p>}
     {contractError && <p role="alert" className={styles.contractError}>协议错误：{contractError}</p>}
-    {substeps.length > 0 && <details className={styles.notes}><summary>内部检查与执行证据 · {substeps.length} 项</summary>
-      <p>以下是审查 Agent 使用的验证工具；最终结论由语法、业务修复和影响范围综合形成。</p>
-      <ul>{substeps.map((item) => <li key={item.name}><strong>{item.title}</strong> · {item.status === 'running' ? '执行中' : item.assessment?.outcome === 'passed' ? '证据已取得' : '需综合判断'}<p>{item.summary}</p></li>)}</ul>
-      <p>完整记录见本步骤的 review_substeps 归档产物。</p>
-    </details>}
     {findings.length > 0 && <section className={styles.notes}><strong>已确认缺陷</strong><ul>{findings.map((value, index) => <li key={index}>{value}</li>)}</ul></section>}
     <section className={styles.nextAction}><strong>待处理事项</strong>
       {changes.length > 0 ? <ul>{changes.map((value, index) => <li key={index}>{value}</li>)}</ul> : <p>没有额外处理项</p>}
-      <p>后续动作由“确定后续动作”节点统一计算，审查意见不直接触发人工审批。</p>
+      <p>已确认缺陷进入回修；交付后由人工确认保留或打回。</p>
     </section>
     {Boolean(output.review_notes) && <details className={styles.notes}><summary>查看完整审查说明</summary><p>{String(output.review_notes)}</p></details>}
   </div>;

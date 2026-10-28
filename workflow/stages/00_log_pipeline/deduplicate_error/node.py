@@ -100,7 +100,7 @@ def consume(
                 "raw_error": record["raw_error"],
             },
         }
-        # 保留可选 response/track_config，供 verify_issue 执行真实重放。
+        # 保留可选 response/track_config，供分析与审查 Agent 核对真实输入。
         for optional in ("response", "track_config", "message"):
             if optional in record and record.get(optional):
                 grouped[key]["problem"][optional] = record[optional]

@@ -152,20 +152,20 @@ export function ChangeSection({ detail, view, onOpenStep }: {
             {diffArtifact && (
               <Button size="small" icon={<DiffOutlined />} onClick={() => openDiff('')}>查看代码差异</Button>
             )}
-            {changes.step && <Button size="small" type="link" onClick={() => onOpenStep(changes.step!.name)}>变更门禁详情</Button>}
+            {changes.step && <Button size="small" type="link" onClick={() => onOpenStep(changes.step!.name)}>基线差异详情</Button>}
           </div>
         </>
       ) : (
         <SectionEmpty
-          title={changes.checkState === 'not_returned' ? '变更门禁证据未回传'
+          title={changes.checkState === 'not_returned' ? '基线差异证据未回传'
             : changes.listMissing ? '变更核验已执行，但没有回传文件清单'
               : changes.evidenceKnown ? '没有检测到真实源码差异'
                 : changes.claimedFiles.length ? '修改声明尚未核验' : '没有可核验的源码差异'}
           body={changes.checkState === 'not_returned'
-            ? '审查内部的变更核验已执行，但结果没有回传到本任务，不能据此判断是否存在真实差异。'
+            ? '本任务没有记录可用的基线差异，不能据此判断是否存在真实差异。'
             : changes.listMissing
               ? '核验结论已经回传，文件级差异清单没有随审查结论返回；请用“查看代码差异”核对逐行差异。'
-              : changes.evidenceKnown ? '确定性门禁已比对基线；未将模型声明当作实际修改。'
+              : changes.evidenceKnown ? '已比对只读基线；未将模型声明当作实际修改。'
                 : changes.claimedFiles.length ? '修复 Agent 声明了候选文件，但还没有确定性差异证据。'
                   : '任务可能只做根因分析，或在修改前已终止。'}
         />
@@ -179,17 +179,17 @@ export function ChangeSection({ detail, view, onOpenStep }: {
         styles={{ body: { padding: 10, overflow: 'hidden' } }}
       >
         {diffQuery.isLoading ? <Skeleton active paragraph={{ rows: 8 }} />
-          : diffQuery.isError ? <EmptyState title="差异产物读取失败" description="请到变更门禁步骤核对错误。" />
+          : diffQuery.isError ? <EmptyState title="差异产物读取失败" description="请到基线差异步骤核对错误。" />
             : diffQuery.data?.content ? (
               <CodeDiffViewer payload={diffQuery.data.content} selectedPath={selectedPath} onSelectedPathChange={setSelectedPath} />
             ) : (
               <EmptyState
                 title="没有可展示的差异文本"
                 description={changes.checkState === 'available'
-                  ? '变更门禁已执行，但没有回传差异文本产物。'
+                  ? '基线差异已执行，但没有回传差异文本产物。'
                   : changes.checkState === 'not_returned'
-                    ? '审查内部证据未回传，本任务没有可展示的差异文本。'
-                    : '变更门禁未执行，本任务没有差异产物。'}
+                    ? '差异证据未记录，本任务没有可展示的差异文本。'
+                    : '基线差异未执行，本任务没有差异产物。'}
               />
             )}
       </WorkbenchDrawer>

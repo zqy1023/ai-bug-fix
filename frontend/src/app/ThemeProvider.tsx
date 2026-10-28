@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
-import { applyDesignTokens, applyLegacyAliases, type ThemeMode } from './tokens';
+import { applyDesignTokens, type ThemeMode } from './tokens';
 import { getAntdTheme } from './theme';
 
 const STORAGE_KEY = 'wb-theme';
@@ -15,7 +15,6 @@ function initialMode(): ThemeMode {
 
 // 首帧渲染前先写入令牌,避免主题闪烁;此后由 effect 接管(跟随系统变化)。
 applyDesignTokens(initialMode());
-applyLegacyAliases();
 
 interface ThemeContextValue {
   mode: ThemeMode;
@@ -46,8 +45,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     applyDesignTokens(mode);
-    applyLegacyAliases();
-    document.documentElement.dataset.theme = mode;
+        document.documentElement.dataset.theme = mode;
   }, [mode]);
 
   const toggle = useCallback(() => {

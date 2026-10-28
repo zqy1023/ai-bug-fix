@@ -72,7 +72,7 @@ def _mark_waiting_approval(report: dict[str, Any], *, delivered: bool) -> None:
 def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
     """把通过审查的修复交付到修复分支。交付前检查必要的门禁条件。"""
     from workflow.engine.evidence_version import evidence_version
-    from workflow.engine.validation import business_recovery, fingerprint
+    from workflow.engine.routes import fingerprint
 
     candidate_id = fingerprint(
         {
@@ -128,7 +128,7 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
                 {"changed_files": [], "reason": "no_changes"},
             )
         review_decision = str(data.review_decision or "").upper()
-        # 是否允许交付由 review_agent 的 validation_decision 统一决定；MANUAL 可能仅表示
+        # 是否允许交付由 review_agent 的三项审查结论决定；MANUAL 可能仅表示
         # 缺少录制 response，不能在此重复把业务未验证变成交付失败。
         if review_decision not in ("PASS", "HUMAN", "MANUAL"):
             raise StepFailed(
@@ -194,13 +194,7 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
                 )
                 from workflow.engine.evidence_version import evidence_version
 
-                recorded_patch = (
-                    (
-                        (repair_report.get("validation") or {}).get("verify_issue")
-                        or {}
-                    ).get("evidence_version")
-                    or {}
-                ).get("patch_id")
+                recorded_patch = ((repair_report.get("review") or {}).get("evidence_version") or {}).get("patch_id")
                 current_patch = evidence_version(
                     data.ai_workspace_path, list(data.changed_files)
                 ).get("patch_id")
@@ -256,10 +250,6 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
                     "核对修复分支与验证记录后确认保留；需要撤回时打回。"
                 )
             _mark_waiting_approval(repair_report, delivered=data.publish)
-            validation = repair_report.get("validation")
-            repair_report["business_recovery"] = business_recovery(
-                (validation if isinstance(validation, dict) else {}).get("run_regression") or {}
-            )
             store.write_artifact(
                 ctx.run.run_id, report_path, _delivery_report(repair_report), data.task_id
             )

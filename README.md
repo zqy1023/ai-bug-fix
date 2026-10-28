@@ -160,7 +160,7 @@ ai_bug_fixer/
 │   └── projections.py              # 前端视图投影与看板统计
 │
 ├── frontend/                       # React + Vite 前端看板
-├── tests/                          # 单元与集成测试套件 (全量 135 个测试用例)
+├── tests/                          # 单元与集成核心自动化测试套件
 ├── .env.example                    # 环境配置范例
 └── README.md                       # 系统架构说明文档
 ```
@@ -176,8 +176,8 @@ python -m workflow.engine.handoff
 # 2. 前端编译与生产打包验证 (TypeScript 类型安全校验)
 npm --prefix frontend run build
 
-# 3. 运行全量自动化测试套件 (135 个测试)
-python -m pytest tests/ -q
+# 3. 运行全量自动化测试套件
+python -m pytest tests/ --ignore=runtime -q
 
 # 4. 启动统一 Web 服务
 python server.py

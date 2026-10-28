@@ -1,6 +1,8 @@
 """工作台运行投影、产物解析与状态计算。"""
 from __future__ import annotations
 
+from config.nacos import nacos_get
+
 import json
 import logging
 import os
@@ -46,7 +48,7 @@ from server.projections import run_error as project_run_error
 from server.projections import run_timestamps, task_stages
 from server.view_models import delivery_view, run_actions, task_retry_action
 
-logger = logging.getLogger("workbench.run_service")
+logger = logging.getLogger("server.run_service")
 
 
 class ApprovalDecision(BaseModel):
@@ -196,13 +198,11 @@ def _health_payload(_: None = Depends(_authorize)) -> dict[str, Any]:
     config = _config()
     from agents.review.contract import REVIEW_CONTRACT_VERSION
     from core.contracts import WORKFLOW_VERSION
-    from agents.review.gates.verify_issue.assessment import CONTRACT_VERSION
     return {
         "status": "ok",
         "service": SERVICE_NAME,
         "version": SERVICE_VERSION,
         "workflow_version": WORKFLOW_VERSION,
-        "verification_contract_version": CONTRACT_VERSION,
         "review_contract_version": REVIEW_CONTRACT_VERSION,
         # 该字段只表示「日志行本身是否脱敏」，当前进程日志不脱敏，因此必须如实
         # 报告 False；交付面与异常摘要的脱敏走 redact_for_delivery /
@@ -210,7 +210,6 @@ def _health_payload(_: None = Depends(_authorize)) -> dict[str, Any]:
         "log_redaction_enabled": False,
         "runtime_dir_configured": bool(config.runtime_dir),
         "source_repo_configured": config.source_repo is not None,
-        from config.nacos import nacos_get
         "api_token_required": bool(nacos_get("WORKBENCH_API_TOKEN", "").strip()),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
@@ -521,13 +520,9 @@ def _checkpoint_projection(snapshot: Any) -> dict[str, Any]:
     }
 
 def _run_payload(
-    store: RecordStore, run_id: str, *, substeps_for: str | None = None
+    store: RecordStore, run_id: str
 ) -> dict[str, Any]:
-    """构建 Run 聚合投影。
-
-    ``substeps_for`` 指定只加载某个任务的审查内部证据；任务详情只需要当前
-    任务，避免为 30+ 个任务读取无关的 review_agent 子步骤产物。
-    """
+    """构建主工作流的 Run 聚合投影。"""
     directory = store.run_dir(run_id)
     if not directory.is_dir():
         raise HTTPException(status_code=404, detail="运行记录不存在")
@@ -563,14 +558,6 @@ def _run_payload(
                 item.model_dump(mode="json")
                 for item in store.list_steps_from_snapshot(run_id, steps_payload, task_id)
             ]
-            # 审查 Agent 的内部工具（check_changes / verify_issue / run_regression …）
-            # 刻意不进 steps.json 主表，但工作台必须能看到它们的执行证据，
-            # 否则"变更校验/问题验证/回归验证"三块永远空白。
-            if substeps_for is None or task_id == substeps_for:
-                task_steps.extend(
-                    item.model_dump(mode="json")
-                    for item in store.list_review_substeps(run_id, task_id)
-                )
             final_path = store.task_dir(run_id, task_id) / "reports" / "final.json"
             report = _read_json(final_path, {})
             # 同一任务可经历多轮回修与多次审批；必须以最后一次 request_approval 为准。

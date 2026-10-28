@@ -16,7 +16,7 @@ import { ContextInspector } from './ContextInspector';
 import { StepActionBar } from './StepActionBar';
 import { StepAssessment } from './StepAssessment';
 import { StepOutcome } from './StepOutcome';
-import { REVIEW_TOOL_NAMES, reviewSubsteps } from './reviewEvidence';
+import { workflowSteps } from './reviewEvidence';
 import { labelOf, type TaskView } from './taskVerdict';
 import { TASK_STAGES } from './stages';
 import { Section as TaskSection, ToneTag } from '../../components/section/Section';
@@ -53,19 +53,8 @@ export function TimelineSection({ detail, view, runActive, approvalPending, onOp
   const steps = detail.task.steps ?? [];
   const [selected, setSelected] = useState('');
 
-  // 审计内部工具：审查输出的 substeps 已回传，但主表可能没有对应步骤记录。
-  const internalTools = useMemo(() => {
-    const reviewStep = [...steps].reverse().find((step) => step.name === 'review_agent');
-    const substeps = reviewSubsteps(reviewStep?.output);
-    return [...new Map([...substeps, ...steps]
-      .filter((item) => (REVIEW_TOOL_NAMES as readonly string[]).includes(item.name))
-      .map((item) => [item.name, item])).values()];
-  }, [steps]);
-
   const rows = useMemo(() => {
-    const main = steps.filter((step) => !(REVIEW_TOOL_NAMES as readonly string[]).includes(step.name)
-      && (step.status !== 'pending' || step.name === view.activeStep));
-    const internal = internalTools.map((item) => item.name);
+    const main = workflowSteps(steps).filter(step => step.status !== 'pending' || step.name === view.activeStep);
     // 按工作流阶段顺序排；没有时间戳或同一阶段的记录保持原始相对次序，
     // 避免“等待中”的节点因为缺时间被排到最前。
     const stageIndex = (name: string): number => {
@@ -82,8 +71,8 @@ export function TimelineSection({ detail, view, runActive, approvalPending, onOp
       if (leftTime !== rightTime) return leftTime - rightTime;
       return (original.get(left) ?? 0) - (original.get(right) ?? 0);
     });
-    return { ordered, internal };
-  }, [steps, internalTools, view.activeStep, detail.stages]);
+    return { ordered };
+  }, [steps, view.activeStep, detail.stages]);
 
   const failed = rows.ordered.find((step) => toneForStep(step) === 'danger');
   const selectedStep = rows.ordered.find((step) => step.name === selected);
@@ -98,11 +87,6 @@ export function TimelineSection({ detail, view, runActive, approvalPending, onOp
       subtitle="点击任意节点查看输入、输出与产物"
       extra={<ToneTag tone={failed ? 'bad' : 'muted'}>{failed ? `${rows.ordered.filter((step) => toneForStep(step) === 'danger').length} 个执行异常` : `${rows.ordered.length} 条记录`}</ToneTag>}
     >
-      {rows.internal.length > 0 && (
-        <div className={styles.pad}>
-          <div className={styles.hint}>历史审查内部记录（{rows.internal.length}）记录在审查归档中，点击对应阶段可在抽屉里核对。</div>
-        </div>
-      )}
       {failed && (
         <div className={styles.chipRow}>
           <button type="button" className={styles.chip} onClick={() => open(failed.name)}>

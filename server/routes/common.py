@@ -50,7 +50,7 @@ _RUN_LOCKS: OrderedDict[str, threading.Lock] = OrderedDict()
 _RUN_LOCKS_GUARD = threading.Lock()
 _RUN_LOCKS_LIMIT = 4096
 _STARTED_RUNS: set[str] = set()
-logger = logging.getLogger("workbench.api")
+logger = logging.getLogger("server.api")
 
 
 class ApprovalDecision(BaseModel):
@@ -165,13 +165,6 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
                 item.model_dump(mode="json")
                 for item in store.list_steps(run_id, task_id)
             ]
-            # 审查 Agent 的内部工具（check_changes / verify_issue / run_regression …）
-            # 刻意不进 steps.json 主表，但工作台必须能看到它们的执行证据，
-            # 否则"变更校验/问题验证/回归验证"三块永远空白。
-            task_steps.extend(
-                item.model_dump(mode="json")
-                for item in store.list_review_substeps(run_id, task_id)
-            )
             final_path = store.task_dir(run_id, task_id) / "reports" / "final.json"
             report = _read_json(final_path, {})
             # 同一任务可经历多轮回修与多次审批；必须以最后一次 request_approval 为准。
@@ -491,13 +484,11 @@ def _health_payload(_: None = Depends(_authorize)) -> dict[str, Any]:
     config = _config()
     from agents.review.contract import REVIEW_CONTRACT_VERSION
     from core.contracts import WORKFLOW_VERSION
-    from agents.review.gates.verify_issue.assessment import CONTRACT_VERSION
     return {
         "status": "ok",
         "service": SERVICE_NAME,
         "version": SERVICE_VERSION,
         "workflow_version": WORKFLOW_VERSION,
-        "verification_contract_version": CONTRACT_VERSION,
         "review_contract_version": REVIEW_CONTRACT_VERSION,
         # 该字段只表示「日志行本身是否脱敏」，当前进程日志不脱敏，因此必须如实
         # 报告 False；交付面与异常摘要的脱敏走 redact_for_delivery /
@@ -1318,21 +1309,21 @@ def _resume_workflow_background(
             # task.interrupts 上。审批接口已校验当前任务处于待决状态且持有 run 锁，因此
             # 必须直接把决定交给 checkpoint；绝不能因快照未显示 interrupt 而重新 invoke(None)。
             if detached:
-                from workflow.engine.validation import assert_workflow_version
+                from workflow.engine.routes import assert_workflow_version
                 assert_workflow_version(_store().load_run(run_id))
                 final_state = graph.invoke(None, config=config) if snapshot.next else dict(snapshot.values)
             else:
-                from workflow.engine.validation import assert_workflow_version
+                from workflow.engine.routes import assert_workflow_version
                 assert_workflow_version(_store().load_run(run_id))
                 final_state = graph.invoke(Command(resume=resume_payload), config=config)
         elif has_interrupt:
             from langgraph.types import Command
 
-            from workflow.engine.validation import assert_workflow_version
+            from workflow.engine.routes import assert_workflow_version
             assert_workflow_version(_store().load_run(run_id))
             final_state = graph.invoke(Command(resume={"control": "resume"}), config=config)
         else:
-            from workflow.engine.validation import assert_workflow_version
+            from workflow.engine.routes import assert_workflow_version
             assert_workflow_version(_store().load_run(run_id))
             final_state = graph.invoke(None, config=config)
         # 本次恢复已成功推进 checkpoint；清理之前后台异常写入的失败标记，避免 UI 继续把已恢复运行判为 FAILED。
@@ -1549,7 +1540,7 @@ def _reinvestigate_task(run_id: str, task_id: str, background: BackgroundTasks) 
 
 
 def _require_current_workflow(run_id: str) -> None:
-    from workflow.engine.validation import assert_workflow_version
+    from workflow.engine.routes import assert_workflow_version
     try:
         assert_workflow_version(_store().load_run(run_id))
     except ValueError as error:

@@ -111,7 +111,6 @@ export interface WorkflowReport {
   tokens?: number;
   change_summary?: string;
   completed_steps?: string[];
-  legacy_report?: boolean;
 }
 
 export interface TaskSummary {

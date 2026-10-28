@@ -42,6 +42,7 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         "task_id": str(state.get("task_id") or ""),
         "agent_policy": dict(state.get("agent_policy") or {}),
         "candidate_id": candidate["candidate_id"],
+        "evidence_version": evidence_version(workspace_path, list(state.get("changed_files") or []), baseline_dir),
         "decision": str(state.get("decision") or "PENDING").upper(),
         "reason": str(state.get("retry_reason") or ""),
         "retry_target": str(state.get("retry_target") or "") or None,

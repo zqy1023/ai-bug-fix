@@ -1,7 +1,6 @@
 import type { StepRecord, TaskDetailResponse } from '../../lib/types';
 import { taskIsActive } from '../../lib/lifecycle';
-import { toneForStep } from '../../lib/stepPresentation';
-import { EVIDENCE_STATE_LABELS, workflowSteps, type EvidenceState } from './reviewEvidence';
+import { workflowSteps, type EvidenceState } from './reviewEvidence';
 import { STEP_LABELS } from './stages';
 
 export type Dict = Record<string, unknown>;
@@ -57,16 +56,6 @@ export function stepSummary(step?: StepRecord): string {
 export function labelOf(name?: string): string {
   if (!name) return '未记录';
   return STEP_LABELS[name] || name;
-}
-
-/** 证据位为什么为空，必须按审查真实停点区分，不能统一写成“未执行”。 */
-function evidenceTone(state: EvidenceState): VerdictTone {
-  if (state === 'available') return 'muted';
-  return state === 'not_returned' ? 'warn' : 'muted';
-}
-
-function evidenceBadge(state: EvidenceState): string {
-  return EVIDENCE_STATE_LABELS[state];
 }
 
 export type ChangeFile = { path: string; status: string; added: number; removed: number };
@@ -134,17 +123,7 @@ export interface Verdict {
 }
 
 export interface EvidenceResolution {
-  checkStep?: StepRecord;
-  verifyStep?: StepRecord;
-  regressionStep?: StepRecord;
-  syntaxStep?: StepRecord;
   reviewStep?: StepRecord;
-  checkState: EvidenceState;
-  verifyState: EvidenceState;
-  regressionState: EvidenceState;
-  syntaxState: EvidenceState;
-  reviewRan: boolean;
-  substepSummary: (name: string) => string;
 }
 
 export interface TaskView {
@@ -278,78 +257,31 @@ function verdictOf(input: {
 }
 
 function verificationOf(evidence: EvidenceResolution): VerificationView {
-  const verify = dict(evidence.verifyStep?.output);
-  const regression = dict(evidence.regressionStep?.output);
-  const verifyMode = getText(verify, 'mode');
-  const syntaxOnlyVerification = verifyMode === 'syntax_only';
-  const verifyPassed = evidence.verifyStep?.assessment
-    ? evidence.verifyStep.assessment.outcome === 'passed'
-    : verify.passed === true && !syntaxOnlyVerification;
-  const regressionSyntaxOnly = getText(regression, 'status') === 'syntax_only' || getText(regression, 'mode') === 'syntax';
-  const regressionPassed = evidence.regressionStep?.assessment
-    ? evidence.regressionStep.assessment.outcome === 'passed'
-    : regression.passed === true && !regressionSyntaxOnly;
-  const verifyUnverified = evidence.verifyStep?.assessment?.outcome === 'inconclusive' || getText(verify, 'status') === 'unverified';
-  const regressionUnverified = evidence.regressionStep?.assessment?.outcome === 'inconclusive' || getText(regression, 'status') === 'unverified';
-  const qualitySteps = [evidence.syntaxStep, evidence.verifyStep, evidence.regressionStep]
-    .filter((step): step is StepRecord => Boolean(step));
-  const qualityFailed = qualitySteps.some((step) => toneForStep(step) === 'danger');
-
-  const verdictTone = (state: EvidenceState, passed: boolean, unverified: boolean): { text: string; tone: VerdictTone } => {
-    if (state !== 'available') return { text: evidenceBadge(state), tone: evidenceTone(state) };
-    if (passed) return { text: '通过', tone: 'ok' };
-    if (unverified) return { text: '未验证', tone: 'muted' };
-    return { text: '未通过', tone: 'bad' };
+  const output = dict(evidence.reviewStep?.output);
+  const dimensions = dict(output.dimensions);
+  const dimension = (key: string) => {
+    const status = text(dict(dimensions[key]).status);
+    return { text: status === 'passed' ? '通过' : status === 'failed' ? '未通过' : evidence.reviewStep ? '待确认' : '未执行',
+      tone: (status === 'passed' ? 'ok' : status === 'failed' ? 'bad' : 'muted') as VerdictTone };
   };
-  const verifyVerdict = verdictTone(evidence.verifyState, verifyPassed, verifyUnverified);
-  const regressionVerdict = verdictTone(evidence.regressionState, regressionPassed, regressionUnverified);
-  const syntaxFailed = toneForStep(evidence.syntaxStep) === 'danger';
-  const syntaxText = evidence.syntaxState !== 'available' ? evidenceBadge(evidence.syntaxState)
-    : syntaxFailed ? '未通过' : '通过';
-
-  return {
-    verifyState: evidence.verifyState,
-    regressionState: evidence.regressionState,
-    syntaxState: evidence.syntaxState,
-    verifyText: evidence.verifyState !== 'available'
-      ? evidenceBadge(evidence.verifyState)
-      : syntaxOnlyVerification ? '仅语法检查' : verifyVerdict.text,
-    verifyTone: evidence.verifyState !== 'available' || syntaxOnlyVerification ? evidenceTone(evidence.verifyState) : verifyVerdict.tone,
-    regressionText: evidence.regressionState !== 'available'
-      ? evidenceBadge(evidence.regressionState)
-      : regressionSyntaxOnly ? '仅语法编译' : regressionVerdict.text,
-    regressionTone: evidence.regressionState !== 'available' || regressionSyntaxOnly ? evidenceTone(evidence.regressionState) : regressionVerdict.tone,
-    syntaxText,
-    syntaxTone: evidence.syntaxState !== 'available' ? evidenceTone(evidence.syntaxState) : syntaxFailed ? 'bad' : 'ok',
-    internalEvidenceMissing: [evidence.checkState, evidence.verifyState, evidence.regressionState].includes('not_returned'),
-    qualityFailed,
-    syntaxOnlyVerification,
-  };
+  const syntax = dimension('syntax'), business = dimension('business'), scope = dimension('scope');
+  const state: EvidenceState = evidence.reviewStep ? 'available' : 'not_executed';
+  return { verifyState: state, regressionState: state, syntaxState: state,
+    verifyText: business.text, verifyTone: business.tone, regressionText: scope.text, regressionTone: scope.tone,
+    syntaxText: syntax.text, syntaxTone: syntax.tone, internalEvidenceMissing: false,
+    qualityFailed: [syntax, business, scope].some(item => item.tone === 'bad'), syntaxOnlyVerification: false };
 }
 
 function changesOf(detail: TaskDetailResponse, evidence: EvidenceResolution): ChangeView {
   const steps = detail.task.steps ?? [];
   const repairStep = latestStep(steps, 'unified_fixer_agent') ?? latestStep(steps, 'repair_agent');
   const repair = dict(repairStep?.output);
-  const gate = dict(evidence.checkStep?.output);
-  const gateFiles = objects(gate.files).filter((file) => text(file.path) && text(file.status) !== 'truncated');
-  const fileByPath = new Map<string, Dict>(gateFiles.map((file) => [text(file.path), file] as const));
-  const claim = dict(gate.claim);
-  const gateScope = dict(gate.scope);
-  // 只有回传了 actual 清单且基线可比较，才算“核验完成”；
-  // 有步骤记录但没有 claim.actual 的受阻输出不算核验证据。
-  const hasActualClaim = Array.isArray(claim.actual);
-  const evidenceKnown = Boolean(
-    evidence.checkStep && hasActualClaim
-    && (gateScope.diffable === true || Number(gateScope.baseline_files || 0) > 0),
-  );
-  const actualFilePaths = strings(claim.actual);
-  const actualFromFileEvidence = gateFiles
-    .filter((file) => ['added', 'modified', 'deleted', 'changed', 'modified_too_large'].includes(text(file.status).toLowerCase()))
-    .map((file) => text(file.path));
-  const verifiedFilePaths = actualFilePaths.length ? actualFilePaths : actualFromFileEvidence;
+  const review = dict(evidence.reviewStep?.output);
+  const diffFiles = objects(review.diff_files).filter(file => text(file.path));
+  const fileByPath = new Map<string, Dict>(diffFiles.map(file => [text(file.path), file] as const));
+  const evidenceKnown = Array.isArray(review.diff_files) && Boolean(dict(review.evidence_version).baseline_id);
   const claimedFiles = strings(repair.changed_files);
-  const displayPaths = evidenceKnown ? verifiedFilePaths : claimedFiles;
+  const displayPaths = evidenceKnown ? diffFiles.map(file => text(file.path)) : claimedFiles;
   const files: ChangeFile[] = displayPaths.map((path) => {
     const file = fileByPath.get(path);
     return {
@@ -359,7 +291,7 @@ function changesOf(detail: TaskDetailResponse, evidence: EvidenceResolution): Ch
       removed: Number(file?.removed || 0) || 0,
     };
   });
-  const totals = dict(gate.totals);
+  const totals: Dict = {};
   const added = Number(totals.added ?? files.reduce((sum, file) => sum + file.added, 0)) || 0;
   const removed = Number(totals.removed ?? files.reduce((sum, file) => sum + file.removed, 0)) || 0;
   return {
@@ -368,10 +300,10 @@ function changesOf(detail: TaskDetailResponse, evidence: EvidenceResolution): Ch
     added,
     removed,
     evidenceKnown,
-    listMissing: evidence.checkState === 'available' && !evidenceKnown && files.length === 0,
-    checkState: evidence.checkState,
+    listMissing: false,
+    checkState: evidenceKnown ? 'available' : 'not_executed',
     claimedFiles,
-    step: evidence.checkStep,
+    step: evidence.reviewStep,
   };
 }
 
@@ -414,7 +346,7 @@ function deliveryOf(detail: TaskDetailResponse, result: string, recoveryFailed: 
 /** 单一数据推导入口：结论、改动、交付、验证四块共用同一套取舍，避免各分区各算一遍。 */
 export function buildTaskView(detail: TaskDetailResponse, evidence: EvidenceResolution): TaskView {
   const task = detail.task;
-  const steps = task.steps ?? [];
+  const steps = workflowSteps(task.steps ?? []);
   const report = dict(task.report);
   const lifecycle = dict(task.lifecycle);
   const lifecycleStatus = getText(lifecycle, 'status').toLowerCase();
@@ -550,8 +482,8 @@ export function buildHeroTiles(view: TaskView): HeroTile[] {
       sub: changes.count > 0 && changes.evidenceKnown ? `+${changes.added} / −${changes.removed}` : changes.evidenceKnown ? '基线比对完成' : '未完成确定性比对',
       tone: changes.evidenceKnown ? 'ok' : changes.checkState === 'not_returned' ? 'warn' : 'muted',
     },
-    { key: 'verify', tab: 'evidence', label: '问题验证', value: verification.verifyText, sub: '原问题重放', tone: verification.verifyTone },
-    { key: 'regression', tab: 'evidence', label: '回归测试', value: verification.regressionText, sub: '真实请求回归', tone: verification.regressionTone },
+    { key: 'verify', tab: 'evidence', label: '业务修复', value: verification.verifyText, sub: 'Agent 源码审查', tone: verification.verifyTone },
+    { key: 'regression', tab: 'evidence', label: '影响范围', value: verification.regressionText, sub: 'Agent 范围审查', tone: verification.regressionTone },
     { key: 'review', tab: 'evidence', label: 'AI 审查', value: reviewValue, sub: review.findings.length ? `${review.findings.length} 项发现` : '审查结论', tone: reviewTone },
     {
       key: 'delivery',
@@ -574,5 +506,5 @@ export function verificationSummary(view: TaskView): { tone: VerdictTone; text: 
   if (view.verification.internalEvidenceMissing) return { tone: 'warn', text: '审查内部证据未回传' };
   if (view.verification.verifyTone === 'warn') return { tone: 'warn', text: `问题验证 ${verify}` };
   if (view.verification.regressionTone === 'warn') return { tone: 'warn', text: `回归测试 ${regression}` };
-  return { tone: 'ok', text: `问题验证 ${verify} · 回归 ${regression} · 语法 ${syntax}` };
+  return { tone: 'ok', text: `业务修复 ${verify} · 影响范围 ${regression} · 语法 ${syntax}` };
 }

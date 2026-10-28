@@ -13,14 +13,12 @@ const descriptions: Record<string, string> = {
   locate_agent: '结合异常与源码定位根因，区分事实、推断与证据缺口。',
   claim_repair_slot: '领取本问题的修复资格，防止重复处理。',
   repair_agent: '执行运输商范围内的修复，记录方案及实际修改清单。',
-  review_agent: '内部执行范围、语法和业务验证，按三个维度综合判定修复效果。',
+  review_agent: '由审查 Agent 读取源码与证据，核对语法、业务修复及影响范围。',
   prepare_delivery: '提交业务修改与本轮任务概要，记录分支与提交。',
-  request_approval: '审阅本地修复候选；批准后才正式推送修复分支。',
+  request_approval: '复核已交付的报告或代码，确认保留或打回撤回。',
   generate_report: '生成任务报告，汇总分析、修复、审查和验证结论。',
   publish_delivery: '将人工批准的同一提交正式交付，按配置推送。',
   finalize_execution: '汇总任务结果、停止原因和后续处理要求。',
-  plan_validation: '固定本次验证的覆盖范围、原始响应可用性与验收断言。',
-  summarize_validation: '汇总原异常重放与真实请求回归两个维度的实际结论。',
 };
 const labels: Record<string, string> = {
   root_cause: '根因分析', summary: '执行结论', reason: '处理说明', analysis: '修复分析',

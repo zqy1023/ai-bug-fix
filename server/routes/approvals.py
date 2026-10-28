@@ -81,19 +81,6 @@ def v1_list_approvals(
             reason="" if current and candidate.phase in {"prepared", "published"} and candidate.candidate_id else "缺少有效交付候选或记录属于历史工作流",
         )
         reject = ActionAvailability(enabled=current, reason="" if current else "历史工作流只读，请创建新执行")
-        regression_step = next((value for value in reversed(steps) if value.get("name") == "run_regression"), {})
-        regression_output = regression_step.get("output") if isinstance(regression_step.get("output"), dict) else {}
-        if not regression_output:
-            recovery = None
-        else:
-            reg_status = str(regression_output.get("status") or regression_output.get("outcome") or "").lower()
-            reg_reason = str(regression_output.get("reason") or regression_output.get("summary") or "")
-            if reg_status in {"passed", "verified", "success", "succeeded"}:
-                recovery = {"status": "verified", "reason": reg_reason or "业务回归验证通过"}
-            elif reg_status in {"failed", "fail"}:
-                recovery = {"status": "failed", "reason": reg_reason or "业务回归未通过"}
-            else:
-                recovery = {"status": "unverified", "reason": reg_reason or "未获得明确业务回归结论"}
         items.append({
             "delivery": candidate.model_dump(mode="json"),
             "actions": {"approve": approve.model_dump(mode="json"), "reject": reject.model_dump(mode="json")},
@@ -102,7 +89,7 @@ def v1_list_approvals(
             "scope": safe_plan["scope"], "status": "pending", "summary": summary,
             "changed_files": list(dict.fromkeys(str(value) for value in files if str(value).strip())),
             "change_plan": safe_plan,
-            "business_recovery": recovery,
+
             "problem": task.get("problem") or item.get("problem") or {},
             "created_at": item.get("updated_at") or datetime.now(timezone.utc).isoformat(), "expires_at": None,
         })

@@ -8,10 +8,10 @@ export type TaskStage = {
   group: boolean;
 };
 
-/** 与 app/workflow/definitions.py 的任务子图保持一致；组合节点展开为成员步骤。 */
+/** 与 workflow/engine/handoff.py 的任务子图阶段保持一致；组合节点展开为成员步骤。 */
 export const TASK_STAGES: TaskStage[] = WORKFLOW_STAGES;
 
-/** 只有终态收尾记录不属于用户定义的八个业务阶段。 */
+/** 只有终态收尾记录不属于公开的业务阶段。 */
 const INTERNAL_STEP_LABELS: Record<string, string> = {
   finalize_execution: '收尾汇总',
 };
@@ -36,7 +36,7 @@ export type VisibleStage = {
   representative?: StepRecord;
 };
 
-/** 将内部原子记录聚合到八个公开阶段，主页面不再暴露实现细节。 */
+/** 将内部原子记录聚合到公开业务阶段，主页面不再暴露实现细节。 */
 export function visibleStages(steps: StepRecord[], stages: TaskStage[] = TASK_STAGES): VisibleStage[] {
   const byName = new Map(steps.map((step) => [step.name, step]));
   return stages.map((stage) => {

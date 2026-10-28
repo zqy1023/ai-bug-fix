@@ -28,7 +28,7 @@ def run_fixed_commands(
 ) -> dict[str, Any]:
     """只执行工作流预先配置的命令，禁止 AI 选择或拼接命令。
 
-    原样返回 stdout/stderr；run_regression 分别生成摘要和完整归档。
+    原样返回 stdout/stderr，调用方决定摘要和归档方式。
     """
     root = Path(workspace).resolve()
     results: list[dict[str, Any]] = []

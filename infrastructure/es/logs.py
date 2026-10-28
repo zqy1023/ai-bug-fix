@@ -287,7 +287,7 @@ class ESLogAdapter:
         if track_config:
             result["track_config"] = track_config
         # 显式 error: 后可能只剩异常摘要，必须在丢弃 message 上下文前保留代理渠道。
-        from agents.review.gates.verify_issue.replay_model import extract_track_config
+        from infrastructure.es.request_context import extract_track_config
 
         recovered_config = extract_track_config({"req": req_obj, "track_config": track_config, "message": message})
         if recovered_config:

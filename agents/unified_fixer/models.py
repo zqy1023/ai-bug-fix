@@ -41,8 +41,6 @@ class UnifiedFixerInput(FrozenModel):
     attempt: int = Field(default=1, ge=1)
     retry_reason: str = ""
     retry_context: dict[str, Any] = Field(default_factory=dict)
-    acceptance_contract: dict[str, Any] | None = None
-    baseline_reproduction: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def validate_identity(self) -> UnifiedFixerInput:

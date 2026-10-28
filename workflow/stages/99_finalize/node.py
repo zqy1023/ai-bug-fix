@@ -74,16 +74,9 @@ def build_report(ctx: StepContext, data: FinalizeInput) -> dict[str, Any]:
         ctx.store, ctx.run.run_id, data.task_id, records, "review_agent"
     )
     delivered = _output(records, "submit_changes") or _output(records, "generate_report") or _output(records, "prepare_delivery")
-    validation_decision = review.get("validation_decision") or {}
-    analysis_record = _output(records, "locate_agent") or unified
-    acceptance_contract = analysis_record.get("acceptance_contract") or {}
-    baseline_reproduction = analysis_record.get("baseline_reproduction") or {}
     manual_required, manual_reasons = confirmation(
         {
-            "validation_decision": validation_decision,
             "review": review,
-            "verify_result": _output(records, "verify_issue"),
-            "regression_result": _output(records, "run_regression"),
             "manual_confirmation_required": delivered.get(
                 "manual_confirmation_required"
             ),
@@ -117,22 +110,12 @@ def build_report(ctx: StepContext, data: FinalizeInput) -> dict[str, Any]:
         "candidate_files": locate.get("candidate_files", []),
         "change_plan": repair.get("change_plan", {}),
         "blocked_reason": repair.get("blocked_reason", ""),
-        "acceptance_contract": acceptance_contract,
-        "analysis_checks": analysis_record.get("checks") or {},
-        "agent_policy": analysis_record.get("agent_policy") or {},
-        "baseline_reproduction": baseline_reproduction,
-        "suggested_acceptance": _suggested_acceptance(
-            acceptance_contract, baseline_reproduction
-        ),
-        "validation": {
-            name: full_output(ctx.store, ctx.run.run_id, data.task_id, records, name)
-            for name in ("verify_issue", "syntax_regression", "run_regression")
-        },
+        "analysis_checks": locate.get("checks") or {},
+        "agent_policy": locate.get("agent_policy") or {},
+        "review": review,
+        "acceptance_criteria": unified.get("acceptance_criteria") or [],
         "change_summary": str(repair.get("summary") or repair.get("analysis") or ""),
         "workflow_version": 8,
-        "validation_plan": full_output(ctx.store, ctx.run.run_id, data.task_id, records, "plan_validation"),
-        "validation_summary": full_output(ctx.store, ctx.run.run_id, data.task_id, records, "summarize_validation"),
-        "validation_decision": validation_decision,
         "review_decision": str(review.get("verdict") or ""),
         "manual_confirmation_required": manual_required,
         "manual_confirmation_reasons": manual_reasons,
@@ -151,16 +134,6 @@ def build_report(ctx: StepContext, data: FinalizeInput) -> dict[str, Any]:
             or ""
         ),
     }
-    plan = report.get("validation_plan") or {}
-    missing_response = baseline_reproduction.get("reason_code") == "missing_response" or (
-        bool(plan) and plan.get("has_original_response") is False
-    )
-    if missing_response:
-        report["business_validation"] = {
-            "status": "unverified",
-            "reason_code": "missing_response",
-            "reason": "缺少原始 response，录制样本业务回归未验证；不影响修复、审查、交付及审批流程",
-        }
     from core.contracts import TaskResolution
 
     resolution = {
@@ -278,39 +251,6 @@ def _record_reason(record: StepRecord | None) -> str:
     return ""
 
 
-def _suggested_acceptance(
-    contract: dict[str, Any], baseline: dict[str, Any]
-) -> dict[str, Any]:
-    """基线未建立时，把已固定的验收断言转成“未执行”的人工验收清单。"""
-    if str(baseline.get("status") or "").lower() != "unverified":
-        return {}
-    assertions = contract.get("assertions") if isinstance(contract, dict) else None
-    if not isinstance(assertions, list):
-        return {}
-    return {
-        "status": "not_executed",
-        "coverage": "baseline_unverified",
-        "reason": str(baseline.get("reason") or ""),
-        "assertions": [
-            {
-                "assertion_id": item.get("assertion_id"),
-                "description": item.get("description"),
-                "method": item.get("method"),
-                "verifier": item.get("verifier"),
-                "expected": item.get("expected"),
-                "execution_status": "not_executed",
-            }
-            for item in assertions
-            if isinstance(item, dict)
-        ],
-        "manual_verification": [
-            "按定位根因修改候选文件后，用同一运输商原始请求经 server_dev.main 复跑。",
-            "确认入口返回框架业务结果（TrackResponseModel 或明确的 ServiceError），不得出现未捕获异常。",
-            "补录本次请求与响应作为下一次任务的原始证据，使基线可重放。",
-        ],
-    }
-
-
 def _terminal_details(
     records: list[StepRecord],
     terminal_status: str,
@@ -354,7 +294,7 @@ def _terminal_details(
         )
         if review_record and not blocked_reason:
             blocked_reason = str(
-                (review_record.output.get("validation_decision") or {}).get("reason")
+                review_record.output.get("summary")
                 or review_record.output.get("summary")
                 or ""
             )
@@ -414,7 +354,6 @@ def _terminal_details(
         followups = {
             "prepare_delivery": "检查交付工作区、文件复制、Git 暂存与提交错误日志后重试交付。",
             "review_agent": "检查审查输入证据、模型原始输出和审查契约。",
-            "run_regression": "检查回归报告、命令输出和运行环境。",
         }
         return (
             failed_step.name,
@@ -436,7 +375,7 @@ def _terminal_details(
         # Modification scope is a decisive refusal even when the diagnostic also
         # lists uncertainty. Do not ask for more evidence to resolve a permission boundary.
         for record in reversed(ordered):
-            if record.name not in {"locate_agent", "repair_agent"}:
+            if record.name not in {"unified_fixer_agent", "locate_agent", "repair_agent"}:
                 continue
             output = record.output if isinstance(record.output, dict) else {}
             plan = output.get("change_plan") or {}
@@ -461,17 +400,6 @@ def _terminal_details(
                 f"修复范围超出本任务权限：需要修改当前运输商目录之外的文件{detail}。"
                 "本任务只能修改当前运输商，不能自动修改共享层或其他运输商目录，已转人工处理。",
                 "为涉及的共享层或对应运输商单独发起修复任务；当前任务不继续自动修改范围外文件。",
-            )
-        analysis = _output(records, "generate_report")
-        fixer = _output(records, "unified_fixer_agent") or _output(records, "locate_agent")
-        baseline = fixer.get("baseline_reproduction") or {}
-        if analysis and str(baseline.get("status") or "").lower() == "unverified":
-            return (
-                "generate_report",
-                str(analysis.get("reason") or "").strip()
-                or "未能建立验收基线，已生成分析报告；未执行代码修复。",
-                str(analysis.get("next_action") or "").strip()
-                or "按分析报告中的建议验收标准人工修复并验证后，再重新发起任务。",
             )
         for name in manual_names:
             record = next(
@@ -564,9 +492,6 @@ def _terminal_details(
             "claim_repair_slot": "确认本轮修复资格以及重复任务去重结果。",
             "prepare_workspace": "检查隔离工作区创建日志、磁盘权限和剩余空间。",
             "repair_agent": "依据修复输出调整方案后重试或转人工。",
-            "check_changes": "检查变更门禁报告与文件范围，修正不合规改动。",
-            "verify_issue": "检查问题验证报告和原始异常证据。",
-            "run_regression": "检查准生产回归报告及失败命令。",
             "review_agent": "按审查报告修正风险项后重新提交审查。",
             "prepare_delivery": "检查分支创建、文件复制和交付记录。",
         }
@@ -601,11 +526,6 @@ def full_output(
     store: Any, run_id: str, task_id: str, records: list[StepRecord], name: str
 ) -> dict[str, Any]:
     """Read current formal output; running records may not have a handoff yet."""
-    from workflow.engine.definitions import REVIEW_EVIDENCE_STEPS
-    if name in REVIEW_EVIDENCE_STEPS and not any(record.name == name for record in records):
-        review = _output(records, "review_agent")
-        if not any(item.get("name") == name for item in review.get("substeps") or []):
-            return {}
     formal_path = f"workflow/outputs/{name}.json"
     if (store.task_dir(run_id, task_id) / formal_path).is_file():
         from core.contracts import Handoff

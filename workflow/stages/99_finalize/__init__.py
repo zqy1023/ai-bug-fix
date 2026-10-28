@@ -24,7 +24,7 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
     # safe_carrier_name。Linux 上两者不同会写出一个模型从未修改过的目录。
     report_directory = report_dir(evidence, report_framework_name, carrier)
     # 只有明确的分析报告任务需要把 final.json 复制到 AI 工作区供交付；
-    # 修复任务若也写入该路径，重试 check_changes 时会被误认为源码新增文件。
+    # 修复任务若也写入该路径，重新核对基线差异时会被误认为源码新增文件。
     from workflow.engine.routes import _analysis_only_task
 
     report_destination = (

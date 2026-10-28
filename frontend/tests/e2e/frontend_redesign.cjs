@@ -14,8 +14,7 @@ const passed = (summary) => ({ outcome: 'passed', code: 'VERIFIED', summary });
 const record = (name, title, summary, output = {}) => ({ name, title, status: 'succeeded', execution: { status: 'succeeded' }, assessment: passed(summary), summary, output, artifacts: [], started_at: '2026-10-25T01:08:00Z', finished_at: '2026-10-25T01:12:00Z' });
 const steps = [
   record('prepare_workspace', '准备工作区', '隔离源码基线已准备'),
-  record('locate_agent', '分析模型', '定位到 events 字段缺失', { root_cause: '响应缺少 events 时直接索引字典触发 KeyError。' }),
-  record('repair_agent', '代码修复', '增加缺省值处理', { changed_files: ['carriers/dhl/parser.py'], summary: '为缺失 events 的响应增加受控缺省处理。' }),
+  record('unified_fixer_agent', '统一分析修复模型', '定位到 events 字段缺失并完成受限修补', { root_cause: '响应缺少 events 时直接索引字典触发 KeyError。', changed_files: ['carriers/dhl/parser.py'], summary: '为缺失 events 的响应增加受控缺省处理。' }),
   { ...record('review_agent', '审查模型', '三维综合审查通过', {"review_contract_version": 6, "verdict": "PASS", "passed": true, "code_verdict": "PASS", "summary": "代码修复已通过语法、业务修复与影响范围综合审查。", "dimensions": {"syntax": {"status": "passed", "reason": "修改文件语法编译通过。", "evidence": ["carriers/dhl/parser.py:48"]}, "business": {"status": "passed", "reason": "历史异常重放与源码证明缺失字段得到正确处理。", "evidence": ["carriers/dhl/parser.py:48"]}, "scope": {"status": "passed", "reason": "仅修改运输商解析分支，未发现共享逻辑回退。", "evidence": ["carriers/dhl/parser.py:48"]}}, "substeps": [{"name": "check_changes", "title": "范围检查", "status": "succeeded", "summary": "验证证据已取得", "assessment": {"outcome": "passed"}}, {"name": "syntax_regression", "title": "语法检查", "status": "succeeded", "summary": "验证证据已取得", "assessment": {"outcome": "passed"}}, {"name": "plan_validation", "title": "证据计划", "status": "succeeded", "summary": "验证证据已取得", "assessment": {"outcome": "passed"}}, {"name": "verify_issue", "title": "原问题重放", "status": "succeeded", "summary": "验证证据已取得", "assessment": {"outcome": "passed"}}, {"name": "run_regression", "title": "真实请求", "status": "succeeded", "summary": "验证证据已取得", "assessment": {"outcome": "passed"}}, {"name": "summarize_validation", "title": "证据汇总", "status": "succeeded", "summary": "验证证据已取得", "assessment": {"outcome": "passed"}}]}), artifacts: [diffRef, verifyRef] },
   { name: 'request_approval', title: '人工审批', status: 'waiting', execution: { status: 'waiting' }, artifacts: [], started_at: '2026-10-25T01:12:00Z' },
 ];
@@ -25,12 +24,11 @@ const task = { task_id: taskId, carrier: 'DHL', biztype: '物流查询', result:
 const siblingTasks = [task, { task_id: 'DHL-0041', carrier: 'DHL', biztype: '物流查询', result: 'SUCCESS' }, { task_id: 'FEDEX-0043', carrier: 'FedEx', biztype: '轨迹查询', result: 'RUNNING', current_step: 'review_agent' }, { task_id: 'UPS-0044', carrier: 'UPS', biztype: '物流查询', result: 'BLOCKED' }];
 const stages = [
   { key: 'prepare_context', title: '准备上下文', members: ['prepare_workspace'], group: true },
-  { key: 'locate_agent', title: '分析模型', members: ['locate_agent'], group: false },
-  { key: 'claim_repair_slot', title: '领取资格', members: ['claim_repair_slot'], group: false },
-  { key: 'repair_agent', title: '修复模型', members: ['repair_agent'], group: false },
-  { key: 'review_agent', title: '审查模型', members: ['review_agent'], group: false },
-  { key: 'generate_report', title: '生成报告', members: ['generate_report'], group: false },
-  { key: 'submit_changes', title: '提交本地、远程分支', members: ['prepare_delivery', 'publish_delivery'], group: true },
+  { key: 'claim_repair_slot', title: '资格领取确认', members: ['claim_repair_slot'], group: false },
+  { key: 'unified_fixer_agent', title: '统一分析修复模型', members: ['unified_fixer_agent'], group: false },
+  { key: 'review_agent', title: '修复后代码审查 Agent', members: ['review_agent'], group: false },
+  { key: 'generate_report', title: '汇总生成报告', members: ['generate_report'], group: false },
+  { key: 'submit_changes', title: '提交候选分支', members: ['submit_changes'], group: false },
   { key: 'request_approval', title: '人工审批', members: ['request_approval'], group: false },
 ];
 const run = { run_id: runId, status: 'running', terminal: false, worker_active: true, started_at: '2026-10-25T00:30:00Z', task_count: 4, succeeded_tasks: 1, failed_tasks: 0, manual_tasks: 0, blocked_tasks: 1, waiting_tasks: 1, inactive_tasks: 0, operator: 'UI acceptance sample', config: { log_hours: 24, log_limit: 500, review_mode: 'human', max_attempts: 3 }, actions: { pause: allow, cancel: allow, resume: deny, retry: deny }, tasks: siblingTasks, steps: [], artifacts: [], run_lifecycle: { status: 'running', current_task_id: 'FEDEX-0043', current_step: 'review_agent' } };
@@ -38,6 +36,10 @@ const approval = { approval_id: 'approval-dhl-0042', run_id: runId, task_id: tas
 if (process.env.UI_REVIEW_ONLY) {
   candidate.phase = 'published'; candidate.pushed = true; candidate.local_branch = false;
   approval.changed_files = [];
+  const reviewOutput = steps.find(step => step.name === 'review_agent').output;
+  delete reviewOutput.substeps;
+  reviewOutput.diff_files = [];
+  reviewOutput.evidence_version = {baseline_id:'baseline',patch_id:'patch'};
   steps.push(...['check_changes', 'syntax_regression', 'plan_validation'].map(name => record(name, name, '历史脚本记录')));
 }
 const reviewCall = {model_call_id:'review-call',agent_role:'review',attempt:1,status:'succeeded',model:'test',tool_call_count:0};
@@ -78,7 +80,7 @@ const diff = { files: [{ path: 'carriers/dhl/parser.py', available: true, status
           run_error:{status:'FAILED',message:reason,terminal_reason:reason},
           task:{...body.task,result:'FAILED',approval_pending:false,current_step:'unified_fixer_agent',
             lifecycle:{status:'failed',terminal_reason:reason},
-            steps:body.task.steps.map(step=>step.name==='locate_agent'?{...step,status:'failed',output:{root_cause:reason,summary:reason}}:step)}};
+            steps:body.task.steps.map(step=>step.name==='unified_fixer_agent'?{...step,status:'failed',output:{root_cause:reason,summary:reason}}:step)}};
       }
       if (process.env.UI_ACTIVITY_ONLY && path.endsWith(`/runs/${runId}`)) {
         const review = activityPhase !== 'repair';
@@ -109,17 +111,20 @@ const diff = { files: [{ path: 'carriers/dhl/parser.py', available: true, status
     if (process.env.UI_REVIEW_ONLY) {
       await page.setViewportSize({width:1440,height:1000});
       await page.goto(`${origin}/runs/${runId}/tasks/${taskId}`); await page.waitForLoadState('networkidle');
-      await page.getByRole('tab',{name:/执行时间线 · 5/}).click();
+      await page.getByRole('tab',{name:/执行时间线 · 4/}).click();
       for (const name of ['check_changes','syntax_regression','plan_validation']) {
         assert.equal(await page.getByRole('button',{name:new RegExp(name)}).count(),0,`${name} must not be a workflow node`);
       }
-      await page.getByText(/历史审查内部记录（6）/).waitFor();
+      assert.equal(await page.getByText(/历史审查内部记录|审查内部证据未回传/).count(),0);
       await page.screenshot({path:join(artifacts,'agent-review-timeline.png'),fullPage:true});
       await page.getByRole('button',{name:/修复后代码审查 Agent.*已完成/}).first().click();
       await page.getByText('实际审查提示词 UI-REVIEW-PROMPT',{exact:true}).waitFor();
       await page.getByText('已读取基线和当前源码 UI-REVIEW-OUTPUT',{exact:false}).first().waitFor();
       await page.screenshot({path:join(artifacts,'agent-review-trace.png'),fullPage:true});
       await page.keyboard.press('Escape');
+      await page.getByRole('tab',{name:'验证证据',exact:true}).click();
+      await page.getByRole('list',{name:'代码审查三个维度'}).waitFor();
+      assert.equal(await page.getByText(/重放对比|内部证据未回传|变更门禁/).count(),0);
       await page.goto(`${origin}/approvals`); await page.waitForLoadState('networkidle');
       assert.equal(await page.getByLabel('确认保留',{exact:true}).isEnabled(),true);
       await page.screenshot({path:join(artifacts,'published-report-approval.png'),fullPage:true});
@@ -127,7 +132,7 @@ const diff = { files: [{ path: 'carriers/dhl/parser.py', available: true, status
       await page.getByRole('dialog').getByRole('button',{name:/返\s*回/}).click();
       assert.equal(submissions.length,0);
       assert.deepEqual(errors,[]);
-      console.log(`PASS: legacy scripts excluded from workflow, prompt/output visible, published analysis report approval enabled. ${artifacts}`);
+      console.log(`PASS: retired script records excluded, Agent dimensions and prompt/output visible, published report approval enabled. ${artifacts}`);
       return;
     }
     if (process.env.UI_FAILURE_PREVIEW) {
@@ -208,7 +213,7 @@ const diff = { files: [{ path: 'carriers/dhl/parser.py', available: true, status
         }
       }
       await page.setViewportSize({ width: 1440, height: 1000 });
-      await page.goto(`${origin}/runs/${runId}/tasks/${taskId}?view=timeline&step=locate_agent`);
+      await page.goto(`${origin}/runs/${runId}/tasks/${taskId}?view=timeline&step=unified_fixer_agent`);
       await page.waitForLoadState('networkidle');
       const dialog = page.getByRole('dialog');
       if (await dialog.count()) await page.keyboard.press('Escape');
