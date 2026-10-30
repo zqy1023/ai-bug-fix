@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
+import re
 import time
 from collections.abc import Callable, Iterator
 from datetime import datetime, timedelta, timezone
@@ -12,6 +14,24 @@ from typing import Any
 
 from config.settings import settings
 from core.errors import StepFailed
+
+
+# 日志里偶见把占位值写进 carrier 字段。这类记录无法定位可写的 carrier 目录，
+# 不能当成一个叫 "unknown" 的运输商建任务，必须在准入阶段就拒绝。
+_PLACEHOLDER_CARRIERS = frozenset({"unknown", "unk", "none", "null", "n/a", "na", "-", "?"})
+
+
+def _valid_carrier(value: Any) -> str:
+    """返回可用运输商名；占位值/空值一律视为不可用。"""
+    name = value.strip() if isinstance(value, str) else ""
+    return "" if name.casefold() in _PLACEHOLDER_CARRIERS else name
+
+
+# 内联标记：部分日志把 carrier/单号直接写在正文里，而不是包成 req JSON。
+# 大小写混用真实存在（`carrier:` / `Carrier:`），单号字段也有 `num` / `number` 两种。
+_INLINE_CARRIER = re.compile(r"carrier\s*[:=]\s*([A-Za-z0-9_.-]+)", re.IGNORECASE)
+_INLINE_NUMBER = re.compile(r"\bnum(?:ber)?\s*[:=]\s*([A-Za-z0-9_-]+)", re.IGNORECASE)
+_INLINE_BODY = re.compile(r"\b(?:body|msg)\s*[:=]\s*", re.IGNORECASE)
 
 
 class ESLogAdapter:
@@ -148,7 +168,22 @@ class ESLogAdapter:
                     message = str(source.get("message") or "")
                     missing = [key for key in ("service_name", "biztype", "message")
                                if not isinstance(source.get(key), str) or not source[key]]
-                    reason = "missing_required_fields" if missing else "missing_req_marker" if "req:" not in message else "invalid_request_or_error_structure"
+                    if missing:
+                        reason = "missing_required_fields"
+                    elif any(marker in message for marker in ("req:", "model:", "requestResponse:")):
+                        # 已知格式但内容结构不合法：与"格式本身不认识"分开计，便于定位。
+                        reason = "invalid_request_or_error_structure"
+                    elif "异常溯源:" in message:
+                        # 溯源根不在 gathers/spiders 下，无法还原 carrier。
+                        reason = "carrier_unresolved"
+                    elif re.search(
+                        r"carrier\s*[:=]\s*(?:unknown|unk|none|null|n/?a|-|[\"'])\s*[,}]",
+                        message, re.IGNORECASE,
+                    ):
+                        # carrier 字段写的是占位值：不能当成运输商建任务。
+                        reason = "carrier_unresolved"
+                    else:
+                        reason = "unrecognized_message_format"
                     failures = checkpoint.setdefault("parse_failures", {"counts": {}, "samples": []})
                     failures["counts"][reason] = failures["counts"].get(reason, 0) + 1
                     if len(failures["samples"]) < 20:
@@ -204,11 +239,38 @@ class ESLogAdapter:
         2. 扩展格式：... carrier:XXX, req:{...} (错误信息在前面)
         3. 带响应格式：... req:{...} response:{...} error: 错误信息
         4. 完整格式：... req:{...} track_config:{...} response:{...} error: 错误信息
+        5. 解析异常格式：... framework.track_server:解析异常,model:{"carrier":"XXX",
+           "requests":[...],"track_config":{...},"response":"<原始响应正文>"}, msg:None
+        6. 业务结果格式：requestResponse:{'code': 404, 'data': [{'number': '..',
+           'carrier': '..'}], 'message': '..', 'error_type': 'ProcessError'}
+        7. 异常溯源格式：... <module>:<error>, 异常溯源:gathers.<Carrier>.main_batch
+           （无 req/response，但溯源路径能确定性还原 carrier）
+        8. 内联格式：... <module>:<error>, carrier:<X>, num:<Y>（carrier 与单号写在正文里）
 
-        response 和 track_config 为可选字段，用于 response 重放验证。
+        ``response`` 和 ``track_config`` 为可选字段，用于 response 重放验证。
+        格式 5 的 ``response`` 是原始响应正文，也是"official 坏数据还是本地解析缺陷"
+        的唯一判据；它过去因为 message 里没有 ``req:`` 标记而被整条丢弃，导致归一化
+        产物中的 ``response`` 永远为空。
         """
-        import re
+        # 按标记依次尝试：响应正文里也可能出现 "req:" 等字样，单一判据会误选解析器。
+        parsers = (
+            ("req:", ESLogAdapter._parse_request_marker),
+            ("model:", ESLogAdapter._parse_model_marker),
+            ("requestResponse:", ESLogAdapter._parse_request_response),
+            ("异常溯源:", ESLogAdapter._parse_trace_marker),
+        )
+        for marker, parser in parsers:
+            if marker not in message:
+                continue
+            parsed = parser(message)
+            if parsed is not None:
+                return parsed
+        # 兜底：`<module>:<error>, carrier:<X>, num:<Y>` 这类没有标记的内联格式。
+        return ESLogAdapter._parse_inline_marker(message)
 
+    @staticmethod
+    def _parse_request_marker(message: str) -> dict[str, str] | None:
+        """格式 1-4：以 ``req:`` 标记带出请求、响应和配置。"""
         req_marker = "req:"
         error_marker = " error:"
         req_index = message.find(req_marker)
@@ -235,6 +297,9 @@ class ESLogAdapter:
             else:
                 # 没有找到有效 carrier，放弃此条日志
                 return None
+        carrier = _valid_carrier(carrier)
+        if not carrier:
+            return None
 
         # 尝试提取 track_config (可选字段)
         track_config_marker = " track_config:"
@@ -283,6 +348,7 @@ class ESLogAdapter:
             "carrier": carrier,
             "req": json.dumps(req_obj, ensure_ascii=False, separators=(",", ":")),
             "error": error,
+            "message_format": "req",
         }
         if track_config:
             result["track_config"] = track_config
@@ -294,5 +360,233 @@ class ESLogAdapter:
             result["track_config"] = json.dumps(recovered_config, ensure_ascii=False, separators=(",", ":"))
         if response:
             result["response"] = response
+        return result
+
+    @staticmethod
+    def _parse_model_marker(message: str) -> dict[str, str] | None:
+        """格式 5：``model:{...}`` 解析异常，携带 carrier/requests/track_config/response。"""
+        marker = "model:"
+        index = message.find(marker)
+        if index < 0:
+            return None
+        payload_text = message[index + len(marker):].lstrip()
+        try:
+            payload, length = json.JSONDecoder().raw_decode(payload_text)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        carrier = _valid_carrier(payload.get("carrier"))
+        if not carrier:
+            return None
+        requests = payload.get("requests")
+        if not isinstance(requests, list):
+            requests = []
+        request: dict[str, Any] = {"carrier": carrier, "requests": requests}
+        track_config = payload.get("track_config")
+        if isinstance(track_config, dict) and track_config:
+            request["track_config"] = track_config
+        error = ESLogAdapter._log_topic(message, index)
+        if not error:
+            # 缺少 logger 前缀时仍保留记录：carrier/requests/response 组合仍有价值。
+            error = "解析异常"
+        # 只在 JSON 正文之后找 msg:，避免响应正文里出现 "msg:" 时误取尾部文本。
+        tail = payload_text[length:]
+        msg_index = tail.find("msg:")
+        if msg_index >= 0:
+            detail = tail[msg_index + len("msg:"):].strip()
+            if detail and detail.casefold() not in {"none", "null"}:
+                error = f"{error} | msg: {detail}"
+        result = {
+            "carrier": carrier,
+            "req": json.dumps(request, ensure_ascii=False, separators=(",", ":")),
+            "error": error,
+            "message_format": "model",
+        }
+        if isinstance(track_config, dict) and track_config:
+            result["track_config"] = json.dumps(
+                track_config, ensure_ascii=False, separators=(",", ":")
+            )
+        response = ESLogAdapter._json_text(payload.get("response"))
+        if response:
+            result["response"] = response
+        return result
+
+    @staticmethod
+    def _parse_request_response(message: str) -> dict[str, str] | None:
+        """格式 6：``requestResponse:{...}`` 业务结果（Python repr，非 JSON）。
+
+        这类记录是下游症状（例如日期串带 ``Z`` 触发 ``ProcessError``），不是"无单"的同义词，
+        因此必须保留 ``message``/``error_type`` 原文，交给归因层判断官方还是本地。
+        """
+        marker = "requestResponse:"
+        index = message.find(marker)
+        if index < 0:
+            return None
+        payload = ESLogAdapter._literal_object(message[index + len(marker):])
+        if payload is None:
+            return None
+        carrier = payload.get("carrier") if isinstance(payload.get("carrier"), str) else None
+        requests: list[dict[str, str]] = []
+        data = payload.get("data")
+        if isinstance(data, list):
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                number = item.get("number")
+                if not isinstance(number, str) or not number:
+                    continue
+                requests.append({
+                    "number": number,
+                    "gather_channel": str(item.get("gather_channel") or ""),
+                })
+                if not carrier and isinstance(item.get("carrier"), str) and item["carrier"]:
+                    carrier = item["carrier"]
+        if not carrier:
+            return None
+        carrier = _valid_carrier(carrier)
+        if not carrier:
+            return None
+        error = "requestResponse: code={code}, error_type={kind}, message={msg}".format(
+            code=payload.get("code"),
+            kind=payload.get("error_type") or "",
+            msg=payload.get("message") or "",
+        ).strip()
+        return {
+            "carrier": carrier,
+            "req": json.dumps(
+                {"carrier": carrier, "requests": requests},
+                ensure_ascii=False, separators=(",", ":"),
+            ),
+            "error": error,
+            "message_format": "requestResponse",
+        }
+
+    @staticmethod
+    def _log_topic(message: str, end_index: int) -> str:
+        """取日志主题：最后一个 `` - `` 之后、json 标记之前的文本。"""
+        prefix = message[:end_index]
+        cut = prefix.rfind(" - ")
+        topic = prefix[cut + 3:] if cut >= 0 else prefix
+        return topic.strip().rstrip(",").strip()
+
+    @staticmethod
+    def _json_text(value: Any) -> str:
+        """把响应正文统一成字符串；对象走紧凑 JSON，避免二次转义丢信息。"""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        return ""
+
+    @staticmethod
+    def _literal_object(text: str) -> dict[str, Any] | None:
+        """解析 Python repr 字典；日志尾部可能还有文本，按括号配对截取。"""
+        start = text.find("{")
+        if start < 0:
+            return None
+        depth = 0
+        in_string = False
+        escaped = False
+        quote = ""
+        for pos in range(start, len(text)):
+            char = text[pos]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    in_string = False
+                continue
+            if char in "'\"":
+                in_string = True
+                quote = char
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        value = ast.literal_eval(text[start:pos + 1])
+                    except (ValueError, SyntaxError):
+                        return None
+                    return value if isinstance(value, dict) else None
+        return None
+
+    @staticmethod
+    def _parse_trace_marker(message: str) -> dict[str, str] | None:
+        """格式 7：``<module>:<error>, 异常溯源:<模块路径>``。
+
+        这类记录没有 req、没有 response（典型是共享层抛出的"未知时区"），
+        但 ``异常溯源:gathers.<Carrier>.main_batch`` 能确定性还原 carrier，
+        过去因为缺 ``req:`` 被整条丢弃。没有订单号不等于没有归属。
+        """
+        marker = "异常溯源:"
+        index = message.find(marker)
+        if index < 0:
+            return None
+        topic = message[:index].rstrip()
+        cut = topic.rfind(" - ")
+        if cut >= 0:
+            topic = topic[cut + 3:]
+        topic = topic.strip().rstrip(",").strip()
+        if not topic:
+            return None
+        source = message[index + len(marker):].strip()
+        parts = source.split(".")
+        if len(parts) < 3 or parts[0] not in {"gathers", "spiders"}:
+            return None
+        carrier = _valid_carrier(parts[1])
+        if not carrier:
+            return None
+        return {
+            "carrier": carrier,
+            "req": json.dumps(
+                {"carrier": carrier, "source": source},
+                ensure_ascii=False, separators=(",", ":"),
+            ),
+            "error": topic,
+            "message_format": "trace",
+        }
+
+    @staticmethod
+    def _parse_inline_marker(message: str) -> dict[str, str] | None:
+        """格式 8：``<module>:<error>, carrier:<X>, num:<Y>``（内联 carrier，无 req JSON）。
+
+        典型是旧框架桥接层的「时间解析错误」。这类记录带着明确的 carrier 与单号，
+        可以直接定位到 carrier；没有它就只能整条丢弃。
+        """
+        if any(marker in message for marker in ("req:", "model:", "requestResponse:")):
+            return None
+        match = _INLINE_CARRIER.search(message)
+        if not match:
+            return None
+        carrier = _valid_carrier(match.group(1))
+        if not carrier:
+            return None
+        topic = message[:match.start()].rstrip().rstrip(",").strip()
+        cut = topic.rfind(" - ")
+        if cut >= 0:
+            topic = topic[cut + 3:]
+        topic = topic.strip()
+        if not topic:
+            return None
+        request: dict[str, Any] = {"carrier": carrier}
+        number = _INLINE_NUMBER.search(message, match.end())
+        if number:
+            request["requests"] = [{"number": number.group(1)}]
+        result = {
+            "carrier": carrier,
+            "req": json.dumps(request, ensure_ascii=False, separators=(",", ":")),
+            "error": topic,
+            "message_format": "inline",
+        }
+        # body= 之后是原始响应正文（常见于拦截/验证页），保留下来供归因重放。
+        body = _INLINE_BODY.search(message, match.end())
+        if body:
+            text = message[body.end():].strip()
+            if text:
+                result["response"] = text
         return result
 

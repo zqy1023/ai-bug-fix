@@ -1,6 +1,5 @@
 import dayjs from 'dayjs';
 
-/** 把毫秒压成运维可读的时长；未知值返回占位符而不是 0。 */
 export function formatDuration(ms?: number | null): string {
   if (ms === undefined || ms === null || Number.isNaN(Number(ms))) return '—';
   const value = Math.max(0, Math.round(Number(ms)));
@@ -13,14 +12,18 @@ export function formatDuration(ms?: number | null): string {
   return `${hours}h ${minutes % 60}m`;
 }
 
-/** 本地时区展示，tooltip 保留原始 ISO。 */
 export function formatTime(value?: string | null): string {
   if (!value) return '—';
   const parsed = dayjs(value);
   return parsed.isValid() ? parsed.format('MM-DD HH:mm:ss') : value;
 }
 
-/** Compact batch timestamps; the full ISO remains available on the cell title. */
+export function formatDayTime(value?: string | null): string {
+  if (!value) return '—';
+  const parsed = dayjs(value);
+  return parsed.isValid() ? parsed.format('MM-DD HH:mm') : value;
+}
+
 export function formatBatchTime(value?: string | null): string {
   if (!value) return '—';
   const parsed = dayjs(value);
@@ -28,6 +31,18 @@ export function formatBatchTime(value?: string | null): string {
   if (parsed.isSame(dayjs(), 'day')) return `今天 ${parsed.format('HH:mm')}`;
   if (parsed.isSame(dayjs().subtract(1, 'day'), 'day')) return `昨天 ${parsed.format('HH:mm')}`;
   return parsed.format('M月D日 HH:mm');
+}
+
+export function relativeTime(value?: string | null): string {
+  if (!value) return '—';
+  const parsed = dayjs(value);
+  if (!parsed.isValid()) return value;
+  const seconds = dayjs().diff(parsed, 'second');
+  if (seconds < 45) return '刚刚';
+  if (seconds < 3600) return `${Math.max(1, Math.floor(seconds / 60))} 分钟前`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`;
+  if (seconds < 604800) return `${Math.floor(seconds / 86400)} 天前`;
+  return parsed.format('MM-DD HH:mm');
 }
 
 export function formatTokens(value?: number | null): string {
@@ -45,4 +60,12 @@ export function shortId(value?: string | null, size = 8): string {
 export function percent(value?: number | null): string {
   if (value === undefined || value === null || Number.isNaN(value)) return '—';
   return `${Math.round(value * 100)}%`;
+}
+
+export function durationFrom(startedAt?: string | null, finishedAt?: string | null): number | null {
+  if (!startedAt) return null;
+  const start = dayjs(startedAt);
+  const end = finishedAt ? dayjs(finishedAt) : dayjs();
+  if (!start.isValid() || !end.isValid()) return null;
+  return Math.max(0, end.diff(start));
 }

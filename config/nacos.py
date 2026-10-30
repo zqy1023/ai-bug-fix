@@ -10,6 +10,8 @@ import json
 import logging
 import os
 import tempfile
+import threading
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +33,11 @@ _CONNECT_TIMEOUT = settings.nacos_connect_timeout
 # 模块级缓存
 _nacos_config: dict[str, Any] | None = None
 _nacos_loaded = False
+_PUBLISH_LOCK = threading.Lock()
+
+
+class NacosUnavailable(RuntimeError):
+    """Nacos 未启用、不可达或无写权限；设置不能落本地冒充已保存。"""
 
 
 def _env_first(*keys: str, default: str = "") -> str:
@@ -93,6 +100,8 @@ def _fetch_nacos_config() -> dict[str, Any]:
         client = nacos.NacosClient(
             server_addresses=server_addr,
             namespace=namespace,
+            username=os.getenv("NACOS_USERNAME", "").strip() or None,
+            password=os.getenv("NACOS_PASSWORD", "") or None,
             logDir=log_dir,
         )
         raw = client.get_config(data_id, group, timeout=_CONNECT_TIMEOUT)
@@ -158,6 +167,65 @@ def nacos_bool(name: str, default: bool = False) -> bool:
     return parse_bool(os.getenv(name), default)
 
 
+def nacos_target() -> dict[str, Any]:
+    """当前 Nacos 目标（不向前端暴露服务地址）。"""
+    enabled = parse_bool(os.getenv("NACOS_ENABLED"), default=settings.nacos_enabled)
+    return {
+        "enabled": enabled,
+        "data_id": os.getenv("NACOS_DATA_ID", _DEFAULT_DATA_ID).strip() or _DEFAULT_DATA_ID,
+        "group": os.getenv("NACOS_GROUP", _DEFAULT_GROUP).strip() or _DEFAULT_GROUP,
+        "namespace": _env_first(*_NAMESPACE_KEYS, default=_DEFAULT_NAMESPACE),
+    }
+
+
+def publish_nacos_values(updates: Mapping[str, Any]) -> dict[str, Any]:
+    """读-改-写 Nacos JSON 配置；失败抛 NacosUnavailable，绝不落本地。"""
+    target = nacos_target()
+    if not target["enabled"]:
+        raise NacosUnavailable("Nacos 未启用，无法保存设置")
+    server_addr = _env_first(*_SERVER_ADDR_KEYS, default=_DEFAULT_SERVER_ADDR)
+    try:
+        import nacos  # noqa: F811
+    except ImportError as exc:
+        raise NacosUnavailable("nacos-sdk-python 未安装，无法保存设置") from exc
+
+    with _PUBLISH_LOCK:
+        try:
+            client = nacos.NacosClient(
+                server_addresses=server_addr,
+                namespace=target["namespace"],
+                username=os.getenv("NACOS_USERNAME", "").strip() or None,
+                password=os.getenv("NACOS_PASSWORD", "") or None,
+                logDir=_writable_log_dir(),
+            )
+            raw = client.get_config(
+                target["data_id"], target["group"], timeout=_CONNECT_TIMEOUT
+            )
+            config: dict[str, Any] = json.loads(raw) if raw else {}
+            if not isinstance(config, dict):
+                raise NacosUnavailable("Nacos 配置根值不是 JSON 对象，拒绝覆盖")
+            for key, value in updates.items():
+                if value is None:
+                    config.pop(key, None)
+                else:
+                    config[key] = value
+            published = client.publish_config(
+                target["data_id"], target["group"],
+                json.dumps(config, ensure_ascii=False, indent=2),
+                config_type="json", timeout=_CONNECT_TIMEOUT,
+            )
+            if not published:
+                raise NacosUnavailable("Nacos 拒绝写入，请检查权限")
+        except NacosUnavailable:
+            raise
+        except Exception as exc:
+            logger.warning("Nacos 配置写入失败 data_id=%s", target["data_id"], exc_info=True)
+            raise NacosUnavailable("Nacos 写入失败，请检查连接或权限") from exc
+        finally:
+            reset()
+        return config
+
+
 def reset() -> None:
     """清除缓存，仅供测试使用。"""
     global _nacos_config, _nacos_loaded
@@ -165,5 +233,8 @@ def reset() -> None:
     _nacos_loaded = False
 
 
-__all__ = ["load_nacos_config", "nacos_bool", "nacos_get", "reset"]
+__all__ = [
+    "NacosUnavailable", "load_nacos_config", "nacos_bool", "nacos_get",
+    "nacos_target", "publish_nacos_values", "reset",
+]
 

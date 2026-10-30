@@ -12,11 +12,11 @@
 flowchart TD
     Start([任务开始]) --> S1[阶段 1: 准备上下文<br/>prepare_context<br/><i>源码快照、预检证据、工作区初始化</i>]
     
-    S1 --> S2{阶段 2: 资格领取确认<br/>claim_repair_slot<br/><i>分支检查、问题指纹互斥锁</i>}
+    S1 --> S2{阶段 2: 重复分支检查<br/>claim_repair_slot<br/><i>远端分支检查</i>}
     
-    S2 -- "未获取到槽位 / 分支冲突" --> EndManual[终态收尾 / 转人工处理]
+    S2 -- "发现重复分支" --> EndManual[终态收尾 / 转人工处理]
     
-    S2 -- "成功领取修复资格" --> S3[阶段 3: 统一分析修复模型<br/>unified_fixer_agent<br/><b>单会话端到端: 分析 + 验收建模 + 受限修补</b>]
+    S2 -- "无重复分支（全局串行已确认）" --> S3[阶段 3: 统一分析修复模型<br/>unified_fixer_agent<br/><b>单会话端到端: 分析 + 验收建模 + 受限修补</b>]
     
     S3 -- "仅分析交付 / 旧框架 / 共享层阻断<br/>(ANALYSIS_ONLY / MANUAL)" --> S5[阶段 5: 汇总生成报告<br/>generate_report]
     
@@ -26,23 +26,21 @@ flowchart TD
     
     S5 --> S6[阶段 6: 提交候选分支<br/>submit_changes]
     
-    S6 --> S7[阶段 7: 人工审批<br/>request_approval]
-    
-    S7 --> End([任务完成交付])
+    S6 --> End([任务完成交付])
     EndManual --> End
 ```
 
-### 7 大公开阶段执行节点
+### 6 大公开业务阶段 + 终态收尾
 
-1. **`01_prepare_context`（准备上下文）**：组合执行分支预检、源码快照生成、隔离工作区部署与确定性预检证据提取。
-2. **`02_claim_slot`（资格领取确认）**：前置拦截。检查任务问题指纹互斥锁与分支冲突，拦截并发与重复认领，零浪费大模型 Token。
-3. **`03_unified_fixer`（统一分析修复模型）**：在单一 LLM 会话生命周期内端到端完成异常感知建模、假设定位归因、智能提前收敛判定、受限精准修补与 AST 语法自检。
-4. **`04_review`（审查模型与全链路回归）**：执行代码改动范围比对、确定性语法回归、原问题重放与真实请求业务回归验证。
-5. **`05_generate_report`（汇总生成报告）**：准备候选交付物。修复任务提交本地候选分支并绑定证据，纯分析任务交付 `final.json` 决策报告。
-6. **`06_submit_changes`（提交候选分支）**：将通过审查并完成准备的修复候选分支推送至远程 Git 仓库。
-7. **`07_request_approval`（人工审批）**：终态交付前的最后一道把关，人工复核决定保留或打回。通过则交付完成，驳回则打回统一模型重修。
+1. **`prepare_context`（准备上下文）**：组合执行分支预检、源码快照生成、隔离工作区部署与确定性预检证据提取。
+2. **`claim_slot`（重复分支检查）**：前置拦截。检查远端是否已存在同一问题的修复分支；启动入口保证全局串行，不再维护 per-problem claim 锁。
+3. **`unified_fixer_agent`（统一分析修复模型）**：在单一 LLM 会话生命周期内端到端完成异常感知建模、假设定位归因、智能提前收敛判定、受限精准修补与 AST 语法自检（实现位于 `agents/unified_fixer/`）。
+4. **`review_agent`（审查模型与运行验证）**：平台先在临时副本执行预设重放/真实请求命令，审查模型只读核对原始问题、修复验收标准、实际差异和执行证据。未配置验证或缺少有效断言时保留业务未验证，不能仅凭静态审查宣称回归通过（实现位于 `agents/review/`，配置见 [受控运行验证](docs/validation-runner.md)）。
+5. **`generate_report`（汇总生成报告）**：准备候选交付物。修复任务把候选提交锚定到源仓库的交付锚点（不建本地分支），供第二阶段推送同一提交并在中断后恢复；纯分析任务交付 `final.json` 决策报告。
+6. **`submit_changes`（提交候选分支）**：将通过审查并完成准备的修复候选分支推送至远程 Git 仓库；无法推送时才写本地分支，推送成功后删除本地分支与交付锚点，分支状态只保留在远端。
+7. **AI 审查自动回修**：只允许自动打回 1 轮；第二轮仍不通过时生成报告并提交报告分支，不再进入人工审批。
 
-> 注：`00_log_pipeline` 为批次级日志发现、规范化与去重组合入口；`99_finalize` 为终态收尾/异常转人工处理节点。
+> 注：`log_pipeline` 为批次级日志发现、规范化与去重组合入口；`finalize` 为终态报告/结果结算节点。人工审批与人工打回已移除。
 
 ---
 
@@ -72,7 +70,7 @@ flowchart TD
         Decision -- "当前 carrier 局部缺陷" --> P3 --> P4
     end
 
-    Input[前置资格领取成功] --> SingleSession
+    Input[前置重复分支检查通过] --> SingleSession
     
     EarlyExit --> OutputArtifacts["<b>持久化交付物与交接 (Handoff)</b><br/>• 落盘 artifacts/analysis.json (完整归因、证据链、验收标准)<br/>• 落盘 artifacts/patch.json (修改方案、改动文件清单、自测状态)<br/>• 填充 StepRecord 与下游影子通道"]
     
@@ -122,13 +120,11 @@ ai_bug_fixer/
 │   ├── unified_fixer/              # 阶段3: 统一分析修复 Agent
 │   │   ├── graph.py                # 单会话四阶段编排 (感知建模->归因->修补->AST自检)
 │   │   ├── models.py               # 输入输出契约
-│   │   ├── provider.py             # 会话流管理
-│   │   └── prompt.md               # 提示词模板
+│   │   └── provider.py             # 会话流管理
 │   └── review/                     # 阶段4: 审查智能体与确定性门禁
-│       ├── graph.py                # 审查子图编排
-│       ├── contract.py             # 审查维度定义
-│       ├── prompt.md               # 审查提示词
-│       └── gates/                  # 确定性门禁工具 (语法回归、改动范围比对、真实请求验证)
+│       ├── graph.py                # 审查子图编排 (含确定性门禁与模型通道)
+│       └── contract.py             # 审查维度定义
+│   （提示词统一由 infrastructure/llm/templates/ 加载）
 │
 ├── workflow/                       # 业务工作流编排中枢 (直接对齐权威执行生命周期)
 │   ├── engine/                     # 编排引擎与状态路由 (严格收敛为 4 大核心文件)
@@ -138,22 +134,18 @@ ai_bug_fixer/
 │   │   └── handoff.py              # 状态快照与阶段数据移交
 │   │
 │   └── stages/                     # 权威执行阶段 (与业务阶段 1:1 物理对应)
-│       ├── 00_log_pipeline/        # 批次触发: 日志发现、规范化与去重 (discover/normalize)
-│       ├── 01_prepare_context/     # 阶段1: 源码快照、预检证据、工作区初始化
-│       ├── 02_claim_slot/          # 阶段2: 资格领取确认 (分支检查与互斥锁)
-│       ├── 03_unified_fixer/       # 阶段3: 统一分析修复执行适配器
-│       ├── 04_review/              # 阶段4: 审查模型与全链路回归适配器
-│       ├── 05_generate_report/     # 阶段5: 汇总生成报告与交付产物准备
-│       ├── 06_submit_changes/      # 阶段6: 提交候选分支至远程 Git 仓库
-│       ├── 07_request_approval/    # 阶段7: 人工审批与保留/撤回决策
-│       └── 99_finalize/            # 收尾与异常转人工处理 (finalize_execution)
+│       ├── log_pipeline/           # 批次触发: 日志发现、规范化与去重 (discover/normalize)
+│       ├── prepare_context/        # 阶段1: 源码快照、预检证据、工作区初始化
+│       ├── claim_slot/             # 阶段2: 重复分支检查 (远端分支占用)
+│       ├── generate_report/        # 阶段5: 汇总生成报告与交付产物准备
+│       ├── submit_changes/         # 阶段6: 提交候选分支至远程 Git 仓库
+│       └── finalize/               # 终态报告/结果结算 (finalize_execution)
 │
 ├── server.py                       # 系统主入口文件 (FastAPI 应用构建、生命周期与 uvicorn 服务)
 ├── server/                         # 统一 Web 交互与控制台服务
 │   ├── routes/                     # 业务接口路由 (按领域物理拆分)
 │   │   ├── runs.py                 # 运行管理路由 (启动/暂停/恢复/重试/取消/看板)
 │   │   ├── tasks.py                # 任务详情与单步调试路由
-│   │   ├── approvals.py            # 人工审批列表与审批决断处理
 │   │   ├── artifacts.py            # 产物下载与内容展示路由
 │   │   ├── common.py               # 路由共享底层认证、锁管理与数据处理
 │   │   └── __init__.py             # 统一 APIRouter 挂载聚合中心
@@ -174,7 +166,7 @@ ai_bug_fixer/
 python -m workflow.engine.handoff
 
 # 2. 前端编译与生产打包验证 (TypeScript 类型安全校验)
-npm --prefix frontend run build
+pnpm --dir frontend build
 
 # 3. 运行全量自动化测试套件
 python -m pytest tests/ --ignore=runtime -q
@@ -187,14 +179,14 @@ python server.py
 ## server.py 统一启动入口
 
 ```powershell
-python server.py                         # 新建并执行一次流程，直到人工审批或终态
-python server.py --web                   # 同时启动 API，保留在线人工审批入口
+python server.py                         # 新建并执行一次流程，直到终态
+python server.py --web                   # 同时启动 API
 python server.py --frontend              # 同时启动 API 和 Vite 前端
 python server.py --serve-only            # 只启动 API，不新建批次
-python server.py --serve-only --frontend # 只启动前后端，用于审批已有批次
+python server.py --serve-only --frontend # 只启动前后端，用于查看已有批次
 python server.py --run-id my-new-run     # 指定新批次 ID；已有 ID 不会覆盖
 ```
 
-参数与连接配置继续读取现有配置。无界面模式到达人工审批后保留 checkpoint，不会自动批准；随后可启动工作台继续审批。前端依赖需先在 `frontend` 目录运行 `npm install`。前后端模式持续提供服务，直到手动退出；退出时会关闭本入口启动的前端进程。
+参数与连接配置继续读取现有配置。无界面模式会持续执行到终态，不再等待人工审批。前端依赖需先在 `frontend` 目录运行 `pnpm install`。前后端模式持续提供服务，直到手动退出；退出时会关闭本入口启动的前端进程。
 
-人工审批完成、取消或无法继续恢复时统一进入终态收尾，写入最终报告并释放修复资格。审查回修次数耗尽走失败收尾报告，不向提交节点发送未通过的补丁。
+任务到达终态时统一写入最终报告；AI 审查最多自动打回 1 轮，第二轮仍不通过时生成报告并提交报告分支，不再等待人工审批。

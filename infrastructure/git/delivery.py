@@ -2,8 +2,9 @@
 
 修复全程发生在无 Git 的 AI 隔离区里。审查通过后，交付器从源仓库的明确基准
 提交克隆出一个**独立工作区**，在里面创建修复分支、复制本轮文件、提交并按配置
-推送。开发人员正在使用的源仓库全程不被检出、不被改写；失败时删除临时工作区。
-模块没有 MR 或自动合并能力。
+推送。开发人员正在使用的源仓库全程不被检出：准备阶段只写交付锚点，不建本地
+分支；只有正式交付无法推送时才写本地分支，推送成功后清理交付器自己写入的本地
+分支引用。失败时删除临时工作区。模块没有 MR 或自动合并能力。
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from git import Repo
 
 from core.errors import DeliveryError
 from infrastructure.workspace.workspace import WorkspaceError, WorkspaceManager
+from infrastructure.git.branches import delete_local_branch
 from infrastructure.git.task_summary import render_task_summary
 from infrastructure.storage.redaction import (
     redact_for_delivery,
@@ -229,7 +231,9 @@ class GitBranchDelivery:
     def _anchor_slug(run_id: str, task_id: str, branch: str) -> str:
         """锚点引用前缀：同一任务同一分支的锚点都在这一段下面。"""
         raw = f"{run_id}-{task_id}-{branch}"
-        return re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("-") or "unknown"
+        slug = re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("-") or "unknown"
+        # 单个 ref 路径分量还要容纳 .lock；长业务名不能越过 Windows/文件系统限制。
+        return f"{slug[:72]}-{hashlib.sha256(raw.encode()).hexdigest()[:24]}"
 
     @classmethod
     def _anchor_ref(cls, run_id: str, task_id: str, branch: str, fingerprint: str) -> str:
@@ -268,6 +272,9 @@ class GitBranchDelivery:
             raise DeliveryError("缺少 AI 工作区或修复分支名")
         if not self._BRANCH.fullmatch(str(branch)):
             raise DeliveryError("修复分支名不符合安全格式")
+        # 准备阶段（publish=False）只保留交付锚点，不建本地分支；
+        # 正式交付仍无法推送时才需要本地分支作为唯一可查看的落点。
+        materialize_local_branch = bool(state.get("materialize_local_branch"))
 
         # branch_root 是源仓库里的**业务目录**（可能位于 Git 根的子目录），
         # 只用来定位 Git 根和计算相对路径，交付过程不在这里检出或写文件。
@@ -291,7 +298,9 @@ class GitBranchDelivery:
         receipt = state.get("delivery_receipt") or {}
         if isinstance(receipt, dict) and receipt:
             if receipt.get("fingerprint") == fingerprint and receipt.get("repair_branch") == str(branch):
-                return self._resume_delivery(repo, state, receipt)
+                return self._resume_delivery(
+                    repo, state, receipt, materialize_local_branch=materialize_local_branch
+                )
             # 收据属于上一轮候选：内容已经变了，旧提交不能复用，但也不能因此
             # 永久阻断交付——按新内容重新交付即可（锚点已按内容指纹区分）。
             receipt = {}
@@ -308,7 +317,9 @@ class GitBranchDelivery:
             persist = state.get("persist_delivery")
             if callable(persist):
                 persist(recovered)
-            return self._resume_delivery(repo, state, recovered)
+            return self._resume_delivery(
+                repo, state, recovered, materialize_local_branch=materialize_local_branch
+            )
 
         workspace: Path | None = None
         delivery_repo: Repo | None = None
@@ -444,6 +455,14 @@ class GitBranchDelivery:
                         delivery_repo, remote_url, str(branch), commit.hexsha
                     )
                     pushed = True
+                    # 远端已确认，本地候选分支与锚点不再承担状态职责。
+                    self._drop_published_local_state(
+                        repo,
+                        str(branch),
+                        run_id=str(state.get("run_id") or ""),
+                        task_id=str(state.get("task_id") or ""),
+                        commit=commit.hexsha,
+                    )
                 except DeliveryError:
                     # 已带状态的校验失败直接上抛，保留"远端查不到该分支"这类精确原因。
                     raise
@@ -459,9 +478,9 @@ class GitBranchDelivery:
                         branch_workspace_path=str(git_root),
                         commit=commit.hexsha,
                     ) from error
-            else:
-                # 不推送时提交只存在于临时克隆；必须写回源仓库的本地分支。
-                # 否则 finally 删除临时工作区后提交对象不可达，修复结果等于丢失。
+            elif materialize_local_branch:
+                # 正式交付阶段无法推送时，本地分支是唯一能查看/merge 的落点；
+                # 不写回就会在 finally 删除临时工作区后丢失提交。
                 try:
                     delivery_repo.git.push(str(git_root), f"HEAD:refs/heads/{branch}")
                     self._verify_local_branch(git_root, str(branch), commit.hexsha)
@@ -475,6 +494,10 @@ class GitBranchDelivery:
                         branch_workspace_path=str(git_root),
                         commit=commit.hexsha,
                     ) from error
+            else:
+                # 准备阶段只保留交付锚点：提交已在源仓库可达，本地不建分支，
+                # 避免准备阶段与正式交付之间出现第二套分支状态。
+                self._verify_anchor(git_root, anchor, commit.hexsha)
         finally:
             try:
                 if delivery_repo is not None:
@@ -487,7 +510,7 @@ class GitBranchDelivery:
         if commit is None:  # pragma: no cover - 提交失败都在上面抛出
             raise DeliveryError("修复分支没有生成提交")
         return {
-            "delivery_status": state.get("delivery_status"),
+            "delivery_phase": state.get("delivery_phase"),
             "branch_workspace_path": str(git_root),
             "repair_branch": str(branch),
             "commit": commit.hexsha,
@@ -497,6 +520,30 @@ class GitBranchDelivery:
             "merge_request_created": False,
             "auto_merged": False,
         }
+
+    def _drop_published_local_state(
+        self,
+        repo: Repo,
+        branch: str,
+        *,
+        run_id: str,
+        task_id: str,
+        commit: str,
+    ) -> None:
+        """推送成功后清掉源仓库里的本地候选分支与交付锚点。
+
+        分支状态只保留在远端：本地引用留着会变成第二套事实来源，让"资格领取"
+        和人工核验看到与远端不一致的分支。清理失败只告警，不推翻已经回读校验
+        通过的远端交付。
+        """
+        try:
+            delete_local_branch(repo, branch, expected_commit=commit, source="交付")
+        except Exception:
+            _logger.warning("清理本地修复分支失败: %s", branch, exc_info=True)
+        try:
+            self._drop_anchors(repo, run_id, task_id, branch)
+        except Exception:
+            _logger.warning("清理交付锚点失败: %s", branch, exc_info=True)
 
     @staticmethod
     def _fingerprint(source_root: Path, state: Mapping[str, Any]) -> str:
@@ -515,7 +562,12 @@ class GitBranchDelivery:
         return hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
 
     def _resume_delivery(
-        self, repo: Repo, state: Mapping[str, Any], receipt: Mapping[str, Any],
+        self,
+        repo: Repo,
+        state: Mapping[str, Any],
+        receipt: Mapping[str, Any],
+        *,
+        materialize_local_branch: bool = False,
     ) -> dict[str, Any]:
         """恢复已准备提交；只有远端引用等于预期提交才算成功。"""
         branch = str(receipt["repair_branch"])
@@ -537,7 +589,36 @@ class GitBranchDelivery:
                 if not refs:
                     repo.git.push(remote, f"{commit}:refs/heads/{branch}", f"--force-with-lease=refs/heads/{branch}:")
             self._verify_remote_branch(repo, remote, branch, commit)
+            self._drop_published_local_state(
+                repo,
+                branch,
+                run_id=str(state.get("run_id") or ""),
+                task_id=str(state.get("task_id") or ""),
+                commit=commit,
+            )
         else:
+            if not materialize_local_branch:
+                # 准备阶段恢复：提交已在源仓库（cat_file 已校验），锚点负责
+                # 保持可达；不为了恢复就凭空造一个本地分支。
+                anchor = str(receipt.get("anchor") or "")
+                if anchor:
+                    try:
+                        current = str(repo.git.rev_parse(anchor)).strip()
+                    except Exception:
+                        current = ""
+                    if not current:
+                        # 审批打回会删锚点；重试时提交仍在对象库里，重新锚定即可。
+                        repo.git.update_ref(anchor, commit)
+                    elif current != commit:
+                        raise DeliveryError(
+                            "交付锚点指向的提交与交付收据不一致，拒绝覆盖",
+                            status="GIT_ANCHOR_UNVERIFIED",
+                            commit=commit,
+                        )
+                return {
+                    "repair_branch": branch, "commit": commit, "pushed": False,
+                    "local_branch": False, "delivery_phase": state.get("delivery_phase"),
+                }
             existing = next((head.commit.hexsha for head in repo.heads if head.name == branch), None)
             if existing and existing != commit:
                 raise DeliveryError("本地修复分支已指向其他提交，拒绝覆盖", status="GIT_BRANCH_EXISTS", commit=commit)
@@ -546,7 +627,8 @@ class GitBranchDelivery:
             self._verify_local_branch(Path(repo.working_tree_dir), branch, commit)
         return {
             "repair_branch": branch, "commit": commit, "pushed": remote_push,
-            "local_branch": not remote_push, "delivery_status": state.get("delivery_status"),
+            "local_branch": (not remote_push) and materialize_local_branch,
+            "delivery_phase": state.get("delivery_phase"),
         }
 
     def _reject_existing_remote_branch(
@@ -642,6 +724,41 @@ class GitBranchDelivery:
             raise DeliveryError(
                 f"源仓库修复分支指向的提交与本次提交不一致: {branch}",
                 status="GIT_LOCAL_BRANCH_UNVERIFIED",
+                commit=commit,
+            )
+
+    @staticmethod
+    def _verify_anchor(git_root: Path, anchor: str, commit: str) -> None:
+        """确认交付锚点指向本次提交，保证临时克隆删除后提交仍然可达。
+
+        准备阶段不建本地分支，锚点是提交在源仓库里的唯一引用；它必须指向
+        本次提交，否则第二阶段拿到的收据就是一个会丢失的对象。
+        """
+        try:
+            repo = Repo(git_root)
+        except Exception as error:
+            raise DeliveryError(
+                f"无法打开源仓库校验交付锚点: {anchor}",
+                status="GIT_ANCHOR_UNVERIFIED",
+                commit=commit,
+            ) from error
+        try:
+            actual = str(repo.git.rev_parse(anchor)).strip()
+        except Exception as error:
+            raise DeliveryError(
+                f"源仓库缺少交付锚点: {anchor}",
+                status="GIT_ANCHOR_UNVERIFIED",
+                commit=commit,
+            ) from error
+        finally:
+            try:
+                repo.close()
+            except Exception:
+                pass
+        if actual != commit:
+            raise DeliveryError(
+                f"交付锚点指向的提交与本次提交不一致: {anchor}",
+                status="GIT_ANCHOR_UNVERIFIED",
                 commit=commit,
             )
 
@@ -864,7 +981,7 @@ class GitBranchDelivery:
         审查 agent 的结论（``review``）。空段落直接不出现，不留空壳。
         """
         carrier = str(state.get("carrier") or "unknown")
-        status = str(state.get("delivery_status") or "REPAIR")
+        status = str(state.get("delivery_phase") or "REPAIR")
         lines = [f"{settings.repair_branch_prefix}: {carrier} ({status})"]
         if bool(state.get("manual_confirmation_required")):
             lines += ["", "[MANUAL_CONFIRMATION_REQUIRED]"]

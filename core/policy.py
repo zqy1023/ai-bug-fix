@@ -25,12 +25,11 @@ def legacy_analysis_required(state: dict[str, Any]) -> bool:
     framework = evidence.get("framework") or state.get("framework")
     targets = [
         *(state.get("changed_files") or []),
-        *((state.get("locate") or {}).get("proposed_edit_files") or []),
+        *((state.get("unified_fixer") or {}).get("proposed_edit_files") or []),
     ]
     return (
         framework == "spiders"
         or evidence.get("legacy_only") is True
-        or evidence.get("legacy_dependency") is True
         or any(
             str(path).replace("\\", "/").casefold().startswith("spiders/")
             for path in targets
@@ -55,18 +54,6 @@ APPROVAL_RETRY_TARGETS = frozenset(get_args(RetryTarget))
 
 def locate_disposition(status: str) -> LocateDisposition:
     return "repair" if status == "LOCATED" else "manual"
-
-
-
-
-
-import ast
-import functools
-import hashlib
-import json
-import os
-import re
-from pathlib import Path, PurePosixPath
 
 
 
@@ -166,6 +153,12 @@ def policy_of(state: dict[str, Any]) -> AgentPolicy:
 
 def skipped(reason: str = "用户关闭") -> dict[str, str]:
     return {"status": "skipped", "reason_code": "policy_disabled", "reason": reason}
+
+
+def external_skip(payload: dict[str, Any]) -> bool:
+    """Model-inferred responsibility needs disposition review before skipping."""
+    return bool(payload.get("skip_reason") and payload.get("status") == "ANALYSIS_ONLY"
+                and payload.get("attribution_type") in {"official", "environment"})
 
 
 def retry_evidence_dir(root: Path, run_id: str, task_id: str) -> Path:
@@ -325,7 +318,7 @@ class ToolPolicy:
         if request.agent_role == "unified_fixer":
             if request.allowed_write_roots or request.write_root:
                 if legacy_analysis_required(context):
-                    raise ToolPolicyError("旧框架及依赖旧插件的任务只允许分析报告，不允许修复写入")
+                    raise ToolPolicyError("旧框架实现及 spiders 修改目标只允许分析，不允许修复写入")
                 write_root = Path(request.write_root).resolve()
                 allowed = tuple(Path(item).resolve() for item in request.allowed_write_roots)
                 if write_root != expected_carrier or allowed != tuple(carrier_write_paths(workspace, carrier)):

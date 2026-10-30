@@ -10,6 +10,21 @@ from server.routes.common import *
 
 router = APIRouter()
 
+
+@router.get("/api/v1/runs/{run_id}/tasks/{task_id}/problem-log")
+def v1_task_problem_log(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
+    """返回无损原始异常及精确关联日志，不依赖步骤记录的裁剪摘要。"""
+    from infrastructure.es.original_message import original_message
+    store = _store()
+    run_id, task_id = _safe_id(run_id), _safe_id(task_id)
+    payload = _run_payload(store, run_id)
+    task = next((item for item in payload.get("tasks", []) if item.get("task_id") == task_id), None)
+    if task is None:
+        raise HTTPException(status_code=404, detail="该执行中不存在此任务")
+    archive = _read_json(store.run_dir(run_id) / "artifacts/normalized_records.json", {})
+    return {"run_id": run_id, "task_id": task_id,
+            **original_message(dict(task.get("problem") or {}), archive.get("records") or [])}
+
 @router.get("/api/v1/runs/{run_id}/tasks/{task_id}")
 def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dict[str, Any]:
     """只返回一个任务的详情，避免 Run 页面携带并渲染所有任务的步骤与产物。"""
@@ -48,6 +63,8 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
         run_status=_v1_run_summary(payload)["status"],
         task={**source, "result": source.get("status"), "steps": steps},
     )
+    from core.task_outcome import task_outcome
+    outcome = task_outcome(source)
     return {
         "read_only": not current,
         "actions": {"retry": retry.model_dump(mode="json")},
@@ -60,7 +77,7 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
         "stages": task_stages(),
         "task": {
             "task_id": task_id, "carrier": source.get("carrier", ""),
-            "biztype": source.get("biztype", ""), "result": source.get("status", "PENDING"),
+            "biztype": source.get("biztype", ""), "result": outcome,
             "problem": source.get("problem") or {}, "approval_pending": bool(source.get("approval_pending")),
             "lifecycle": source.get("lifecycle") if isinstance(source.get("lifecycle"), dict) else {},
             "current_step": str((source.get("lifecycle") or {}).get("current_step") or ""),
@@ -320,7 +337,7 @@ def v1_get_step(
     record = record or store.load(run_id, step_name)
     if record is None:
         raise HTTPException(status_code=404, detail="步骤记录不存在")
-    # Agent 记录的 name 是 repair_agent，审计里的 agent_role 是 repair；两者都接受。
+    # Agent 记录的 name 是 unified_fixer_agent，审计里的 agent_role 是 unified_fixer；两者都接受。
     roles = {record.name, record.name.removesuffix("_agent")}
     calls = [
         item for item in _load_model_calls(run_id, task_id)

@@ -19,6 +19,10 @@ class DeliveryView(BaseModel):
     pushed: bool = False
     local_branch: bool = False
     binding: dict[str, str] = Field(default_factory=dict)
+    # analysis_only：本轮只交付 final.json 分析报告，没有源码补丁。
+    analysis_only: bool = False
+    # report_paths：随报告分支交付的审计产物（仅 analysis_only 场景）。
+    report_paths: list[str] = Field(default_factory=list)
 
 
 def delivery_view(steps: list[dict]) -> DeliveryView:
@@ -28,16 +32,25 @@ def delivery_view(steps: list[dict]) -> DeliveryView:
     published = latest.get("submit_changes", {}) or latest.get("publish_delivery", {})
     step = published or candidate
     output = step.get("output") or {}
+    candidate_output = candidate.get("output") if isinstance(candidate.get("output"), dict) else output
+    candidate_input = candidate.get("input") if isinstance(candidate.get("input"), dict) else {}
     phase = "none"
     if step.get("status") == "failed":
         phase = "failed"
     elif step.get("status") == "succeeded" and output.get("commit"):
         phase = "published" if published else "prepared"
+    # generate_report 的 analysis_only/report_paths 记录在输入契约里；旧记录可能写在
+    # 输出里，两个位置都要兼容，否则前端会把分析报告误判成源码交付。
+    report_paths = candidate_input.get("report_paths") or candidate_output.get("report_paths") or []
     return DeliveryView(
-        phase=phase, candidate_id=str(output.get("candidate_id") or ""),
-        commit=str(output.get("commit") or ""), branch=str(output.get("repair_branch") or ""),
-        pushed=output.get("pushed") is True, local_branch=output.get("local_branch") is True,
-        binding=output.get("binding") or {},
+        phase=phase, candidate_id=str(output.get("candidate_id") or candidate_output.get("candidate_id") or ""),
+        commit=str(output.get("commit") or candidate_output.get("commit") or ""),
+        branch=str(output.get("repair_branch") or candidate_output.get("repair_branch") or ""),
+        pushed=output.get("pushed") is True or candidate_output.get("pushed") is True,
+        local_branch=output.get("local_branch") is True or candidate_output.get("local_branch") is True,
+        binding=output.get("binding") or candidate_output.get("binding") or {},
+        analysis_only=candidate_input.get("analysis_only") is True or candidate_output.get("analysis_only") is True,
+        report_paths=[str(item) for item in report_paths if str(item)] if isinstance(report_paths, list) else [],
     )
 
 

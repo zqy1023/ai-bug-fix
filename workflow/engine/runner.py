@@ -86,6 +86,8 @@ class WorkflowServices:
     project_subdir: Path | None = None
     git_push: bool = False
     git_remote: str = settings.default_git_remote
+    # git_env：查询远端分支/推送时注入的 Git 凭据环境，不落盘。
+    git_env: dict[str, str] | None = None
     command_timeout_seconds: int = 600
     workspaces: WorkspaceManager | None = None
     delivery: GitBranchDelivery | None = None
@@ -284,7 +286,6 @@ def _check_cycles() -> list[str]:
 
 STEP_LOCATIONS: dict[str, str] = {
     "claim_repair_slot": "workflow.stages.claim_slot",
-    "request_approval": "workflow.stages.request_approval",
     "prepare_evidence": "workflow.stages.prepare_context.prepare_evidence",
     "prepare_source_snapshot": "workflow.stages.prepare_context.prepare_source_snapshot",
     "prepare_workspace": "workflow.stages.prepare_context.prepare_workspace",
@@ -596,7 +597,7 @@ def bind(
                     )
             if spec.name in {REPORT, SUBMIT}:
                 key = "delivery_candidate" if spec.name == REPORT else "delivery"
-                patch = {**patch, key: {"delivery_status": "FAILED"}}
+                patch = {**patch, key: {"delivery_phase": "FAILED"}}
 
         routed_state = {**state, **patch, "last_result": patch.get("last_result", result.status)}
         action = next_step_for(spec.name, routed_state) if next_step is None else next_step

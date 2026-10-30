@@ -1,24 +1,97 @@
 """运行管理路由。"""
 from __future__ import annotations
 
+import json
+import threading
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from server.routes.common import *
 
 router = APIRouter()
 
-@router.get("/api/v1/run-config")
-def v1_run_config(_: None = Depends(_authorize)) -> dict[str, Any]:
-    """提供新建运行的有效默认值与上限，不返回连接地址、凭据或内部路径。"""
+# 全局串行：同一时刻只允许一个执行批次占用工作流。
+_SERIAL_START_LOCK = threading.Lock()
+_TERMINAL_RUN_STATUSES = {
+    "succeeded", "partial_failed", "failed", "cancelled", "manual", "blocked", "skipped",
+    # 人工审批已移除；历史等待审批 Run 不再占用全局串行位。
+    "waiting_approval",
+}
+
+
+def _idempotency_lookup(key: str):
+    connection = _control_db()
+    try:
+        return connection.execute(
+            "SELECT payload_hash,run_id FROM idempotency_keys WHERE key=?", (key,)
+        ).fetchone()
+    finally:
+        connection.close()
+
+
+def _busy_run(store) -> tuple[str, str] | None:
+    """返回仍在占用全局串行位的批次；已终态批次不阻塞新批次。"""
+    from infrastructure.storage.lifecycle import LifecycleStore
+
+    lifecycle = LifecycleStore(store.root)
+    for run_id in _all_run_ids(store):
+        try:
+            status = str(lifecycle.read_run(run_id).get("status") or "").lower()
+        except Exception:
+            status = ""
+        if status:
+            if status not in _TERMINAL_RUN_STATUSES:
+                return run_id, status
+            continue
+        # 旧记录或刚持久化、尚未写 lifecycle 的 queued Run 走统一摘要投影。
+        try:
+            status = str(_v1_run_summary(_run_payload(store, run_id)).get("status") or "")
+        except Exception:
+            logger.warning("启动前无法读取批次状态 run_id=%s", run_id, exc_info=True)
+            continue
+        if status not in _TERMINAL_RUN_STATUSES:
+            return run_id, status
+    return None
+
+
+def _run_config_payload(*, force: bool = False) -> dict[str, Any]:
+    """提供新建运行的有效默认值与上限；设置来源为 Nacos。"""
     from infrastructure.llm.models import model_options, model_options_by_role
-    from core.policy import AgentPolicy
+    from core.policy import AgentPolicy, resolve_policy
+    from config.nacos import load_nacos_config, nacos_target
 
     config = _config()
+    nacos = nacos_target()
+    raw = load_nacos_config(force=force)
+    overrides: dict[str, Any] = {}
+    for key, name in (
+        ("LOG_PULL_HOURS", "log_hours"),
+        ("LOG_PULL_LIMIT", "log_limit"),
+        ("AI_REPAIR_MAX_ATTEMPTS", "max_attempts"),
+    ):
+        if key in raw:
+            try:
+                overrides[name] = int(raw[key])
+            except (TypeError, ValueError):
+                pass
+    policy_raw = raw.get("AI_REPAIR_AGENT_POLICY")
+    try:
+        policy_values = json.loads(policy_raw) if isinstance(policy_raw, str) else policy_raw
+    except ValueError:
+        policy_values = None
+    if isinstance(policy_values, dict):
+        if policy_values.get("unified_model"):
+            overrides["unified_model"] = str(policy_values["unified_model"])
+        if policy_values.get("review_model"):
+            overrides["review_model"] = str(policy_values["review_model"])
+
     defaults = V1StartRunRequest().model_dump(mode="json")
-    if not defaults.get("agent_policy"):
+    try:
+        defaults["agent_policy"] = resolve_policy()
+    except Exception:
         defaults["agent_policy"] = AgentPolicy().model_dump(mode="json")
     return {
         "defaults": defaults,
@@ -28,7 +101,111 @@ def v1_run_config(_: None = Depends(_authorize)) -> dict[str, Any]:
         },
         "models": model_options_by_role(config),
         "model_catalog": [item.as_dict() for item in model_options(config)],
+        "overrides": overrides,
+        "customized": bool(overrides),
+        "nacos": {
+            "enabled": bool(nacos["enabled"]),
+            "data_id": nacos["data_id"],
+            "group": nacos["group"],
+        },
     }
+
+
+@router.get("/api/v1/run-config")
+def v1_run_config(_: None = Depends(_authorize)) -> dict[str, Any]:
+    return _run_config_payload()
+
+
+class V1RunDefaultsUpdate(BaseModel):
+    """设置页可修改的运行默认值；None 表示清除该 Nacos 覆盖。"""
+
+    model_config = {"extra": "forbid"}
+
+    log_hours: int | None = Field(default=None, ge=1, le=720)
+    log_limit: int | None = Field(default=None, ge=0)
+    max_attempts: int | None = Field(default=None, ge=1, le=5)
+    unified_model: str | None = Field(default=None, max_length=200)
+    review_model: str | None = Field(default=None, max_length=200)
+
+
+def _agent_policy_values() -> dict[str, Any]:
+    from config.nacos import nacos_get
+
+    try:
+        value = json.loads(nacos_get("AI_REPAIR_AGENT_POLICY", "{}"))
+    except ValueError:
+        return {}
+    return dict(value) if isinstance(value, dict) else {}
+
+
+@router.put("/api/v1/run-config")
+def v1_update_run_config(
+    request: V1RunDefaultsUpdate,
+    _: None = Depends(_authorize),
+) -> dict[str, Any]:
+    """写入 Nacos 配置；本地不保存覆盖，写失败直接返回 503。"""
+    from infrastructure.llm.models import model_options
+    from config.nacos import NacosUnavailable, publish_nacos_values
+
+    updates = request.model_dump(exclude_unset=True)
+    catalog = {item.model_id for item in model_options(_config())}
+    for key in ("unified_model", "review_model"):
+        value = updates.get(key)
+        if value and value not in catalog:
+            raise HTTPException(status_code=400, detail=f"{key} 不在可用模型目录中")
+
+    nacos_updates: dict[str, Any] = {}
+    for source, target in (
+        ("log_hours", "LOG_PULL_HOURS"),
+        ("log_limit", "LOG_PULL_LIMIT"),
+        ("max_attempts", "AI_REPAIR_MAX_ATTEMPTS"),
+    ):
+        if source in updates:
+            nacos_updates[target] = updates[source]
+
+    if "unified_model" in updates or "review_model" in updates:
+        policy = _agent_policy_values()
+        for source in ("unified_model", "review_model"):
+            if source in updates:
+                value = updates[source]
+                if value:
+                    policy[source] = value
+                else:
+                    policy.pop(source, None)
+        nacos_updates["AI_REPAIR_AGENT_POLICY"] = (
+            json.dumps(policy, ensure_ascii=False) if policy else None
+        )
+
+    try:
+        if nacos_updates:
+            publish_nacos_values(nacos_updates)
+    except NacosUnavailable as exc:
+        raise HTTPException(status_code=503, detail=public_exception(exc, prefix="Nacos 设置不可用")) from exc
+    return _run_config_payload(force=True)
+
+
+@router.delete("/api/v1/run-config")
+def v1_reset_run_config(_: None = Depends(_authorize)) -> dict[str, Any]:
+    """删除设置页写入的 Nacos 键，恢复环境默认。"""
+    from config.nacos import NacosUnavailable, publish_nacos_values
+
+    nacos_updates: dict[str, Any] = {
+        "LOG_PULL_HOURS": None,
+        "LOG_PULL_LIMIT": None,
+        "AI_REPAIR_MAX_ATTEMPTS": None,
+    }
+    policy = _agent_policy_values()
+    if "unified_model" in policy or "review_model" in policy:
+        policy.pop("unified_model", None)
+        policy.pop("review_model", None)
+    nacos_updates["AI_REPAIR_AGENT_POLICY"] = (
+        json.dumps(policy, ensure_ascii=False) if policy else None
+    )
+    try:
+        publish_nacos_values(nacos_updates)
+    except NacosUnavailable as exc:
+        raise HTTPException(status_code=503, detail=public_exception(exc, prefix="Nacos 设置不可用")) from exc
+    return _run_config_payload(force=True)
 
 
 @router.get("/api/v1/health")
@@ -85,22 +262,24 @@ def v1_list_runs(
         ge=1,
         le=100,
     ),
-    status: str | None = None, keyword: str | None = Query(default=None, max_length=160),
+    status: str | None = None,
+    status_group: str | None = Query(default=None, pattern="^(active|ended)$"),
+    keyword: str | None = Query(default=None, max_length=160),
     from_: str | None = Query(default=None, alias="from", max_length=40),
     to: str | None = Query(default=None, max_length=40), _: None = Depends(_authorize),
 ) -> dict[str, Any]:
     store = _store()
-    items = []
+    candidates = []
     unreadable_runs = 0
     from_time, to_time = _parse_time(from_), _parse_time(to)
+    active_statuses = {"queued", "running", "pause_requested", "cancel_requested"}
+    ended_statuses = {"succeeded", "partial_failed", "failed", "cancelled"}
     for run_id in _all_run_ids(store):
         try:
             item = _v1_run_summary(_run_payload(store, run_id))
         except (OSError, ValueError, HTTPException):
             unreadable_runs += 1
             logger.warning("执行列表跳过无法读取的记录 run_id=%s", run_id, exc_info=True)
-            continue
-        if status and item["status"] != status:
             continue
         if keyword and keyword.casefold() not in run_id.casefold():
             continue
@@ -109,12 +288,51 @@ def v1_list_runs(
             continue
         if to_time and (not created or created > to_time):
             continue
-        items.append(item)
+        candidates.append(item)
+
+    # 分组计数覆盖当前时间/检索范围，但不受 status/status_group 过滤影响。
+    active_count = sum(1 for item in candidates if item["status"] in active_statuses)
+    ended_count = sum(
+        1 for item in candidates
+        if item.get("terminal") is True or item["status"] in ended_statuses
+    )
+    attention_count = sum(
+        int(item.get("failed_tasks") or 0)
+        + int(item.get("blocked_tasks") or 0)
+        + int(item.get("manual_tasks") or 0)
+        for item in candidates
+    )
+    attention_run = next(
+        (
+            item for item in candidates
+            if int(item.get("failed_tasks") or 0)
+            + int(item.get("blocked_tasks") or 0)
+            + int(item.get("manual_tasks") or 0) > 0
+        ),
+        None,
+    )
+
+    filtered = [
+        item for item in candidates
+        if (not status or item["status"] == status)
+        and (
+            not status_group
+            or (status_group == "active" and item["status"] in active_statuses)
+            or (status_group == "ended" and (item.get("terminal") is True or item["status"] in ended_statuses))
+        )
+    ]
     start = (page - 1) * page_size
     return {
-        "items": items[start:start + page_size], "total": len(items),
+        "items": filtered[start:start + page_size], "total": len(filtered),
         "page": page, "page_size": page_size,
         "unreadable_runs": unreadable_runs,
+        "degraded": unreadable_runs > 0,
+        "counts": {
+            "active": active_count,
+            "ended": ended_count,
+            "attention": attention_count,
+        },
+        "attention_run_id": str(attention_run.get("run_id") or "") if attention_run else "",
     }
 
 
@@ -133,53 +351,73 @@ def v1_start_run(
     payload = request.model_dump(mode="json")
     payload_hash = sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     run_id = uuid.uuid4().hex
-    connection = _control_db()
-    run_lock: threading.Lock | None = None
-    lock_held = False
-    try:
-        connection.execute("BEGIN IMMEDIATE")
-        existing = connection.execute(
-            "SELECT payload_hash,run_id FROM idempotency_keys WHERE key=?", (idempotency_key,)
-        ).fetchone()
+
+    with _SERIAL_START_LOCK:
+        existing = _idempotency_lookup(idempotency_key)
         if existing:
             if existing["payload_hash"] != payload_hash:
                 raise HTTPException(status_code=409, detail="相同 Idempotency-Key 不允许复用于不同请求参数")
             return {"run_id": existing["run_id"], "status": "accepted", "idempotent_replay": True}
 
-        # 在返回 202 之前持久化 run.json。详情/事件/模型调用接口因此能立即查询到 queued Run，
-        # 不再依赖 BackgroundTasks 何时开始执行后才创建目录。
-        with _RUN_LOCKS_GUARD:
-            if run_id in _STARTED_RUNS or _store().run_dir(run_id).exists():
-                raise HTTPException(status_code=409, detail="执行 ID 冲突，请重试")
-            run_lock = _run_lock(run_id)
-            if not run_lock.acquire(blocking=False):
-                raise HTTPException(status_code=409, detail="该执行已被另一个工作线程启动")
-            lock_held = True
-            _STARTED_RUNS.add(run_id)
-
-        try:
-            from workflow.engine.entrypoint import prepare_run
-            prepare_run(run_id, overrides=payload, queued=True)
-        except Exception as exc:
+        busy = _busy_run(_store())
+        if busy:
+            busy_run_id, busy_status = busy
             raise HTTPException(
-                status_code=503,
-                detail=public_exception(exc, prefix="初始化执行记录失败，工作流未启动"),
-            ) from exc
+                status_code=409,
+                detail=(
+                    f"全局串行模式：执行批次 {busy_run_id} 当前为 {busy_status}，"
+                    "请先完成、取消或处理审批后再新建批次"
+                ),
+            )
 
-        connection.execute(
-            "INSERT INTO idempotency_keys(key,payload_hash,run_id,created_at) VALUES(?,?,?,?)",
-            (idempotency_key, payload_hash, run_id, datetime.now(timezone.utc).isoformat()),
-        )
-        connection.commit()
-    except Exception:
-        connection.rollback()
-        if lock_held and run_lock is not None:
-            run_lock.release()
+        connection = _control_db()
+        run_lock: threading.Lock | None = None
+        lock_held = False
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            # 幂等键在锁外可能已被另一进程写入，事务内再确认一次。
+            existing = connection.execute(
+                "SELECT payload_hash,run_id FROM idempotency_keys WHERE key=?", (idempotency_key,)
+            ).fetchone()
+            if existing:
+                if existing["payload_hash"] != payload_hash:
+                    raise HTTPException(status_code=409, detail="相同 Idempotency-Key 不允许复用于不同请求参数")
+                return {"run_id": existing["run_id"], "status": "accepted", "idempotent_replay": True}
+
+            # 在返回 202 之前持久化 run.json。详情/事件/模型调用接口因此能立即查询到 queued Run，
+            # 不再依赖 BackgroundTasks 何时开始执行后才创建目录。
             with _RUN_LOCKS_GUARD:
-                _STARTED_RUNS.discard(run_id)
-        raise
-    finally:
-        connection.close()
+                if run_id in _STARTED_RUNS or _store().run_dir(run_id).exists():
+                    raise HTTPException(status_code=409, detail="执行 ID 冲突，请重试")
+                run_lock = _run_lock(run_id)
+                if not run_lock.acquire(blocking=False):
+                    raise HTTPException(status_code=409, detail="该执行已被另一个工作线程启动")
+                lock_held = True
+                _STARTED_RUNS.add(run_id)
+
+            try:
+                from workflow.engine.entrypoint import prepare_run
+                prepare_run(run_id, overrides=payload, queued=True)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail=public_exception(exc, prefix="初始化执行记录失败，工作流未启动"),
+                ) from exc
+
+            connection.execute(
+                "INSERT INTO idempotency_keys(key,payload_hash,run_id,created_at) VALUES(?,?,?,?)",
+                (idempotency_key, payload_hash, run_id, datetime.now(timezone.utc).isoformat()),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            if lock_held and run_lock is not None:
+                run_lock.release()
+                with _RUN_LOCKS_GUARD:
+                    _STARTED_RUNS.discard(run_id)
+            raise
+        finally:
+            connection.close()
 
     try:
         _audit_control(run_id, "", "run.start_requested", "api", json.dumps(payload, ensure_ascii=False))
@@ -537,7 +775,7 @@ def v1_control_audit(run_id: str, _: None = Depends(_authorize)) -> dict[str, An
 def v1_run_board(run_id: str, _: None = Depends(_authorize),
                  page: int = Query(default=1, ge=1),
                  page_size: int = Query(default=20, ge=1, le=100),
-                 category: str = Query(default="all", pattern="^(all|active|approval|success|manual|blocked|failed|skipped|cancelled|paused|other)$"),
+                 category: str = Query(default="all", pattern="^(all|pending|active|changed_delivered|unchanged_delivered|failed|skipped|paused)$"),
                  keyword: str = Query(default="", max_length=160)) -> dict[str, Any]:
     """任务板首屏投影：只返回任务卡摘要与步骤状态，不携带 input/output。"""
     store = _store()
@@ -548,6 +786,8 @@ def v1_run_board(run_id: str, _: None = Depends(_authorize),
         report = task.get("report") if isinstance(task.get("report"), dict) else {}
         problem = task.get("problem") if isinstance(task.get("problem"), dict) else {}
         tasks.append({
+            "report": report,
+            "steps": steps,
             "task_id": task.get("task_id", ""),
             "carrier": task.get("carrier", ""),
             "biztype": task.get("biztype", ""),
@@ -568,10 +808,15 @@ def v1_run_board(run_id: str, _: None = Depends(_authorize),
             },
         })
     from server.task_board import paginate_tasks
+    board = paginate_tasks(tasks, page, page_size, category, keyword)
+    # 分类需读取交付证据，但任务板只返回摘要，避免携带全部源码与模型上下文。
+    for task in board["tasks"]:
+        task.pop("report", None)
+        task.pop("steps", None)
     return {
         "run_id": str(payload.get("run_id") or run_id),
         "summary": _v1_run_summary(payload),
         "stages": task_stages(),
-        **paginate_tasks(tasks, page, page_size, category, keyword),
+        **board,
     }
 

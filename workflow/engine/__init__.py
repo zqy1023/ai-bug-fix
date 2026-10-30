@@ -25,16 +25,11 @@ _LEGACY_MODULE_MAP = {
     # graph 承载
     "workflow.engine.wiring": graph,
     "workflow.engine.entrypoint": graph,
-    "workflow.engine.adapter": graph,
     # runner 承载
     "workflow.engine.step_runner": runner,
     "workflow.engine.loader": runner,
     "workflow.engine.registry": runner,
-    "workflow.engine.services": runner,
-    "workflow.engine.plugin_checks": runner,
     # handoff 承载
-    "workflow.engine.state": handoff,
-    "workflow.engine.task_execution": handoff,
     "workflow.engine.retry_context": handoff,
     "workflow.engine.evidence_version": handoff,
     "workflow.engine.frontend_contracts": handoff,

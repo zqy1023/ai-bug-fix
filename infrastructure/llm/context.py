@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 from core.contracts import AgentRole
@@ -107,6 +110,134 @@ def build_context(
             f"Agent 上下文无法在预算内完整序列化：需要 {len(text)} 字符，预算 {max_chars}"
         )
     return text
+
+
+def compact_roots(roots: Sequence[str], workspace: str | Path) -> tuple[str, ...]:
+    """压缩只读范围：去掉被父路径覆盖的重复项，工作区内改成相对路径。
+
+    hook 用真实绝对路径做强制校验，提示词只需要让模型知道"可读哪里"。把 7 条
+    绝对路径原样塞进上下文（实测 1KB），既占体积又不提供额外信息。
+    """
+    resolved: list[Path] = []
+    for item in roots:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        try:
+            resolved.append(Path(text).resolve())
+        except OSError:
+            continue
+    kept: list[Path] = []
+    for path in sorted(set(resolved), key=lambda value: len(value.parts)):
+        if any(path == other or other in path.parents for other in kept):
+            continue
+        kept.append(path)
+    root = Path(workspace).resolve() if str(workspace).strip() else None
+    compact: list[str] = []
+    for path in kept:
+        if root is not None:
+            try:
+                compact.append(path.relative_to(root).as_posix() or ".")
+                continue
+            except ValueError:
+                pass
+        compact.append(path.as_posix())
+    return tuple(compact)
+
+
+def compact_problem(problem: Mapping[str, Any]) -> dict[str, Any]:
+    """去掉 problem 里完全重复的原始文本。
+
+    解析器在没有 `` error:`` 标记时会把整行日志回退成 error，于是
+    ``error``/``raw_error``/``message`` 三份完全相同——实测占 783 字符。
+    ``message`` 保留（规则要求"优先阅读 problem.message 全文"），其余重复项删除。
+    """
+    value = dict(problem)
+    message = str(value.get("message") or "")
+    error = str(value.get("error") or "")
+    raw = str(value.get("raw_error") or "")
+    if raw and raw in {message, error}:
+        value.pop("raw_error", None)
+    if error and message and error == message:
+        value.pop("error", None)
+    return value
+
+
+def read_scope(context: PromptContext, workspace: str | Path) -> dict[str, Any]:
+    """把读写范围压缩成"根 + 子路径"结构，供渲染。
+
+    5 条共享树绝对路径实测占 768 字符，压缩后约 190。请求契约仍保留真实路径，
+    这里只决定模型看到什么。
+    """
+    root = Path(workspace).resolve() if str(workspace).strip() else None
+    inside: list[str] = []
+    outside: list[Path] = []
+    for item in context.allowed_read_roots:
+        try:
+            path = Path(str(item)).resolve()
+        except OSError:
+            continue
+        if root is not None and path.is_relative_to(root):
+            inside.append(path.relative_to(root).as_posix())
+        else:
+            outside.append(path)
+    scope: dict[str, Any] = {
+        "workspace_root": root.as_posix() if root is not None else "",
+        "carrier": [p for p in inside if not p.startswith(".evidence/")],
+        "evidence": [p for p in inside if p.startswith(".evidence/")],
+        "writable": list(compact_roots(context.allowed_write_roots, workspace)),
+    }
+    if outside:
+        try:
+            common = Path(os.path.commonpath([str(path) for path in outside]))
+        except ValueError:
+            scope["shared_root"] = ""
+            scope["shared_paths"] = [path.as_posix() for path in outside]
+        else:
+            if len(outside) > 1:
+                scope["shared_root"] = common.as_posix()
+                scope["shared_paths"] = [p.relative_to(common).as_posix() for p in outside]
+            else:
+                scope["shared_root"] = outside[0].as_posix()
+                scope["shared_paths"] = []
+    return scope
+
+
+def display_context(context: PromptContext, workspace: str | Path) -> PromptContext:
+    """构造只用于渲染的上下文副本：压缩体积，但不动权限字段。
+
+    ``allowed_read_roots`` 在请求契约里必须保持真实路径（ToolPolicy 与 PreToolUse
+    hook 依赖它做强制校验），因此只在渲染副本里替换成相对范围。
+    """
+    evidence = dict(context.evidence)
+    full = evidence.get("full_context")
+    if isinstance(full, dict):
+        # notice 文案已经在 core 规则里说明，逐调用重复没有信息增量。
+        evidence["full_context"] = {k: v for k, v in full.items() if k != "notice"}
+    snapshot = dict(context.source_snapshot)
+    return context.model_copy(update={
+        "problem": compact_problem(context.problem),
+        "evidence": evidence,
+        "source_snapshot": snapshot,
+        "allowed_read_roots": compact_roots(context.allowed_read_roots, workspace),
+        "allowed_write_roots": compact_roots(context.allowed_write_roots, workspace),
+        "source_project_path": _compact_path(context.source_project_path, workspace),
+        "read_scope": read_scope(context, workspace),
+    })
+
+
+def _compact_path(value: str, workspace: str | Path) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    root = Path(workspace).resolve() if str(workspace).strip() else None
+    try:
+        path = Path(text).resolve()
+    except OSError:
+        return text
+    if root is not None and path.is_relative_to(root):
+        return path.relative_to(root).as_posix()
+    return path.as_posix()
 
 
 def prompt_context(

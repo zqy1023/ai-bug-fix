@@ -28,6 +28,7 @@ from langgraph.types import RetryPolicy, interrupt
 
 from config.settings import settings
 from core.contracts import (
+    WORKFLOW_VERSION,
     AgentSpec,
     ArtifactRef,
     StepError,
@@ -68,7 +69,6 @@ from workflow.engine.handoff import (
     task_result,
 )
 from workflow.engine.routes import (
-    APPROVE,
     CLAIM,
     FINALIZE,
     IDENTIFY,
@@ -264,15 +264,15 @@ def _agent_node(
                     "agent_policy": dict(state.get("agent_policy") or {}),
                 }
             else:
-                from agents.unified_fixer.models import RepairView
-                repair = state.get("repair")
-                repair_payload = repair if isinstance(repair, dict) else {}
+                from core.contracts import RepairHandoff
+                unified = state.get("unified_fixer")
+                repair_payload = unified if isinstance(unified, dict) else {}
                 incoming = input_model(
                     retry_context=dict(state.get("retry_context") or {}),
                     task_id=str(state.get("task_id") or ""),
                     attempt=int(state.get("attempt") or 1),
                     ai_workspace_path=str(state.get("ai_workspace_path") or ""),
-                    repair=RepairView.model_validate(repair_payload) if repair_payload else RepairView(),
+                    repair=RepairHandoff.model_validate(repair_payload),
                     changed_files=[str(item) for item in (state.get("changed_files") or [])],
                     diff_summary=_diff_summary(state),
                     baseline_dir=str(state.get("baseline_dir") or ""),
@@ -280,13 +280,14 @@ def _agent_node(
                 graph_input = {
                     **task,
                     **dump_model(incoming),
-                    "repair": repair_payload,
                     "problem": dict(state.get("problem") or task.get("problem") or {}),
                     "run_id": str(state["run_id"]),
                     "baseline_dir": str(state.get("baseline_dir") or ""),
                     "baseline_manifest": dict(state.get("baseline_manifest") or {}),
                     "framework": str(state.get("framework") or (state.get("evidence") or {}).get("framework") or ""),
+                    "evidence": dict(state.get("evidence") or {}),
                     "source_project_path": str(state.get("source_project_path") or ""),
+                    "agent_policy": dict(state.get("agent_policy") or {}),
                 }
         except Exception as error:
             record = StepRecord(
@@ -347,6 +348,13 @@ def _agent_node(
                 output_view=spec.output_record,
             )
             final = graph.invoke(graph_input)
+            reproduction = (final.get("_audit") or {}).get("reproduction")
+            if kind == "unified_fixer" and reproduction:
+                refs.append(ArtifactRef(name="request_reproduction", path=store.write_artifact(
+                    run_id, "artifacts/reproduction.json", reproduction, task_id), task_id=task_id))
+            if kind == "review" and final.get("_validation_report"):
+                refs.append(ArtifactRef(name="validation", path=store.write_artifact(
+                    run_id, "artifacts/validation.json", final["_validation_report"], task_id), task_id=task_id))
             record.duration_ms = round((time.perf_counter() - started) * 1000, 2)
 
             if debug_artifacts(store.run_dir(run_id)):
@@ -391,19 +399,11 @@ def _agent_node(
                 view = view.model_copy(update={"passed": is_passed, "verdict": verdict})
                 conclusion = str(view.verdict)
 
-            if kind == "review" and state.get("baseline_dir"):
-                diff_files = []
-                for name in state.get("changed_files") or []:
-                    entry = {"path": name, "available": True}
-                    for key, root in (("before", state["baseline_dir"]), ("after", state["ai_workspace_path"])):
-                        base = Path(root).resolve()
-                        target = (base / name).resolve()
-                        if not target.is_relative_to(base):
-                            raise ValueError("差异文件越出源码范围")
-                        entry[key] = target.read_text(encoding="utf-8") if target.is_file() else ""
-                    diff_files.append(entry)
+            if kind in {"unified_fixer", "review"} and state.get("baseline_dir"):
+                from infrastructure.workspace.diff import complete_changes
+                difference = complete_changes(state["ai_workspace_path"], state["baseline_dir"])
                 refs.append(ArtifactRef(name="diff", path=store.write_artifact(
-                    run_id, "artifacts/diff.json", {"files": diff_files}, task_id), task_id=task_id))
+                    run_id, "artifacts/diff.json", difference, task_id), task_id=task_id))
 
             refs.append(
                 ArtifactRef(
@@ -422,7 +422,7 @@ def _agent_node(
             record.status = status
             record.result = business
             record.output = dump_model(view)
-            record.summary = summary_of(record.output) or str(view.analysis or view.summary)
+            record.summary = summary_of(record.output) or str(getattr(view, "analysis", "") or view.summary)
             audit = final.get("_audit") if isinstance(final, dict) else None
             if isinstance(audit, dict) and audit:
                 refs.append(
@@ -481,8 +481,12 @@ def _agent_node(
             )
 
         record.finished_at = utc_now()
-        formal = outcome_of(record.output, summary=record.summary, business=record.result)
+        formal = outcome_of(record.output, summary=record.summary, business=record.result,
+                            execution_status="failed" if record.status == "failed" else "succeeded",
+                            error=record.error.model_dump() if record.error else None)
         record.execution, record.assessment = formal.execution, formal.assessment
+        if formal.execution.status == "failed":
+            record.status = "failed"
         store.save(
             run_id,
             record,
@@ -533,16 +537,18 @@ def _agent_node(
             patch["repair_changed_files"] = changed_files
             patch["change_plan"] = change_plan
             patch["blocked_reason"] = str(final.get("blocked_reason") or "")
-            patch["analysis_only"] = view.status in {"ANALYSIS_ONLY", "MANUAL"}
-            patch["locate"] = dict(final.get("locate") or {})
-            patch["repair"] = dict(final.get("repair") or {})
+            patch["scope_escalation_required"] = bool(view.scope_escalation_required)
+            patch["analysis_only"] = view.status in {"ANALYSIS_ONLY", "MANUAL", "INSUFFICIENT_EVIDENCE"} or not changed_files
             if failed:
                 patch["retry_target"] = "unified_fixer_agent"
         elif kind == "review":
             patch["review_contract_error"] = view.contract_error
-            patch["terminal_status"] = "passed"
+            patch["terminal_status"] = "manual" if view.verdict == "MANUAL" else "failed" if failed else "passed"
             if failed:
                 patch["retry_target"] = "unified_fixer_agent"
+            elif view.contract_error.startswith(("review_invocation_failed:", "review_protocol_invalid:")):
+                patch["retry_target"] = REVIEW
+                patch["retry_reason"] = view.summary
 
         if cancellation_requested(store.root, run_id):
             patch.update(
@@ -587,6 +593,7 @@ def build_services(
     workspaces = WorkspaceManager(
         WorkspaceConfig(root_dir=config.workspace_root, project_subdir=config.project_subdir)
     )
+    git_env = git_auth_env(config.git_username, config.git_password)
     log_source = None
     if config.log_es:
         from elasticsearch7.helpers import scan
@@ -605,6 +612,7 @@ def build_services(
         project_subdir=config.project_subdir,
         git_push=config.git_push,
         git_remote=config.git_remote,
+        git_env=git_env,
         command_timeout_seconds=config.command_timeout_seconds,
         workspaces=workspaces,
         delivery=GitBranchDelivery(
@@ -612,7 +620,7 @@ def build_services(
                 remote_name=config.git_remote,
                 push=config.git_push,
                 source_repo=resolved_source,
-                git_env=git_auth_env(config.git_username, config.git_password),
+                git_env=git_env,
                 workspace_manager=workspaces,
             )
         ),
@@ -888,13 +896,15 @@ def dispatch(state: RunState) -> dict[str, Any]:
         "task_summary": {},
         "attempt": task_attempt,
         "automatic_attempt": 1,
-        "workflow_version": 7,
+        "workflow_version": WORKFLOW_VERSION,
         "retry_reason": "",
         "last_result": "passed",
     }
 
 
 def after_dispatch(state: RunState) -> str:
+    if state.get("stop_requested"):
+        return END
     tasks = list(state.get("tasks") or [])
     return RUN_TASK if int(state.get("task_cursor") or 0) < len(tasks) else END
 
@@ -910,7 +920,177 @@ def collect(state: RunState) -> dict[str, Any]:
             "biztype": str(task.get("biztype") or ""),
             "result": str(state.get("terminal_status") or "FAILED"),
         }
-    return {"task_cursor": cursor + 1, "task_results": [summary]}
+    patch: dict[str, Any] = {"task_cursor": cursor + 1, "task_results": [summary]}
+    if str(state.get("terminal_status") or "").upper() == "CANCELLED":
+        patch["stop_requested"] = True
+    return patch
+
+
+def _retry_reset_failure(
+    state: dict[str, Any], reason: str, *, blocked: str = ""
+) -> dict[str, Any]:
+    """构造重试准备失败、直接收尾的统一补丁。"""
+    patch: dict[str, Any] = {
+        "attempt": int(state.get("attempt") or 1),
+        "last_result": "failed",
+        "terminal_status": "failed",
+        "retry_target": RETRY_RESET_FAILED,
+        "retry_reason": reason,
+    }
+    if blocked:
+        patch["blocked_reason"] = blocked
+    return patch
+
+
+def _archive_previous_attempts(
+    state: dict[str, Any],
+    manager: Any,
+    transition_store: Any,
+    workspace_root: Path | None,
+) -> dict[str, Any] | None:
+    """把旧基线与隔离工作区改名归档以保留现场；失败时回滚并返回失败补丁。"""
+    run_id = str(state.get("run_id") or "")
+    task_id = str(state.get("task_id") or "")
+    if not run_id or not task_id:
+        return _retry_reset_failure(state, "缺少 run_id/task_id，无法定位旧的任务基线")
+    root = Path(workspace_root).resolve() if workspace_root is not None else None
+    if root is None:
+        return _retry_reset_failure(state, "工作区根目录未配置")
+    if transition_store is not None and hasattr(transition_store, "task_dir"):
+        task_root = Path(transition_store.task_dir(run_id, task_id)).resolve()
+    else:
+        task_root = (
+            root.parent / "runs" / safe_name(run_id) / "tasks" / safe_name(task_id)
+        ).resolve()
+    baseline = Path(str(state.get("baseline_dir") or task_root / "source_snapshot")).resolve()
+    if not baseline.is_relative_to(task_root):
+        return _retry_reset_failure(state, "源码基线超出当前 Task 目录")
+    workspace_value = str(state.get("ai_workspace_path") or "")
+    workspace = (
+        Path(workspace_value).resolve()
+        if workspace_value
+        else (root / "ai" / manager.safe_name(f"{run_id}-{task_id}")).resolve()
+    )
+    if not workspace.is_relative_to(workspace_root):
+        return _retry_reset_failure(state, "隔离工作区超出配置的 workspace_root")
+    archived: list[tuple[Path, Path]] = []
+    try:
+        suffix = f".previous-attempt-{int(state.get('attempt') or 1) + 1}-{uuid.uuid4().hex[:8]}"
+        for original in (baseline, workspace):
+            if original.exists():
+                archive = original.with_name(original.name + suffix)
+                original.replace(archive)
+                archived.append((original, archive))
+    except Exception as error:
+        for original, archive in reversed(archived):
+            try:
+                if archive.exists() and not original.exists():
+                    archive.replace(original)
+            except OSError:
+                pass
+        return _retry_reset_failure(
+            state, public_exception(error, prefix="重试准备阶段前归档旧基线/工作区失败")
+        )
+    return None
+
+
+def _reset_workspace_for_retry(
+    state: dict[str, Any], manager: Any
+) -> dict[str, Any] | None:
+    """把隔离工作区恢复到基线并校验清单；不一致或异常返回失败补丁。"""
+    try:
+        task = dict(state.get("task") or {})
+        manager.reset_task_workspace(
+            state.get("ai_workspace_path") or "",
+            state.get("baseline_dir") or "",
+            str(task.get("carrier") or ""),
+        )
+        manifest = {
+            str(key): str(value)
+            for key, value in (state.get("baseline_manifest") or {}).items()
+        }
+        if manifest:
+            valid, mismatches = manager.verify_manifest(
+                state.get("ai_workspace_path") or "",
+                manifest,
+                carrier=str(task.get("carrier") or "") or None,
+            )
+            if not valid:
+                return _retry_reset_failure(
+                    state,
+                    "重试后工作区与基线不一致",
+                    blocked=f"基线校验失败：{', '.join(mismatches[:8])}",
+                )
+    except Exception as error:
+        return _retry_reset_failure(
+            state, public_exception(error, prefix="重试前恢复隔离工作区失败")
+        )
+    return None
+
+
+def _retry_patch(
+    state: dict[str, Any], target: str, retry_context: dict[str, Any]
+) -> dict[str, Any]:
+    """生成重试后的状态补丁：递增尝试次数并清空会重新产出的下游通道。"""
+    patch: dict[str, Any] = {
+        "retry_context": retry_context,
+        "attempt": int(state.get("attempt") or 1) + 1,
+        "automatic_attempt": int(state.get("automatic_attempt") or 1)
+        + (1 if target == UNIFIED_FIXER else 0),
+        "validation_recovery_counts": {
+            **dict(state.get("validation_recovery_counts") or {}),
+            target: int((state.get("validation_recovery_counts") or {}).get(target, 0)) + 1,
+        },
+        "terminal_status": "passed",
+        "decision": "PENDING",
+        "review": dict(state.get("review") or {}) if target in {REPORT, SUBMIT} else {},
+        "delivery": {} if target != SUBMIT else state.get("delivery", {}),
+        "approval_result": state.get("approval_result", {}) if target == SUBMIT else {},
+        "approval_granted": bool(state.get("approval_granted")) if target == SUBMIT else False,
+        "delivery_candidate": state.get("delivery_candidate", {}) if target in {SUBMIT, REPORT} else {},
+        "delivery_pushed": False,
+        "delivery_local_branch": False,
+        "delivery_commit": "",
+        "repair_branch": "",
+        "approval_cleanup_failed": False,
+        "approval_recovery_blocked": False,
+        "blocked_reason": "",
+        "repair_slot_claimed": kept_repair_slot(state),
+        "last_result": "passed",
+        "analysis_only": bool(state.get("analysis_only")) if target in {REPORT, SUBMIT} else False,
+    }
+    if target not in {REVIEW, REPORT, SUBMIT}:
+        patch.update(
+            {
+                "changed_files": [],
+                "repair_changed_files": [],
+                "change_plan": {},
+                "scope_escalation_required": False,
+            }
+        )
+    if target in {REPORT, SUBMIT}:
+        from infrastructure.workspace.diff import source_changes
+        from core.policy import legacy_analysis_required
+        patch["analysis_only"] = bool(state.get("analysis_only") or legacy_analysis_required(state)
+            or (state.get("unified_fixer") or {}).get("status") in {"MANUAL", "ANALYSIS_ONLY", "INSUFFICIENT_EVIDENCE"}
+            or (state.get("delivery") or {}).get("delivery_phase") == "ANALYSIS_ONLY")
+        if state.get("baseline_dir") and Path(str(state.get("ai_workspace_path") or "")).is_dir():
+            files = source_changes(str(state["ai_workspace_path"]), str(state["baseline_dir"]))
+            patch.update(changed_files=files, repair_changed_files=files)
+    if target == PREPARE_CONTEXT:
+        patch.update(
+            {
+                "baseline_manifest": {},
+                "baseline_dir": "",
+                "source_project_path": "",
+                "ai_workspace_path": "",
+                "evidence": {},
+                "framework": "",
+            }
+        )
+    if target == UNIFIED_FIXER:
+        patch["unified_fixer"] = {}
+    return patch
 
 
 def build_task_graph(
@@ -943,151 +1123,28 @@ def build_task_graph(
                         "blocked_reason": reason,
                     }
                 manager = workspace_manager
-                preserve_workspace_targets = {CLAIM, REVIEW, REPORT, SUBMIT}
-                preserve_workspace = target in preserve_workspace_targets
+                preserve_workspace = target in {CLAIM, REVIEW, REPORT, SUBMIT}
                 if target == PREPARE_CONTEXT:
                     if manager is None:
-                        return {
-                            "attempt": int(state.get("attempt") or 1),
-                            "last_result": "failed",
-                            "terminal_status": "failed",
-                            "retry_target": RETRY_RESET_FAILED,
-                            "retry_reason": "重试准备阶段前未配置工作区管理器，无法安全隔离旧目录",
-                        }
-                    archived: list[tuple[Path, Path]] = []
-                    try:
-                        run_id = str(state.get("run_id") or "")
-                        task_id = str(state.get("task_id") or "")
-                        if not run_id or not task_id:
-                            raise RuntimeError("缺少 run_id/task_id，无法定位旧的任务基线")
-                        root = Path(workspace_root).resolve() if workspace_root is not None else None
-                        if root is None:
-                            raise RuntimeError("工作区根目录未配置")
-                        if transition_store is not None and hasattr(transition_store, "task_dir"):
-                            task_root = Path(transition_store.task_dir(run_id, task_id)).resolve()
-                        else:
-                            task_root = (root.parent / "runs" / safe_name(run_id) / "tasks" / safe_name(task_id)).resolve()
-                        baseline_value = str(state.get("baseline_dir") or task_root / "source_snapshot")
-                        baseline = Path(baseline_value).resolve()
-                        if not baseline.is_relative_to(task_root):
-                            raise RuntimeError("源码基线超出当前 Task 目录")
-                        workspace_value = str(state.get("ai_workspace_path") or "")
-                        workspace = (
-                            Path(workspace_value).resolve()
-                            if workspace_value
-                            else (root / "ai" / manager.safe_name(f"{run_id}-{task_id}")).resolve()
+                        return _retry_reset_failure(
+                            state, "重试准备阶段前未配置工作区管理器，无法安全隔离旧目录"
                         )
-                        if not workspace.is_relative_to(workspace_root):
-                            raise RuntimeError("隔离工作区超出配置的 workspace_root")
-                        suffix = f".previous-attempt-{int(state.get('attempt') or 1) + 1}-{uuid.uuid4().hex[:8]}"
-                        for original in (baseline, workspace):
-                            if original.exists():
-                                archive = original.with_name(original.name + suffix)
-                                original.replace(archive)
-                                archived.append((original, archive))
-                        preserve_workspace = True
-                    except Exception as error:
-                        for original, archive in reversed(archived):
-                            try:
-                                if archive.exists() and not original.exists():
-                                    archive.replace(original)
-                            except OSError:
-                                pass
-                        return {
-                            "attempt": int(state.get("attempt") or 1),
-                            "last_result": "failed",
-                            "terminal_status": "failed",
-                            "retry_target": RETRY_RESET_FAILED,
-                            "retry_reason": public_exception(error, prefix="重试准备阶段前归档旧基线/工作区失败"),
-                        }
+                    failure = _archive_previous_attempts(
+                        state, manager, transition_store, workspace_root
+                    )
+                    if failure is not None:
+                        return failure
+                    preserve_workspace = True
 
-                if not preserve_workspace and manager is None:
-                    return {
-                        "attempt": int(state.get("attempt") or 1),
-                        "last_result": "failed",
-                        "terminal_status": "failed",
-                        "retry_target": RETRY_RESET_FAILED,
-                        "retry_reason": "重试前未配置工作区管理器，无法安全恢复代码基线",
-                    }
                 if not preserve_workspace:
-                    try:
-                        task = dict(state.get("task") or {})
-                        manager.reset_task_workspace(
-                            state.get("ai_workspace_path") or "",
-                            state.get("baseline_dir") or "",
-                            str(task.get("carrier") or ""),
+                    if manager is None:
+                        return _retry_reset_failure(
+                            state, "重试前未配置工作区管理器，无法安全恢复代码基线"
                         )
-                        manifest = {str(k): str(v) for k, v in (state.get("baseline_manifest") or {}).items()}
-                        if manifest:
-                            valid, mismatches = manager.verify_manifest(
-                                state.get("ai_workspace_path") or "",
-                                manifest,
-                                carrier=str(task.get("carrier") or "") or None,
-                            )
-                            if not valid:
-                                return {
-                                    "attempt": int(state.get("attempt") or 1),
-                                    "last_result": "failed",
-                                    "terminal_status": "failed",
-                                    "retry_target": RETRY_RESET_FAILED,
-                                    "retry_reason": "重试后工作区与基线不一致",
-                                    "blocked_reason": f"基线校验失败：{', '.join(mismatches[:8])}",
-                                }
-                    except Exception as error:
-                        return {
-                            "attempt": int(state.get("attempt") or 1),
-                            "last_result": "failed",
-                            "terminal_status": "failed",
-                            "retry_target": RETRY_RESET_FAILED,
-                            "retry_reason": public_exception(error, prefix="重试前恢复隔离工作区失败"),
-                        }
-                patch: dict[str, Any] = {
-                    "retry_context": retry_context,
-                    "attempt": int(state.get("attempt") or 1) + 1,
-                    "automatic_attempt": int(state.get("automatic_attempt") or 1) + (1 if target == UNIFIED_FIXER else 0),
-                    "validation_recovery_counts": {
-                        **dict(state.get("validation_recovery_counts") or {}),
-                        target: int((state.get("validation_recovery_counts") or {}).get(target, 0)) + 1,
-                    },
-                    "terminal_status": "passed",
-                    "decision": "PENDING",
-                    "review": dict(state.get("review") or {}) if target in {REPORT, SUBMIT} else {},
-                    "delivery": {} if target != SUBMIT else state.get("delivery", {}),
-                    "approval_result": state.get("approval_result", {}) if target == SUBMIT else {},
-                    "approval_granted": bool(state.get("approval_granted")) if target == SUBMIT else False,
-                    "delivery_candidate": state.get("delivery_candidate", {}) if target in {SUBMIT, REPORT} else {},
-                    "delivery_pushed": False,
-                    "delivery_local_branch": False,
-                    "delivery_commit": "",
-                    "repair_branch": "",
-                    "approval_cleanup_failed": False,
-                    "approval_recovery_blocked": False,
-                    "blocked_reason": "",
-                    "repair_slot_claimed": kept_repair_slot(state),
-                    "last_result": "passed",
-                }
-                if target not in {REVIEW, REPORT, SUBMIT}:
-                    patch.update({
-                        "repair": {},
-                        "changed_files": [],
-                        "repair_changed_files": [],
-                        "change_plan": {},
-                        "scope_escalation_required": False,
-                    })
-                if target == PREPARE_CONTEXT:
-                    patch.update({
-                        "baseline_manifest": {},
-                        "baseline_dir": "",
-                        "source_project_path": "",
-                        "ai_workspace_path": "",
-                        "evidence": {},
-                        "framework": "",
-                        "locate": {},
-                    })
-                if target == UNIFIED_FIXER:
-                    patch["unified_fixer"] = {}
-                    patch["locate"] = {}
-                    patch["repair"] = {}
+                    failure = _reset_workspace_for_retry(state, manager)
+                    if failure is not None:
+                        return failure
+                patch = _retry_patch(state, target, retry_context)
                 if transition_store is not None:
                     return apply_step_result(
                         transition_store,
@@ -1210,9 +1267,6 @@ def resume_task_approval(
         raise StepFailed("缺少当前版本的审批检查点，禁止从旧记录补造执行状态")
     if not any(task.interrupts for task in snapshot.tasks):
         raise StepFailed("该任务检查点没有待恢复的审批")
-    if snapshot.values.get("repair_slot_claimed"):
-        from workflow.stages.claim_slot.node import renew_claim
-        renew_claim(store.root, run_id=run_id, task_id=task_id)
     result = invoke_task(graph, Command(resume=payload), checkpoint_config)
     if not result.get("__interrupt__"):
         store.complete_task(run_id, task_id)
@@ -1312,7 +1366,7 @@ def prepare_run(
     resolved = run_id or uuid.uuid4().hex
     store = RecordStore(config.runtime_dir)
     metadata = {
-        "workflow_version": 7,
+        "workflow_version": WORKFLOW_VERSION,
         "source_repo_path": str(config.source_repo),
         "project_subdir": str(config.project_subdir or ""),
         "log_service_name": config.log_service_name,
@@ -1381,7 +1435,8 @@ def run_workflow(
                 "log_excluded_biztypes": list(config.excluded_biztypes),
                 "log_hours": config.log_hours,
                 "log_limit": config.limit,
-                "workflow_version": 7,
+                "workflow_version": WORKFLOW_VERSION,
+                "agent_policy": dict(store.load_run(resolved).get("agent_policy") or {}),
                 "attempt": 1,
                 "max_attempts": config.max_attempts,
                 "review_mode": config.review_mode,
@@ -1453,8 +1508,9 @@ def _ensure_task_final_report(
     task = dict(final_state.get("task") or {})
     carrier = str(existing.get("carrier") or task.get("carrier") or "")
     biztype = str(existing.get("biztype") or task.get("biztype") or "")
-    locate = dict(final_state.get("locate") or {})
-    repair = dict(final_state.get("repair") or {})
+    unified = dict(final_state.get("unified_fixer") or {})
+    locate = unified
+    repair = unified
     terminal_step, inferred_reason, inferred_action = "", "", ""
     if all_records:
         from workflow.stages.finalize.node import _terminal_details
@@ -1469,16 +1525,21 @@ def _ensure_task_final_report(
         terminal_reason = _uncaught_reason(error)
         next_action = "检查失败步骤的错误类型和任务产物；修复后重新执行该任务。"
 
+    from core.task_outcome import task_outcome
+    outcome = task_outcome({"status": result, "report": existing,
+                            "steps": [record.model_dump(mode="json") for record in all_records]})
     return {
+        **existing,
         "schema_version": 2,
-        "workflow_version": 7,
+        "workflow_version": WORKFLOW_VERSION,
         "report_kind": "task_final",
         "task_id": task_id,
         "carrier": carrier,
         "biztype": biztype,
-        "result": result,
-        "status": result,
-        "terminal_status": result,
+        "result": outcome,
+        "status": outcome,
+        "terminal_status": outcome,
+        "task_outcome": outcome,
         "terminal_step": str(final_output.get("terminal_step") or terminal_step or existing.get("terminal_step") or "workflow"),
         "terminal_reason": terminal_reason or "任务结束，但现有记录没有提供更具体的结束原因。",
         "next_action": next_action or "查看终态步骤的错误详情和关联产物，确认后续处置动作。",
@@ -1547,6 +1608,7 @@ def _write_run_report(
         payload = _read_json_file(steps_path)
         slots = payload.get("tasks", []) if isinstance(payload, dict) else []
         task_results = []
+        from core.task_outcome import task_outcome
         for slot in slots if isinstance(slots, list) else []:
             if not isinstance(slot, dict) or not isinstance(slot.get("task_id"), str):
                 continue
@@ -1567,7 +1629,9 @@ def _write_run_report(
                 "task_id": task_id,
                 "carrier": str(report.get("carrier") or ""),
                 "biztype": str(report.get("biztype") or ""),
-                "result": str(report.get("result") or "INCOMPLETE"),
+                "result": report.get("task_outcome") or task_outcome({
+                    "status": report.get("result") or "FAILED", "report": report,
+                    "steps": [step.model_dump(mode="json") for step in store.list_steps(run_id, task_id)]}),
                 "terminal_step": str(report.get("terminal_step") or ""),
                 "terminal_reason": str(report.get("terminal_reason") or "任务结束，但无法生成更具体的原因。"),
                 "next_action": str(report.get("next_action") or "检查该任务最后一个步骤的输出和产物。"),
@@ -1622,19 +1686,21 @@ def _write_run_report(
                 outcome = task_item["result"].upper()
                 counts[outcome] = counts.get(outcome, 0) + 1
             total = len(task_results)
-            successes = counts.get("SUCCESS", 0) + counts.get("SUCCEEDED", 0)
-            manuals = counts.get("MANUAL", 0) + counts.get("INSUFFICIENT_EVIDENCE", 0)
+            changed = counts.get("CHANGED_DELIVERED", 0)
+            unchanged = counts.get("UNCHANGED_DELIVERED", 0)
+            successes = changed + unchanged
+            skipped = counts.get("SKIPPED", 0)
             failures = sum(count for key, count in counts.items()
                            if key in {"FAILED", "FAIL", "REJECTED", "INCOMPLETE", "CANCELLED"})
-            if failures or manuals:
-                result = "PARTIAL_FAILED" if successes else ("MANUAL" if manuals and not failures else "FAILED")
-            elif successes == total:
+            if failures:
+                result = "PARTIAL_FAILED" if successes or skipped else "FAILED"
+            elif successes + skipped == total:
                 result = "SUCCESS"
             else:
                 result = "INCOMPLETE"
-            blocker = next((item for item in task_results if item["result"].upper() not in {"SUCCESS", "SUCCEEDED"}), None)
+            blocker = next((item for item in task_results if item["result"].upper() == "FAILED"), None)
             terminal_step = str(blocker.get("terminal_step") or "task_collect") if blocker else "task_collect"
-            reason = f"本轮共处理 {total} 个任务：成功 {successes} 个，需人工介入 {manuals} 个，失败或未完成 {failures} 个。"
+            reason = f"本轮共处理 {total} 个任务：已改动交付 {changed} 个，无改动交付 {unchanged} 个，已跳过 {skipped} 个，失败 {failures} 个。"
             if blocker and blocker.get("terminal_reason"):
                 reason += f" 首个未成功任务：{blocker.get('carrier')} / {blocker.get('biztype')} — {blocker.get('terminal_reason')}"
             next_action = str(blocker.get("next_action") or "检查各任务终态报告，按团队流程完成人工评审与合并。") if blocker else "所有任务均已完成交付准备；按团队流程完成人工评审与合并。"
@@ -1654,7 +1720,7 @@ def _write_run_report(
         }
         _atomic_json(reports_dir / "final.json", report)
 
-        passed = sum(1 for item in task_results if item.get("result") in {"SUCCESS", "SUCCEEDED", "OK"})
+        passed = sum(1 for item in task_results if item.get("result") in {"CHANGED_DELIVERED", "UNCHANGED_DELIVERED", "SKIPPED"})
         failed_count = len(task_results) - passed
         summary = {
             "run_id": run_id,

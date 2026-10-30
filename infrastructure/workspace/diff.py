@@ -20,6 +20,64 @@ MAX_FILE_BYTES = 2 * 1024 * 1024
 
 _IGNORED_PARTS = (".ai-bug-tasks", ".evidence", ".git")
 
+
+def text_patch(before: str, after: str, name: str) -> str:
+    lines = difflib.unified_diff(before.splitlines(True), after.splitlines(True),
+                                 fromfile="a/" + name, tofile="b/" + name)
+    return "".join(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n"
+                   for line in lines)
+
+
+def complete_changes(workspace: str | Path, baseline: str | Path) -> dict[str, Any]:
+    """冻结完整文本及真实行号 patch；二进制明确标记，不冒充空文件。"""
+    files = []
+    for name in source_changes(workspace, baseline):
+        entry: dict[str, Any] = {"path": name, "available": True}
+        for key, root in (("before", baseline), ("after", workspace)):
+            base = Path(root).resolve()
+            target = (base / name).resolve()
+            if not target.is_relative_to(base):
+                raise ValueError("差异文件越出源码范围")
+            entry[key + "_exists"] = target.is_file()
+            try:
+                data = target.read_bytes() if target.is_file() else b""
+                if b"\x00" in data:
+                    raise UnicodeError("binary")
+                entry[key] = data.decode("utf-8")
+            except UnicodeError:
+                entry[key] = None
+                entry.update(available=False, reason="二进制或非 UTF-8 文件，无法展示文本差异")
+        entry["status"] = "added" if not entry["before_exists"] else "deleted" if not entry["after_exists"] else "modified"
+        if entry["available"]:
+            entry["patch"] = text_patch(entry["before"], entry["after"], name)
+        files.append(entry)
+    return {"files": files, "available": True}
+
+
+def source_manifest(root: str | Path) -> dict[str, str]:
+    """读取完整源码身份，忽略平台产物与解释器缓存，拒绝链接。"""
+    base = Path(root).resolve()
+    if not base.is_dir():
+        raise ValueError(f"源码目录不存在: {base}")
+    ignored = {*_IGNORED_PARTS, "artifacts"}
+    values: dict[str, str] = {}
+    for path in sorted(base.rglob("*")):
+        relative = path.relative_to(base)
+        if relative.parts[0] in ignored or any(part in {"__pycache__", ".pytest_cache"} for part in relative.parts):
+            continue
+        if path.is_symlink():
+            raise ValueError(f"源码中存在符号链接: {relative.as_posix()}")
+        if path.is_file() and path.name not in {"final.json", "task_summary.md"}:
+            values[relative.as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return values
+
+
+def source_changes(root: str | Path, baseline: str | Path | dict[str, str]) -> list[str]:
+    """以实际字节计算完整新增、修改、删除集合，不截断文件清单。"""
+    before = baseline if isinstance(baseline, dict) else source_manifest(baseline)
+    after = source_manifest(root)
+    return sorted(name for name in before.keys() | after.keys() if before.get(name) != after.get(name))
+
 # 门禁与审查会在同一份未变的工作区上反复读同一批文件（算哈希、算 diff、查敏感信息、
 # 过 AST）。这里按 (路径, mtime, 大小) 缓存结果：文件一旦被改动，键就变，自动失效，
 # 因此不会返回过期内容，同时把重复 I/O 压到一次。

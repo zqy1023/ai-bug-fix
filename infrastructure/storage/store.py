@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import os
 import shutil
 import tempfile
@@ -36,6 +37,48 @@ from config.settings import settings
 # 单条记录的硬上限：大字段移出后不该再接近 MB，撞上就是"漏了搬字段"。
 _JSON_MAX_BYTES = 1 * 1024 * 1024
 
+# Windows 上 ``os.replace`` 覆盖一个正被读的路径时会短暂进入 delete-pending：
+# 期间任何不带 FILE_SHARE_DELETE 的 open 都直接拿到 ERROR_ACCESS_DENIED（Errno 13），
+# 同时 rename 本身也会因对端没有共享删除而失败。这个窗口是微秒级的，重试即可跨过。
+_READ_RETRIES = 10
+_READ_RETRY_BASE = 0.005
+_READ_RETRY_CAP = 0.15
+
+_REPLACE_RETRIES = 8
+_REPLACE_RETRY_BASE = 0.01
+_REPLACE_RETRY_CAP = 0.1
+
+# 同一 runtime 根目录共享一把进程内锁，见 ``_root_lock``。
+_ROOT_LOCKS: dict[str, threading.RLock] = {}
+_ROOT_LOCKS_GUARD = threading.Lock()
+
+logger = logging.getLogger(__name__)
+
+
+def _is_sharing_violation(error: OSError) -> bool:
+    """判断 OSError 是否属于并发读写的瞬时共享冲突（而非真实的权限不足）。"""
+    if isinstance(error, PermissionError):
+        return True
+    # 32=ERROR_SHARING_VIOLATION, 33=ERROR_LOCK_VIOLATION，Linux 上恒为 None。
+    return getattr(error, "winerror", None) in {32, 33}
+
+
+def _root_lock(root: Path) -> threading.RLock:
+    """返回 runtime 根目录对应的进程内锁，同一目录的所有 Store 共享同一把。
+
+    API 每个请求都会新建 ``RecordStore``（``server/routes/common.py::_store``），
+    锁挂在实例上就形同虚设：请求线程读 steps.json 时，工作线程正在替换它，
+    于是读侧随机撞上 Errno 13。按根目录共享后，进程内的读与读改写才真正串行。
+    """
+    key = str(root)
+    with _ROOT_LOCKS_GUARD:
+        lock = _ROOT_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _ROOT_LOCKS[key] = lock
+        return lock
+
+
 class RecordStore:
     """读写执行目录下的步骤记录。"""
 
@@ -43,7 +86,7 @@ class RecordStore:
         """指定运行时根目录。"""
         self.root = Path(root).resolve()
         (self.root / "runs").mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
+        self._lock = _root_lock(self.root)
 
     def run_dir(self, run_id: str) -> Path:
         """一次执行的目录。"""
@@ -57,11 +100,24 @@ class RecordStore:
         """一次执行唯一的步骤记录。"""
         return self.run_dir(run_id) / "steps.json"
 
+    def _read_text(self, path: Path) -> str:
+        """读取记录文件，跨过 Windows 上并发替换造成的瞬时共享冲突。"""
+        delay = _READ_RETRY_BASE
+        for attempt in range(_READ_RETRIES):
+            try:
+                return path.read_text(encoding="utf-8")
+            except OSError as error:
+                if attempt + 1 >= _READ_RETRIES or not _is_sharing_violation(error):
+                    raise
+                time.sleep(delay)
+                delay = min(delay * 2, _READ_RETRY_CAP)
+        raise AssertionError("步骤记录读取重试未收敛")
+
     def _read_steps(self, run_id: str) -> dict[str, Any]:
         path = self.steps_path(run_id)
         if not path.is_file():
             return {}
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(self._read_text(path))
         if not isinstance(payload, dict):
             raise ValueError(f"执行 {run_id} 的 steps.json 必须是对象")
         return payload
@@ -75,14 +131,17 @@ class RecordStore:
             file_obj.write(text)
             file_obj.flush()
             os.fsync(file_obj.fileno())
-        for attempt in range(3):
+        delay = _REPLACE_RETRY_BASE
+        for attempt in range(_REPLACE_RETRIES):
             try:
                 temporary.replace(path)
-                break
+                return
             except PermissionError:
-                if attempt == 2:
+                # 对端的读句柄没有共享删除，rename 会失败；读侧已缩短持有时长。
+                if attempt + 1 >= _REPLACE_RETRIES:
                     raise
-                time.sleep(0.05)
+                time.sleep(delay)
+                delay = min(delay * 2, _REPLACE_RETRY_CAP)
 
     def save(
         self,
@@ -101,7 +160,9 @@ class RecordStore:
                 f"步骤记录 {record.name} 达 {size} 字节，超过 {_JSON_MAX_BYTES} 字节上限，大字段必须先落 artifact",
                 code="ARTIFACT_INVALID_FORMAT",
             )
-        with self._lock, _process_lock(self.run_dir(run_id) / ".steps.lock"):
+        # 先拿跨进程锁再拿进程内锁：等另一个进程写完期间不能占着进程内锁，
+        # 否则任务板的所有投影读都会被一起拖住。
+        with _process_lock(self.run_dir(run_id) / ".steps.lock"), self._lock:
             payload = self._read_steps(run_id)
             if task_id:
                 tasks = payload.setdefault("tasks", [])
@@ -116,11 +177,11 @@ class RecordStore:
                 backup_path = self.steps_path(run_id).with_name("steps.json.bak")
                 if backup_path.is_file():
                     try:
-                        backup = json.loads(backup_path.read_text(encoding="utf-8"))
+                        backup = json.loads(self._read_text(backup_path))
                     except (OSError, json.JSONDecodeError) as error:
                         # 损坏的备份不能被当成"空备份"静默处理：留下可定位的
                         # 路径与异常类型，再跳过本次合并（现有 tasks 仍然保留）。
-                        logging.getLogger(__name__).warning(
+                        logger.warning(
                             "步骤记录备份无法读取，跳过备份合并 path=%s error=%s",
                             backup_path, type(error).__name__, exc_info=True,
                         )
@@ -161,8 +222,7 @@ class RecordStore:
         except Exception:
             # Audit history is authoritative; lifecycle projection failure must be visible
             # in logs but must not overwrite a successfully persisted step record.
-            import logging
-            logging.getLogger(__name__).exception(
+            logger.exception(
                 "更新运行/任务生命周期失败 run_id=%s task_id=%s step=%s",
                 run_id, task_id, record.name,
             )
@@ -206,7 +266,7 @@ class RecordStore:
         elif phase == "finalize_execution" and record.status != "running":
             output = record.output if isinstance(record.output, dict) else {}
             delivery_status = str(output.get("delivery_status") or record.result or "").upper()
-            if delivery_status in {"SUCCESS", "SUCCEEDED", "COMPLETED", "DELIVERED"}:
+            if delivery_status in {"CHANGED_DELIVERED", "UNCHANGED_DELIVERED", "SUCCESS", "SUCCEEDED", "COMPLETED", "DELIVERED"}:
                 status = "succeeded"
             elif delivery_status in {"MANUAL", "INSUFFICIENT_EVIDENCE", "MANUAL_REVIEW_REQUIRED"}:
                 status = "manual"
@@ -292,9 +352,34 @@ class RecordStore:
         return self.list_steps_from_snapshot(run_id, self.steps_snapshot(run_id), task_id)
 
     def steps_snapshot(self, run_id: str) -> dict[str, Any]:
-        """一次读取主步骤记录，供批次投影复用同一快照。"""
+        """一次读取主步骤记录，供批次投影复用同一快照。
+
+        投影读不承载写入语义：主文件在重试后仍不可读（或已损坏）时回退到
+        写前快照 ``steps.json.bak``，避免整个任务板 500。回退必须留日志，
+        否则界面会长期展示更旧的一轮步骤而无人察觉。
+        """
         with self._lock:
-            return self._read_steps(run_id)
+            try:
+                return self._read_steps(run_id)
+            except (OSError, ValueError) as error:
+                # ValueError 覆盖 JSON 截断与非对象载荷：两种都是"主文件不可用"。
+                return self._steps_backup(run_id, error)
+
+    def _steps_backup(self, run_id: str, error: Exception) -> dict[str, Any]:
+        backup_path = self.steps_path(run_id).with_name("steps.json.bak")
+        payload: Any = None
+        if backup_path.is_file():
+            try:
+                payload = json.loads(self._read_text(backup_path))
+            except (OSError, json.JSONDecodeError):
+                payload = None
+        if not isinstance(payload, dict):
+            raise error
+        logger.warning(
+            "steps.json 读取失败，回退到写前快照 run_id=%s error=%s path=%s",
+            run_id, type(error).__name__, backup_path,
+        )
+        return payload
 
     def list_steps_from_snapshot(
         self, run_id: str, payload: dict[str, Any], task_id: str = ""

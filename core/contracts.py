@@ -146,7 +146,7 @@ def plan_of(payload: dict[str, Any]) -> ChangePlan | None:
 
 
 
-WORKFLOW_VERSION = 7
+WORKFLOW_VERSION = 8
 
 AgentRole = Literal["unified_fixer", "review"]
 StepStatus = Literal["passed", "failed", "skipped", "manual"]
@@ -209,6 +209,29 @@ class EvidenceBinding(ContractModel):
 
 
 
+class RepairHandoff(FrozenModel):
+    """修复到独立审查的显式交接，不携带模型调用或可变会话状态。"""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+    status: str = "MANUAL"
+    root_cause: str = ""
+    category: str = "unknown"
+    attribution_type: str = "pending"
+    analysis: str = ""
+    summary: str = ""
+    blocked_reason: str = ""
+    skip_reason: str = ""
+    acceptance_criteria: list[str] = Field(default_factory=list)
+    facts: list[str] = Field(default_factory=list)
+    source_evidence: list[dict[str, Any]] = Field(default_factory=list)
+    changed_files: list[str] = Field(default_factory=list)
+    change_plan: ChangePlan | None = None
+    self_check: dict[str, Any] = Field(default_factory=dict)
+    evidence_gaps: list[str] = Field(default_factory=list)
+    recommended_scope: str = "manual"
+    scope_escalation_required: bool = False
+
+
 class TaskIdentity(ContractModel):
     run_id: str
     task_id: str = ""
@@ -241,6 +264,7 @@ class TaskControl(ContractModel):
     approval_granted: bool = False
     approval_cleanup_failed: bool = False
     approval_recovery_blocked: bool = False
+    # 历史字段名：现表示“远端重复分支检查已通过”，不再代表 SQLite claim。
     repair_slot_claimed: bool = False
     scope_escalation_required: bool = False
     blocked_reason: str = ""
@@ -267,8 +291,6 @@ class TaskArtifacts(ContractModel):
     # 历史快照可能包含已经停用的产物；读取时忽略，不重新引入执行状态。
     model_config = ConfigDict(extra="ignore", frozen=True)
     unified_fixer: dict[str, Any] = Field(default_factory=dict)
-    locate: dict[str, Any] = Field(default_factory=dict)
-    repair: dict[str, Any] = Field(default_factory=dict)
     change_plan: dict[str, Any] = Field(default_factory=dict)
     review: dict[str, Any] = Field(default_factory=dict)
     delivery_candidate: dict[str, Any] = Field(default_factory=dict)
@@ -387,6 +409,10 @@ class AgentRequest(BaseModel):
     logical_context_hash: str = ""
     context_mode: Literal["full", "delta"] = "full"
     previous_context_hash: str = ""
+    # rule_ids：本轮实际注入的 Prompt 规则片段；空表示走了完整 common.md。
+    rule_ids: tuple[str, ...] = ()
+    # budget_tier：本轮预算档位（small/default/complex），用于成本归因。
+    budget_tier: str = ""
 
 
 class StepFailure(ContractModel):

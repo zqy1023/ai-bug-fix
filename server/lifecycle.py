@@ -377,7 +377,6 @@ def _resume_workflow_background(
             ),
         }
         snapshot = graph.get_state(config)
-        _renew_open_claim(store, run_id, snapshot)
         has_interrupt = any(getattr(task, "interrupts", ()) for task in (getattr(snapshot, "tasks", ()) or ()))
         if resume_payload is not None:
             from langgraph.types import Command
@@ -449,35 +448,6 @@ def _resume_workflow_background(
         except Exception:
             logger.exception("回收恢复 Run 的工作区失败 run_id=%s", run_id)
         run_lock.release()
-
-def _renew_open_claim(store: RecordStore, run_id: str, snapshot: Any) -> None:
-    """恢复未终态任务前续租本运行的 claim；没有可续租记录时不补领。"""
-    task_id = _claimed_task_id(snapshot)
-    if not task_id:
-        return
-    from workflow.stages.claim_slot.node import renew_claim
-
-    try:
-        renewed = renew_claim(store.root, run_id=run_id, task_id=task_id)
-    except Exception as error:
-        logger.error("恢复前续租修复资格失败 run_id=%s task_id=%s", run_id, task_id, exc_info=True)
-        # 续租失败后继续恢复会让 claim 过期，另一路可能同时修复同一问题。
-        raise RuntimeError("无法续租修复资格，终止恢复以避免并发修复") from error
-    if not renewed:
-        logger.error("恢复时没有可续租的修复资格 run_id=%s task_id=%s", run_id, task_id)
-        raise RuntimeError("修复资格已过期或不存在，终止恢复以避免并发修复")
-
-def _claimed_task_id(snapshot: Any) -> str:
-    """从父图或当前任务子图状态里取出已领取资格的任务。"""
-    states = [getattr(snapshot, "values", None)]
-    states.extend(getattr(task, "state", None) for task in (getattr(snapshot, "tasks", ()) or ()))
-    for values in states:
-        payload = getattr(values, "values", values)
-        if isinstance(payload, dict) and payload.get("repair_slot_claimed"):
-            task_id = str(payload.get("task_id") or "")
-            if task_id:
-                return task_id
-    return ""
 
 def _reinvestigate_task(run_id: str, task_id: str, background: BackgroundTasks) -> dict[str, Any]:
     """为人工任务建立独立调查 Run，保留原报告、分支、回执和审批检查点。"""

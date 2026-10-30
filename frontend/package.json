@@ -8,14 +8,10 @@
     "prebuild": "node -e \"const fs=require('fs'),cp=require('child_process');if(!fs.existsSync('../workflow/engine/handoff.py')){console.log('frontend_contracts: workflow/ unavailable, using committed workflow.generated.ts');process.exit(0)}const r=cp.spawnSync('python',['-m','workflow.engine.handoff'],{cwd:'..',stdio:'inherit'});process.exit(r.status===0?0:1)\"",
     "build": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json && vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "typecheck": "tsc --noEmit -p tsconfig.app.json",
-    "test:e2e": "node tests/e2e/frontend_redesign.cjs"
+    "typecheck": "tsc --noEmit -p tsconfig.app.json"
   },
   "dependencies": {
-    "@ant-design/icons": "^6.0.0",
-    "@ant-design/v5-patch-for-react-19": "^1.0.3",
     "@tanstack/react-query": "^5.90.0",
-    "antd": "^5.27.0",
     "dayjs": "^1.11.13",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

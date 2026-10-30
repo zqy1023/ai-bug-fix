@@ -1,7 +1,7 @@
 """系统主入口文件与统一 Web 服务。
 
 启动方式：
-    python server.py                      # 执行一次，推进到审批或终态
+    python server.py                      # 执行一次，推进到终态
     python server.py --web                # 同时启动后端 API
     python server.py --frontend           # 同时启动前后端
     python server.py --serve-only         # 仅启动 API
@@ -121,22 +121,71 @@ _original_lifespan = app.router.lifespan_context
 app.router.lifespan_context = workspace_lifespan
 app.title = "AI Bug Fixer Server API"
 app.version = SERVICE_VERSION
-app.description = "Run/task/step/artifact observability and human approval API."
+app.description = "Run/task/step/artifact observability API."
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(config.workbench_cors_origins),
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
 app.include_router(router)
+
+# 前端产物由镜像构建期的 `pnpm build` 生成，单容器直接托管，不再依赖独立的 nginx
+# 容器。本地开发仍可用 `python server.py --frontend`（Vite dev server）覆盖这条路径。
+# 注意：必须在 include_router 之后挂载，否则 "/" 会吞掉 /api 路由；FastAPI 自带的
+# /docs、/openapi.json 在 app 构造时注册，早于本挂载，因此不受影响。
+_FRONTEND_DIST = Path(__file__).resolve().parent / "frontend" / "dist"
+
+
+if _FRONTEND_DIST.is_dir():
+    from fastapi.staticfiles import StaticFiles
+    from starlette.exceptions import HTTPException as StarletteHTTPException
+
+    class _SpaStaticFiles(StaticFiles):
+        """静态文件未命中时回落到 index.html，交给前端路由处理。
+
+        /api 前缀例外：未知接口必须继续返回 404，而不是 200 + 首页 HTML，
+        否则前端拿到的错误响应形状会从 JSON 变成 HTML。
+        """
+
+        async def get_response(self, path: str, scope):
+            # StaticFiles 会把路径按当前平台的分隔符归一化（Windows 上是反斜杠），
+            # 所以比较前缀前先统一成正斜杠。
+            normalized = path.replace("\\", "/")
+            if normalized == "api" or normalized.startswith("api/"):
+                raise StarletteHTTPException(status_code=404)
+            try:
+                return await super().get_response(path, scope)
+            except StarletteHTTPException as exc:
+                if exc.status_code != 404:
+                    raise
+                return await super().get_response("index.html", scope)
+
+    app.mount("/", _SpaStaticFiles(directory=_FRONTEND_DIST, html=True), name="frontend")
+
+    @app.middleware("http")
+    async def _frontend_security_headers(request, call_next):
+        """与 frontend/nginx.conf 保持一致的安全响应头，切换托管方式后不回退。"""
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; "
+            "base-uri 'self'; form-action 'self'",
+        )
+        return response
+
 
 
 def _arguments(argv=None):
     import argparse
 
-    parser = argparse.ArgumentParser(description="执行一次修复审批流，可同时启动工作台")
-    parser.add_argument("--web", action="store_true", help="同时启动后端 API，供人工审批")
+    parser = argparse.ArgumentParser(description="执行一次修复流程，可同时启动工作台")
+    parser.add_argument("--web", action="store_true", help="同时启动后端 API")
     parser.add_argument("--frontend", action="store_true", help="同时启动前端和后端")
     parser.add_argument("--serve-only", action="store_true", help="仅启动服务，不新建流程")
     parser.add_argument("--run-id", help="本次新运行的唯一 ID，不用于恢复已有运行")
@@ -151,7 +200,7 @@ def _start_once(run_id=None):
     from server.lifecycle import _run_workflow_background_v1
 
     resolved, _, _ = prepare_run(run_id, overrides={}, queued=True)
-    print(f"run_id={resolved}，流程将执行到人工审批或终态", flush=True)
+    print(f"run_id={resolved}，流程将执行到终态", flush=True)
     _run_workflow_background_v1(resolved, {})
     return resolved
 
@@ -169,7 +218,7 @@ def main(argv=None) -> int:
         node = shutil.which("node")
         vite = Path(__file__).resolve().parent / "frontend/node_modules/vite/bin/vite.js"
         if not node or not vite.is_file():
-            raise RuntimeError("前端依赖未安装，请先在 frontend 执行 npm install")
+            raise RuntimeError("前端依赖未安装，请先在 frontend 执行 pnpm install")
         frontend_env = dict(os.environ)
         api_host = config.workbench_host
         if api_host in {"0.0.0.0", "::"}:
@@ -198,7 +247,7 @@ def main(argv=None) -> int:
                         _start_once(args.run_id)
                     except Exception:
                         startup_failed.set()
-                        logger.exception("启动审批流失败")
+                        logger.exception("启动修复流程失败")
                         server.should_exit = True
                 worker = threading.Thread(target=launch, name="startup-workflow", daemon=True)
                 worker.start()
@@ -207,7 +256,7 @@ def main(argv=None) -> int:
         resolved = _start_once(args.run_id)
         from infrastructure.storage.lifecycle import LifecycleStore
         status = LifecycleStore(config.runtime_dir).read_run(resolved).get("status")
-        print(f"run_id={resolved} status={status}；待审批流程可用 --serve-only 打开工作台继续", flush=True)
+        print(f"run_id={resolved} status={status}；运行记录可用 --serve-only 打开工作台查看", flush=True)
         return 1 if status == "failed" else 0
     finally:
         if frontend is not None:

@@ -16,17 +16,28 @@ class PromptRenderer:
     def __init__(self, loader: PromptLoader | None = None) -> None:
         self._loader = loader or PromptLoader()
 
-    def render(self, role: AgentRole, context: PromptContext) -> RenderedPrompt:
+    def render(
+        self,
+        role: AgentRole,
+        context: PromptContext,
+        rule_ids: tuple[str, ...] | None = None,
+        role_variant: str = "",
+    ) -> RenderedPrompt:
         """渲染系统规则和本次任务数据，并计算版本与内容哈希。"""
         if context.agent_role != role:
             raise ValueError(f"PromptContext 角色不匹配: {context.agent_role} != {role}")
-        common, specific = self._loader.load(role)
+        common, specific = self._loader.load(role, rule_ids, role_variant)
         system_prompt = f"{common.body}\n\n---\n\n{specific.body}"
-        payload = context.model_dump(mode="json", exclude={"agent_role"})
+        # 权限字段只在请求契约里保留真实路径；渲染给模型的是压缩后的 read_scope。
+        payload = context.model_dump(
+            mode="json",
+            exclude={"agent_role", "allowed_read_roots", "allowed_write_roots"},
+        )
         prompt = "## 本次任务上下文\n\n```json\n"
         prompt += json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         prompt += "\n```"
-        version = f"common/{common.version}+{role}/{specific.version}"
+        role_part = f"{role}-{role_variant}" if role_variant else role
+        version = f"common/{common.version}+{role_part}/{specific.version}"
         digest = hashlib.sha256(
             f"{version}\0{system_prompt}\0{prompt}".encode("utf-8")
         ).hexdigest()
@@ -46,11 +57,17 @@ class PromptRenderer:
         workspace: str,
         model: str,
         write_root: str | None = None,
+        rule_ids: tuple[str, ...] | None = None,
+        budget_tier: str = "",
+        role_variant: str = "",
     ) -> AgentRequest:
         """将渲染结果和运行权限组合成 Provider 的唯一请求契约。"""
         from infrastructure.llm.budget import bounded_context
+        from infrastructure.llm.context import display_context
         context = bounded_context(context, workspace)
-        rendered = self.render(role, context)
+        # 渲染用压缩副本；请求契约仍保留真实绝对路径，ToolPolicy 与 hook 依赖它。
+        display = display_context(context, workspace)
+        rendered = self.render(role, display, rule_ids, role_variant)
         return AgentRequest(
             agent_role=role,
             run_id=context.run_id,
@@ -70,6 +87,8 @@ class PromptRenderer:
             allowed_read_roots=context.allowed_read_roots,
             allowed_write_roots=context.allowed_write_roots,
             write_root=write_root,
+            rule_ids=tuple(rule_ids or ()),
+            budget_tier=budget_tier,
         )
 
 

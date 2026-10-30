@@ -48,7 +48,7 @@ class Settings:
     # 3. 日志拉取业务默认值
     default_service_name: str = "gather.py.track"
     default_service_prefix: str = "gather.py"
-    default_log_hours: int = 12
+    default_log_hours: int = 24
     default_log_limit: int = 0
     default_log_tz_offset: int = 8
 

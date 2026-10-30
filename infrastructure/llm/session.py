@@ -29,8 +29,8 @@ _ALL_TOOLS = (
     "Edit",
     "Bash",
     "Task",
-    "WebFetch",
-    "WebSearch",
+    # "WebFetch",
+    # "WebSearch",
     "Skill",
     "NotebookEdit",
 )
@@ -38,9 +38,20 @@ _WRITE_TOOLS = frozenset({"Write", "Edit", "NotebookEdit"})
 
 
 class ClaudeAgentUnavailable(RuntimeError):
-    """Claude Agent SDK 未安装或不可用。"""
-
     pass
+
+
+def validate_process_runtime() -> None:
+    """Fail before spawning the SDK when the imported runtime is incompatible."""
+    import inspect
+    import anyio
+    from importlib.metadata import version
+
+    if "user" not in inspect.signature(anyio.open_process).parameters:
+        raise ClaudeAgentUnavailable(
+            f"模型启动依赖不兼容：Python={sys.executable}，AnyIO={version('anyio')}，"
+            "open_process 缺少 user 参数；请使用项目 .venv 并安装 requirements.txt 中的依赖"
+        )
 
 
 _MAX_EVENT_TEXT = 2000
@@ -137,8 +148,8 @@ def _public_events(message: Any) -> list[dict[str, Any]]:
 
     旧实现只取 text block：工具调用、系统消息、思考块全部变成
     ``{"type": ..., "text": ""}``，事件记录里一半是空条目。现在按内容拆分：
-    助手文本、工具调用（工具名 + 定位参数）、工具结果（含错误标记）；
-    隐藏思考与凭据仍然不进记录。
+    助手文本、思考、工具调用（工具名 + 定位参数）、工具结果（含错误标记）。
+    思考文本按审计要求保留；凭据仍由 provider 脱敏，不进入事件。
     """
     events: list[dict[str, Any]] = []
     content = getattr(message, "content", None)
@@ -165,6 +176,13 @@ def _public_events(message: Any) -> list[dict[str, Any]]:
                     "text": _text_of(getattr(block, "content", "")),
                 }
             )
+            continue
+        thinking = getattr(block, "thinking", None)
+        if isinstance(thinking, str) and thinking.strip():
+            events.append({"type": "thinking", "text": thinking})
+            continue
+        if getattr(block, "type", None) == "redacted_thinking":
+            events.append({"type": "thinking", "text": "", "redacted": True})
             continue
         text = getattr(block, "text", None)
         if isinstance(text, str) and text.strip():
@@ -287,7 +305,25 @@ def _mapped_tool_input(tool_name: str, values: dict[str, Any], root: Path, read_
     mapped = dict(values)
     for key in ("file_path", "path"):
         raw = mapped.get(key)
-        if not isinstance(raw, str) or not raw or Path(raw).is_absolute() or ".." in Path(raw).parts:
+        if not isinstance(raw, str) or not raw or ".." in Path(raw).parts:
+            continue
+        if Path(raw).is_absolute():
+            requested = Path(raw).resolve()
+            if any(_path_is_under(base, requested) for base in read_roots):
+                continue
+            # carrier 在任务副本中；把误拼到共享项目根的路径映射到唯一授权副本。
+            for base in read_roots:
+                if _path_is_under(root, base):
+                    continue
+                for ancestor in list(base.parents)[:3]:
+                    if not _path_is_under(ancestor, requested):
+                        continue
+                    relative = requested.relative_to(ancestor)
+                    if not relative.parts or relative.parts[0] not in {"gathers", "spiders"}:
+                        continue
+                    candidate = (root / relative).resolve()
+                    if candidate.exists() and any(_path_is_under(allowed, candidate) for allowed in read_roots):
+                        mapped[key] = str(candidate)
             continue
         primary = (root / raw).resolve()
         if primary.exists() and any(_path_is_under(base, primary) for base in read_roots):
@@ -300,6 +336,14 @@ def _mapped_tool_input(tool_name: str, values: dict[str, Any], root: Path, read_
                     candidates.add(candidate)
         if len(candidates) == 1:
             mapped[key] = str(next(iter(candidates)))
+    if tool_name == "Glob" and isinstance(mapped.get("pattern"), str):
+        prefix = _glob_prefix(mapped["pattern"])
+        if prefix:
+            candidate = (root / prefix).resolve()
+            search = _resolve_tool_path(mapped.get("path"), root)
+            if search == root and candidate.exists() and any(_path_is_under(base, candidate) for base in read_roots):
+                mapped["path"] = str(candidate)
+                mapped["pattern"] = mapped["pattern"][len(prefix):].lstrip("/")
     return mapped
 
 
@@ -561,10 +605,18 @@ async def _run(
             Path(allowed).resolve().relative_to(root)
     except ValueError as error:
         raise ValueError("AI 写入范围不在工作区内") from error
-    sdk_env = {key: value for key, value in (env or {}).items() if key != "AI_REPAIR_WRITE_ROOT"}
+    from infrastructure.llm.config import load_config
+
+    sdk_env = {
+        **load_config().claude.as_env(),
+        **{key: value for key, value in (env or {}).items() if key != "AI_REPAIR_WRITE_ROOT"},
+    }
+    # 仅内网模型网关证书过期时的临时开关；生产必须使用有效证书。
+    if parse_bool(os.getenv("CLAUDE_AGENT_INSECURE_TLS"), default=False):
+        sdk_env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
     file_tools = resolve_tools(writable, tools)
 
-    budget = ToolBudget(max_tool_calls)
+    budget = ToolBudget(max_tool_calls, writable=writable)
 
     async def pre_tool_use(hook_input: Any, tool_use_id: str | None, _context: Any) -> dict[str, Any]:
         name = hook_input.get("tool_name") if isinstance(hook_input, dict) else ""
@@ -589,7 +641,7 @@ async def _run(
         allowed_tools=file_tools,
         disallowed_tools=[name for name in _ALL_TOOLS if name not in file_tools],
         permission_mode="dontAsk",
-        max_turns=max_turns,
+        max_turns=max_turns + 3,  # SDK 统一计轮，另留 3 轮完成修改与结构化交接。
         setting_sources=[],
         hooks={
             "PreToolUse": [
@@ -616,6 +668,7 @@ async def _run(
     started_at = time.perf_counter()
     try:
         async for message in query(prompt=prompt_stream(), options=options):
+            # SDK max_turns counts model/tool rounds; streamed message fragments must not consume another budget.
             _collect_events(events, message, started_at)
             _debug_hook_event(
                 {
@@ -643,7 +696,7 @@ async def _run(
     if result.is_error:
         hint = ""
         if result.subtype == "error_max_turns":
-            hint = f"（回合预算 {max_turns} 已耗尽：模型把预算花在探索上，没有输出结论）"
+            hint = f"（SDK 轮次上限 {max_turns + 3} 已耗尽，包含 3 轮收尾余量）"
         # result.result 是真正的错误消息，subtype 只是类型标签（可能是 "success"）
         error_msg = result.result or f"SDK 标记调用失败（is_error=true, subtype={result.subtype or 'unknown'}），但未提供错误正文"
         error = RuntimeError(f"Claude 智能体执行失败: {error_msg}{hint}")
@@ -723,11 +776,14 @@ class ClaudeSession:
         self._env = dict(env)
         self._init_prompt = init_prompt
         self._output_schema = kwargs.get("output_schema")
+        self._cumulative_budget = bool(kwargs.get("cumulative_budget", False))
+        self._deadline = time.monotonic() + timeout_seconds if self._cumulative_budget else None
         self._tools = resolve_tools(writable, tools)
         self._max_turns = max(1, int(max_turns))
         self._max_tool_calls = max(1, int(max_tool_calls))
         self._timeout_seconds = max(1, int(timeout_seconds))
         self._ready = threading.Event()
+        self._startup_error: str = ""
         self._requests: queue.Queue[
             tuple[str, Sequence[Path], Path, str | None, queue.Queue[dict[str, Any]] | None]
         ] = queue.Queue()
@@ -754,11 +810,21 @@ class ClaudeSession:
         if any(not path.is_relative_to(self._workspace) for path in write_roots):
             raise ValueError("写入范围越出任务工作区")
         self._requests.put((prompt, read_roots, write_roots, context_prompt, result))
-        try:
-            return result.get(timeout=self._timeout_seconds + 30)
-        except queue.Empty:
-            self.close()
-            return {"passed": False, "reason": "AGENT_TIMEOUT"}
+        deadline = time.monotonic() + self._timeout_seconds + 30
+        while time.monotonic() < deadline:
+            if self._startup_error:
+                return {"passed": False, "reason": "AGENT_STARTUP_FAILED",
+                        "failure_kind": "agent_startup_failed", "failure_detail": self._startup_error}
+            try:
+                return result.get(timeout=min(0.25, max(0.01, deadline - time.monotonic())))
+            except queue.Empty:
+                if self._startup_error:
+                    continue
+                if not self._thread.is_alive():
+                    return {"passed": False, "reason": "AGENT_SESSION_CLOSED",
+                            "failure_kind": "agent_session_closed", "failure_detail": "模型会话线程已退出，未返回结论"}
+        self.close()
+        return {"passed": False, "reason": "AGENT_TIMEOUT", "failure_kind": "agent_timeout"}
 
     def close(self) -> None:
         """关闭后台会话。"""
@@ -766,9 +832,24 @@ class ClaudeSession:
         self._thread.join(timeout=30)
 
     def _thread_main(self) -> None:
-        asyncio.run(self._serve())
+        try:
+            asyncio.run(self._serve())
+        except Exception as error:
+            from infrastructure.storage.redaction import redact_for_delivery
+            self._startup_error = f"模型会话启动或连接失败：{type(error).__name__}: {redact_for_delivery(str(error))[:1500]}"
+
+    def _sdk_env(self) -> dict[str, str]:
+        """常驻会话也必须拿到模型网关凭证与 TLS 开关。"""
+        from infrastructure.llm.config import load_config
+
+        env = {**load_config().claude.as_env(), **self._env}
+        env.pop("AI_REPAIR_WRITE_ROOT", None)
+        if parse_bool(os.getenv("CLAUDE_AGENT_INSECURE_TLS"), default=False):
+            env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
+        return env
 
     async def _serve(self) -> None:
+        validate_process_runtime()
         from claude_agent_sdk import (
             ClaudeAgentOptions,
             ClaudeSDKClient,
@@ -780,7 +861,7 @@ class ClaudeSession:
         current_read_roots: Sequence[Path] = [self._workspace]
         current_write_root: Path | Sequence[Path] = self._workspace
         tools = list(self._tools)
-        budget = ToolBudget(self._max_tool_calls)
+        budget = ToolBudget(self._max_tool_calls, writable="Edit" in self._tools or "Write" in self._tools)
         events: list[dict[str, Any]] = []
         started_at = time.perf_counter()
 
@@ -807,9 +888,9 @@ class ClaudeSession:
             allowed_tools=tools,
             disallowed_tools=[name for name in _ALL_TOOLS if name not in tools],
             permission_mode="dontAsk",
-            max_turns=self._max_turns,
+            max_turns=self._max_turns + 3,
             setting_sources=[],
-            env={k: v for k, v in self._env.items() if k != "AI_REPAIR_WRITE_ROOT"},
+            env=self._sdk_env(),
             hooks={
                 "PreToolUse": [
                     HookMatcher(
@@ -835,16 +916,24 @@ class ClaudeSession:
             # invoke_with_audit 会将已收集事件持久化到当前 task，而不是只保存失败元数据。
             events: list[dict[str, Any]] = []
             try:
-                budget = ToolBudget(self._max_tool_calls)
+                if not self._cumulative_budget:
+                    budget = ToolBudget(self._max_tool_calls, writable="Edit" in self._tools or "Write" in self._tools)
+                usage_start = budget.usage([])
+                def call_usage() -> dict[str, Any]:
+                    usage = budget.usage(events)
+                    for key in ("tool_calls", "tool_attempts", "tool_allowed", "tool_denied", "tool_blocked_writes"):
+                        usage[key] -= usage_start[key]
+                    return usage
                 result = None
                 if context_prompt:
                     prompt = f"{context_prompt}\n\n{prompt}"
                 started_at = time.perf_counter()
-                result = None
-                await client.query(self._with_rules(prompt))
                 result: Any = None
-                async with asyncio.timeout(self._timeout_seconds):
+                remaining = max(0.001, self._deadline - time.monotonic()) if self._deadline is not None else self._timeout_seconds
+                async with asyncio.timeout(remaining):
+                    await client.query(self._with_rules(prompt))
                     async for message in client.receive_response():
+                        # Round limits belong to the SDK, not streamed text/thinking fragments.
                         _collect_events(events, message, started_at)
                         _debug_hook_event(
                             {
@@ -865,7 +954,7 @@ class ClaudeSession:
                     "messages": events,
                     "sdk_receipt": _sdk_receipt(result),
                     "usage": {
-                        **budget.usage(events),
+                        **call_usage(),
                         "prompt_chars": len(prompt),
                         "result_chars": len(text),
                         **_tokens(getattr(result, "usage", None)),
@@ -886,7 +975,7 @@ class ClaudeSession:
                     "messages": events,
                     "sdk_receipt": _sdk_receipt(result),
                     "usage": {
-                        **budget.usage(events),
+                        **call_usage(),
                         "prompt_chars": len(prompt),
                         "result_chars": 0,
                         **_tokens(getattr(result, "usage", None)),

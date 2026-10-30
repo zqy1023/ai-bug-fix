@@ -36,7 +36,7 @@ def v1_list_approvals(
             {},
         )
         steps = task.get("steps") if isinstance(task.get("steps"), list) else []
-        repair_step = next((value for value in reversed(steps) if value.get("name") in {"unified_fixer_agent", "repair_agent"}), {})
+        repair_step = next((value for value in reversed(steps) if value.get("name") == "unified_fixer_agent"), {})
         review_step = next((value for value in reversed(steps) if value.get("name") == "review_agent"), {})
         repair_output = repair_step.get("output") if isinstance(repair_step.get("output"), dict) else {}
         review_output = review_step.get("output") if isinstance(review_step.get("output"), dict) else {}

@@ -1,16 +1,34 @@
-import type { AgentPolicy } from './workflow.generated';
-export type { AgentPolicy } from './workflow.generated';
-import type { ExecutionResult, Assessment, ActionAvailability, DeliveryView } from './workflow.generated';
-export type { ExecutionResult, Assessment, ActionAvailability, DeliveryView } from './workflow.generated';
+import type {
+  ActionAvailability,
+  AgentPolicy,
+  Assessment,
+  DeliveryView,
+  ExecutionResult,
+} from './workflow.generated';
+
+export type {
+  ActionAvailability,
+  AgentPolicy,
+  Assessment,
+  DeliveryView,
+  ExecutionResult,
+} from './workflow.generated';
 
 export type StepStatus = 'pending' | 'running' | 'waiting' | 'succeeded' | 'failed' | 'skipped';
+
 export type RunStatus =
-  | 'queued' | 'running' | 'waiting_approval' | 'succeeded' | 'partial_failed'
-  | 'failed' | 'paused' | 'pause_requested' | 'cancelled' | 'cancel_requested';
-export type BusinessResult =
-  | 'UNVERIFIED' | 'BLOCKED'
-  | 'LOCATED' | 'INSUFFICIENT_EVIDENCE' | 'MANUAL' | 'PASS' | 'FAIL' | 'REJECTED'
-  | 'SKIPPED' | 'DELIVERED' | 'SUCCESS' | 'FAILED' | null;
+  | 'queued'
+  | 'running'
+  | 'waiting_approval'
+  | 'succeeded'
+  | 'partial_failed'
+  | 'failed'
+  | 'paused'
+  | 'pause_requested'
+  | 'cancelled'
+  | 'cancel_requested';
+
+export type Tone = 'ok' | 'warn' | 'danger' | 'info' | 'idle';
 
 export interface RunParameters {
   agent_policy: AgentPolicy;
@@ -20,37 +38,60 @@ export interface RunParameters {
   max_attempts: number;
 }
 
-export interface RunConfig {
-  defaults: RunParameters;
-  limits: { max_log_hours: number; max_attempts: number };
-  models: Record<string, ModelOption[]>;
-  model_catalog?: ModelOption[];
-}
-
 export interface ModelOption {
   key: string;
   model_id: string;
   label: string;
-  roles: Array<string>;
+  roles: string[];
   available: boolean;
   reason?: string | null;
   is_default?: boolean;
 }
 
+export interface RunConfig {
+  defaults: RunParameters;
+  limits: { max_log_hours: number; max_attempts: number };
+  models: Record<string, ModelOption[]>;
+  model_catalog?: ModelOption[];
+  overrides?: RunDefaultsUpdate;
+  customized?: boolean;
+  nacos?: { enabled: boolean; data_id: string; group: string };
+}
+
+export interface RunDefaultsUpdate {
+  log_hours?: number | null;
+  log_limit?: number | null;
+  max_attempts?: number | null;
+  unified_model?: string | null;
+  review_model?: string | null;
+}
+
+export interface HealthResponse {
+  status: string;
+  service: string;
+  version: string;
+  runtime_dir_configured: boolean;
+  source_repo_configured: boolean;
+  api_token_required: boolean;
+  timestamp: string;
+}
+
 export interface DashboardSummary {
   active_runs: number;
+  /** 历史字段；审批已移除，只用于兼容旧 Run。 */
   waiting_approvals: number;
   succeeded_24h: number;
   failed_24h: number;
   success_rate_7d: number;
   recent_runs: RunSummary[];
   daily_trend: Array<{ date: string; succeeded: number; failed: number }>;
+  unreadable_runs?: number;
+  degraded?: boolean;
 }
 
 export interface RunSummary {
   run_id: string;
   status: RunStatus;
-  /** 终态由服务端落盘报告确认；false 时前端必须继续轮询/保持 SSE。 */
   terminal?: boolean;
   identified_tasks?: number;
   dispatched_tasks?: number;
@@ -58,11 +99,18 @@ export interface RunSummary {
   finished_at?: string | null;
   task_count: number;
   succeeded_tasks: number;
+  changed_delivered_tasks: number;
+  unchanged_delivered_tasks: number;
   failed_tasks: number;
   blocked_tasks: number;
   manual_tasks: number;
   waiting_tasks: number;
+  skipped_tasks?: number;
   inactive_tasks?: number;
+  pending_tasks?: number;
+  running_tasks?: number;
+  cancelled_tasks?: number;
+  completed_tasks?: number;
   operator?: string | null;
 }
 
@@ -81,7 +129,7 @@ export interface StepRecord {
   name: string;
   title: string;
   status: StepStatus;
-  result?: BusinessResult;
+  result?: string | null;
   started_at?: string | null;
   finished_at?: string | null;
   duration_ms?: number | null;
@@ -93,9 +141,33 @@ export interface StepRecord {
   output?: Record<string, unknown>;
 }
 
+export interface ReviewCoverage {
+  sufficient?: boolean;
+  missing_evidence?: string[];
+  notes?: string;
+  [key: string]: unknown;
+}
+
+export interface ReviewPayload {
+  review_kind?: 'patch' | 'analysis_disposition';
+  disposition_verified?: boolean;
+  semantic_verified?: boolean;
+  verdict?: 'PASS' | 'FAIL' | 'MANUAL' | string;
+  code_verdict?: 'PASS' | 'FAIL' | 'UNKNOWN' | string;
+  coverage?: ReviewCoverage;
+  dimensions?: Record<string, { status?: string; detail?: string; [key: string]: unknown }>;
+  summary?: string;
+  findings?: string[];
+  required_changes?: string[];
+  todo?: string[];
+  unresolved_issues?: string[];
+  delivery_eligible?: boolean;
+  [key: string]: unknown;
+}
+
 export interface WorkflowReport {
-  report_version?: number;
-  report_kind?: 'run_final' | 'task_final' | string;
+  schema_version?: number;
+  report_kind?: string;
   run_id?: string;
   task_id?: string;
   carrier?: string;
@@ -108,9 +180,12 @@ export interface WorkflowReport {
   next_action?: string;
   finished_at?: string;
   elapsed_ms?: number;
-  tokens?: number;
+  changed_files?: string[];
+  root_cause?: string;
   change_summary?: string;
-  completed_steps?: string[];
+  review?: ReviewPayload;
+  delivery_status?: string;
+  [key: string]: unknown;
 }
 
 export interface TaskSummary {
@@ -123,22 +198,51 @@ export interface TaskSummary {
   terminal_reason?: string;
   next_action?: string;
   steps_count?: number;
+  step_statuses?: Record<string, string>;
   duration_ms?: number | null;
   approval_pending?: boolean;
   current_step?: string;
   attempt?: number;
   lifecycle?: {
-    status?: string; current_step?: string; attempt?: number; terminal_step?: string;
-    terminal_reason?: string; next_action?: string; last_error_summary?: string;
+    status?: string;
+    current_step?: string;
+    attempt?: number;
+    terminal_step?: string;
+    terminal_reason?: string;
+    next_action?: string;
+    last_error_summary?: string;
     updated_at?: string;
+    started_at?: string;
+    finished_at?: string;
   };
-  problem?: Record<string, unknown>;
+  problem?: ProblemPayload;
   report?: WorkflowReport;
   steps?: StepRecord[];
 }
 
+export interface ProblemPayload {
+  service_name?: string;
+  biztype?: string;
+  carrier?: string;
+  req?: string;
+  error?: string;
+  raw_error?: string;
+  message?: string;
+  track_config?: string;
+  [key: string]: unknown;
+}
+
+export interface OriginalProblemLog {
+  message: string;
+  trigger_message: string;
+  related_messages: string[];
+  truncated: boolean;
+  from_archive: boolean;
+  source_biztype: string;
+  message_format: string;
+}
+
 export interface TaskDetailResponse {
-  policy?: { values: AgentPolicy; sources: Record<string, string>; frozen: boolean };
   read_only?: boolean;
   actions?: { retry: ActionAvailability };
   delivery?: DeliveryView;
@@ -174,19 +278,33 @@ export interface RunDetail extends RunSummary {
   worker_active?: boolean;
   phase?: string;
   run_lifecycle?: {
-    status?: string; phase?: string; current_step?: string; current_task_id?: string; attempt?: number;
-    heartbeat_at?: string; error_type?: string; error_message?: string;
-    terminal_reason?: string; next_action?: string; updated_at?: string;
+    status?: string;
+    phase?: string;
+    current_step?: string;
+    current_task_id?: string;
+    attempt?: number;
+    heartbeat_at?: string;
+    error_type?: string;
+    error_message?: string;
+    terminal_reason?: string;
+    next_action?: string;
+    updated_at?: string;
     progress?: { step: string; message: string; counts: Record<string, number> };
     progress_at?: string;
   };
   run_error?: {
-    status?: string; error_type?: string; message?: string; failed_at?: string;
-    terminal_step?: string; terminal_reason?: string; next_action?: string;
+    status?: string;
+    error_type?: string;
+    message?: string;
+    failed_at?: string;
+    terminal_step?: string;
+    terminal_reason?: string;
+    next_action?: string;
   };
   run_report?: WorkflowReport;
   config: Record<string, unknown>;
   steps: StepRecord[];
+  stages?: WorkflowStage[];
   tasks: TaskSummary[];
   checkpoint?: CheckpointProjection & { resumable: boolean };
   artifacts: ArtifactRef[];
@@ -199,6 +317,7 @@ export interface CheckpointProjection {
   next_nodes: string[];
   node?: string | null;
   has_interrupt?: boolean;
+  read_failed?: boolean;
 }
 
 export interface CheckpointHistoryResponse {
@@ -207,41 +326,11 @@ export interface CheckpointHistoryResponse {
   total: number;
 }
 
-export type ApprovalRetryTarget =
-  | 'unified_fixer_agent'
-  | 'review_agent'
-  | 'generate_report';
-
-export interface ApprovalItem {
-  problem?: Record<string, unknown>;
-  business_recovery?: {
-    status: 'verified' | 'unverified' | 'failed' | 'not_executed';
-    reason: string;
-  };
-  delivery?: DeliveryView;
-  actions?: { approve: ActionAvailability; reject: ActionAvailability };
-  approval_id: string;
-  run_id: string;
-  task_id: string;
-  carrier: string;
-  biztype: string;
-  scope: 'carrier' | 'project';
-  status: 'pending' | 'approved' | 'rejected' | 'expired';
-  summary: string;
-  changed_files: string[];
-  change_plan?: {
-    scope: 'carrier' | 'project';
-    rationale: string;
-    edits: Array<{ path: string; action: string; note: string }>;
-  };
-  created_at: string;
-  expires_at?: string | null;
-}
-
 export interface RunQuery {
   page: number;
   page_size: number;
   status?: RunStatus | '';
+  status_group?: 'active' | 'ended';
   keyword?: string;
   from?: string;
   to?: string;
@@ -252,6 +341,10 @@ export interface PageResult<T> {
   total: number;
   page: number;
   page_size: number;
+  unreadable_runs?: number;
+  degraded?: boolean;
+  counts?: { active: number; ended: number; attention: number };
+  attention_run_id?: string;
 }
 
 export interface ControlAuditItem {
@@ -266,7 +359,17 @@ export interface ControlAuditItem {
 
 export type AgentEvent =
   | { type: 'assistant'; text?: string; final?: boolean }
-  | { type: 'tool_use' | 'tool_decision'; tool_use_id?: string | null; tool?: string; input?: Record<string, unknown>; elapsed_ms?: number; decision?: string; reason?: string; source_sha256?: string }
+  | { type: 'thinking'; text?: string; redacted?: boolean }
+  | {
+      type: 'tool_use' | 'tool_decision';
+      tool_use_id?: string | null;
+      tool?: string;
+      input?: Record<string, unknown>;
+      elapsed_ms?: number;
+      decision?: string;
+      reason?: string;
+      source_sha256?: string;
+    }
   | { type: 'tool_result'; tool_use_id?: string | null; is_error?: boolean; text?: string; elapsed_ms?: number };
 
 export interface PromptSnapshot {
@@ -376,7 +479,7 @@ export interface RunBoard {
 export interface StepContext {
   attempt: number;
   status: StepStatus;
-  result: BusinessResult;
+  result: string | null;
   changed_files: string[];
   change_plan_scope: string;
   delivery_status: string;
@@ -393,3 +496,11 @@ export interface StepDetailResponse {
   model_call_ids: string[];
   context: StepContext;
 }
+
+export interface FileChange {
+  path: string; available: boolean; reason?: string;
+  before: string | null; after: string | null;
+  before_exists?: boolean; after_exists?: boolean;
+  status?: 'added' | 'deleted' | 'modified'; patch?: string;
+}
+export interface TaskChanges { available: boolean; reason?: string; files: FileChange[]; declared_files?: string[] }

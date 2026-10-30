@@ -48,6 +48,8 @@ class WorkflowState(TypedDict, total=False):
     approval_result: dict[str, Any]
     analysis_report: dict[str, Any]
     workflow_version: int
+    agent_policy: dict[str, Any]
+    policy_sources: dict[str, Any]
     validation_recovery_counts: dict[str, int]
 
     # 身份与执行参数
@@ -76,8 +78,6 @@ class WorkflowState(TypedDict, total=False):
     changed_files: list[str]
     repair_changed_files: list[str]
     unified_fixer: dict[str, Any]
-    repair: dict[str, Any]
-    locate: dict[str, Any]
     review: dict[str, Any]
     evidence: dict[str, Any]
     manual_confirmation_required: bool
@@ -89,6 +89,7 @@ class WorkflowState(TypedDict, total=False):
     change_plan: dict[str, Any]
     blocked_reason: str
     scope_escalation_required: bool
+    # 历史字段名：现表示“远端重复分支检查已通过”，不再代表 SQLite claim。
     repair_slot_claimed: bool
     approval_granted: bool
     delivery: dict[str, Any]
@@ -107,6 +108,8 @@ class RunState(TypedDict, total=False):
 
     step_outcomes: dict[str, Any]
     workflow_version: int
+    agent_policy: dict[str, Any]
+    policy_sources: dict[str, Any]
     schema_version: int
     run_id: str
     source_repo_path: str
@@ -124,6 +127,7 @@ class RunState(TypedDict, total=False):
     require_push: bool
     tasks: list[dict[str, Any]]
     task_cursor: int
+    stop_requested: bool
     task: dict[str, Any]
     task_id: str
     problem: dict[str, Any]
@@ -141,8 +145,9 @@ class RunState(TypedDict, total=False):
 def evidence_version(workspace: str, files: list[str], baseline_dir: str = "") -> dict[str, Any]:
     """对本轮文件及其基线计算内容身份；删除保留显式标记。"""
     def digest(root: str) -> str:
+        from infrastructure.workspace.diff import source_manifest
         base = Path(root).resolve()
-        values: dict[str, str] = {}
+        values = source_manifest(base)
         for name in sorted(set(files)):
             target = (base / name).resolve()
             if not target.is_relative_to(base):
@@ -153,7 +158,7 @@ def evidence_version(workspace: str, files: list[str], baseline_dir: str = "") -
     return {
         "patch_id": digest(workspace),
         "baseline_id": digest(baseline_dir) if baseline_dir else "",
-        "identity_version": 1,
+        "identity_version": 2,
     }
 
 
@@ -163,14 +168,15 @@ def evidence_version(workspace: str, files: list[str], baseline_dir: str = "") -
 
 CANDIDATE_KEYS = ("delivery_candidate", "approval_result", "delivery")
 INVALIDATES = {
-    "prepare_source_snapshot": ("unified_fixer", "locate", "repair", "review", *CANDIDATE_KEYS),
+    "prepare_source_snapshot": ("unified_fixer", "review", *CANDIDATE_KEYS),
     "unified_fixer_agent": ("review", *CANDIDATE_KEYS),
     "review_agent": CANDIDATE_KEYS,
     "generate_report": ("approval_result", "delivery"),
 }
 STATE_OWNERS = {
+    "agent_policy": "prepare_source_snapshot", "policy_sources": "prepare_source_snapshot",
     "baseline_dir": "prepare_source_snapshot", "baseline_manifest": "prepare_source_snapshot",
-    "unified_fixer": "unified_fixer_agent", "locate": "unified_fixer_agent", "repair": "unified_fixer_agent",
+    "unified_fixer": "unified_fixer_agent",
     "review": "review_agent", "delivery_candidate": "generate_report", "approval_result": "request_approval",
     "delivery": "submit_changes", "repair_branch": "generate_report", "delivery_pushed": "submit_changes",
     "delivery_local_branch": "submit_changes", "delivery_commit": "submit_changes",
@@ -199,6 +205,9 @@ def outcome_of(
 ) -> StepOutcome:
     """将插件业务模型转为统一结果，执行失败绝不视为代码缺陷。"""
     status = output.get("status")
+    if output.get("failure_kind") in {"agent_invocation_failed", "agent_startup_failed"}:
+        execution_status = "failed"
+        error = error or {"code": str(output["failure_kind"]), "message": str(output.get("blocked_reason") or output.get("summary") or "模型调用失败"), "retryable": True}
     if execution_status != "succeeded":
         outcome = "inconclusive"
     elif status in {
@@ -372,10 +381,10 @@ def capture_retry_context(
         latest_path = store.task_dir(str(state["run_id"]), str(state["task_id"])) / "retry/latest.json"
         if latest_path.is_file():
             captured = store.read_artifact(str(state["run_id"]), "retry/latest.json", str(state["task_id"]))
-            if captured.get("attempt") == attempt and not captured.get("capture_errors"):
+            if captured.get("attempt") == attempt and not captured.get("capture_errors") and captured.get("source_only") is True:
                 return captured
     paths = sorted(
-        set(state.get("changed_files") or (state.get("repair") or {}).get("changed_files") or [])
+        set(state.get("changed_files") or (state.get("unified_fixer") or {}).get("changed_files") or [])
     )
     payload = {
         "attempt": attempt,
@@ -386,8 +395,6 @@ def capture_retry_context(
             key: state.get(key) or {}
             for key in (
                 "unified_fixer",
-                "locate",
-                "repair",
                 "change_plan",
                 "review",
             )
@@ -398,16 +405,8 @@ def capture_retry_context(
     workspace_value, baseline_value = state.get("ai_workspace_path"), state.get("baseline_dir")
     if workspace_value and baseline_value:
         workspace, baseline = Path(workspace_value).resolve(), Path(baseline_value).resolve()
-        candidates = set(paths) | set(state.get("baseline_manifest") or {})
-        carrier_dir = str((state.get("evidence") or {}).get("carrier_dir") or "")
-        if carrier_dir:
-            carrier_root = (workspace / carrier_dir).resolve()
-            if carrier_root.is_relative_to(workspace) and carrier_root.is_dir():
-                candidates.update(
-                    path.relative_to(workspace).as_posix()
-                    for path in carrier_root.rglob("*")
-                    if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
-                )
+        from infrastructure.workspace.diff import source_changes
+        candidates = set(source_changes(workspace, baseline))
         actual = []
         for relative in sorted(candidates):
             before, after = (baseline / relative).resolve(), (workspace / relative).resolve()
@@ -435,7 +434,7 @@ def capture_retry_context(
                     tofile=f"attempt-{attempt}/{relative}",
                 )
             )
-        if actual:
+        if workspace.is_dir() and baseline.is_dir():
             payload["declared_changed_files"] = paths
             paths = actual
             payload["changed_files"] = paths
@@ -457,11 +456,10 @@ def capture_retry_context(
         "artifact": artifact,
         "history": _compact(history[-3:]),
     }
+    context["source_only"] = True
     context["capture_errors"] = capture_errors
     for key in (
         "unified_fixer",
-        "locate",
-        "repair",
         "change_plan",
         "review",
     ):
@@ -475,8 +473,6 @@ def capture_retry_context(
         context["history"] = _compact(context["history"][-1:])
         for key in (
             "unified_fixer",
-            "locate",
-            "repair",
             "change_plan",
             "review",
         ):
@@ -552,7 +548,7 @@ def generate() -> str:
         schema = model.model_json_schema()
         definitions.update(schema.pop("$defs", {}))
         definitions[model.__name__] = schema
-    lines = ["// Generated by python -m workflow.engine.frontend_contracts. Do not edit."]
+    lines = ["// Generated by python -m workflow.engine.handoff. Do not edit."]
     for name, schema in definitions.items():
         lines.append(f"export interface {name} {{")
         required = set(schema.get("required", []))

@@ -66,10 +66,19 @@ def safe_name(value: str) -> str:
     return _UNSAFE.sub("-", str(value)).strip("-.") or "item"
 
 
+def stable_error(error: str) -> str:
+    """把异常文本里的易变字段统一替换。
+
+    去重键与任务指纹必须共用这一套规则：两处各写一份正则时，``request_id`` 这类
+    字段在一处被抹掉、另一处保留，同一逻辑问题就会分裂成多个"身份"。
+    """
+    value = _TIMESTAMP.sub("<timestamp>", str(error or ""))
+    return _VOLATILE.sub("", value).strip()
+
+
 def problem_key(problem_input: dict[str, Any]) -> str:
     """由稳定错误特征生成问题指纹，过滤易变日志字段。"""
-    error = _TIMESTAMP.sub("<timestamp>", str(problem_input.get("error", "")))
-    error = _VOLATILE.sub("", error).strip()
+    error = stable_error(str(problem_input.get("error", "")))
     values = (
         problem_input.get("service_name", ""),
         problem_input.get("biztype", ""),

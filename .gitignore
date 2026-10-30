@@ -7,6 +7,7 @@
 **/.claude/settings.local.json
 CLAUDE.local.md
 .venv/
+.runtime-venv/
 .idea/
 .pytest_cache/
 .ruff_cache/

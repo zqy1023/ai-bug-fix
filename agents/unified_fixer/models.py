@@ -90,6 +90,7 @@ class UnifiedFixerOutput(FrozenModel):
     analysis: str = ""
     passed: bool = False
     result: Literal["passed", "failed"] = "failed"
+    skip_reason: str = ""
 
 
 class UnifiedFixerView(UnifiedFixerOutput):
@@ -104,11 +105,13 @@ RepairView = UnifiedFixerView
 class UnifiedFixerConfig(BaseModel):
     """统一 Agent 的单会话与行为参数配置。"""
 
-    timeout_seconds: int = Field(default=600, ge=30, le=1800)
-    max_turns: int = Field(default=15, ge=1, le=50)
+    timeout_seconds: int = Field(default=900, ge=30, le=1800)
+    max_turns: int = Field(default=32, ge=1, le=50)
     max_self_healing_turns: int = Field(default=2, ge=0, le=5)
+    max_provider_attempts: int = Field(default=2, ge=1, le=2)
     max_context_chars: int = Field(default=120000, ge=1000)
     max_candidate_files: int = Field(default=5, ge=1, le=20)
+    max_tool_calls: int = Field(default=64, ge=1, le=64)
     model: str = ""
 
     @classmethod
@@ -118,8 +121,8 @@ class UnifiedFixerConfig(BaseModel):
             try:
                 data = json.loads(config_file.read_text(encoding="utf-8"))
                 return cls.model_validate(data)
-            except Exception:
-                pass
+            except (OSError, ValueError) as error:
+                raise ValueError(f"修复 Agent 配置无效: {config_file}") from error
         return cls()
 
 
@@ -153,6 +156,8 @@ class UnifiedFixerState(TypedDict, total=False):
 
     # 最终业务产物
     status: str
+    failure_kind: str
+    skip_reason: str
     root_cause: str
     category: str
     attribution_type: str
@@ -171,8 +176,6 @@ class UnifiedFixerState(TypedDict, total=False):
     result: str
 
     unified_fixer: dict[str, Any]
-    locate: dict[str, Any]
-    repair: dict[str, Any]
     analysis_only: bool
     last_result: str
     self_check: dict[str, Any]
@@ -180,6 +183,8 @@ class UnifiedFixerState(TypedDict, total=False):
     acceptance_criteria: list[str]
     usage: dict[str, Any]
     metadata: dict[str, Any]
+    _usage: dict[str, Any]
+    _audit: dict[str, Any]
 
     # 元数据与审计
     token_usage: dict[str, Any]

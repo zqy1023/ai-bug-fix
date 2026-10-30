@@ -1,133 +1,141 @@
-import { workbenchQueries } from '../lib/workbenchQueries';
-import { useState } from 'react';
-import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import {
-  MoonOutlined, SafetyCertificateOutlined, SunOutlined, ToolOutlined, TableOutlined, MenuFoldOutlined, MenuUnfoldOutlined, ApartmentOutlined, ReloadOutlined, QuestionCircleOutlined, BellOutlined, UserOutlined, ArrowRightOutlined,
-} from '@ant-design/icons';
-import { Button, Drawer, Input, Modal, Popover, Tooltip, Typography } from 'antd';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ApiError, api, setApiToken } from '../lib/api';
-import { queryKeys } from '../lib/queryKeys';
-import { useThemeMode } from '../app/ThemeProvider';
-import { WorkspaceSearch } from './WorkspaceSearch';
-import styles from './AppShell.module.css';
+import { useState, type FormEvent } from 'react';
+import { Link, NavLink, Outlet, useLocation, useMatch, useNavigate } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+import { api } from '../lib/api';
+import { Icon } from '../components/ui';
+import { shortId } from '../lib/format';
+import { useRunEvents } from '../lib/hooks';
 
-const { Text } = Typography;
+function navClass({ isActive }: { isActive: boolean }) {
+  return isActive ? 'on' : undefined;
+}
 
-const NAV_GROUPS = [
-  { label: '执行', items: [{ key: '/runs', label: '执行批次', icon: <TableOutlined /> }] },
-  { label: '人工', items: [{ key: '/approvals', label: '交付审批', icon: <SafetyCertificateOutlined /> }] },
-];
+function Crumbs() {
+  const { pathname } = useLocation();
+  const parts = pathname.split('/').filter(Boolean);
+  const crumbs: Array<{ label: string; to?: string }> = [{ label: '工作空间', to: '/' }];
+  if (parts[0] === 'runs') {
+    crumbs.push({ label: '批次', to: '/runs' });
+    if (parts[1] && parts[1] !== 'new') {
+      crumbs.push({ label: shortId(parts[1], 10), to: `/runs/${parts[1]}` });
+      if (parts[2] === 'tasks' && parts[3]) {
+        crumbs.push({ label: shortId(parts[3].split('__')[0], 18), to: pathname });
+      } else if (parts[2] === 'records') {
+        crumbs.push({ label: '记录' });
+      } else if (parts[2] === 'artifacts') {
+        crumbs.push({ label: '产物' });
+      }
+    } else if (parts[1] === 'new') {
+      crumbs.push({ label: '新建' });
+    }
+  } else if (parts[0] === 'settings') {
+    crumbs.push({ label: '设置' });
+  } else {
+    crumbs.push({ label: '概览' });
+  }
+  return (
+    <div className="crumbs">
+      {crumbs.map((crumb, index) => (
+        <span className="row" key={`${crumb.label}-${index}`} style={{ gap: 8 }}>
+          {index > 0 ? <span className="sep">/</span> : null}
+          {crumb.to && index < crumbs.length - 1 ? <Link to={crumb.to}>{crumb.label}</Link> : <b>{crumb.label}</b>}
+        </span>
+      ))}
+    </div>
+  );
+}
 
 export function AppShell() {
   const navigate = useNavigate();
-  const location = useLocation();
-  const queryClient = useQueryClient();
-  const { mode, toggle } = useThemeMode();
-  const [tokenDraft, setTokenDraft] = useState('');
-  const [collapsed, setCollapsed] = useState(false);
-  const [helpOpen, setHelpOpen] = useState(false);
+  const match = useMatch('/runs/:runId/*');
+  const live = useRunEvents(match?.params.runId);
+  const [keyword, setKeyword] = useState('');
+  const health = useQuery({ queryKey: ['health'], queryFn: api.health, staleTime: 30_000 });
+  const dashboard = useQuery({ queryKey: ['dashboard'], queryFn: api.dashboard, refetchInterval: 15_000 });
+  const activeCount = dashboard.data?.active_runs ?? 0;
 
-  const health = useQuery({ queryKey: queryKeys.health, queryFn: api.health, refetchInterval: 30000, retry: 1 });
-  const approvals = useQuery({ ...workbenchQueries.approvals(), retry: 1 });
-  const authRequired = health.error instanceof ApiError && health.error.status === 401;
-  const pending = approvals.data?.length ?? 0;
-
-  const submitToken = async () => {
-    if (!tokenDraft.trim()) return;
-    setApiToken(tokenDraft);
-    setTokenDraft('');
-    await queryClient.invalidateQueries();
-    await health.refetch();
+  const onSearch = (event: FormEvent) => {
+    event.preventDefault();
+    const value = keyword.trim();
+    navigate(value ? `/runs?keyword=${encodeURIComponent(value)}` : '/runs');
   };
 
-  const active = location.pathname.startsWith('/approvals') ? '/approvals' : '/runs';
-  const healthDotClass = health.isSuccess
-    ? `${styles.healthDot} ${styles.dotOnline}`
-    : health.isError ? `${styles.healthDot} ${styles.dotOffline}` : `${styles.healthDot} ${styles.dotChecking}`;
-
   return (
-    <div className={`${styles.shell}${collapsed ? ` ${styles.collapsed}` : ''}`}>
-      <a className={styles.skipLink} href="#main-content">跳到主要内容</a>
-      <Modal
-        title="连接工作流服务"
-        open={authRequired}
-        closable={false}
-        maskClosable={false}
-        keyboard={false}
-        okText="验证并连接"
-        cancelButtonProps={{ style: { display: 'none' } }}
-        onOk={submitToken}
-        okButtonProps={{ disabled: !tokenDraft.trim(), loading: health.isFetching }}
-      >
-        <p>后端已启用访问令牌认证。请输入工作台令牌后继续。</p>
-        <Input.Password
-          autoFocus
-          value={tokenDraft}
-          onChange={(event) => setTokenDraft(event.target.value)}
-          onPressEnter={submitToken}
-          placeholder="工作台访问令牌"
-        />
-        <Text type="secondary" className={styles.tokenNote}>令牌仅保存在当前页面内存中，刷新后需要重新验证。</Text>
-      </Modal>
-
-      <aside className={styles.side}>
-        <div className={styles.sideTop}>
-          <div className={styles.brandRow}>
-            <Link className={styles.brand} to="/runs" aria-label="修复工作台首页">
-              <ToolOutlined className={styles.brandMark} />
-              <span className={styles.brandCopy}><strong>修复工作台</strong><small>Repair Atlas</small></span>
-            </Link>
-            <button className={styles.collapseHandle} aria-label={collapsed ? '展开导航' : '收起导航'} onClick={() => setCollapsed(!collapsed)}>{collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}</button>
+    <div className="app">
+      <aside className="rail">
+        <div className="rail-brand">
+          <div className="rail-logo">修</div>
+          <div>
+            <div className="name">修复工作台</div>
+            <span className="sub">REPAIR ATLAS</span>
           </div>
-          <div className={styles.workspace}><ApartmentOutlined /><span>物流服务</span></div>
-          <nav className={styles.navigation} aria-label="全局导航">
-            {NAV_GROUPS.flatMap((group) => group.items).map((item) => {
-              const isActive = active === item.key;
-              return <button key={item.key} type="button" className={`${styles.navItem}${isActive ? ` ${styles.navItemActive}` : ''}`} aria-current={isActive ? 'page' : undefined} aria-label={item.label} onClick={() => navigate(item.key)}>
-                {item.icon}<span className={styles.navLabel}>{item.label}</span>
-                {item.key === '/approvals' && pending > 0 ? <span className={styles.navCount}>{pending}</span> : isActive ? <i className={styles.activeMark} aria-hidden="true" /> : null}
-              </button>;
-            })}
-          </nav>
         </div>
-        <div className={styles.sideFoot}>
-          <Tooltip title={health.isSuccess ? '工作流服务连接正常' : health.isError ? '工作流服务不可用' : '正在检查服务状态'}>
-            <span className={styles.healthPill}><span className={healthDotClass} /><span>{health.isSuccess ? '服务连接正常' : health.isError ? '服务连接异常' : '正在连接服务'}</span></span>
-          </Tooltip>
-          <div className={styles.session}>
-            <span className={styles.avatar}><UserOutlined /></span>
-            <span className={styles.sessionName}>工作台会话</span>
-            <Button type="text" size="small" className={styles.themeBtn} icon={mode === 'dark' ? <MoonOutlined /> : <SunOutlined />} onClick={toggle} title="切换明暗主题" aria-label="切换明暗主题" />
+
+        <div className="rail-ws">
+          <span>默认工作空间</span>
+          <span className="caret">▾</span>
+        </div>
+
+        <nav className="rail-nav">
+          <NavLink to="/" end className={navClass}>
+            <Icon name="grid" />
+            概览
+          </NavLink>
+          <NavLink to="/runs" className={navClass}>
+            <Icon name="layers" />
+            批次
+            {activeCount > 0 ? <span className="count">{activeCount}</span> : null}
+          </NavLink>
+          <NavLink to="/settings" className={navClass}>
+            <Icon name="settings" />
+            设置
+          </NavLink>
+        </nav>
+
+        <div className="rail-foot">
+          <div className="health">
+            <i style={{ background: health.data?.status === 'ok' ? '#22c55e' : '#f59e0b' }} />
+            {health.isError ? '服务不可达' : health.data?.status === 'ok' ? '服务正常 · 全局串行' : '检查中'}
+          </div>
+          <div className="user">
+            <span className="avatar">K</span>
+            <div>
+              <div style={{ color: '#cbd5e1', fontSize: 12 }}>kirby</div>
+              <div style={{ color: '#64748b', fontSize: 10 }}>默认操作人</div>
+            </div>
           </div>
         </div>
       </aside>
 
-      <Drawer title="工作台使用说明" open={helpOpen} onClose={() => setHelpOpen(false)} width="min(480px, 100vw)">
-        <div className={styles.help}>
-          <section><h3>查看执行批次</h3><p>按状态、批次 ID 和时间筛选记录。展开批次行查看最近动作，进入详情核对执行案卷、问题任务和恢复记录。</p></section>
-          <section><h3>排查问题与证据</h3><p>进入任务工作台查看原始异常、修复差异、正式验证结论及各步骤的输入、输出和归档产物。</p></section>
-          <section><h3>核对交付审批</h3><p>本地候选准备完成后，由人工核对提交与验证证据。批准后系统正式交付；驳回后按指定阶段回修。系统不会自动合并。</p></section>
-          <section><h3>快捷检索</h3><p>按 Ctrl+K 搜索批次 ID，或快速进入执行批次与交付审批。</p></section>
-        </div>
-      </Drawer>
-      <div className={styles.workarea}>
-        <header className={styles.topbar}>
-          <nav aria-label="工作空间路径" className={styles.breadcrumb}><span>工作空间</span><span>/</span><Link to={active}><i aria-hidden="true" />{active === '/approvals' ? '交付审批' : '执行批次'}</Link>{location.pathname.includes('/tasks/') && <><span>/</span><span>任务工作台</span></>}</nav>
-          <div className={styles.topActions}>
-            <WorkspaceSearch />
-            <span className={styles.actionDivider} />
-            <Button className={styles.docsButton} aria-label="文档" type="text" icon={<QuestionCircleOutlined />} onClick={() => setHelpOpen(true)}><span>文档</span></Button>
-            <Popover trigger="click" placement="bottomRight" title="待处理消息" content={<div className={styles.notifications}><p>{pending > 0 ? `${pending} 个本地候选等待交付审批。` : '当前没有待审批交付。'}</p><Button type="link" size="small" onClick={() => navigate('/approvals')}>打开交付审批 <ArrowRightOutlined /></Button></div>}>
-              <button className={styles.notificationButton} aria-label="待处理消息"><BellOutlined />{pending > 0 && <i aria-hidden="true" />}</button>
-            </Popover>
-            <Button type="text" className={styles.topRefresh} icon={<ReloadOutlined />} aria-label="刷新工作空间" title="同步状态" onClick={() => void queryClient.invalidateQueries()} />
+      <div className="main">
+        <header className="topbar">
+          <Crumbs />
+          <div className="top-right">
+            {match ? <span className={`live-sync ${live.error ? 'offline' : ''}`} role="status">
+              <i />{live.error ? '同步失败' : live.terminal ? '已同步最终结果' : live.streamState === 'open' ? '实时更新' : '自动同步中'}
+            </span> : null}
+            <form className="searchbox" onSubmit={onSearch}>
+              <Icon name="search" />
+              <input
+                value={keyword}
+                onChange={(event) => setKeyword(event.target.value)}
+                placeholder="搜索批次、任务、承运商"
+                aria-label="搜索批次、任务、承运商"
+                style={{ border: 0, outline: 0, background: 'transparent', flex: 1, minWidth: 0, color: 'inherit' }}
+              />
+            </form>
+            <button className="btn ghost" aria-label="通知" style={{ padding: 4 }}>
+              <Icon name="bell" size={18} />
+            </button>
+            <span className="avatar" style={{ width: 28, height: 28, borderRadius: '50%', background: '#f1f5f9', display: 'grid', placeItems: 'center', fontSize: 11 }}>
+              K
+            </span>
           </div>
         </header>
-        <main id="main-content" className={styles.main}><Outlet /></main>
+        <main className="page">
+          <Outlet />
+        </main>
       </div>
-
-
     </div>
   );
 }

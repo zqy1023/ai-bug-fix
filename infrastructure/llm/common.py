@@ -31,7 +31,18 @@ def parse_result(raw: dict[str, Any], role: str) -> dict[str, Any]:
         return dict(raw)
     text = raw.get("result")
     if not isinstance(text, str) or not text.strip():
-        return {"passed": False, "reason": f"{role} agent 未返回结构化结果"}
+        usage = raw.get("usage") or {}
+        receipt = raw.get("sdk_receipt") or {}
+        kind = usage.get("tool_stop_kind") or raw.get("failure_kind") or receipt.get("subtype") or "protocol_invalid"
+        if receipt.get("subtype") == "error_max_turns":
+            kind = "turn_budget_exhausted"
+        reasons = {"turn_budget_exhausted": "模型轮数耗尽，未输出结构化结论",
+                   "exploration_budget_exhausted": "探索预算耗尽，未输出结构化结论",
+                   "tool_access_blocked": "工具读取路径连续被拒绝，未输出结构化结论",
+                   "tool_budget_exhausted": "工具预算耗尽，未输出结构化结论",
+                   "agent_timeout": "模型执行超时，未输出结构化结论"}
+        reason = reasons.get(kind) or str(raw.get("failure_detail") or raw.get("reason") or f"{role} agent 未返回结构化结果")
+        return {"passed": False, "reason": reason, "failure_kind": kind}
     payload = loads_object(text)
     if payload is None:
         return {"passed": False, "reason": f"{role} agent 返回不是有效 JSON"}
@@ -76,6 +87,10 @@ def audit_metadata(
         "tool_allowed": usage.get("tool_allowed"),
         "tool_denied": usage.get("tool_denied"),
         "tool_completed": usage.get("tool_completed"),
+        "tool_blocked_writes": usage.get("tool_blocked_writes"),
+        # 规则片段与预算档位：成本与"为何缺少某条规则"都靠这两项回溯。
+        "rule_ids": list(getattr(request, "rule_ids", ()) or ()),
+        "budget_tier": str(getattr(request, "budget_tier", "") or ""),
     }
 
 
@@ -142,7 +157,7 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
             "total_tokens": usage.get("total_tokens", None),
             "tool_call_count": usage.get("tool_calls", None),
             **{key: usage.get(key) for key in ("tool_attempts", "tool_allowed", "tool_denied", "tool_completed",
-                                               "tool_errors", "structured_output_calls", "tool_stop_kind", "tool_stop_reason")},
+                                               "tool_errors", "structured_output_calls", "tool_stop_kind", "tool_stop_reason", "tool_blocked_writes")},
             "sdk_receipt": raw.get("sdk_receipt") or {},
             "usage_source": "sdk_reported" if isinstance(usage.get("input_tokens"), int) else "unknown",
             "token_total_scope": usage.get("token_total_scope", "unknown"),
@@ -203,7 +218,7 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
             "input_tokens": failed_usage.get("input_tokens"), "output_tokens": failed_usage.get("output_tokens"),
             "cache_tokens": failed_usage.get("cache_read_input_tokens"), "total_tokens": failed_usage.get("total_tokens"),
             "usage_source": "sdk_reported" if isinstance(failed_usage.get("input_tokens"), int) else "unknown",
-            **{key: failed_usage.get(key) for key in ("tool_allowed", "tool_denied", "tool_completed", "tool_stop_kind", "tool_stop_reason")},
+            **{key: failed_usage.get(key) for key in ("tool_allowed", "tool_denied", "tool_completed", "tool_stop_kind", "tool_stop_reason", "tool_blocked_writes")},
             "prompt_chars": len(str(getattr(request, "system_prompt", "") or "")) + len(str(getattr(request, "prompt", "") or "")),
             **_prompt_metrics(request),
             "events": _audit_events(getattr(exc, "agent_events", [])),
@@ -227,7 +242,7 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
 def _persist_agent_events(
     record: dict[str, Any], events: list[dict[str, Any]]
 ) -> tuple[str, int]:
-    """将有效公开事件按任务、调用拆分持久化；不写隐藏思考或原始 SDK 对象。"""
+    """将对话、思考与工具事件按任务、调用拆分持久化；不写原始 SDK 对象。"""
     run_id = str(record.get("run_id") or "")
     task_id = str(record.get("task_id") or "")
     call_id = str(record.get("model_call_id") or "")
@@ -385,7 +400,7 @@ def _audit_text(value: Any, limit: int) -> str:
 
 
 def _audit_events(value: Any) -> list[dict[str, Any]]:
-    """持久化公开工具证据和关联 ID；不记录隐藏思考。"""
+    """持久化对话、思考与工具调用流；保留完整事件供审计回放。"""
     if not isinstance(value, list):
         return []
     result = []
@@ -393,7 +408,7 @@ def _audit_events(value: Any) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         kind = item.get("type")
-        if kind in {"tool_use", "tool_result", "tool_decision"}:
+        if kind in {"tool_use", "tool_result", "tool_decision", "thinking"}:
             result.append(dict(item))
         elif kind == "assistant" and "elapsed_ms" not in item:
             result.append(dict(item))

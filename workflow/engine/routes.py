@@ -67,19 +67,17 @@ TASK_NODE_NAMES = (
     REVIEW,
     REPORT,
     SUBMIT,
-    APPROVE,
     FINALIZE,
     RETRY,
 )
 
 PUBLIC_STAGE_TITLES: dict[str, str] = {
     PREPARE_CONTEXT: "准备上下文",
-    CLAIM: "资格领取确认",
+    CLAIM: "重复分支检查",
     UNIFIED_FIXER: "统一分析修复模型",
-    REVIEW: "修复后代码审查 Agent",
+    REVIEW: "独立审查 Agent",
     REPORT: "汇总生成报告",
     SUBMIT: "提交候选分支",
-    APPROVE: "人工审批",
     FINALIZE: "终态收尾",
     RETRY: "重试准备",
 }
@@ -99,9 +97,10 @@ def fingerprint(value: Any) -> str:
 
 
 def confirmation(state: dict[str, Any]) -> tuple[bool, list[str]]:
-    required = state.get("review_mode") == "human" or state.get("manual_confirmation_required") is True
+    required = (state.get("review_mode") == "human" or state.get("manual_confirmation_required") is True
+                or str((state.get("review") or {}).get("verdict") or "").upper() == "MANUAL")
     reasons = list(state.get("manual_confirmation_reasons") or [])
-    return required, reasons or (["用户选择人工代码审查"] if required else [])
+    return required, reasons or ([str((state.get("review") or {}).get("summary") or "需要人工复核")] if required else [])
 
 
 def assert_workflow_version(metadata: dict[str, Any]) -> None:
@@ -186,6 +185,8 @@ def _retry_or_finalize(state: dict[str, Any]) -> str:
     limit = int(state.get("max_attempts") or settings.default_max_attempts)
     target = str(state.get("retry_target") or "")
     if target == UNIFIED_FIXER:
+        from core.policy import policy_of
+        limit = policy_of(state).max_repairs + 1
         exhausted = (
             int(state.get("automatic_attempt") or state.get("attempt") or 1) >= limit
         )
@@ -218,7 +219,7 @@ def after_run_prepare(state: dict[str, Any]) -> str:
 
 
 def after_prepare_context(state: dict[str, Any]) -> str:
-    """准备上下文完成后，优先领取修复资格以确保分支互斥并防止白白浪费大模型推理资源。"""
+    """准备上下文后进入重复分支检查；已有远端分支则跳过，不生成重复报告。"""
     if (
         str(state.get("terminal_status") or "").upper() == "CANCELLED"
         or _result(state) == "cancelled"
@@ -226,16 +227,14 @@ def after_prepare_context(state: dict[str, Any]) -> str:
         return FINALIZE
     if _result(state) == "passed":
         return CLAIM
-    if (
-        _result(state) == "failed"
-        and str(state.get("retry_target") or "") == PREPARE_CONTEXT
-    ):
-        return _retry_or_finalize(state)
+    if _result(state) == "skipped":
+        return FINALIZE
+    # 上下文未准备成功，尚无分析结论可交付；保留原始失败阶段。
     return FINALIZE
 
 
 def after_claim(state: dict[str, Any]) -> str:
-    """成功领取修复资格后进入统一分析修复模型；槽位冲突或未获取资格直接收尾转人工。"""
+    """通过重复分支检查后进入修复；跳过或失败的任务也生成报告分支。"""
     if (
         str(state.get("terminal_status") or "").upper() == "CANCELLED"
         or _result(state) == "cancelled"
@@ -243,38 +242,39 @@ def after_claim(state: dict[str, Any]) -> str:
         return FINALIZE
     if _result(state) == "passed":
         return UNIFIED_FIXER
-    if _result(state) == "failed" and str(state.get("retry_target") or "") == CLAIM:
-        return _retry_or_finalize(state)
+    if _result(state) == "skipped":
+        # 远端已有同一问题分支：不能为重复问题再推一个分支。
+        return FINALIZE
     return FINALIZE
 
 
 def after_unified_fixer(state: dict[str, Any]) -> str:
-    """统一分析修复模型路由：修复完成进入审查模型，仅分析或转人工直接进入汇总生成报告。"""
+    """分析、修改和模型跳过均需审查；执行失败与确定性跳过直接收尾。"""
     if (
         str(state.get("terminal_status") or "").upper() == "CANCELLED"
         or _result(state) == "cancelled"
     ):
         return FINALIZE
-    if _result(state) == "failed" and not state.get("analysis_only"):
-        target = str(state.get("retry_target") or "")
-        if target == UNIFIED_FIXER:
-            return _retry_or_finalize(state)
 
-    if (
-        state.get("analysis_only")
-        or legacy_analysis_required(state)
-        or str(state.get("terminal_status") or "").upper() == "MANUAL"
-        or not bool(state.get("changed_files"))
-    ):
-        return REPORT
+    unified = state.get("unified_fixer") or {}
+    from core.policy import external_skip
+    if unified.get("failure_kind"):
+        # 未取得有效分析结论，只保留本地失败证据。
+        return FINALIZE
+    if unified.get("skip_reason"):
+        return REVIEW if external_skip(unified) else FINALIZE
+
+    if _result(state) == "failed":
+        # 分析执行未完成不进入交付；收尾仍会写本地失败报告。
+        return FINALIZE
 
     if _result(state) == "passed":
         return REVIEW
-    return REPORT
+    return FINALIZE
 
 
 def after_review(state: dict[str, Any]) -> str:
-    """审查后路由：审查失败且开启自动回修时打回统一模型，否则统一进入汇总生成报告。"""
+    """按独立回修额度推进；未获批准或耗尽额度时失败收尾，不发布报告分支。"""
     if (
         str(state.get("terminal_status") or "").upper() == "CANCELLED"
         or _result(state) == "cancelled"
@@ -286,13 +286,26 @@ def after_review(state: dict[str, Any]) -> str:
     review = state.get("review") or {}
     code_verdict = str(review.get("code_verdict") or "").upper()
     verdict = str(review.get("verdict") or "").upper()
+    if str(review.get("contract_error") or "").startswith(("review_invocation_failed:", "review_protocol_invalid:")) or (
+        _result(state) == "failed" and not review
+    ):
+        state["retry_target"] = REVIEW
+        recovery = _retry_or_finalize(state)
+        return recovery
     needs_repair = code_verdict == "FAIL" or verdict == "FAIL"
-    if needs_repair and policy.automatic_repair:
-        limit = int(state.get("max_attempts") or settings.default_max_attempts)
+    if needs_repair:
         attempt = int(state.get("automatic_attempt") or state.get("attempt") or 1)
-        if attempt < limit:
+        # automatic_attempt=1 是初次修复；max_repairs 只计其后的回修次数。
+        if policy.automatic_repair and attempt <= policy.max_repairs:
             state["retry_target"] = UNIFIED_FIXER
             return RETRY
+        return FINALIZE
+    from agents.review.contract import delivery_allowed
+    from core.policy import external_skip
+    if external_skip(state.get("unified_fixer") or {}):
+        # No branch is published for a skip, including when disposition is unknown.
+        return FINALIZE
+    if not delivery_allowed(review):
         return FINALIZE
     return REPORT
 
@@ -310,7 +323,7 @@ def after_report(state: dict[str, Any]) -> str:
 
 
 def after_submit(state: dict[str, Any]) -> str:
-    """提交并推送分支后，进入人工审批。"""
+    """提交并推送分支后直接收尾；人工审批已移除。"""
     if (
         str(state.get("terminal_status") or "").upper() == "CANCELLED"
         or _result(state) == "cancelled"
@@ -318,7 +331,7 @@ def after_submit(state: dict[str, Any]) -> str:
         return FINALIZE
     if _result(state) == "failed":
         return _retry_or_finalize(state)
-    return APPROVE
+    return FINALIZE
 
 
 def after_finalize(state: dict[str, Any]) -> str:
@@ -328,24 +341,29 @@ def after_finalize(state: dict[str, Any]) -> str:
 
 def _analysis_only_task(state: dict[str, Any]) -> bool:
     """仅按明确的业务分流原因判断报告交付，不用 FAILED/MANUAL 终态反推原因。"""
-    if str((state.get("delivery") or {}).get("delivery_status") or "").upper() == "FAILED":
-        return False
     if state.get("analysis_only"):
         return True
     evidence = state.get("evidence") or {}
-    locate = state.get("locate") or {}
+    locate = state.get("unified_fixer") or {}
     review = state.get("review") or {}
+    if review:
+        from agents.review.contract import delivery_allowed
+        if not delivery_allowed(review):
+            return True
     if (
         evidence.get("legacy_only")
-        or evidence.get("legacy_dependency")
         or state.get("scope_escalation_required")
-        or str(review.get("verdict") or "").upper() == "MANUAL"
+        # review=MANUAL 不再降级为"只交报告"：多数 MANUAL 只是缺少录制 response
+        # 导致业务未验证，代码本身已经修对，应当正常交付并标记人工复核。
+        # 只有 FAIL（补丁本身有问题）才不能推代码。
+        or str(review.get("verdict") or "").upper() == "FAIL"
+        or str(review.get("code_verdict") or "").upper() == "FAIL"
     ):
         return True
     if not locate:
-        return False
+        return str(state.get("last_result") or "").upper() in {"FAILED", "FAIL"}
     return bool(
-        str(locate.get("status") or "").upper() in {"MANUAL", "INSUFFICIENT_EVIDENCE"}
+        str(locate.get("status") or "").upper() in {"MANUAL", "ANALYSIS_ONLY", "INSUFFICIENT_EVIDENCE"}
         or str(locate.get("recommended_scope") or "") != "carrier"
         or str(locate.get("category") or "") != "carrier"
         or legacy_analysis_required(state)
@@ -397,7 +415,6 @@ def after_retry(state: dict[str, Any]) -> str:
         REVIEW,
         REPORT,
         SUBMIT,
-        APPROVE,
         FINALIZE,
     }:
         return target
@@ -405,13 +422,12 @@ def after_retry(state: dict[str, Any]) -> str:
 
 
 TASK_CONDITIONAL_TRANSITIONS = (
-    (PREPARE_CONTEXT, after_prepare_context, (CLAIM, RETRY, FINALIZE)),
-    (CLAIM, after_claim, (UNIFIED_FIXER, RETRY, FINALIZE)),
+    (PREPARE_CONTEXT, after_prepare_context, (CLAIM, REPORT, RETRY, FINALIZE)),
+    (CLAIM, after_claim, (UNIFIED_FIXER, REPORT, RETRY, FINALIZE)),
     (UNIFIED_FIXER, after_unified_fixer, (REVIEW, REPORT, RETRY, FINALIZE)),
     (REVIEW, after_review, (REPORT, RETRY, FINALIZE)),
     (REPORT, after_report, (SUBMIT, RETRY, FINALIZE)),
-    (SUBMIT, after_submit, (APPROVE, RETRY, FINALIZE)),
-    (APPROVE, after_approval, (RETRY, FINALIZE)),
+    (SUBMIT, after_submit, (RETRY, FINALIZE)),
     (FINALIZE, after_finalize, (END,)),
     (
         RETRY,
@@ -423,7 +439,6 @@ TASK_CONDITIONAL_TRANSITIONS = (
             REVIEW,
             REPORT,
             SUBMIT,
-            APPROVE,
             FINALIZE,
         ),
     ),

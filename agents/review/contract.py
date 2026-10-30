@@ -15,10 +15,10 @@ from typing import Any, Literal, TypedDict
 from pydantic import ConfigDict, Field
 
 from config.settings import parse_bool
-from core.contracts import ChangePlan, FrozenModel
+from core.contracts import ChangePlan, FrozenModel, RepairHandoff
 
 RESULT_VALUES = ("PASS", "FAIL", "MANUAL")
-REVIEW_CONTRACT_VERSION = 6
+REVIEW_CONTRACT_VERSION = 10
 RESULT_FIELDS = (
     "verdict",
     "passed",
@@ -30,6 +30,8 @@ RESULT_FIELDS = (
     "summary",
     "findings",
     "required_changes",
+    "todo",
+    "unresolved_issues",
     "change_plan",
 )
 _MAX_FIELD_CHARS = 4000
@@ -42,12 +44,12 @@ DEFAULTS: dict[str, Any] = {
     "enabled": True,
     "provider": "claude_session",
     "tools": list(READ_ONLY_TOOLS),
-    "max_turns": 12,
-    "max_tool_calls": 16,
-    "max_context_chars": 18000,
+    "max_turns": 36,
+    "max_tool_calls": 48,
+    "max_context_chars": 60000,
     "max_candidate_files": 6,
     "max_diff_chars": 12000,
-    "timeout_seconds": 480,
+    "timeout_seconds": 900,
     "options": {},
 }
 
@@ -64,12 +66,12 @@ class ReviewConfig:
     enabled: bool = True
     provider: str = "claude_session"
     tools: tuple[str, ...] = READ_ONLY_TOOLS
-    max_turns: int = 12
-    max_tool_calls: int = 16
-    max_context_chars: int = 18000
+    max_turns: int = 36
+    max_tool_calls: int = 48
+    max_context_chars: int = 60000
     max_candidate_files: int = 6
     max_diff_chars: int = 12000
-    timeout_seconds: int = 480
+    timeout_seconds: int = 900
     options: Mapping[str, Any] = field(default_factory=dict)
     source: str = "defaults"
 
@@ -87,6 +89,8 @@ class ReviewConfig:
         raw_path = str(path or environment.get(f"{ENV_PREFIX}CONFIG", "")).strip()
         default_path = Path(__file__).resolve().parent / "config.json"
         resolved = Path(raw_path) if raw_path else default_path
+        if raw_path and not resolved.is_file():
+            raise ReviewConfigError(f"指定的审查 Agent 配置不存在: {resolved}")
         payload = dict(DEFAULTS)
         source = "defaults"
         if resolved.is_file():
@@ -95,8 +99,10 @@ class ReviewConfig:
                 if isinstance(loaded, dict):
                     payload.update(loaded)
                     source = str(resolved)
-            except Exception:
-                pass
+            except (OSError, ValueError) as error:
+                raise ReviewConfigError(f"审查 Agent 配置无效: {resolved}") from error
+            if not isinstance(loaded, dict):
+                raise ReviewConfigError(f"审查 Agent 配置必须为对象: {resolved}")
         enabled = environment.get(f"{ENV_PREFIX}ENABLED", "").strip()
         if enabled:
             payload["enabled"] = parse_bool(enabled)
@@ -111,19 +117,23 @@ class ReviewConfig:
             "max_candidate_files", "max_diff_chars", "timeout_seconds"
         ):
             val = environment.get(f"{ENV_PREFIX}{int_field.upper()}", "").strip()
-            if val and val.isdigit():
+            if val:
+                if not val.isdigit() or int(val) < 1:
+                    raise ReviewConfigError(f"{ENV_PREFIX}{int_field.upper()} 必须为正整数")
                 payload[int_field] = int(val)
+            if not isinstance(payload[int_field], int) or isinstance(payload[int_field], bool) or payload[int_field] < 1:
+                raise ReviewConfigError(f"{int_field} 必须为正整数")
         return cls(
             description=str(payload.get("description", "")),
             enabled=bool(payload.get("enabled", True)),
             provider=str(payload.get("provider", "claude_session")),
             tools=tuple(payload.get("tools", READ_ONLY_TOOLS)),
-            max_turns=int(payload.get("max_turns", 12)),
-            max_tool_calls=int(payload.get("max_tool_calls", 16)),
+            max_turns=int(payload.get("max_turns", 24)),
+            max_tool_calls=int(payload.get("max_tool_calls", 32)),
             max_context_chars=int(payload.get("max_context_chars", 18000)),
             max_candidate_files=int(payload.get("max_candidate_files", 6)),
             max_diff_chars=int(payload.get("max_diff_chars", 12000)),
-            timeout_seconds=int(payload.get("timeout_seconds", 480)),
+            timeout_seconds=int(payload.get("timeout_seconds", 600)),
             options=payload.get("options", {}),
             source=source,
         )
@@ -143,6 +153,18 @@ class ReviewConfig:
             "options": dict(self.options),
             "source": self.source,
         }
+
+
+def review_budget(config: ReviewConfig, files: list[str], diff_chars: int, semantic_risk: bool = False) -> dict[str, int]:
+    """Scale review work to actual changes; explicit configuration stays a ceiling."""
+    if not files or (len(files) == 1 and diff_chars <= 3000 and not semantic_risk):
+        limits = (12, 16, 18000, 300)
+    elif len(files) <= 3 and diff_chars <= 12000 and not semantic_risk:
+        limits = (24, 32, 36000, 600)
+    else:
+        limits = (36, 48, 60000, 900)
+    return {key: min(getattr(config, key), value) for key, value in zip(
+        ("max_turns", "max_tool_calls", "max_context_chars", "timeout_seconds"), limits)}
 
 
 class CoverageAssessment(FrozenModel):
@@ -178,7 +200,9 @@ class ReviewAgentOutput(FrozenModel):
     upstream_assessment: str = ""
     summary: str = ""
     findings: list[str] = Field(default_factory=list)
-    required_changes: list[str] = Field(default_factory=list)
+    required_changes: list[str] = Field(default_factory=list, description="仅填写阻断当前补丁的必要修改或语义决策；code_verdict=PASS 时必须为空。非阻断回归建议写入 todo。")
+    todo: list[str] = Field(default_factory=list, description="非阻断的后续回归建议，不影响代码审查或交付资格；真实代码缺陷和必要语义决策必须放入 findings/required_changes，不能移到此处绕过审查。")
+    unresolved_issues: list[str] = Field(default_factory=list, description="分析交付或跳过后仍存在的已确认缺陷及必要业务决策，写明源码位置、证据和未处理原因。不是可选回归 TODO；有补丁时这些问题不能用于绕过阻断审查。")
     change_plan: ChangePlan | None = None
     review_contract_version: int = REVIEW_CONTRACT_VERSION
 
@@ -190,7 +214,7 @@ class ReviewInput(FrozenModel):
     ai_workspace_path: str = ""
     attempt: int = 1
     retry_context: dict[str, Any] = Field(default_factory=dict)
-    repair: Any = Field(default_factory=dict)
+    repair: RepairHandoff = Field(default_factory=RepairHandoff)
     changed_files: list[str] = Field(default_factory=list)
     baseline_dir: str = ""
     diff_summary: str = ""
@@ -203,11 +227,15 @@ class ReviewView(ReviewAgentOutput):
 
     diff_files: list[dict[str, Any]] = Field(default_factory=list)
     delivery_eligible: bool = False
+    semantic_verified: bool = False
+    review_kind: Literal["patch", "analysis_disposition"] = "patch"
+    disposition_verified: bool = False
     checks: list[dict[str, str]] = Field(default_factory=list)
     review_notes: str = ""
     contract_error: str = ""
     evidence_version: dict[str, Any] = Field(default_factory=dict)
     next_action: str = ""
+    validation: dict[str, Any] = Field(default_factory=dict)
     review_contract_version: int = REVIEW_CONTRACT_VERSION
 
 
@@ -215,6 +243,7 @@ class ReviewState(TypedDict, total=False):
     """审查子图自己的状态。"""
 
     agent_policy: dict[str, Any]
+    evidence: dict[str, Any]
     run_id: str
     source_project_path: str
     task_id: str
@@ -233,6 +262,9 @@ class ReviewState(TypedDict, total=False):
     verdict: Literal["PASS", "FAIL", "MANUAL"]
     passed: bool
     delivery_eligible: bool
+    semantic_verified: bool
+    review_kind: Literal["patch", "analysis_disposition"]
+    disposition_verified: bool
     review_contract_version: int
     contract_error: str
     evidence_version: dict[str, Any]
@@ -248,10 +280,14 @@ class ReviewState(TypedDict, total=False):
     summary: str
     findings: list[str]
     required_changes: list[str]
+    todo: list[str]
+    unresolved_issues: list[str]
     change_plan: dict[str, Any]
     raw_result: str
     _usage: dict[str, Any]
     _audit: dict[str, Any]
+    validation: dict[str, Any]
+    _validation_report: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -334,17 +370,24 @@ def validate_shape(payload: dict[str, Any]) -> tuple[bool, str]:
         return False, "findings 必须是数组"
     if not isinstance(payload.get("required_changes"), list):
         return False, "required_changes 必须是数组"
+    if not isinstance(payload.get("todo"), list):
+        return False, "todo 必须是数组，用于非阻断回归建议"
     if payload.get("code_verdict") not in {"PASS", "FAIL", "UNKNOWN"}:
         return False, "code_verdict 必须独立声明 PASS/FAIL/UNKNOWN"
     if value == "PASS" and payload["code_verdict"] != "PASS":
         return False, "批准补丁必须先明确代码审查通过"
-    for field_name in ("findings", "required_changes"):
+    for field_name in ("findings", "required_changes", "todo"):
         if any(not isinstance(item, str) or not item.strip() for item in payload[field_name]):
             return False, f"{field_name} 只能包含非空字符串"
+    unresolved = payload.get("unresolved_issues", [])
+    if not isinstance(unresolved, list) or any(not isinstance(item, str) or not item.strip() for item in unresolved):
+        return False, "unresolved_issues 必须为非空字符串组成的数组"
     if payload["code_verdict"] == "FAIL" and not payload["findings"]:
         return False, "代码缺陷结论必须提供具体 findings"
     if payload["code_verdict"] == "PASS" and payload["findings"]:
         return False, "已确认缺陷尚存在时不能声明代码检查通过"
+    if payload["code_verdict"] == "PASS" and payload["required_changes"]:
+        return False, "代码 PASS 不能同时包含必需修改；真实阻断项应判 FAIL/UNKNOWN，非阻断回归建议应写入 todo"
     if value == "PASS" and payload["required_changes"]:
         return False, "仍有必需处理项时不能批准补丁"
     dimensions = payload.get("dimensions")
@@ -375,7 +418,7 @@ def validate_shape(payload: dict[str, Any]) -> tuple[bool, str]:
     for field_name in ("reviewed_symbols", "missing_checks"):
         if not isinstance(coverage.get(field_name), list) or any(not isinstance(item, str) for item in coverage[field_name]):
             return False, f"coverage.{field_name} 必须是字符串数组"
-    if value == "PASS" and coverage["decision"] != "sufficient":
+    if payload["code_verdict"] == "PASS" and coverage["decision"] != "sufficient":
         return False, "代码审查通过必须明确实际变更覆盖充分"
     if coverage["decision"] == "sufficient" and coverage["missing_checks"]:
         return False, "覆盖仍有必需检查缺口时不能声明 sufficient"
@@ -402,6 +445,30 @@ def judge(payload: dict[str, Any]) -> ReviewVerdict:
     return ReviewVerdict(True, True, "审查通过")
 
 
+def delivery_allowed(payload: dict[str, Any]) -> bool:
+    """仅放行有效通过，或代码已确认、仅业务证据不足的人工复核。"""
+    checked = judge(payload)
+    if not checked.valid or payload.get("contract_error"):
+        return False
+    if payload.get("review_kind") == "analysis_disposition":
+        return checked.passed and payload.get("disposition_verified") is True
+    if payload.get("unresolved_issues"):
+        return False
+    if checked.passed:
+        return True
+    dimensions = payload.get("dimensions") or {}
+    return bool(
+        result_of(payload) == "MANUAL"
+        and payload.get("code_verdict") == "PASS"
+        and (payload.get("coverage") or {}).get("decision") == "sufficient"
+        and not (payload.get("coverage") or {}).get("missing_checks")
+        and not payload.get("required_changes")
+        and all((dimensions.get(key) or {}).get("status") == "passed" for key in ("syntax", "scope"))
+        and (dimensions.get("business") or {}).get("status") in {"passed", "unverified"}
+        and (payload.get("semantic_verified") is True or (dimensions.get("business") or {}).get("status") == "passed")
+    )
+
+
 def review_checks(
     state: dict[str, Any],
     code_verdict: str,
@@ -410,7 +477,9 @@ def review_checks(
 ) -> list[dict[str, str]]:
     dimensions = dimensions or {}
     rows = []
-    for key, label in (("syntax", "语法检查"), ("business", "业务修复检查"), ("scope", "影响范围检查")):
+    labels = (("syntax", "语法检查"), ("business", "业务修复检查"), ("scope", "影响范围检查")) if state.get("changed_files") else (
+        ("syntax", "源码与接口核对"), ("business", "分析与不修改依据"), ("scope", "权限与处置范围"))
+    for key, label in labels:
         item = dimensions.get(key) or {}
         status = item.get("status", "unverified")
         detail = item.get("reason") or "等待修复后代码审查 Agent 核对证据"
