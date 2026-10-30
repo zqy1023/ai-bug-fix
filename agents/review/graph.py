@@ -317,9 +317,12 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
             "validation": validation_report,
             "repair_claims_status": "以下 repair/repair_plan/acceptance_criteria 是修复方声明，需独立核对，不作为已证明事实",
             "review_responsibility": {
-                "scope": "改动文件及行为范围是否合理；逐项核对旧新条件、返回和受影响输入",
-                "business": "原异常是否得到符合业务依据的正确处理，不能只确认报错消失",
-                "regression": "相关正常分支、边界、请求身份及返回协议是否受影响",
+                "scope": ("改动文件及行为范围是否合理；逐项核对旧新条件、返回和受影响输入" if changed_files
+                          else "不修改依据是否符合实际权限；只读引用不能代替确认真实缺陷归属"),
+                "business": ("原异常是否得到符合业务依据的正确处理，不能只确认报错消失" if changed_files
+                             else "原始证据是否支持分析与不修改决定；无响应不等于没有可修复的本地缺陷"),
+                "regression": ("相关正常分支、边界、请求身份及返回协议是否受影响" if changed_files
+                               else "确认没有实际源码改动；明确保留未修复问题，不将分析通过写成修复或运行通过"),
                 "ownership": "三项业务判断由审查 Agent 负责；平台仅提供证据和风险位置，不替代判断",
             },
             "review_focus": [{"path": name, "kind": "not_found_exit_changed",

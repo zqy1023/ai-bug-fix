@@ -13,6 +13,8 @@ import os
 import re
 import shutil
 import stat
+import time
+import logging
 import tempfile
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -137,9 +139,9 @@ class WorkspaceManager:
 
     # 修改过滤行为时递增版本；名单内容本身也参与缓存键。
     # v2：_is_sensitive 收敛——带扩展名的文件不再因名字前缀被剔除。
-    _SHARED_FILTER_VERSION = 2
+    _SHARED_FILTER_VERSION = 4
     _SHARED_SUFFIXES = {
-        ".py", ".json", ".js", ".csv", ".txt", ".xml", ".html", ".htm", ".yaml", ".yml",
+        ".py", ".json", ".js", ".csv", ".txt", ".xml", ".html", ".htm", ".yaml", ".yml", ".zip",
     }
     _SHARED_RELATIVE = {"docs/rules.md"}
 
@@ -214,13 +216,27 @@ class WorkspaceManager:
             self._force_remove(temporary / ".git")
             self._sanitize_shared_tree(cloned_project)
             self._make_read_only(cloned_project)
-            if project == Path("."):
-                temporary.rename(target)
-            else:
-                cloned_project.rename(target)
+            self._publish_directory(temporary if project == Path(".") else cloned_project, target)
         finally:
             if temporary.exists():
-                self._force_remove(temporary)
+                try:
+                    self._force_remove(temporary)
+                except OSError:
+                    if not target.is_dir():
+                        raise
+                    # 完整基线已原子发布，残留空外壳的清理失败不能推翻发布事实。
+                    logging.getLogger(__name__).warning("共享基线已发布，临时目录待回收: %s", temporary, exc_info=True)
+
+    @staticmethod
+    def _publish_directory(source: Path, target: Path) -> None:
+        for attempt in range(3):
+            try:
+                source.rename(target)
+                return
+            except PermissionError:
+                if attempt == 2:
+                    raise
+                time.sleep(0.1 * (attempt + 1))
 
     def create_task_workspace(
         self,
@@ -440,8 +456,8 @@ class WorkspaceManager:
             raise
         return target
 
+    @staticmethod
     def copy_files(
-        self,
         ai_workspace: str | Path,
         destination_workspace: str | Path,
         relative_files: list[str],
@@ -603,11 +619,15 @@ class WorkspaceManager:
     def _force_remove(path: Path) -> None:
         """删除可能带只读属性的目录，失败时保留原始异常。"""
         def onerror(function, failed_path, exc_info):
-            try:
-                os.chmod(failed_path, stat.S_IWRITE)
-                function(failed_path)
-            except OSError:
-                raise exc_info[1]
+            for attempt in range(3):
+                try:
+                    os.chmod(failed_path, stat.S_IWRITE)
+                    function(failed_path)
+                    return
+                except OSError:
+                    if attempt == 2:
+                        raise exc_info[1]
+                    time.sleep(0.1 * (attempt + 1))
 
         try:
             shutil.rmtree(path, onerror=onerror)
@@ -790,7 +810,9 @@ class WorkspaceManager:
         """
         lowered = name.lower()
         stem = lowered[:-4] if lowered.endswith(".csv") else ""
-        sensitive_csv = bool(stem) and any(
+        # 框架导入依赖的承运商代码映射是运行数据，不是供应商认证资料。
+        runtime_mapping = lowered == "local_provider_mapping.csv"
+        sensitive_csv = bool(stem) and not runtime_mapping and any(
             marker in stem
             for marker in ("provider", "auth", "token", "credential", "secret", "password")
         )

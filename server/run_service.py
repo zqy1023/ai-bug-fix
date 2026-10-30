@@ -94,6 +94,8 @@ def _task_status(steps: list[dict[str, Any]], approval: dict[str, Any] | None) -
     if finalizer:
         output = finalizer.get("output") if isinstance(finalizer.get("output"), dict) else {}
         result = str(output.get("delivery_status") or finalizer.get("result") or "").upper()
+        if result in {"CHANGED_DELIVERED", "UNCHANGED_DELIVERED", "SKIPPED"}:
+            return result
         if result in {"SUCCESS", "SUCCEEDED", "COMPLETED", "DELIVERED"}:
             return "COMPLETED"
         if result in {"MANUAL", "INSUFFICIENT_EVIDENCE", "MANUAL_REVIEW_REQUIRED"}:
@@ -359,11 +361,18 @@ def _v1_run_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "started_at": created, "finished_at": payload.get("finished_at"),
         "task_count": int(summary.get("tasks_total") or len(payload.get("tasks") or [])),
         "succeeded_tasks": int(summary.get("tasks_success") or 0),
+        "changed_delivered_tasks": int(summary.get("tasks_changed_delivered") or 0),
+        "unchanged_delivered_tasks": int(summary.get("tasks_unchanged_delivered") or 0),
         "failed_tasks": int(summary.get("tasks_failed") or 0),
         "blocked_tasks": int(summary.get("tasks_blocked") or 0),
         "manual_tasks": int(summary.get("tasks_manual") or 0),
         "waiting_tasks": int(summary.get("tasks_waiting_approval") or 0),
         "inactive_tasks": int(summary.get("tasks_inactive") or 0),
+        "pending_tasks": int(summary.get("tasks_pending") or 0),
+        "running_tasks": int(summary.get("tasks_running") or 0),
+        "skipped_tasks": int(summary.get("tasks_skipped") or 0),
+        "cancelled_tasks": int(summary.get("tasks_cancelled") or 0),
+        "completed_tasks": int(summary.get("tasks_completed") or 0),
         "operator": payload.get("operator") or "系统", "created_at": created, "updated_at": payload.get("updated_at") or created,
     }
 
@@ -382,7 +391,8 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
                 "description": step.get("name") or "", "size_bytes": None,
             })
     for task in payload.get("tasks") or []:
-        result = str(task.get("status") or "PENDING")
+        from core.task_outcome import task_outcome
+        result = task_outcome(task)
         report = task.get("report") if isinstance(task.get("report"), dict) else {}
         task_steps = task.get("steps") or []
         tasks.append({
@@ -534,7 +544,8 @@ def _run_payload(
         item.model_dump(mode="json")
         for item in store.list_steps_from_snapshot(run_id, steps_payload)
     ]
-    task_slots = steps_payload.get("tasks", [])
+    from server.projections import task_catalog, task_counts
+    task_slots, dispatched_count = task_catalog(steps_payload, directory)
     lifecycle_store = LifecycleStore(store.root)
     ic_tasks = steps_payload.get("identify_carrier", {}).get("output", {}).get("tasks", [])
     identify_by_id = {
@@ -587,7 +598,7 @@ def _run_payload(
                 if derived_step_status in active_derived_statuses
                 else str(report.get("result") or derived_step_status).upper()
             )
-            task_prob = dict(_task_problem(slot))
+            task_prob = {**dict(_task_problem(slot)), **dict((slot.get("identity") or {}).get("problem") or {})}
             if not task_prob.get("message") and task_id in identify_by_id:
                 for k, v in identify_by_id[task_id].items():
                     task_prob.setdefault(k, v)
@@ -709,23 +720,14 @@ def _run_payload(
         "phase": str(run_lifecycle.get("phase") or run_lifecycle.get("current_step") or ""),
         "run_lifecycle": run_lifecycle,
         "identified_tasks": identified_tasks,
-        "dispatched_tasks": len(tasks),
+        "dispatched_tasks": dispatched_count,
         "run_error": project_run_error(run_failure if isinstance(run_failure, dict) else {}, run_lifecycle),
         **run_timestamps(run_lifecycle, run_report, run_failure, created_at=created, terminal=terminal),
         "created_at": created,
         "updated_at": updated,
         "steps": run_steps,
         "tasks": tasks,
-        "summary": {
-            "tasks_total": len(tasks),
-            "tasks_success": sum(1 for result in results if result in {"SUCCESS", "SUCCEEDED"}),
-            "tasks_failed": sum(1 for result in results if result in {"FAILED", "FAIL"}),
-            "tasks_manual": sum(1 for result in results if result in {"MANUAL", "REJECTED"}),
-            "tasks_blocked": sum(1 for result in results if result == "BLOCKED"),
-            "tasks_waiting_approval": pending,
-            "tasks_inactive": sum(1 for result in results if result in {"CANCELLED", "SKIPPED", "COMPLETED"}),
-            "steps_total": len(run_steps) + sum(len(task["steps"]) for task in tasks),
-        },
+        "summary": task_counts(tasks, run_steps),
     }
 
 def _load_model_calls(run_id: str, task_id: str | None = None) -> list[dict[str, Any]]:

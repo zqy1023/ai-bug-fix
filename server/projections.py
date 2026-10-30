@@ -3,6 +3,55 @@
 from __future__ import annotations
 
 from typing import Any
+import json
+from pathlib import Path
+
+
+def task_catalog(snapshot: dict[str, Any], run_dir: Path) -> tuple[list[dict[str, Any]], int]:
+    """合并识别清单与已派发记录；只做投影，不为未开始任务创建执行状态。"""
+    raw_slots = snapshot.get("tasks") or []
+    slots = {item["task_id"]: dict(item) for item in raw_slots
+             if isinstance(item, dict) and isinstance(item.get("task_id"), str)}
+    dispatched = len(slots)
+    identified = (snapshot.get("identify_carrier") or {}).get("output") or {}
+    path = run_dir / "workflow/outputs/identify_carrier.json"
+    if path.is_file():
+        try:
+            formal = json.loads(path.read_text(encoding="utf-8"))
+            identified = (formal.get("outcome") or {}).get("output") or identified
+        except (OSError, ValueError, AttributeError):
+            pass  # 正式快照写入窗口内仍可使用步骤记录中的清单。
+    candidates = identified.get("tasks") or []
+    if isinstance(candidates, dict):
+        candidates = list(candidates.values())
+    ordered: dict[str, dict[str, Any]] = {}
+    for candidate in candidates:
+        if not isinstance(candidate, dict) or not candidate.get("task_id"):
+            continue
+        task_id = str(candidate["task_id"])
+        ordered[task_id] = {**slots.get(task_id, {"task_id": task_id}),
+                            "identity": {**candidate, "input": {"problem": candidate.get("problem") or {}}}}
+    ordered.update({key: value for key, value in slots.items() if key not in ordered})
+    return list(ordered.values()), dispatched
+
+
+def task_counts(tasks: list[dict[str, Any]], run_steps: list[dict[str, Any]]) -> dict[str, int]:
+    """互斥统计完整任务清单，未开始不计入执行中或完成进度。"""
+    from server.task_board import task_category
+    categories = [task_category({**task, "result": task.get("status")}) for task in tasks]
+    return {
+        "tasks_total": len(tasks),
+        "tasks_success": categories.count("changed_delivered") + categories.count("unchanged_delivered"),
+        "tasks_changed_delivered": categories.count("changed_delivered"),
+        "tasks_unchanged_delivered": categories.count("unchanged_delivered"),
+        "tasks_failed": categories.count("failed"), "tasks_manual": 0,
+        "tasks_blocked": 0, "tasks_waiting_approval": 0,
+        "tasks_pending": categories.count("pending"), "tasks_running": categories.count("active"),
+        "tasks_skipped": categories.count("skipped"), "tasks_cancelled": 0,
+        "tasks_inactive": categories.count("skipped"),
+        "tasks_completed": sum(categories.count(key) for key in ("changed_delivered", "unchanged_delivered", "failed", "skipped")),
+        "steps_total": len(run_steps) + sum(len(task.get("steps") or []) for task in tasks),
+    }
 
 
 def run_error(failure: dict[str, Any], lifecycle: dict[str, Any]) -> dict[str, Any]:

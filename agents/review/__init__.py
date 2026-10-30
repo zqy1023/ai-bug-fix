@@ -18,7 +18,7 @@ from core.contracts import AgentSpec, RecordView
 
 SPEC = AgentSpec(
     name="review_agent",
-    title="修复后代码审查 Agent",
+    title="独立审查 Agent",
     kind="review",
     input_model=ReviewInput,
     output_model=ReviewView,

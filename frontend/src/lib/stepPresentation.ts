@@ -1,58 +1,18 @@
 import type { StepRecord } from './types';
+import { text } from './taskResults';
 
-export type StepTone = 'success' | 'danger' | 'running' | 'waiting' | 'manual' | 'neutral' | 'pending' | 'skipped' | 'cancelled';
-
-/** 正式评估优先；兼容历史记录时，不将程序完成解释成业务通过。 */
-export function toneForStep(step?: StepRecord): StepTone {
-  if (!step) return 'pending';
-  const execution = step.execution?.status ?? step.status;
-  if (execution === 'failed' || step.assessment?.outcome === 'failed') return 'danger';
-  // 取消既不是失败也不是未开始，必须单独成态，否则会和“从未执行”混在一起。
-  if (execution === 'cancelled') return 'cancelled';
-  if (execution === 'running') return 'running';
-  if (execution === 'waiting') return 'waiting';
-  if (step.assessment?.outcome === 'inconclusive') return 'manual';
-  if (execution === 'skipped') return 'skipped';
-  if (step.assessment?.outcome === 'passed') return 'success';
-  if (step.assessment?.outcome === 'not_applicable') return 'neutral';
-  const result = String(step.result ?? '').toUpperCase();
-  if (['FAIL', 'FAILED', 'REJECTED'].includes(result)) return 'danger';
-  if (['MANUAL', 'INSUFFICIENT_EVIDENCE', 'UNVERIFIED'].includes(result)) return 'manual';
-  if (result === 'CANCELLED') return 'cancelled';
-  if (result === 'SKIPPED') return 'skipped';
-  return execution === 'succeeded' ? 'neutral' : 'pending';
+// Historical records may mark a caught SDK failure as a completed node.
+// Preserve that execution record while showing the actual agent outcome.
+export function stepPresentation(step: StepRecord) {
+  const invocationFailed = ['agent_invocation_failed', 'agent_startup_failed'].includes(text(step.output?.failure_kind));
+  const executionFailed = step.execution?.status === 'failed' || step.status === 'failed' || invocationFailed;
+  const assessment = step.assessment?.outcome;
+  const rejected = assessment === 'failed' || ['FAIL', 'FAILED', 'REJECTED'].includes(step.result || '');
+  if (executionFailed) return { tone: 'bad', label: invocationFailed ? '模型调用失败' : '执行失败' };
+  if (['running', 'waiting'].includes(step.status)) return { tone: 'active', label: step.status === 'running' ? '执行中' : '等待' };
+  if (step.status === 'pending') return { tone: 'idle', label: '未开始' };
+  if (step.status === 'skipped') return { tone: 'warn', label: '跳过' };
+  if (rejected) return { tone: 'bad', label: '结论未通过' };
+  if (assessment === 'inconclusive') return { tone: 'warn', label: '未能确认' };
+  return { tone: 'ok', label: '完成' };
 }
-
-/**
- * 停点语义：把“未执行”“已取消”“已跳过”“需人工处理”“业务未通过”拆成互不相同的几类。
- * MANUAL / INSUFFICIENT_EVIDENCE 属于人工处理结论，不算失败。
- */
-export type StepStopKind =
-  | 'not_executed' | 'running' | 'waiting' | 'cancelled' | 'skipped'
-  | 'manual' | 'failed' | 'passed' | 'recorded';
-
-export function stepStopKind(step?: StepRecord): StepStopKind {
-  if (!step) return 'not_executed';
-  const tone = toneForStep(step);
-  if (tone === 'danger') return 'failed';
-  if (tone === 'running') return 'running';
-  if (tone === 'waiting') return 'waiting';
-  if (tone === 'cancelled') return 'cancelled';
-  if (tone === 'skipped') return 'skipped';
-  if (tone === 'manual') return 'manual';
-  if (tone === 'success') return 'passed';
-  if (tone === 'neutral') return 'recorded';
-  return 'not_executed';
-}
-
-export const STOP_KIND_LABELS: Record<StepStopKind, string> = {
-  not_executed: '未执行',
-  running: '执行中',
-  waiting: '等待处理',
-  cancelled: '已取消',
-  skipped: '已跳过',
-  manual: '需人工处理',
-  failed: '业务未通过',
-  passed: '已完成',
-  recorded: '已记录，未作业务判定',
-};

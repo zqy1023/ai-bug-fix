@@ -22,11 +22,71 @@ def verdict():
         'dimensions': {key: {'status': 'passed', 'reason': '已核对源码与基线',
                              'evidence': ['gathers/TEST/main.py:1']}
                        for key in ('syntax', 'business', 'scope')},
-        'findings': [], 'required_changes': [], 'summary': '静态源码审查通过',
+        'findings': [], 'required_changes': [], 'todo': [], 'summary': '静态源码审查通过',
     }
 
 
 class AgentReviewFlowTests(unittest.TestCase):
+    def test_code_pass_with_required_changes_is_a_protocol_error(self):
+        from agents.review.contract import delivery_allowed, judge
+        from workflow.engine.routes import after_review, RETRY
+        result = verdict()
+        result.update(verdict="MANUAL", passed=False,
+                      required_changes=["决策事项：确认空值接受度后再交付"])
+        result["dimensions"]["business"]["status"] = "unverified"
+        checked = judge(result)
+        self.assertFalse(checked.valid)
+        self.assertIn("PASS", checked.reason)
+        self.assertFalse(delivery_allowed(result))
+        result["contract_error"] = "review_protocol_invalid:" + checked.reason
+        state = {"review": result, "attempt": 1}
+        self.assertEqual(after_review(state), RETRY)
+        self.assertEqual(state["retry_target"], "review_agent")
+
+    def test_real_semantic_blocker_is_unknown_and_blocks_delivery(self):
+        from agents.review.contract import delivery_allowed, judge
+        result = verdict()
+        result.update(verdict="MANUAL", passed=False, code_verdict="UNKNOWN",
+                      required_changes=["必须确认缺失字段是否允许缺省"])
+        result["coverage"].update(decision="unknown", missing_checks=["字段缺省契约"])
+        result["dimensions"]["business"]["status"] = "unverified"
+        self.assertTrue(judge(result).valid)
+        self.assertFalse(delivery_allowed(result))
+
+    def test_code_pass_cannot_bypass_missing_coverage_via_manual_verdict(self):
+        from agents.review.contract import delivery_allowed, judge
+        for decision in ("unknown", "insufficient"):
+            result = verdict()
+            result.update(verdict="MANUAL", passed=False)
+            result["coverage"].update(decision=decision, missing_checks=["需确认新增条件不会误判正常响应"])
+            result["dimensions"]["business"]["status"] = "unverified"
+            self.assertFalse(judge(result).valid)
+            self.assertFalse(delivery_allowed(result))
+
+    def test_runtime_unverified_only_can_preserve_complete_code_review(self):
+        from agents.review.contract import delivery_allowed, judge
+        result = verdict()
+        result.update(verdict="MANUAL", passed=False)
+        result["dimensions"]["business"]["status"] = "unverified"
+        result["todo"] = ["后续增加正常单号回归"]
+        self.assertTrue(judge(result).valid)
+        self.assertFalse(delivery_allowed(result))  # Unverified semantics cannot be waived as runtime-only.
+        result["semantic_verified"] = True
+        self.assertTrue(delivery_allowed(result))
+
+    def test_todo_is_retained_without_overriding_a_real_blocker(self):
+        from agents.review.contract import delivery_allowed, judge, slim_review
+        result = verdict()
+        result["todo"] = ["后续补充多文本节点回归"]
+        self.assertTrue(judge(result).valid)
+        self.assertTrue(delivery_allowed(result))
+        self.assertEqual(slim_review(result)["todo"], result["todo"])
+        result.update(verdict="FAIL", passed=False, code_verdict="FAIL",
+                      findings=["首项取值被改为合并全部结果"], required_changes=["恢复正常输入的原取值规则"])
+        result["dimensions"]["scope"]["status"] = "failed"
+        self.assertTrue(judge(result).valid)
+        self.assertFalse(delivery_allowed(result))
+
     def test_old_artifact_fields_are_not_restored_into_current_state(self):
         from core.contracts import TaskArtifacts
         artifacts = TaskArtifacts.model_validate({'gate_result': {'passed': True},
@@ -50,7 +110,9 @@ class AgentReviewFlowTests(unittest.TestCase):
 
             def invoke(request):
                 requests.append(request)
-                return {'result': json.dumps(verdict())}
+                payload = verdict()
+                payload['todo'] = [f'非阻断回归建议 {index}' for index in range(10)]
+                return {'result': json.dumps(payload)}
 
             runtime = SimpleNamespace(run=invoke)
             state = {
@@ -66,14 +128,16 @@ class AgentReviewFlowTests(unittest.TestCase):
             with patch.dict('sys.modules', {'agents.review.gates': None}):
                 result = build_agent_node(SPEC, store, runtime=runtime)(state)
             self.assertEqual(len(requests), 1)
-            self.assertEqual(result['review']['verdict'], 'PASS')
-            self.assertTrue(all(row['status'] == 'passed' for row in result['review']['checks']))
+            self.assertEqual(result['review']['verdict'], 'MANUAL')
+            self.assertEqual(result['review']['dimensions']['business']['status'], 'unverified')
+            self.assertEqual(result['review']['code_verdict'], 'PASS')
+            self.assertEqual(result['review']['todo'], [f'非阻断回归建议 {index}' for index in range(10)])
             self.assertEqual([step.name for step in store.list_steps('run', 'task')], ['review_agent'])
             self.assertNotIn('substeps', result['review'])
             self.assertEqual(result['review']['diff_files'][0]['path'], 'gathers/TEST/main.py')
             diff = store.read_artifact('run', 'artifacts/diff.json', 'task')
-            self.assertEqual(diff['files'][0]['before'], 'value = 1\n')
-            self.assertEqual(diff['files'][0]['after'], 'value = 2\n')
+            self.assertEqual(diff['files'][0]['before'], (baseline / 'gathers/TEST/main.py').read_bytes().decode('utf-8'))
+            self.assertEqual(diff['files'][0]['after'], (workspace / 'gathers/TEST/main.py').read_bytes().decode('utf-8'))
             self.assertEqual(result['review']['review_contract_version'], REVIEW_CONTRACT_VERSION)
             combined = {**state, **result}
             data = _input(combined)

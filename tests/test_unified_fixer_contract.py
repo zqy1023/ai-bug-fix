@@ -60,6 +60,58 @@ class UnifiedFixerContractTests(unittest.TestCase):
             self.assertEqual(result['root_cause'], payload['root_cause'])
             self.assertEqual(result['source_evidence'], payload['source_evidence'])
             self.assertEqual(result['status'], 'ANALYSIS_ONLY')
+            self.assertEqual(calls[0].budget_tier, 'analysis')
+            self.assertEqual(calls[0].budget['max_turns'], 12)
+            self.assertEqual(calls[0].budget['max_tool_calls'], 16)
+
+    def test_legacy_entry_budget_and_failed_call(self):
+        for framework, dependency in [('spiders', False), ('spiders', True)]:
+            with self.subTest(framework=framework), tempfile.TemporaryDirectory() as directory:
+                (Path(directory) / framework / 'TEST').mkdir(parents=True)
+                calls = []
+
+                def runner(**kwargs):
+                    calls.append(kwargs)
+                    raise ConnectionError('connection reset')
+
+                state = {'run_id': 'r', 'task_id': 't', 'carrier': 'TEST', 'attempt': 1,
+                         'workspace_path': directory,
+                         'problem': {'service_name': 'test', 'biztype': 'test', 'carrier': 'TEST'},
+                         'evidence': {'framework': framework, 'legacy_dependency': dependency}}
+                runtime = SimpleNamespace(config=UnifiedFixerConfig(), agent_runner=runner)
+                with patch('agents.unified_fixer.provider.invoke_with_audit', side_effect=lambda req, invoke: invoke()):
+                    result = run_unified_fixer(state, runtime)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(calls[0]['timeout_seconds'], 300)
+                self.assertEqual(calls[0]['max_turns'], 12)
+                self.assertEqual(calls[0]['max_tool_calls'], 16)
+                self.assertFalse(calls[0]['writable'])
+                self.assertEqual(result['status'], 'MANUAL')
+                self.assertEqual(result['result'], 'failed')
+
+    def test_analysis_budget_respects_tighter_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / 'spiders/TEST').mkdir(parents=True)
+            captured = []
+
+            def factory(config, **kwargs):
+                captured.append(config)
+                return lambda request: {'result': json.dumps({'status': 'ANALYSIS_ONLY'})}
+
+            state = {'run_id': 'r', 'task_id': 't', 'carrier': 'TEST', 'attempt': 1,
+                     'workspace_path': directory,
+                     'problem': {'service_name': 'test', 'biztype': 'test', 'carrier': 'TEST'},
+                     'evidence': {'framework': 'spiders'}}
+            config = UnifiedFixerConfig(timeout_seconds=30, max_turns=1,
+                                       max_tool_calls=2, max_context_chars=4000)
+            with patch('agents.unified_fixer.graph.create_provider', side_effect=factory):
+                run_unified_fixer(state, config)
+            self.assertEqual(captured[0].timeout_seconds, 30)
+            self.assertEqual(captured[0].max_turns, 1)
+            self.assertEqual(captured[0].max_tool_calls, 2)
+            self.assertEqual(captured[0].max_context_chars, 4000)
+            self.assertEqual(captured[0].max_self_healing_turns, 0)
+            self.assertEqual(captured[0].max_provider_attempts, 1)
 
 
 if __name__ == '__main__':

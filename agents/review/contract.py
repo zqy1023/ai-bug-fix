@@ -382,6 +382,8 @@ def validate_shape(payload: dict[str, Any]) -> tuple[bool, str]:
     unresolved = payload.get("unresolved_issues", [])
     if not isinstance(unresolved, list) or any(not isinstance(item, str) or not item.strip() for item in unresolved):
         return False, "unresolved_issues 必须为非空字符串组成的数组"
+    if payload.get("review_kind") == "patch" and unresolved and payload["code_verdict"] == "PASS":
+        return False, "补丁存在未解决问题，不能用 unresolved_issues 绕过代码审查"
     if payload["code_verdict"] == "FAIL" and not payload["findings"]:
         return False, "代码缺陷结论必须提供具体 findings"
     if payload["code_verdict"] == "PASS" and payload["findings"]:

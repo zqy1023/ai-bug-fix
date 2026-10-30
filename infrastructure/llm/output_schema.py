@@ -18,7 +18,7 @@ def output_schema(role: str) -> dict[str, Any]:
     for key in ("root_cause", "summary", "analysis", "blocked_reason"):
         if key in schema["properties"]:
             schema["properties"][key]["pattern"] = r"\S"
-    for key in ("facts", "evidence_gaps", "findings", "required_changes"):
+    for key in ("facts", "evidence_gaps", "findings", "required_changes", "todo", "unresolved_issues"):
         items = schema["properties"].get(key, {}).get("items", {})
         if items.get("type") == "string":
             items["pattern"] = r"\S"

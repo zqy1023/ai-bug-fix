@@ -1,26 +1,15 @@
 """任务板互斥结果分类与分页投影。"""
 
 from typing import Any
+from core.task_outcome import task_outcome
 
-CATEGORIES = ("active", "approval", "success", "manual", "blocked", "failed", "skipped", "cancelled", "paused", "other")
+CATEGORIES = ("pending", "active", "paused", "changed_delivered", "unchanged_delivered", "skipped", "failed")
 
 
 def task_category(task: dict[str, Any]) -> str:
-    """使用当前生命周期分类，审批优先于历史终态。"""
-    status = str((task.get("lifecycle") or {}).get("status") or task.get("result") or "PENDING").upper()
-    if task.get("approval_pending") or status == "WAITING_APPROVAL":
-        return "approval"
-    mapping = {
-        "active": {"RUNNING", "RETRYING", "PENDING", "QUEUED"},
-        "success": {"SUCCESS", "SUCCEEDED", "PASSED", "APPROVED"},
-        "manual": {"MANUAL", "INSUFFICIENT_EVIDENCE", "UNVERIFIED"},
-        "blocked": {"BLOCKED"},
-        "failed": {"FAILED", "FAIL", "REJECTED", "PARTIAL_FAILED"},
-        "skipped": {"SKIPPED"},
-        "cancelled": {"CANCELLED", "CANCELED"},
-        "paused": {"PAUSED"},
-    }
-    return next((key for key, values in mapping.items() if status in values), "other")
+    """任务类别与任务详情使用同一终态归约，不把审查 MANUAL 当任务状态。"""
+    outcome = task_outcome(task)
+    return {"PENDING": "pending", "RUNNING": "active"}.get(outcome, outcome.lower())
 
 
 def paginate_tasks(tasks: list[dict[str, Any]], page: int, page_size: int,
@@ -29,6 +18,7 @@ def paginate_tasks(tasks: list[dict[str, Any]], page: int, page_size: int,
     counts = {key: 0 for key in CATEGORIES}
     for task in tasks:
         task["category"] = task_category(task)
+        task["result"] = task_outcome(task)
         counts[task["category"]] += 1
     needle = keyword.strip().casefold()
     filtered = [task for task in tasks if (category == "all" or task["category"] == category)
