@@ -1,9 +1,8 @@
 """工作台幂等控制、停机控制与审计持久化。"""
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timezone
-
-from config.settings import settings
 from infrastructure.storage.sqlite import open_sqlite
 from server.context import _config
 
@@ -16,7 +15,7 @@ def _control_db():
         runtime_dir / "workbench-control.sqlite3",
         timeout=config.workbench_sqlite_timeout_seconds,
         busy_timeout_ms=config.workbench_sqlite_busy_timeout_ms,
-        row_factory=__import__("sqlite3").Row,
+        row_factory=sqlite3.Row,
         journal_mode="WAL",
     )
 
