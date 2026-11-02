@@ -337,6 +337,8 @@ def _run_workflow_background_v1(
             allow_reactivate=True,
         )
         run_workflow(run_id, overrides=overrides, prepared=True, worker_lease=(lease_owner, lease_token))
+        if not _owns_worker_lease(run_id, lease_owner, lease_token):
+            raise WorkerLeaseLost(f"Run lease lost before lifecycle settlement: {run_id}")
         _complete_run_lifecycle(run_id, store)
     except WorkerLeaseBusy as exc:
         logger.warning("%s", exc)
@@ -453,6 +455,8 @@ def _resume_workflow_background(
             from workflow.engine.routes import assert_workflow_version
             assert_workflow_version(_store().load_run(run_id))
             final_state = graph.invoke(None, config=config)
+        if not _owns_worker_lease(run_id, lease_owner, lease_token):
+            raise WorkerLeaseLost(f"Run lease lost before resume settlement: {run_id}")
         if not _owns_worker_lease(run_id, lease_owner, lease_token):
             raise WorkerLeaseLost(f"Run lease lost before resume settlement: {run_id}")
         # 本次恢复已成功推进 checkpoint；清理之前后台异常写入的失败标记，避免 UI 继续把已恢复运行判为 FAILED。
