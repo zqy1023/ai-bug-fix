@@ -84,6 +84,7 @@ def _clear_worker_active(run_id: str, owner_id: str, lease_token: str) -> bool:
                 "清理 Run 活动租约失败 run_id=%s attempt=%s",
                 run_id, attempt + 1,
             )
+    return False
 
 def _complete_run_lifecycle(run_id: str, store: RecordStore) -> None:
     """Settle the run only after graph.invoke has returned; waiting interrupts are not failures."""
@@ -333,6 +334,8 @@ def _run_workflow_background_v1(
         _complete_run_lifecycle(run_id, store)
     except WorkerLeaseBusy as exc:
         logger.warning("%s", exc)
+    except WorkerLeaseLost as exc:
+        logger.warning("旧 worker 已失去执行权，放弃后续状态收敛 run_id=%s error=%s", run_id, exc)
     except Exception as exc:
         logger.exception("工作流后台执行失败 run_id=%s", run_id)
         _record_background_failure(run_id, exc)
