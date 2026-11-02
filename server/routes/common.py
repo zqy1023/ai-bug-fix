@@ -29,6 +29,7 @@ from server.view_models import delivery_view, run_actions, task_retry_action
 
 from config.nacos import nacos_get
 from server.context import (
+    _ID_PATTERN,
     _RUN_LOCKS,
     _RUN_LOCKS_GUARD,
     _STARTED_RUNS,
@@ -885,15 +886,6 @@ def _checkpoint_projection(snapshot: Any) -> dict[str, Any]:
 
 
 
-# 基础身份校验和文件解析函数只在 server.context 维护。
-from server.context import (
-    _ID_PATTERN, _authorize, _config, _parse_time, _read_json, _safe_id, _store,
-)
-
-# Run 级线程锁与运行标记只在 server.context 维护，避免 API 路由和 worker
-# 各自持有一套互不知情的进程内锁表。
-from server.context import _RUN_LOCKS, _RUN_LOCKS_GUARD, _STARTED_RUNS, _run_lock
-
 # 控制库连接、Schema 初始化和审计写入只由 server.control_store 维护。
 from server.control_store import _audit_control, _control_db
 
@@ -913,12 +905,5 @@ from server.lifecycle import (
     _start_lifecycle_heartbeat,
 )
 
-
-def _require_current_workflow(run_id: str) -> None:
-    from workflow.engine.routes import assert_workflow_version
-    try:
-        assert_workflow_version(_store().load_run(run_id))
-    except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
 
 __all__ = [name for name in dir() if not name.startswith("__")]
