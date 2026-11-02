@@ -5,6 +5,8 @@ def test_route_common_reuses_canonical_runtime_and_control_services():
     import server.routes.common as common
 
     assert common._config is context._config
+    assert common._require_current_workflow is context._require_current_workflow
+    assert common._ID_PATTERN is context._ID_PATTERN
     assert common._store is context._store
     assert common._run_lock is context._run_lock
     assert common._RUN_LOCKS is context._RUN_LOCKS
