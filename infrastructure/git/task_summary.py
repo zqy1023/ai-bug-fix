@@ -18,6 +18,8 @@ _LABELS = {
     "MANUAL": "需人工处理", "SKIPPED": "已跳过", "CANCELLED": "已停止",
     "PASS": "通过", "FAIL": "未通过", "verified": "已验证", "unverified": "业务未验证",
     "passed": "通过", "failed": "未通过",
+    # 复现三态：与业务结论分开呈现。
+    "reproduced": "已复现", "assertion_failed": "断言未通过", "unavailable": "未执行",
 }
 _ATTRIBUTION = {
     "code": "代码问题", "official": "官方问题", "environment": "环境配置问题",
@@ -154,8 +156,29 @@ def render_task_summary(report: Mapping[str, Any]) -> str:
     if error:
         fence = "`" * max(3, max((len(part) for part in re.findall(r"`+", error)), default=0) + 1)
         lines.extend([fence + "text", error, fence, ""])
+    # 完整原始请求与响应必须落到交付文档里：复核者要靠它判断修复对不对。
+    # 只写"已捕获 N 字符"等于没给——ApexMotor 那轮的根因正是 response 里的
+    # "PRO=" 前缀，缺了它交付文档里只剩一句"上游响应：未捕获"。
     response = str(problem.get("response") or "")
-    lines.append(f"上游响应：已捕获 {len(response)} 字符，见工作台原始异常。" if response else "上游响应：未捕获，业务重放能力需单独确认。")
+    if response:
+        fence = "`" * max(3, max((len(part) for part in re.findall(r"`+", response)), default=0) + 1)
+        lines.extend([f"上游响应原文（{len(response)} 字符）：", "", fence + "text", response, fence, ""])
+    else:
+        lines.extend(["上游响应：未捕获，业务重放能力需单独确认。", ""])
+    req_raw = str(problem.get("req") or "")
+    if req_raw:
+        fence = "`" * max(3, max((len(part) for part in re.findall(r"`+", req_raw)), default=0) + 1)
+        lines.extend([f"原始请求参数（{len(req_raw)} 字符）：", "", fence + "text", req_raw, fence, ""])
+    original = str(problem.get("original_exception_message") or "")
+    if original and original != str(problem.get("message") or ""):
+        fence = "`" * max(3, max((len(part) for part in re.findall(r"`+", original)), default=0) + 1)
+        lines.extend([f"归档恢复的完整异常（{len(original)} 字符）：", "", fence + "text", original, fence, ""])
+    related = [str(item) for item in (problem.get("related_messages") or []) if item]
+    if related:
+        lines.extend([f"关联日志（{len(related)} 条）：", ""])
+        for index, item in enumerate(related[:5], start=1):
+            fence = "`" * max(3, max((len(part) for part in re.findall(r"`+", item)), default=0) + 1)
+            lines.extend([f"关联日志 {index}：", "", fence + "text", item, fence, ""])
     steps = _items(report.get("completed_steps"))
     if steps:
         lines.extend(["", "已执行：" + " → ".join(f"`{_text(item)}`" for item in steps)])
@@ -285,6 +308,28 @@ def _review_lines(value: Any) -> list[str]:
         status = _label(item.get("status") or "unverified")
         reason = str(item.get("reason") or "").strip()
         rows.append(f"- {name}：{status}" + (f"。{redact_for_delivery(reason)}" if reason else ""))
+    # 复现情况单独一行：它回答"这段行为有没有被真实执行检验过"，
+    # 与代码是否正确是两件事。能复现就写明基线/补丁的实际表现；
+    # 不能复现要写清原因，让复核者知道该补什么。
+    reproduction = value.get("reproduction") if isinstance(value.get("reproduction"), dict) else {}
+    state = str(reproduction.get("state") or "").strip()
+    if state:
+        title = {"reproduced": "已复现", "assertion_failed": "复现后断言未通过",
+                 "unavailable": "未复现"}.get(state, state)
+        reason = str(reproduction.get("reason") or "").strip()
+        rows.append(f"- 复现：{title}" + (f"。{redact_for_delivery(reason)}" if reason else ""))
+        detail = reproduction.get("detail") if isinstance(reproduction.get("detail"), dict) else {}
+        for key in ("replay", "request"):
+            item = detail.get(key) if isinstance(detail.get(key), dict) else {}
+            if not item:
+                continue
+            label = str(item.get("label") or key)
+            item_state = str(item.get("state") or "")
+            item_reason = str(item.get("reason") or "").strip()
+            if item_state == "reproduced":
+                continue  # 通过的不逐项列，避免刷屏
+            rows.append(f"  - {label}：{_label(item_state or 'unavailable')}"
+                        + (f"。{redact_for_delivery(item_reason)}" if item_reason else ""))
     return rows
 
 

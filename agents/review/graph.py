@@ -14,26 +14,31 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from agents.review.contract import (
+    ReviewConfig,
+    ReviewState,
+    ReviewView,
+    delivery_allowed,
+    judge,
+    result_of,
+    review_budget,
+    review_checks,
+    slim_review,
+)
 from core.contracts import AgentRequest, plan_of
 from core.policy import ToolPolicy
 from infrastructure.llm import PromptRenderer
-from infrastructure.llm.common import audit_metadata, invoke_with_audit, parse_result, raw_result, usage_of
+from infrastructure.llm.common import (
+    audit_metadata,
+    invoke_with_audit,
+    parse_result,
+    raw_result,
+    usage_of,
+)
 from infrastructure.llm.context import build_context, model_name, prompt_context
 from infrastructure.llm.session import ClaudeSession, resolve_tools, run_agent_once
 from infrastructure.workspace.diff import file_changes, source_changes
 from infrastructure.workspace.workspace import WorkspaceManager
-from agents.review.contract import (
-    REVIEW_CONTRACT_VERSION,
-    ReviewConfig,
-    ReviewState,
-    ReviewView,
-    judge,
-    delivery_allowed,
-    result_of,
-    review_checks,
-    slim_review,
-    review_budget,
-)
 
 # =========================================================================
 # 2. 模型通道 Provider (原 provider.py)
@@ -68,8 +73,11 @@ class ClaudeSessionProvider(ReviewProvider):
 
     def run(self, request: AgentRequest) -> dict[str, Any]:
         from infrastructure.llm.output_schema import output_schema
-        from infrastructure.llm.session_context import invoke_session, session_fingerprint
         from infrastructure.llm.runtime import drop_session, session_scope
+        from infrastructure.llm.session_context import (
+            invoke_session,
+            session_fingerprint,
+        )
 
         request = request.model_copy(update={"provider": self.name})
         ToolPolicy.validate(request)
@@ -135,7 +143,8 @@ class ManualProvider(ReviewProvider):
     _REASON = "provider=manual，审查转人工执行"
 
     def run(self, request: AgentRequest) -> dict[str, Any]:
-        request = request.model_copy(update={"provider": self.name})
+        # 人工模式不调用模型，但必须把 provider 带进审计：否则 model_calls.jsonl
+        # 里 provider 仍是外层配置值，事后无法区分"模型真审查"与"根本没跑"。
         ToolPolicy.validate(request)
         payload = {
             "verdict": "MANUAL",
@@ -157,6 +166,7 @@ class ManualProvider(ReviewProvider):
         return {
             "passed": True,
             "manual": True,
+            "provider": self.name,
             "reason": self._REASON,
             "result": json.dumps(payload, ensure_ascii=False),
         }
@@ -217,6 +227,51 @@ def _evidence_block(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
 # 4. 审查执行主节点
 # =========================================================================
 
+def _reproduction_disposition(validation: dict[str, Any]) -> dict[str, Any]:
+    """把 replay/request 的执行结果归纳成"复现情况"，与业务结论分开。
+
+    复现是审查的一环，不是交付门槛。这里只回答"这段行为有没有被真实执行检验过"，
+    产出三种状态：
+
+    - ``reproduced``       —— 验证执行且全部通过（原异常正确处理已被真实执行证明）
+    - ``assertion_failed`` —— 验证**执行了**但业务断言未通过（补丁可能没解决问题）
+    - ``unavailable``      —— 验证没跑起来（采集环境未就绪、原始请求缺字段、缺录制 response）
+    """
+    detail: dict[str, Any] = {}
+    states: list[str] = []
+    for key, label in (("replay", "原始响应回放"), ("request", "真实请求验证")):
+        item = dict(validation.get(key) or {})
+        status = str(item.get("status") or "")
+        outcome = str(item.get("outcome") or "")
+        reason = str(item.get("reason") or "")
+        if status == "passed":
+            states.append("reproduced")
+            detail[key] = {"label": label, "state": "reproduced", "reason": reason}
+        elif outcome == "assertion_failed" or ("断言未通过" in reason and "未执行" not in reason):
+            states.append("assertion_failed")
+            detail[key] = {"label": label, "state": "assertion_failed", "reason": reason}
+        else:
+            states.append("unavailable")
+            detail[key] = {"label": label, "state": "unavailable", "reason": reason or "未执行"}
+
+    if "assertion_failed" in states:
+        state = "assertion_failed"
+        reason = "运行验证已执行但业务断言未通过：" + "；".join(
+            f"{item['label']}：{item['reason']}" for item in detail.values()
+            if item["state"] == "assertion_failed"
+        )
+    elif all(item == "reproduced" for item in states):
+        state = "reproduced"
+        reason = "原始异常已在真实执行中复现并确认正确处理"
+    else:
+        state = "unavailable"
+        reason = "；".join(
+            f"{item['label']}：{item['reason']}" for item in detail.values()
+            if item["state"] == "unavailable"
+        ) or "运行验证未执行"
+    return {"state": state, "reason": reason, "detail": detail}
+
+
 def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
     """只读审查。"""
     workspace = str(state["ai_workspace_path"])
@@ -240,7 +295,7 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
         actual = source_changes(workspace, str(state["baseline_dir"]))
         if sorted(set(changed_files)) != actual:
             raise ValueError("审查变更清单与实际源码差异不一致，必须重新执行修复交接")
-    from workflow.engine.evidence_version import evidence_version
+    from workflow.engine.handoff import evidence_version
     current_version = evidence_version(workspace, changed_files, str(state.get("baseline_dir") or ""))
     from infrastructure.workspace.validation import run_validation, validation_summary
     # 无补丁时审查的是分析与处置决定，不能将未修改源码的执行伪称修复验证。
@@ -259,8 +314,13 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
     added = "\n".join(line.get("text", "") for change in raw_diffs
                       for line in change.get("lines", []) if line.get("type") == "add")
     semantic_risk = bool(semantic_files) or "ErrorType." in added
-    limits = review_budget(config, changed_files,
-                          max(len(evidence_text), len(str(state.get("diff_summary") or ""))), semantic_risk)
+    # 预算按**真实差异规模**分档，不按证据 JSON 的体积：evidence_text 里含完整
+    # 文件路径、sha、状态等固定开销，用它当 diff_chars 会把小改动抬到最高档，
+    # 审查成本与改动规模脱钩（实测单个只读任务也能跑满 900 秒）。
+    diff_chars = sum(len(line.get("text", "")) for change in raw_diffs
+                     for line in change.get("lines", []))
+    diff_chars = max(diff_chars, len(str(state.get("diff_summary") or "")))
+    limits = review_budget(config, changed_files, diff_chars, semantic_risk)
     validation = validation_summary(validation_report)
     full_diff_summary = str(state.get("diff_summary") or "")
     if len(full_diff_summary) > config.max_diff_chars:
@@ -273,11 +333,18 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
         max_chars=limits["max_context_chars"],
         max_candidates=config.max_candidate_files,
     )
-    from core.policy import review_read_paths
+    from core.conventions import convention_facts
+    from core.policy import review_evidence_read_paths, review_read_paths
     shared_root = Path(str(state["source_project_path"])).resolve() if state.get("source_project_path") else None
     roots = tuple(str(path) for path in review_read_paths(
         Path(workspace), carrier_root, shared_root, carrier, str(state.get("baseline_dir") or "")
     ))
+    # 共享树收敛后，证据链点名的文件仍要可读；否则审查只能反复试探被拒。
+    roots = (*roots, *(str(path) for path in review_evidence_read_paths(
+        Path(workspace), shared_root,
+        (dict(state.get("repair") or {})).get("source_evidence")
+        or dict(state.get("evidence") or {}).get("source_evidence"),
+    )))
     from core.policy import retry_read_paths
     roots = (*roots, *(str(path) for path in retry_read_paths(Path(workspace), str(state["run_id"]), str(state["task_id"]))))
     from infrastructure.llm.rules import select_rules
@@ -312,6 +379,11 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
                 "boundary": "旧依赖引用不等于当前解析委托给旧实现；沿本次输入核对，不得以引用直接拒绝 gathers 局部修复",
             },
             "repair": dict(state.get("repair") or {}),
+            # 用户修复习惯的确定性事实（新增函数数、改动文件数、是否读过入口路由），
+            # 由平台算出来交给审查，避免"规则只写在提示词里、没人核对"。
+            "repair_conventions": convention_facts(
+                state.get("baseline_dir"), workspace, changed_files, state.get("evidence") or {}
+            ),
             "repair_plan": dict((state.get("repair") or {}).get("change_plan") or {}),
             "acceptance_criteria": list((state.get("repair") or {}).get("acceptance_criteria") or []),
             "validation": validation_report,
@@ -413,23 +485,62 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
             "_validation_report": validation_report,
         }
     payload = parse_result(raw, "review")
+    # 必须先写入 review_kind，再调用 judge：validate_shape 靠它区分
+    # "补丁审查" 与 "无改动处置审查"，顺序颠倒时该分支永不生效。
+    payload["review_kind"] = review_kind
     # Preserve semantic judgment independently of execution availability. Never let
     # a provider-supplied flag turn an unverified business decision into approval.
-    payload["review_kind"] = review_kind
     payload["disposition_verified"] = bool(not changed_files and judge(payload).passed)
-    payload["semantic_verified"] = bool(changed_files and judge(payload).valid and payload.get("code_verdict") == "PASS"
-        and (payload.get("dimensions", {}).get("business") or {}).get("status") == "passed")
-    # 静态源码判断不能伪装成运行验证；缺证据保留代码结论并标记业务未验证。
-    if changed_files and judge(payload).valid and payload.get("code_verdict") == "PASS" and any(
-        (validation.get(key) or {}).get("status") != "passed" for key in ("replay", "request")
-    ):
-        payload = {**payload, "verdict": "MANUAL", "passed": False,
-                   "dimensions": {**payload["dimensions"], "business": {
-                       "status": "unverified", "reason": "；".join(f"{key}: {(validation.get(key) or {}).get('reason') or '缺少执行证据'}"
-                                           for key in ("replay", "request")
-                                           if (validation.get(key) or {}).get("status") != "passed"),
-                       "evidence": ["artifacts/validation.json"],
-                   }}}
+    # semantic_verified：**代码语义是否已被独立确认**，不包含运行验证。
+    #
+    # 复现是审查的一环，不是交付门槛。运行验证跑不起来（原始请求缺字段、
+    # 采集环境未就绪）只说明"这段行为没有被真实执行检验过"，不等于"补丁错了"。
+    # 之前这里的条件是 ``business == "passed"``，而下面又会因验证未通过把 business
+    # 强制改成 unverified，两个条件互相锁死，导致补丁本身正确也必然判失败。
+    # 现在只看代码层三维度（语法/业务语义/范围）与 code_verdict。
+    _dimensions = payload.get("dimensions") or {}
+    payload["semantic_verified"] = bool(
+        changed_files
+        and judge(payload).valid
+        and payload.get("code_verdict") == "PASS"
+        and (_dimensions.get("syntax") or {}).get("status") == "passed"
+        and (_dimensions.get("scope") or {}).get("status") == "passed"
+        and (_dimensions.get("business") or {}).get("status") == "passed"
+    )
+    # 复现（replay/request）结果单独记录，供交付文档与人工复核使用；
+    # 它**不影响** verdict 与交付资格，除非验证确实执行过且断言失败。
+    payload["reproduction"] = _reproduction_disposition(validation)
+    # 运行验证只影响"这段行为是否被真实执行检验过"，不推翻代码层的判断。
+    #
+    # - 验证**确实执行过且断言失败**：说明补丁没能让原异常被正确处理，
+    #   业务维度必须降为 failed，verdict 转 MANUAL（阻断交付）。
+    # - 验证**没跑起来**（环境未就绪 / 原始请求缺字段）：这是证据缺失，
+    #   在 reproduction 里如实记录并在交付文档说明即可，业务维度保持模型判断。
+    if changed_files and judge(payload).valid and payload.get("code_verdict") == "PASS":
+        statuses = {key: str((validation.get(key) or {}).get("status") or "")
+                    for key in ("replay", "request")}
+        blocked = {
+            key: str((validation.get(key) or {}).get("reason") or "缺少执行证据")
+            for key, status in statuses.items() if status != "passed"
+        }
+        if payload["reproduction"]["state"] == "assertion_failed":
+            # 验证真的跑了、断言没过 —— 这是补丁的问题，必须阻断。
+            payload = {**payload, "verdict": "MANUAL", "passed": False,
+                       "dimensions": {**payload["dimensions"], "business": {
+                           "status": "failed",
+                           "reason": "运行验证已执行但业务断言未通过：" + "；".join(blocked.values()),
+                           "evidence": ["artifacts/validation.json"],
+                       }}}
+        elif blocked:
+            # 证据缺失：保留模型对业务语义的判断，只在原因里如实标注未执行。
+            business = dict(payload.get("dimensions", {}).get("business") or {})
+            note = payload["reproduction"]["reason"]
+            base_reason = str(business.get("reason") or "").strip()
+            business["reason"] = (f"{base_reason}（运行验证未执行：{note}）"
+                                  if base_reason else f"运行验证未执行：{note}")
+            business.setdefault("status", "unverified")
+            business.setdefault("evidence", ["artifacts/validation.json"])
+            payload = {**payload, "dimensions": {**payload["dimensions"], "business": business}}
     slim = slim_review(payload)
     findings = _lines(slim.get("findings"))
     required = _lines(slim.get("required_changes"))
@@ -465,6 +576,7 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
         checks=checks,
         next_action=next_action,
         validation=validation,
+        reproduction=dict(payload.get("reproduction") or {}),
         review_notes=str(slim.get("summary") or ""),
         summary=str(slim.get("summary") or checked.reason) if checked.valid else f"审查输出协议错误：{checked.reason}",
         findings=findings,
@@ -501,10 +613,10 @@ def build(runtime: Any | None = None) -> CompiledStateGraph:
 
 
 __all__ = [
+    "PROVIDERS",
     "ClaudeQueryProvider",
     "ClaudeSessionProvider",
     "ManualProvider",
-    "PROVIDERS",
     "ReviewProvider",
     "build",
     "create_provider",

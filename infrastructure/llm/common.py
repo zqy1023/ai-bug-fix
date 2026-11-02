@@ -7,8 +7,9 @@ import logging
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from core.keys import loads_object
 from infrastructure.storage.database import RecordDatabase
@@ -136,7 +137,9 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
         raw = raw if isinstance(raw, dict) else {}
         usage = {**usage_of(raw), "model_call_id": call_id, "sent_prompt_hash": request.prompt_hash,
                  "logical_context_hash": request.logical_context_hash or request.prompt_hash,
-                 "context_mode": request.context_mode, "provider": request.provider}
+                 "context_mode": request.context_mode,
+                 # provider 由调用方返回时优先采信：人工模式/provider 切换必须能追溯。
+                 "provider": raw.get("provider") or request.provider}
         raw["usage"] = usage
         record = {
             "model_call_id": call_id, "run_id": str(getattr(request, "run_id", "") or ""),
@@ -197,7 +200,7 @@ def invoke_with_audit(request: Any, invoke: Callable[[], dict[str, Any]]) -> dic
                         "logical_context_hash": request.logical_context_hash or request.prompt_hash,
                         "context_mode": request.context_mode, "provider": request.provider}
         try:
-            setattr(exc, "agent_usage", failed_usage)
+            exc.agent_usage = failed_usage
         except Exception:
             pass
         record = {
@@ -408,9 +411,7 @@ def _audit_events(value: Any) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         kind = item.get("type")
-        if kind in {"tool_use", "tool_result", "tool_decision", "thinking"}:
-            result.append(dict(item))
-        elif kind == "assistant" and "elapsed_ms" not in item:
+        if kind in {"tool_use", "tool_result", "tool_decision", "thinking"} or kind == "assistant" and "elapsed_ms" not in item:
             result.append(dict(item))
     return result
 
@@ -428,4 +429,4 @@ def _persist_model_call(record: dict[str, Any]) -> None:
         logging.getLogger(__name__).exception("模型调用审计写入失败 run_id=%s", run_id)
 
 
-__all__ = ["audit_metadata", "parse_result", "raw_result", "usage_of", "invoke_with_audit"]
+__all__ = ["audit_metadata", "invoke_with_audit", "parse_result", "raw_result", "usage_of"]

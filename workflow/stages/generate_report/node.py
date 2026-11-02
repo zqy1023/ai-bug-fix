@@ -71,7 +71,7 @@ def _analysis_input_fingerprint(data: DeliveryInput) -> str:
 
 def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
     """把通过审查的修复交付到修复分支。交付前检查必要的门禁条件。"""
-    from workflow.engine.evidence_version import evidence_version
+    from workflow.engine.handoff import evidence_version
     from workflow.engine.routes import fingerprint
 
     candidate_id = fingerprint(
@@ -206,7 +206,7 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
                 repair_report = store.read_artifact(
                     ctx.run.run_id, report_path, data.task_id
                 )
-                from workflow.engine.evidence_version import evidence_version
+                from workflow.engine.handoff import evidence_version
 
                 recorded_patch = ((repair_report.get("review") or {}).get("evidence_version") or {}).get("patch_id")
                 current_patch = evidence_version(

@@ -93,9 +93,9 @@ def run_timestamps(
 
 def task_stages() -> list[dict[str, Any]]:
     """从实际图节点和插件注册表输出前端阶段契约。"""
-    from workflow.engine.definitions import PHASE_COMPOSITIONS, TASK_NODE_NAMES, PUBLIC_STAGE_TITLES
-    from workflow.engine.loader import load_all
-    from workflow.engine.registry import resolve
+    from workflow.engine.routes import PHASE_COMPOSITIONS, TASK_NODE_NAMES, PUBLIC_STAGE_TITLES
+    from workflow.engine.runner import load_all
+    from workflow.engine.runner import resolve
 
     load_all()
 

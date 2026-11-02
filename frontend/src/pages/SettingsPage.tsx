@@ -22,6 +22,7 @@ interface Draft {
   max_attempts: number;
   unified_model: string;
   review_model: string;
+  small_model: string;
 }
 
 function draftOf(config?: RunConfig): Draft {
@@ -32,6 +33,7 @@ function draftOf(config?: RunConfig): Draft {
     max_attempts: defaults?.max_attempts ?? 3,
     unified_model: defaults?.agent_policy?.unified_model ?? '',
     review_model: defaults?.agent_policy?.review_model ?? '',
+    small_model: defaults?.agent_policy?.small_model ?? '',
   };
 }
 
@@ -56,8 +58,10 @@ export function SettingsPage() {
       };
       const currentUnified = current?.agent_policy?.unified_model ?? '';
       const currentReview = current?.agent_policy?.review_model ?? '';
+      const currentSmall = current?.agent_policy?.small_model ?? '';
       if (draft.unified_model !== currentUnified) payload.unified_model = draft.unified_model || null;
       if (draft.review_model !== currentReview) payload.review_model = draft.review_model || null;
+      if (draft.small_model !== currentSmall) payload.small_model = draft.small_model || null;
       return api.updateRunConfig(payload);
     },
     onSuccess: (data) => {
@@ -163,6 +167,18 @@ export function SettingsPage() {
                         value={draft.review_model}
                         options={reviewOptions}
                         onChange={(value) => setDraft((current) => ({ ...current, review_model: value }))}
+                      />
+                    </Field>
+                  </div>
+                  <div className="two-col">
+                    <Field
+                      label="小任务模型（可选）"
+                      hint="证据已定位的单点小任务用更便宜的模型；留空表示不分层，全部使用统一模型。"
+                    >
+                      <ModelSelect
+                        value={draft.small_model}
+                        options={unifiedOptions}
+                        onChange={(value) => setDraft((current) => ({ ...current, small_model: value }))}
                       />
                     </Field>
                   </div>

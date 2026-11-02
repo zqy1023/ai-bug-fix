@@ -24,7 +24,7 @@ from core.contracts import ArtifactRef, StepRecord
 from infrastructure.es.logs import ESLogAdapter
 from infrastructure.git.delivery import GitBranchDelivery
 from infrastructure.storage.store import RecordStore
-from workflow.engine.evidence_version import evidence_version
+from workflow.engine.handoff import evidence_version
 from workflow.engine.routes import _analysis_only_task
 from workflow.stages.log_pipeline.deduplicate_error.node import write_groups
 from workflow.stages.log_pipeline.identify_carrier.models import IdentifyCarrierInput
@@ -402,10 +402,13 @@ class SingleAnomalyEndToEndTests(unittest.TestCase):
                 },
             )
             verdict = review_run(review_state, review_runtime)
-            self.assertEqual(verdict["verdict"], "MANUAL")
-            self.assertFalse(verdict["passed"])
+            # 复现是审查的一环，不是交付门槛：验证没跑起来（缺采集框架）时，
+            # 代码维度的判断照常生效，verdict 保持 PASS；
+            # 复现情况单独记录，业务维度原因里写明"运行验证未执行"。
+            self.assertEqual(verdict["verdict"], "PASS")
             self.assertEqual(verdict["code_verdict"], "PASS")
-            self.assertEqual(verdict["dimensions"]["business"]["status"], "unverified")
+            self.assertEqual(verdict["reproduction"]["state"], "unavailable")
+            self.assertIn("运行验证未执行", verdict["dimensions"]["business"]["reason"])
             self.assertEqual(
                 [item["key"] for item in verdict["checks"]],
                 ["syntax", "business", "scope"],

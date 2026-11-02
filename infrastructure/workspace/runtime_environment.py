@@ -15,8 +15,31 @@ def prepare_runtime_logging() -> None:
     logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
 
 
+def sanitize_ssl_environment() -> list[str]:
+    """清掉会让 SSL 初始化失败的机器级环境变量，返回被清理的键名。
+
+    ``SSLKEYLOGFILE`` 是 NSS 的调试开关，机器上常被指到盘符根目录
+    （例如 ``D:\\nss_ssl_sfagent.log``）。``ssl.create_default_context()`` 会直接
+    打开该文件写密钥日志，路径不可写时抛 PermissionError——而这个调用发生在
+    **import 阶段**（aiohttp 导入即触发），于是整个采集框架导入失败，
+    所有真实验证都变成 "框架没加载" 的假失败。
+
+    只在验证子进程里清理，不改机器级环境变量。
+    """
+    removed: list[str] = []
+    value = os.environ.get("SSLKEYLOGFILE", "")
+    if value:
+        os.environ.pop("SSLKEYLOGFILE", None)
+        removed.append("SSLKEYLOGFILE")
+    return removed
+
+
 def initialize_framework_runtime() -> None:
     """按采集服务入口顺序初始化日志和进程内指标，不启动 HTTP/订阅服务。"""
+    # 必须在任何框架 import 之前清理：aiohttp 在 import 期就创建 SSL context，
+    # 路径不可写时整框架导入失败。校验副本里没有 server.py，所以这一步不能
+    # 放在"是采集服务目录"的判断之后——否则真实验证永远是假失败。
+    sanitize_ssl_environment()
     if not (Path.cwd() / "server.py").is_file():
         return
     state_root = os.environ.get("AI_REPAIR_RUNTIME_STATE_DIR")
@@ -30,7 +53,12 @@ def initialize_framework_runtime() -> None:
 
     if sys.platform == "win32" or sys.platform == "darwin":
         (Path.cwd() / "logs").mkdir(parents=True, exist_ok=True)
-    LogUtils.initialize("gather.py.track")
+    # 框架日志写不出去（目录只读、磁盘满、被占用）不该让整轮验证崩掉：
+    # 日志只是副产物，采集结果才是断言依据。
+    try:
+        LogUtils.initialize("gather.py.track")
+    except OSError as error:
+        logging.getLogger(__name__).warning("框架日志初始化失败，改用 stderr 输出: %s", error)
     PrometheusUtils.initialize(multi_process=False)
 
 

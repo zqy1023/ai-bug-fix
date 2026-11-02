@@ -56,6 +56,9 @@ class PromptContext(BaseModel):
     source_project_path: str = ""
     # project_rules：项目规范正文，供 Agent 在修改前核对约束。
     project_rules: str = ""
+    # agent_policy：本轮生效的 AgentPolicy（含共享层写入授权）。
+    # ToolPolicy 需要用它与子图计算同一份写白名单，否则 repair_shared 无法生效。
+    agent_policy: dict[str, Any] = Field(default_factory=dict)
     # read_scope：只读/可写范围的压缩结构（渲染用）。
     # 请求契约仍用 allowed_read_roots 的真实绝对路径做权限校验。
     read_scope: dict[str, Any] = Field(default_factory=dict)

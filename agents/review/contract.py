@@ -236,6 +236,9 @@ class ReviewView(ReviewAgentOutput):
     evidence_version: dict[str, Any] = Field(default_factory=dict)
     next_action: str = ""
     validation: dict[str, Any] = Field(default_factory=dict)
+    # 复现情况：与业务结论分开记录。reproduced / assertion_failed / unavailable。
+    # 它回答"这段行为有没有被真实执行检验过"，不决定交付资格。
+    reproduction: dict[str, Any] = Field(default_factory=dict)
     review_contract_version: int = REVIEW_CONTRACT_VERSION
 
 
@@ -287,6 +290,10 @@ class ReviewState(TypedDict, total=False):
     _usage: dict[str, Any]
     _audit: dict[str, Any]
     validation: dict[str, Any]
+    # 复现情况（reproduced / assertion_failed / unavailable）。
+    # 必须在 TypedDict 里声明：LangGraph 只保留声明过的 key，
+    # 漏声明会让该字段在子图返回时被静默丢弃。
+    reproduction: dict[str, Any]
     _validation_report: dict[str, Any]
 
 
@@ -448,7 +455,17 @@ def judge(payload: dict[str, Any]) -> ReviewVerdict:
 
 
 def delivery_allowed(payload: dict[str, Any]) -> bool:
-    """仅放行有效通过，或代码已确认、仅业务证据不足的人工复核。"""
+    """审查结论是否允许交付（代码维度的门禁）。
+
+    复现**不是**交付门槛：它是审查的一环，结果如实记录在 ``reproduction``，
+    由交付文档与人工复核使用。这里只拦真正的代码问题：
+
+    - 审查协议错误 / 契约不符
+    - 代码结论不是 PASS
+    - 存在已确认缺陷（findings / required_changes）
+    - 补丁审查里挂着未解决问题（unresolved_issues）
+    - 三维度里有 failed（业务语义明确判定为错）
+    """
     checked = judge(payload)
     if not checked.valid or payload.get("contract_error"):
         return False
@@ -459,15 +476,29 @@ def delivery_allowed(payload: dict[str, Any]) -> bool:
     if checked.passed:
         return True
     dimensions = payload.get("dimensions") or {}
+    statuses = {(dimensions.get(key) or {}).get("status") for key in ("syntax", "scope", "business")}
+    if "failed" in statuses:
+        # 语法/范围/业务语义任一项被明确判错：不交付。
+        return False
+    if payload.get("code_verdict") != "PASS":
+        return False
+    if payload.get("required_changes") or payload.get("findings"):
+        return False
+    if (payload.get("coverage") or {}).get("decision") != "sufficient":
+        return False
+    if (payload.get("coverage") or {}).get("missing_checks"):
+        return False
+    # 语法与范围必须已被独立核对通过。
+    for key in ("syntax", "scope"):
+        if (dimensions.get(key) or {}).get("status") != "passed":
+            return False
+    # 业务语义必须有独立确认：要么审查方明确 passed，
+    # 要么 semantic_verified=True（代码层语义已被确认）。
+    # 注意这与"运行验证是否执行"是两件事 —— 复现没跑不影响业务语义的静态确认，
+    # 但审查方没确认语义时仍然不能交付。
     return bool(
-        result_of(payload) == "MANUAL"
-        and payload.get("code_verdict") == "PASS"
-        and (payload.get("coverage") or {}).get("decision") == "sufficient"
-        and not (payload.get("coverage") or {}).get("missing_checks")
-        and not payload.get("required_changes")
-        and all((dimensions.get(key) or {}).get("status") == "passed" for key in ("syntax", "scope"))
-        and (dimensions.get("business") or {}).get("status") in {"passed", "unverified"}
-        and (payload.get("semantic_verified") is True or (dimensions.get("business") or {}).get("status") == "passed")
+        (dimensions.get("business") or {}).get("status") == "passed"
+        or payload.get("semantic_verified") is True
     )
 
 

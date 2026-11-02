@@ -101,7 +101,7 @@ def v1_retry_task(
     from infrastructure.llm.config import load_config, workflow_recursion_limit
     from infrastructure.workspace.workspace import WorkspaceManager
     from workflow.engine.graph import TASK_DISPATCH
-    from workflow.engine.wiring import build_graph, build_services
+    from workflow.engine.graph import build_graph, build_services
 
     run_id, task_id = _safe_id(run_id), _safe_id(task_id)
     store = _store()
@@ -163,8 +163,8 @@ def v1_retry_task(
             0,
         ) + 1
 
-        from workflow.engine.step_runner import state_from_records
-        from workflow.engine.retry_context import capture_retry_context
+        from workflow.engine.runner import state_from_records
+        from workflow.engine.handoff import capture_retry_context
         previous_state = state_from_records(store, run_id, task_id)
         previous_state["retry_reason"] = str((task_payload.get("lifecycle") or {}).get("terminal_reason") or "人工请求重试失败任务")
         previous_state["attempt"] = next_attempt - 1
@@ -354,7 +354,7 @@ def v1_get_step(
             and (finished is None or moment <= finished + timedelta(seconds=5))
         ]
     step_payload = _formal_step_payload(store, run_id, step_scope or "", record.model_dump(mode="json"))
-    from workflow.engine.step_runner import StepRunner, StepRunnerError, StepRunRequest
+    from workflow.engine.runner import StepRunner, StepRunnerError, StepRunRequest
     from server.view_models import ActionAvailability
     action = ActionAvailability(enabled=False)
     try:
@@ -393,7 +393,7 @@ def v1_run_step(
 ) -> dict[str, Any]:
     """基于已落盘记录单步执行一个步骤或 Agent；写操作必须显式确认。"""
     _require_current_workflow(run_id)
-    from workflow.engine.step_runner import StepRunner, StepRunnerError, StepRunRequest
+    from workflow.engine.runner import StepRunner, StepRunnerError, StepRunRequest
 
     run_id, task_id, step_name = _safe_id(run_id), _safe_id(task_id), _safe_id(step_name)
     store = _store()
@@ -415,9 +415,9 @@ def v1_run_step(
         _audit_control(run_id, task_id, f"step.run.rejected:{step_name}", actor, message)
         raise HTTPException(status_code=409, detail={"code": "RUN_LOCKED", "message": message})
     def _continue(selected: StepRunRequest, payload: dict[str, Any]) -> None:
-        from workflow.engine.entrypoint import _write_run_report_if_terminal
+        from workflow.engine.graph import _write_run_report_if_terminal
         from infrastructure.llm.config import load_config, workflow_recursion_limit
-        from workflow.engine.wiring import (
+        from workflow.engine.graph import (
             build_graph,
             build_services,
             continue_task_after_step,

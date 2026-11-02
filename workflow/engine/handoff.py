@@ -146,8 +146,13 @@ def evidence_version(workspace: str, files: list[str], baseline_dir: str = "") -
     """对本轮文件及其基线计算内容身份；删除保留显式标记。"""
     def digest(root: str) -> str:
         from infrastructure.workspace.diff import source_manifest
+        from infrastructure.workspace.runtime_artifacts import is_runtime_log_path
+
         base = Path(root).resolve()
         values = source_manifest(base)
+        # 框架运行日志不参与补丁身份：平台自己的验证/复现会写日志，
+        # 让它影响 patch_id 会把同一份补丁判成"已变化、证据失效"。
+        values = {key: value for key, value in values.items() if not is_runtime_log_path(key)}
         for name in sorted(set(files)):
             target = (base / name).resolve()
             if not target.is_relative_to(base):

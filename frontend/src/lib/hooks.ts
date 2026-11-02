@@ -11,7 +11,9 @@ export function useRunEvents(runId?: string, enabled = true) {
   const [streamState, setStreamState] = useState<StreamState>('connecting');
   const run = useQuery({
     queryKey: ['run', runId], queryFn: () => api.run(runId as string), enabled: Boolean(runId && enabled),
-    refetchInterval: (query) => query.state.data?.terminal ? 15_000 : 5_000,
+    // 终态后批次不再变化：SSE 会主动断开（服务端终态关闭流），此处的轮询只是
+    // 兜底，继续跑只会一直打 API 而拿不到新数据。
+    refetchInterval: (query) => query.state.data?.terminal ? false : 5_000,
   });
   const terminal = run.data?.terminal === true;
   useEffect(() => {
@@ -33,6 +35,7 @@ export function useRunEvents(runId?: string, enabled = true) {
       },
     });
     // Agent 对话追加不会总改变批次快照；轮询兜底覆盖流断线及节点长时间执行。
+    // terminal 时上面的 effect 已提前返回（不订阅、不建定时器），终态批次不再变化。
     const timer = window.setInterval(() => {
       if (document.visibilityState !== 'hidden') refresh();
     }, 5_000);

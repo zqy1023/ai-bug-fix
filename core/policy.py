@@ -9,14 +9,11 @@ import json
 import os
 import re
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal, get_args
+from typing import Any, Literal, Mapping, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from core.contracts import AgentRequest
-
-
-
 
 
 def legacy_analysis_required(state: dict[str, Any]) -> bool:
@@ -107,6 +104,9 @@ class AgentPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     unified_model: str = ""
     review_model: str = ""
+    # small_model：证据充分的小任务（single-tier：字段/栈帧明确）的廉价模型。
+    # 留空表示不分层，全部用 unified_model。
+    small_model: str = ""
     analyze_legacy: bool = True
     reproduce: bool = True
     acceptance: bool = True
@@ -122,7 +122,14 @@ class AgentPolicy(BaseModel):
     local_commit: bool = True
     remote_push: bool = True
 
-    def model_choice(self, role: Literal["unified_fixer", "review"]) -> str:
+    def model_choice(self, role: Literal["unified_fixer", "review"], tier: str = "") -> str:
+        """按角色与预算档位选模型；small 档可单独指定廉价模型。
+
+        ``tier`` 为空或 ``small_model`` 未配置时退回角色默认模型，所以不分层部署
+        的行为与之前完全一致。
+        """
+        if role == "unified_fixer" and tier == "small" and self.small_model:
+            return self.small_model
         return {
             "unified_fixer": self.unified_model,
             "review": self.review_model,
@@ -181,12 +188,18 @@ def retry_read_paths(root: Path, run_id: str, task_id: str) -> list[Path]:
 
 
 def carrier_write_paths(root: Path, carrier: str, policy: Any = None) -> list[Path]:
+    """当前任务允许写入的根目录：carrier 目录，加上策略显式授权的共享子目录。
+
+    ``repair_shared`` 是硬开关：只配 ``shared_paths`` 而不打开它，写入范围仍只有
+    carrier 目录。快照准备（``prepare_source_snapshot``）、提示词、写权限校验三处
+    必须使用同一个判定，否则会出现"快照复制了共享文件、模型却没权限改"的无声失效。
+    """
     paths = [
         path.resolve()
         for framework in ("gathers",)
         if (path := find_carrier_dir(root, framework, carrier)) is not None
     ]
-    if isinstance(policy, dict):
+    if isinstance(policy, dict) and policy.get("repair_shared") is True:
         shared_list = policy.get("shared_paths") or []
         for p in shared_list:
             target = (root / p).resolve()
@@ -196,6 +209,7 @@ def carrier_write_paths(root: Path, carrier: str, policy: Any = None) -> list[Pa
 
 
 def shared_read_paths(shared_root: Path | None) -> list[Path]:
+    """共享层的**完整**只读范围（修复 Agent 需要：它要沿调用链读框架实现）。"""
     if shared_root is None or not shared_root.is_dir():
         return []
     paths = [
@@ -211,6 +225,79 @@ def shared_read_paths(shared_root: Path | None) -> list[Path]:
         for relative in readable_rule_paths(shared_root)
     )
     return paths
+
+
+def review_shared_read_paths(shared_root: Path | None) -> list[Path]:
+    """审查 Agent 的**收敛**只读范围：入口文件，不是整个共享树。
+
+    审查的职责是核对指定改动与原始证据，不是重新做一遍全仓定位。把
+    ``framework/`` / ``gathers_base/`` / ``gather_providers/`` 整目录放进可读范围，
+    与提示词里"先按 source_ownership 定向读取、不要遍历全仓"直接矛盾；实测
+    无源码改动的处置审查也要跑 76~107 秒，大部分花在重复扫共享目录上。
+
+    这里只保留决定"入口是否走共享实现"的最小集合：采集服务入口、插件注册表、
+    共享层的强制定向文件（``track_server``/基类/规则）。真正的调用链仍可通过
+    审查侧证据里的 ``source_evidence`` 引用按路径读取（``_repo_evidence_roots``）。
+    """
+    if shared_root is None or not shared_root.is_dir():
+        return []
+    candidates = (
+        "plugins.py",
+        "framework/track_server.py",
+        "framework/models.py",
+        "framework/gather_base.py",
+        "framework/gather_provider_base.py",
+    )
+    paths = [shared_root / name for name in candidates if (shared_root / name).is_file()]
+    paths.extend(shared_root / relative for relative in readable_rule_paths(shared_root))
+    return paths
+
+
+def review_evidence_read_paths(
+    workspace: Path, shared: Path | None, references: Any
+) -> list[Path]:
+    """把修复方 ``source_evidence`` 引用的具体文件加入审查只读范围。
+
+    ``review_shared_read_paths`` 收敛了共享树，但证据链里点名的文件必须能读——
+    否则审查会因 scope_denied 反复试探，反而更贵。这里只放**单个已存在文件**，
+    不接受目录，也不接受工作区外的任意路径。
+    """
+    if not isinstance(references, list):
+        return []
+    roots: list[Path] = [workspace.resolve()]
+    if shared is not None and shared.is_dir():
+        roots.append(shared.resolve())
+    paths: list[Path] = []
+    for item in references:
+        value = item.get("path") if isinstance(item, dict) else item
+        if not isinstance(value, str) or not value.strip():
+            continue
+        relative = value.replace("\\", "/").lstrip("/")
+        if ".." in relative.split("/"):
+            continue
+        for root in roots:
+            candidate = (root / relative).resolve()
+            if candidate.is_file() and candidate.is_relative_to(root):
+                paths.append(candidate)
+                break
+    return list(dict.fromkeys(paths))
+
+
+def evidence_references(context: Mapping[str, Any]) -> list[Any]:
+    """取出本轮审查应当放开的证据引用（两侧必须用同一份数据）。
+
+    审查子图按 ``state["repair"]["source_evidence"]`` 放行文件，权限校验若按
+    ``context["evidence"]`` 取就会少算这些路径，两边数量对不上就直接把审查判成
+    "读取范围不符合角色白名单"（真实批次里 Maersk、Sweden 就是这样崩的）。
+    这里把取值收敛到一处：先看 ``evidence.repair.source_evidence``，再退回
+    ``evidence.source_evidence``。
+    """
+    evidence = context.get("evidence") or {}
+    if not isinstance(evidence, Mapping):
+        return []
+    nested = evidence.get("repair")
+    nested_refs = nested.get("source_evidence") if isinstance(nested, Mapping) else None
+    return list(nested_refs or evidence.get("source_evidence") or [])
 
 
 def carrier_read_paths(root: Path, primary: Path, shared: Path | None, carrier: str) -> list[Path]:
@@ -247,7 +334,12 @@ def carrier_read_paths(root: Path, primary: Path, shared: Path | None, carrier: 
 
 
 def review_read_paths(root: Path, primary: Path, shared: Path | None, carrier: str, baseline: str = "") -> list[Path]:
-    paths = [primary.resolve(), *carrier_write_paths(root, carrier), *shared_read_paths(shared)]
+    """审查 Agent 的只读范围：carrier + 入口级共享文件 + 基线中的同类实现。
+
+    共享层用 ``review_shared_read_paths``（收敛版），不是
+    ``shared_read_paths``（整棵共享树）。审查也要读基线副本，才能做修改前后对比。
+    """
+    paths = [primary.resolve(), *carrier_write_paths(root, carrier), *review_shared_read_paths(shared)]
     if baseline:
         base = Path(baseline).resolve()
         for framework in ("gathers", "spiders"):
@@ -307,6 +399,13 @@ class ToolPolicy:
         else:
             snapshot = context.get("source_snapshot") or {}
             expected_reads = tuple(review_read_paths(workspace, expected_carrier, shared_root, carrier, str(snapshot.get("baseline_dir") or "")))
+            # 审查范围收敛后，证据链点名的文件仍必须可读（只放已存在的单个文件）。
+            # 取值必须与审查子图完全一致，否则两边数量对不上会直接判权限不合规。
+            expected_reads = (*expected_reads, *review_evidence_read_paths(
+                workspace,
+                shared_root,
+                evidence_references(context),
+            ))
         expected_reads = (*expected_reads, *retry_read_paths(workspace, str(request.run_id), str(request.task_id)))
         expected_reads = tuple(dict.fromkeys(expected_reads))
         from infrastructure.llm.budget import readable_context
@@ -321,7 +420,10 @@ class ToolPolicy:
                     raise ToolPolicyError("旧框架实现及 spiders 修改目标只允许分析，不允许修复写入")
                 write_root = Path(request.write_root).resolve()
                 allowed = tuple(Path(item).resolve() for item in request.allowed_write_roots)
-                if write_root != expected_carrier or allowed != tuple(carrier_write_paths(workspace, carrier)):
+                # 与 unified_fixer 子图使用同一个判定（含 repair_shared 授权），
+                # 否则策略开了共享层写入而校验按旧口径拒绝，配置静默失效。
+                expected_writes = tuple(carrier_write_paths(workspace, carrier, context.get("agent_policy")))
+                if write_root != expected_carrier or allowed != expected_writes:
                     raise ToolPolicyError("unified_fixer Agent 只能写入当前任务的 carrier 目录")
         elif request.allowed_write_roots or request.write_root is not None:
             raise ToolPolicyError(f"{request.agent_role} Agent 不允许写入")

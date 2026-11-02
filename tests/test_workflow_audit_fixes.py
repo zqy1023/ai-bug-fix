@@ -143,7 +143,9 @@ def test_real_agent_node_forwards_repair_criteria_policy_and_validation(state: d
     store = RecordStore(tmp_path / "runtime")
     with patch("infrastructure.workspace.validation.nacos_get", return_value="{}"):
         output = build_agent_node(SPEC, store, runtime=runtime)({**state, "agent_policy": {"review_model": "custom-review"}})
-    assert output["review"]["verdict"] == "MANUAL"
+    # 复现未执行不阻断交付：代码判断照常保留，delivery_eligible 仍为 True。
+    assert output["review"]["verdict"] == "PASS"
+    assert output["review"]["reproduction"]["state"] == "unavailable"
     assert output["review"]["delivery_eligible"]
     assert requests[0].model == "custom-review"
     evidence = requests[0].prompt_context["evidence"]
@@ -305,5 +307,8 @@ def test_platform_does_not_replace_reviewer_business_judgment_with_magic_receipt
     with patch("infrastructure.workspace.validation.nacos_get", return_value="{}"):
         result = review({**state, **state["task"]}, SimpleNamespace(run=lambda request: {"result": json.dumps(decision())}))
     assert result["code_verdict"] == "PASS"
-    assert result["verdict"] == "MANUAL"  # 执行事实未验证，保留代码判断，不由平台猜业务分类。
+    # 复现是审查的一环，不是交付门槛：执行事实未验证时，代码判断照常保留
+    # （verdict 保持 PASS），复现情况单独记录，由交付文档说明。
+    assert result["verdict"] == "PASS"
+    assert result["reproduction"]["state"] == "unavailable"
     assert "not_found" not in result["validation"]

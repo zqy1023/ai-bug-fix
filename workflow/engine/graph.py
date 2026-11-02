@@ -1397,9 +1397,9 @@ def prepare_run(
         if mismatches:
             raise RuntimeError(f"执行 {resolved} 已存在，但配置不匹配：{', '.join(mismatches)}")
         existing["startup_state"] = "started"
-        temporary = run_json.with_suffix(".json.tmp")
-        temporary.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
-        temporary.replace(run_json)
+        from infrastructure.storage.atomic import atomic_write_json
+
+        atomic_write_json(run_json, existing)
     else:
         if allow_prepared:
             raise RuntimeError(f"执行 {resolved} 缺少 API 预创建的运行记录，拒绝后台启动")
@@ -1562,10 +1562,16 @@ def _read_json_file(path: Path) -> dict[str, Any]:
 
 
 def _atomic_json(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
-    temporary.replace(path)
+    """原子写 JSON：先写临时文件再替换目标。
+
+    Windows 上 ``os.replace`` 对**正被其他进程读取**的目标文件会直接抛
+    PermissionError（WinError 5）——工作台正在读 ``final.json`` 时，终态报告
+    就会整份写不进去，批次结果全丢。重试与降级策略见
+    ``infrastructure.storage.atomic``（与记录存储共用同一实现）。
+    """
+    from infrastructure.storage.atomic import atomic_write_json
+
+    atomic_write_json(path, value)
 
 
 def _write_run_report_if_terminal(

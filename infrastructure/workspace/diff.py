@@ -11,8 +11,6 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
-from config.settings import settings
-
 MAX_LINES_PER_FILE = 120
 MAX_LINE_CHARS = 400
 MAX_FILES = 20
@@ -73,10 +71,19 @@ def source_manifest(root: str | Path) -> dict[str, str]:
 
 
 def source_changes(root: str | Path, baseline: str | Path | dict[str, str]) -> list[str]:
-    """以实际字节计算完整新增、修改、删除集合，不截断文件清单。"""
+    """以实际字节计算完整新增、修改、删除集合，不截断文件清单。
+
+    框架运行时新写的日志不算源码改动：否则模型工作区里出现一个
+    ``logs/<service>_<ts>.log``，就会被越权检查判成「未授权源码变化」，
+    整任务无谓转 MANUAL。判定口径与 ``validation`` 共用
+    ``runtime_artifacts.classify_changes``。
+    """
+    from infrastructure.workspace.runtime_artifacts import classify_changes
+
     before = baseline if isinstance(baseline, dict) else source_manifest(baseline)
     after = source_manifest(root)
-    return sorted(name for name in before.keys() | after.keys() if before.get(name) != after.get(name))
+    changed, _ = classify_changes(before, after)
+    return changed
 
 # 门禁与审查会在同一份未变的工作区上反复读同一批文件（算哈希、算 diff、查敏感信息、
 # 过 AST）。这里按 (路径, mtime, 大小) 缓存结果：文件一旦被改动，键就变，自动失效，

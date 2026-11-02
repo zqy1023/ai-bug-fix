@@ -159,3 +159,52 @@ def test_missing_response_does_not_block_proven_local_request_fix(tmp_path) -> N
     assert routes.after_unified_fixer(result) == routes.REVIEW
     exec(compile(target.read_text(encoding='utf-8'), str(target), 'exec'), scope)
     assert scope['build_request']({'timeout': 30000}) == {'timeout': 30000}
+
+
+def test_rejected_service_error_skip_returns_to_repair_before_delivery() -> None:
+    from workflow.engine.graph import build_task_graph
+
+    calls = []
+    missing_guard = 'Known HTTP 503 page reaches json.loads before ServiceError handling'
+    rejection = {'verdict': 'FAIL', 'code_verdict': 'FAIL',
+                 'required_changes': [missing_guard], 'summary': missing_guard}
+
+    def node(name):
+        def run(state):
+            calls.append(name)
+            if name == routes.UNIFIED_FIXER:
+                if state['automatic_attempt'] == 1:
+                    return {'last_result': 'passed', 'unified_fixer': {
+                        'status': 'ANALYSIS_ONLY', 'attribution_type': 'official',
+                        'skip_reason': 'Upstream service unavailable', 'changed_files': []}}
+                assert state['retry_context']['review'] == rejection
+                assert state['unified_fixer'] == {}
+                assert state['review'] == {}
+                return {'last_result': 'passed', 'changed_files': ['gathers/TEST/main.py'],
+                        'unified_fixer': {'status': 'FIXED', 'attribution_type': 'mixed',
+                                          'skip_reason': '', 'changed_files': ['gathers/TEST/main.py']}}
+            if name == routes.REVIEW:
+                if state['automatic_attempt'] == 1:
+                    assert state['unified_fixer']['skip_reason']
+                    return {'last_result': 'failed', 'review': rejection,
+                            'retry_target': routes.UNIFIED_FIXER}
+                assert state['changed_files'] == ['gathers/TEST/main.py']
+                return {'last_result': 'passed', 'review': {**approval(), 'review_kind': 'patch',
+                                                           'semantic_verified': True}}
+            return {'last_result': 'passed'}
+        return run
+
+    manager = SimpleNamespace(reset_task_workspace=Mock())
+    graph = build_task_graph(
+        {name: node(name) for name in routes.TASK_NODE_NAMES if name != routes.RETRY},
+        workspace_manager=manager,
+        retry_context_builder=lambda state: {'review': dict(state['review'])},
+        entry_node=routes.UNIFIED_FIXER,
+    )
+    final = graph.invoke({'run_id': 'r', 'task_id': 't', 'task': {'carrier': 'TEST'},
+                          'attempt': 1, 'automatic_attempt': 1,
+                          'agent_policy': {'max_repairs': 1}}, {'recursion_limit': 30})
+    assert calls == [routes.UNIFIED_FIXER, routes.REVIEW, routes.UNIFIED_FIXER,
+                     routes.REVIEW, routes.REPORT, routes.SUBMIT, routes.FINALIZE]
+    assert final['unified_fixer']['skip_reason'] == ''
+    manager.reset_task_workspace.assert_called_once()

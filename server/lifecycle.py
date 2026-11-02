@@ -203,7 +203,7 @@ def _record_background_failure(
                 "后台异常发生在停止请求之后，按 CANCELLED 收敛 run_id=%s error=%s",
                 run_id, type(error).__name__,
             )
-            from workflow.engine.entrypoint import _write_run_report
+            from workflow.engine.graph import _write_run_report
 
             _write_run_report(_store(), run_id)
             LifecycleStore(_store().root).update_run(run_id, status="cancelled", worker_active=False)
@@ -289,7 +289,7 @@ def _record_background_failure(
 def _run_workflow_background_v1(
     run_id: str, overrides: dict[str, Any], run_lock: Any = None
 ) -> None:
-    from workflow.engine.entrypoint import run_workflow
+    from workflow.engine.graph import run_workflow
     if run_lock is None:
         with _RUN_LOCKS_GUARD:
             run_lock = _run_lock(run_id)
@@ -344,7 +344,7 @@ def _resume_workflow_background(
     heartbeat_thread: threading.Thread | None = None
     try:
         from infrastructure.llm.config import load_config, workflow_recursion_limit
-        from workflow.engine.wiring import build_graph, build_services
+        from workflow.engine.graph import build_graph, build_services
 
         store = _store()
         LifecycleStore(store.root).update_run(
@@ -381,7 +381,7 @@ def _resume_workflow_background(
         if resume_payload is not None:
             from langgraph.types import Command
 
-            from workflow.engine.wiring import resume_task_approval
+            from workflow.engine.graph import resume_task_approval
 
             task_id = str(resume_payload.get("task_id") or "")
             detached = bool(task_id) and resume_task_approval(
@@ -423,7 +423,7 @@ def _resume_workflow_background(
             in {"FAILED", "FAIL"}
         ):
             stale_run_report.unlink(missing_ok=True)
-        from workflow.engine.entrypoint import _write_run_report_if_terminal
+        from workflow.engine.graph import _write_run_report_if_terminal
         _write_run_report_if_terminal(store, run_id, graph, final_state=final_state)
         _complete_run_lifecycle(run_id, store)
         if (store.run_dir(run_id) / "reports" / "final.json").is_file():
@@ -456,7 +456,7 @@ def _reinvestigate_task(run_id: str, task_id: str, background: BackgroundTasks) 
     from core.contracts import StepRecord
     from infrastructure.llm.config import load_config
     from workflow.engine.routes import IDENTIFY
-    from workflow.engine.wiring import build_graph, build_services
+    from workflow.engine.graph import build_graph, build_services
 
     store = _store()
     config = load_config()

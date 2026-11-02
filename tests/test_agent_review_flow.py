@@ -128,8 +128,14 @@ class AgentReviewFlowTests(unittest.TestCase):
             with patch.dict('sys.modules', {'agents.review.gates': None}):
                 result = build_agent_node(SPEC, store, runtime=runtime)(state)
             self.assertEqual(len(requests), 1)
-            self.assertEqual(result['review']['verdict'], 'MANUAL')
-            self.assertEqual(result['review']['dimensions']['business']['status'], 'unverified')
+            # 复现是审查的一环，不是交付门槛：验证没跑起来时，
+            # 代码维度的判断照常生效（verdict 保持 PASS）。
+            self.assertEqual(result['review']['verdict'], 'PASS')
+            # 但必须如实记录复现情况，并在业务维度原因里标注"运行验证未执行"，
+            # 不能对外宣称业务已验证。
+            reproduction = result['review'].get('reproduction') or {}
+            self.assertEqual(reproduction.get('state'), 'unavailable', reproduction)
+            self.assertIn('运行验证未执行', result['review']['dimensions']['business']['reason'])
             self.assertEqual(result['review']['code_verdict'], 'PASS')
             self.assertEqual(result['review']['todo'], [f'非阻断回归建议 {index}' for index in range(10)])
             self.assertEqual([step.name for step in store.list_steps('run', 'task')], ['review_agent'])

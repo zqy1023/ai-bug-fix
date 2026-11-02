@@ -72,7 +72,7 @@ def build_report(ctx: StepContext, data: FinalizeInput) -> dict[str, Any]:
         terminal_reason = str(unified.get("skip_reason") or unified.get("summary") or unified["failure_kind"])
         next_action = ("补充原始输入或恢复可用复现环境后重新执行。" if unified.get("skip_reason")
                        else "检查模型调用失败证据，恢复后重新执行任务。")
-    from workflow.engine.confirmation import confirmation
+    from workflow.engine.routes import confirmation
 
     review = full_output(
         ctx.store, ctx.run.run_id, data.task_id, records, "review_agent"
@@ -645,9 +645,24 @@ def _problem(ctx: StepContext, task_id: str) -> dict[str, Any]:
         return {}
     # 保留完整原始异常对象，前端单独的“原始异常”板块可以展示 message、error、
     # raw_error、request 和 response；不得只压缩成 error 一行。
+    #
+    # req / response / 归档恢复的异常正文是复核者判断修复对不对的唯一依据：
+    # ApexMotor 那轮的根因就在 response 的 "PRO=" 前缀上，缺了它们，
+    # 交付分支上的 task_summary.md 只会写"上游响应：未捕获"。
     return {
         key: problem[key]
-        for key in ("service_name", "biztype", "carrier", "message", "error", "raw_error", "req", "response")
+        for key in (
+            "service_name",
+            "biztype",
+            "carrier",
+            "message",
+            "error",
+            "raw_error",
+            "req",
+            "response",
+            "original_exception_message",
+            "related_messages",
+        )
         if key in problem and problem[key] not in (None, "")
     }
 

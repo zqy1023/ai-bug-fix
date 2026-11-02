@@ -19,8 +19,22 @@ export function TaskReview({ detail }: { detail: TaskDetailResponse }) {
   const missing = lines(coverage.missing_checks);
   const validation = object(review?.validation);
   const dimensions = review?.dimensions || {};
-  const runtimeStates = [text(object(validation.replay).status), text(object(validation.request).status)];
-  const runtimeStatus = runtimeStates.every(value => value === 'passed') ? 'passed' : runtimeStates.includes('failed') ? 'failed' : 'unverified';
+  // 复现是审查的一环，不是交付门槛。这里单独呈现"这段行为有没有被真实执行检验过"，
+  // 不与代码判断混成一个"通过/不通过"标签。
+  const reproduction = object(review?.reproduction);
+  const reproductionState = text(reproduction.state);
+  const reproductionLabel = reproductionState === 'reproduced' ? '已复现'
+    : reproductionState === 'assertion_failed' ? '复现后断言未通过'
+      : reproductionState === 'unavailable' ? '未复现' : '';
+  const reproductionTone = reproductionState === 'reproduced' ? 'ok'
+    : reproductionState === 'assertion_failed' ? 'danger' : 'idle';
+  const replayCheck = object(validation.replay);
+  const requestCheck = object(validation.request);
+  const runtimeStates = [replayCheck, requestCheck];
+  const environmentBlocked = runtimeStates.some(item => text(item.outcome) === 'environment_unavailable');
+  const runtimeStatus = environmentBlocked ? 'environment_unavailable'
+    : runtimeStates.every(item => text(item.status) === 'passed') ? 'passed'
+      : runtimeStates.some(item => text(item.status) === 'failed') ? 'failed' : 'unverified';
   const dimensionLabels = disposition ? ([['syntax', '源码与接口核对'], ['business', '分析与不修改依据'], ['scope', '权限与处置范围']] as const)
     : ([['syntax', '语法与接口'], ['business', '异常处理与业务'], ['scope', '改动范围与其他业务']] as const);
   const title = failed ? '审查未完成' : running ? '审查进行中' : review ? `审查${reviewLabel(review.verdict)}` : terminal ? '审查未执行' : '审查未开始';
@@ -47,6 +61,7 @@ export function TaskReview({ detail }: { detail: TaskDetailResponse }) {
             {disposition ? <div><span>源码修复</span><Badge tone={results.unresolvedIssues.length ? 'warn' : 'idle'}>{results.unresolvedIssues.length ? '缺陷未修复' : '未修改源码'}</Badge></div>
               : <div><span>补丁业务语义</span><Badge tone={review.semantic_verified === true ? 'ok' : 'warn'}>{review.semantic_verified === true ? '已确认' : review.semantic_verified === false ? '未确认' : '未单独记录'}</Badge></div>}
             <div><span>运行验证</span><Badge tone={reviewTone(runtimeStatus)}>{runtimeStatus === 'passed' ? '已验证' : reviewLabel(runtimeStatus)}</Badge></div>
+            {reproductionLabel ? <div><span>复现</span><Badge tone={reproductionTone}>{reproductionLabel}</Badge></div> : null}
             <div><span>审查覆盖</span><Badge tone={reviewTone(text(coverage.decision))}>{reviewLabel(text(coverage.decision))}</Badge></div>
           </div>
           <div className="review-dimensions">
@@ -78,9 +93,12 @@ export function TaskReview({ detail }: { detail: TaskDetailResponse }) {
           {Object.keys(validation).length ? <section className="review-validation"><h3>实际执行验证</h3>
             {([['replay', '原始响应回放'], ['request', '真实请求验证']] as const).map(([key, label]) => {
               const check = object(validation[key]);
-              return <div key={key}><div className="review-section-heading"><strong>{label}</strong><Badge tone={reviewTone(text(check.status))}>{reviewLabel(text(check.status))}</Badge></div>
-                <p className="result-prose">{text(check.reason) || '未提供执行说明。'}</p></div>;
+              const blocked = text(check.outcome) === 'environment_unavailable';
+              return <div key={key}><div className="review-section-heading"><strong>{label}</strong><Badge tone={blocked ? 'idle' : reviewTone(text(check.status))}>{blocked ? '环境未就绪' : reviewLabel(text(check.status))}</Badge></div>
+                <p className="result-prose">{text(check.reason) || '未提供执行说明。'}</p>
+                {text(check.next_action) ? <p className="note">下一步：{text(check.next_action)}</p> : null}</div>;
             })}
+            {environmentBlocked ? <p className="note">本轮采集验证环境未就绪，未执行到被测代码；下面的结论来自源码级核对，不能视为业务回归已通过。</p> : null}
           </section> : null}
         </>}
     </CardBody>

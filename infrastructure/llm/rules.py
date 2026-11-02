@@ -126,14 +126,19 @@ def budget_tier(
     """按证据充分度选预算：证据越足，轮次和上下文越小。
 
     ``field``（业务字段路径，如 ``track_result_events.datetime``）不是代码位置，
-    但能把搜索范围压到具体模型/字段，因此单独成档；只有"既无栈帧也无字段线索"
-    才落到 complex。
+    但能把搜索范围压到具体模型/字段，因此单独成档。
+
+    ``blame`` 来自日志分类器的**初判**，真实数据里 ``undetermined`` 占比很高
+    （``classify_blame`` 在无栈帧、非 JSON 解码失败时都会返回它）。原实现只认
+    ``code``/``upstream``，导致 ``undetermined + 有栈帧`` 也落到最贵的 complex 档，
+    分档机制在真实批次里形同虚设。这里把"有定位线索"与"归因标签"分开判断：
+    只要有栈帧或字段线索就是 default，只有完全无线索才用 complex。
     """
     if analysis_only:
         return TIERS["analysis"]
     if blame == "code" and frame and has_response and candidate_count <= 2:
         return TIERS["small"]
-    if (blame in {"code", "upstream"} and frame) or field:
+    if frame or field:
         return TIERS["default"]
     return TIERS["complex"]
 

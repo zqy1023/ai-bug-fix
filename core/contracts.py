@@ -64,7 +64,7 @@ class StepSpec:
 
     @property
     def depends_on(self) -> tuple[Dependency, ...]:
-        from workflow.engine.definitions import dependencies_for
+        from core.dependencies import dependencies_for
         return dependencies_for(self.name)
 
     def patch(self, output: dict[str, Any]) -> dict[str, Any]:
@@ -92,7 +92,7 @@ class AgentSpec:
 
     @property
     def depends_on(self) -> tuple[Dependency, ...]:
-        from workflow.engine.definitions import dependencies_for
+        from core.dependencies import dependencies_for
         return dependencies_for(self.name)
 
 

@@ -28,6 +28,7 @@ from core.errors import StepFailed
 from core.keys import safe_name
 from core import utc_now
 from core.contracts import SCHEMA_VERSION, ArtifactRef, StepError, StepRecord
+from infrastructure.storage.atomic import atomic_write_text
 from infrastructure.storage.lifecycle import LifecycleStore
 from infrastructure.storage.database import RecordDatabase
 from infrastructure.storage.policy import artifact_mode
@@ -124,24 +125,9 @@ class RecordStore:
 
     def _write_steps(self, run_id: str, payload: dict[str, Any]) -> None:
         path = self.steps_path(run_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        text = json.dumps(payload, ensure_ascii=False, indent=2)
-        temporary = path.with_suffix(".tmp")
-        with temporary.open("w", encoding="utf-8") as file_obj:
-            file_obj.write(text)
-            file_obj.flush()
-            os.fsync(file_obj.fileno())
-        delay = _REPLACE_RETRY_BASE
-        for attempt in range(_REPLACE_RETRIES):
-            try:
-                temporary.replace(path)
-                return
-            except PermissionError:
-                # 对端的读句柄没有共享删除，rename 会失败；读侧已缩短持有时长。
-                if attempt + 1 >= _REPLACE_RETRIES:
-                    raise
-                time.sleep(delay)
-                delay = min(delay * 2, _REPLACE_RETRY_CAP)
+        # 原子写与文件占用重试统一走 infrastructure.storage.atomic，
+        # 终态报告写入共用同一实现，避免两处口径不一致。
+        atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
 
     def save(
         self,

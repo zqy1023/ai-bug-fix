@@ -24,6 +24,9 @@ export function reviewTone(value?: string): 'ok' | 'warn' | 'danger' | 'idle' {
   if (['PASS', 'PASSED', 'SUFFICIENT'].includes(key)) return 'ok';
   if (['MANUAL', 'UNVERIFIED', 'INSUFFICIENT', 'UNKNOWN'].includes(key)) return 'warn';
   if (['FAIL', 'FAILED'].includes(key)) return 'danger';
+  // 采集环境未就绪：验证根本没跑到被测代码，不能当成"业务没通过"，
+  // 但也不能显示成通过——用中性色区分于"断言未通过"。
+  if (['ENVIRONMENT_UNAVAILABLE'].includes(key)) return 'idle';
   return 'idle';
 }
 
@@ -32,6 +35,7 @@ export function reviewLabel(value?: string): string {
     PASS: '通过', PASSED: '通过', FAIL: '未通过', FAILED: '未通过',
     MANUAL: '存在待确认项', UNVERIFIED: '未验证', UNKNOWN: '无法确认',
     SUFFICIENT: '覆盖充分', INSUFFICIENT: '覆盖不足',
+    ENVIRONMENT_UNAVAILABLE: '环境未就绪',
   };
   return labels[(value || '').toUpperCase()] || value || '未提供';
 }

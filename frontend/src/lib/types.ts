@@ -64,6 +64,8 @@ export interface RunDefaultsUpdate {
   max_attempts?: number | null;
   unified_model?: string | null;
   review_model?: string | null;
+  /** 证据充分的小任务使用的廉价模型；空表示不分层。 */
+  small_model?: string | null;
 }
 
 export interface HealthResponse {
@@ -162,6 +164,27 @@ export interface ReviewPayload {
   todo?: string[];
   unresolved_issues?: string[];
   delivery_eligible?: boolean;
+  /**
+   * 复现情况：与业务结论分开记录。复现是审查的一环，不是交付门槛。
+   * - reproduced：验证执行且通过
+   * - assertion_failed：验证执行了但业务断言未通过（补丁可能没解决问题）
+   * - unavailable：验证没跑起来（环境未就绪 / 原始请求缺字段 / 缺录制 response）
+   */
+  reproduction?: {
+    state?: 'reproduced' | 'assertion_failed' | 'unavailable' | string;
+    reason?: string;
+    detail?: Record<string, { label?: string; state?: string; reason?: string }>;
+  };
+  /**
+   * 运行验证证据。status 与 outcome 是两个维度：
+   * status=unverified 且 outcome=environment_unavailable 表示
+   * **采集环境没起来、本轮未执行到被测代码**，与"断言未通过"完全不同。
+   */
+  validation?: {
+    replay?: { status?: string; outcome?: string; reason?: string; next_action?: string };
+    request?: { status?: string; outcome?: string; reason?: string; next_action?: string };
+    [key: string]: unknown;
+  };
   [key: string]: unknown;
 }
 

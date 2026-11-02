@@ -35,6 +35,10 @@ SPEC = StepSpec(
     # 步骤记录只存分类字段和错误摘要；代表请求留在 run 级 normalized_records 产物里。
     # raw_error / message 是原始日志原文，必须保留：审批与任务详情都要用完整日志判断问题，
     # 只留规范化后的 error 会把堆栈和上下文丢掉。
+    #
+    # req / response 同样不能裁：终态报告与交付分支上的 task_summary.md 都要展示
+    # 完整原始异常——ApexMotor 那轮根因就在 response 的 "PRO=" 前缀上，缺了它
+    # 交付文档只剩一句"上游响应：未捕获"，复核者无法判断修复对不对。
     output_record=RecordView(
         trim=(
             (
@@ -48,7 +52,21 @@ SPEC = StepSpec(
                     "problem",
                 ),
             ),
-            ("tasks.problem", ("carrier", "error", "raw_error", "message", "service_name", "biztype")),
+            (
+                "tasks.problem",
+                (
+                    "carrier",
+                    "error",
+                    "raw_error",
+                    "message",
+                    "service_name",
+                    "biztype",
+                    "req",
+                    "response",
+                    "original_exception_message",
+                    "related_messages",
+                ),
+            ),
         )
     ),
 )

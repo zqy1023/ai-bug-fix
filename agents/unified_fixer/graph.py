@@ -11,18 +11,29 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from infrastructure.llm.common import audit_metadata, parse_result, raw_result, usage_of
-from core.policy import carrier_read_paths, carrier_write_paths, retry_read_paths, rules_text
-from agents.unified_fixer.models import UnifiedFixerConfig, UnifiedFixerInput, UnifiedFixerOutput, UnifiedFixerState
+from agents.unified_fixer.models import (
+    UnifiedFixerConfig,
+    UnifiedFixerState,
+)
 from agents.unified_fixer.provider import create_provider
-from core.policy import legacy_analysis_required
-from infrastructure.workspace.workspace import WorkspaceError, WorkspaceManager
-from infrastructure.storage.redaction import public_exception
-from infrastructure.workspace.diff import source_manifest, source_changes
+from core.policy import (
+    carrier_read_paths,
+    carrier_write_paths,
+    legacy_analysis_required,
+    retry_read_paths,
+    rules_text,
+)
 from infrastructure.llm import PromptRenderer
-from infrastructure.llm.rules import budget_tier, select_rules
+from infrastructure.llm.common import audit_metadata, parse_result, usage_of
 from infrastructure.llm.context import model_name, prompt_context
-from infrastructure.workspace.reproduction import needs_reproduction, reproduce_before_analysis
+from infrastructure.llm.rules import budget_tier, select_rules
+from infrastructure.storage.redaction import public_exception
+from infrastructure.workspace.diff import source_changes, source_manifest
+from infrastructure.workspace.reproduction import (
+    needs_reproduction,
+    reproduce_before_analysis,
+)
+from infrastructure.workspace.workspace import WorkspaceManager
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +81,7 @@ def run_unified_fixer(state: UnifiedFixerState, runtime: Any) -> dict[str, Any]:
     shared_root_val = state.get("source_project_path")
     shared_root = Path(str(shared_root_val)).resolve() if shared_root_val and Path(str(shared_root_val)).is_dir() else None
 
+    policy = dict(state.get("agent_policy") or {})
     carrier_root = WorkspaceManager.find_carrier_dir(str(workspace), framework, carrier)
 
     # 构造读写白名单
@@ -82,7 +94,9 @@ def run_unified_fixer(state: UnifiedFixerState, runtime: Any) -> dict[str, Any]:
     write_roots = ()
     write_target = None
     if not is_legacy and carrier_root is not None:
-        write_roots = tuple(carrier_write_paths(workspace, carrier))
+        # 写白名单与 ToolPolicy 校验必须由同一个函数算出，且都带上策略：
+        # repair_shared 打开后，快照会复制共享子目录，模型也必须能改它们。
+        write_roots = tuple(carrier_write_paths(workspace, carrier, policy))
         write_target = carrier_root
 
     # 2. 准备 Prompt 上下文
@@ -112,8 +126,15 @@ def run_unified_fixer(state: UnifiedFixerState, runtime: Any) -> dict[str, Any]:
     # 小任务用精简角色提示词：位置已知时不需要再教它怎么探索。
     role_variant = "analysis" if is_legacy else "small" if tier.name == "small" else ""
 
-    policy = state.get("agent_policy") or {}
-    chosen_model = policy.get("unified_model") or getattr(config, "model", "") or model_name(runtime)
+    from core.policy import AgentPolicy
+
+    policy = AgentPolicy.model_validate(state.get("agent_policy") or {})
+    # small 档证据充分（字段/栈帧已定位），可用廉价模型；未配置时与之前一致。
+    chosen_model = (
+        policy.model_choice("unified_fixer", tier.name)
+        or getattr(config, "model", "")
+        or model_name(runtime)
+    )
     active_prompt_context = prompt_context(
         "unified_fixer", state,
         framework=framework, evidence=evidence,
@@ -165,11 +186,41 @@ def run_unified_fixer(state: UnifiedFixerState, runtime: Any) -> dict[str, Any]:
                 break
             usage = usage_of(raw_output)
             stop_kind = str(usage.get("tool_stop_kind") or "")
-            if ((usage.get("tool_blocked_writes") and not changed_files)
-                    or (stop_kind and (not changed_files or parsed.get("status") != "FIXED"))):
-                # 结构化分析是保留的证据，不能掩盖平台阻断修复的执行事实。
+            # 工具被平台阻断时，**不能因为阻断就抹掉模型已经给出的结构化结论**：
+            # 探索/总预算耗尽通常发生在模型已经取证完毕、正在收尾时（真实批次里
+            # DHLink 输出了完整正确的归因，却因预算耗尽被判失败）。正确做法是：
+            # 保留结论与缺口，把阻断事实记成"证据不完整"，交独立审查判断。
+            # 只有"写入被拒绝"（tool_blocked_writes）才是真的没完成修复。
+            # 「有结论」有两种形态：模型写出了归因说明，**或者**它已经真的改动了
+            # 源码（修复落地了，只是报告没写全）。真实批次里两者都出现过：
+            # DHLink 输出了完整归因却因预算耗尽被判失败；另一个任务改完了代码、
+            # 轮数耗尽导致 JSON 不完整，同样被判失败。
+            has_conclusion = bool(
+                changed_files
+                or (
+                    parsed.get("status")
+                    and parsed.get("status") != "MANUAL"
+                    and (parsed.get("root_cause") or parsed.get("summary") or parsed.get("analysis"))
+                )
+            )
+            if usage.get("tool_blocked_writes") and not changed_files:
+                # 写入被拒绝：修复确实没完成，不能算有效交付。
                 parsed.update(failure_kind=stop_kind or "tool_write_blocked", result="failed",
                               blocked_reason=str(usage.get("tool_stop_reason") or "工具写入被拒绝，修复未完成"))
+            elif stop_kind and not has_conclusion:
+                # 阻断发生且没有可用结论：按失败处理。
+                parsed.update(failure_kind=stop_kind, result="failed",
+                              blocked_reason=str(usage.get("tool_stop_reason") or "工具调用被阻断，未取得分析结论"))
+            elif stop_kind:
+                # 有结论但工具被阻断：保留结论，标注证据不完整。
+                gaps = list(parsed.get("evidence_gaps") or [])
+                note = f"工具调用被平台阻断（{stop_kind}），本轮结论基于阻断前的已有证据"
+                if note not in gaps:
+                    gaps.append(note)
+                parsed.update(
+                    evidence_gaps=gaps,
+                    summary=str(parsed.get("summary") or "") + f"（{note}）",
+                )
             unauthorized = [name for name in changed_files if not any(
                 (workspace / name).resolve().is_relative_to(Path(allowed).resolve()) for allowed in write_roots
             )]

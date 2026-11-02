@@ -42,7 +42,7 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
 
     analysis_only = _analysis_only_task(state)
     from core.policy import legacy_analysis_required
-    from workflow.engine.confirmation import confirmation
+    from workflow.engine.routes import confirmation
 
     manual_required, manual_reasons = confirmation(state)
     from core.policy import policy_of
@@ -61,7 +61,7 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
         ) != sorted(set(state.get("changed_files") or [])):
             raise StepFailed("变更清单与源码基线不一致", code="CANDIDATE_FILES_STALE")
         from agents.review.contract import REVIEW_CONTRACT_VERSION, delivery_allowed
-        from workflow.engine.evidence_version import evidence_version
+        from workflow.engine.handoff import evidence_version
         from workflow.engine.routes import fingerprint
 
         version = evidence_version(

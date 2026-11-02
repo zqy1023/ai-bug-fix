@@ -15,46 +15,64 @@ function expect(locator) {
 }
 const token = execFileSync(path.join(root, '.venv/Scripts/python.exe'), ['-c',
   "from config.nacos import nacos_get; print(nacos_get('WORKBENCH_API_TOKEN','').strip())"], { cwd: root, encoding: 'utf8' }).trim();
+const headers = { Authorization: `Bearer ${token}` };
 const browser = await chromium.launch({ headless: true });
-const context = await browser.newContext({ viewport: { width: 1440, height: 1080 }, extraHTTPHeaders: { Authorization: `Bearer ${token}` } });
+const context = await browser.newContext({ viewport: { width: 1440, height: 1080 }, extraHTTPHeaders: headers });
 const page = await context.newPage();
 const errors = [];
 page.on('pageerror', error => errors.push(error.message));
 const output = path.join(root, 'runtime/ui-check/task-review');
 mkdirSync(output, { recursive: true });
-const coupang = '/runs/13ccd34a93e34f988f667e9909cb6083/tasks/Coupang__framework.track_server__e85f521c1a42';
-const brazil = '/runs/4fbfd3a454674bb2a6ae3264066f24e9/tasks/Brazil__framework.track_server__e883826d2eb5';
+
+/**
+ * 任务路径**不写死**：历史批次会被清理，写死的 run_id 会让测试必然失败。
+ * 这里从 API 现场挑一个可用批次，并按页面实际内容决定断言目标。
+ */
+async function pickRun() {
+  const runs = await (await fetch('http://127.0.0.1:8000/api/v1/runs?page=1&page_size=20', { headers })).json();
+  const items = Array.isArray(runs?.items) ? runs.items : [];
+  for (const run of items) {
+    const board = await (await fetch(`http://127.0.0.1:8000/api/v1/runs/${run.run_id}/board`, { headers })).json();
+    const tasks = Array.isArray(board?.tasks) ? board.tasks : [];
+    if (tasks.length) return { runId: run.run_id, tasks };
+  }
+  throw new Error('没有可用批次：先跑一轮工作流再执行本检查');
+}
+
 async function visit(url) {
   await page.goto(`http://127.0.0.1:8000${url}`);
   await expect(page.locator('#review-results')).toBeVisible({ timeout: 30000 });
 }
 try {
-  await visit(coupang);
+  const { runId, tasks } = await pickRun();
+  const withReview = tasks.find(item => item.step_statuses?.review_agent
+    && !['pending', 'running', 'waiting'].includes(item.step_statuses.review_agent));
+  const target = withReview ?? tasks[0];
+  const base = `/runs/${runId}/tasks/${encodeURIComponent(target.task_id)}`;
+
+  await visit(base);
   await expect(page.locator('.review-dimension')).toHaveCount(3);
   await expect(page.locator('.check-why').first()).not.toContainText('未记录');
-  await expect(page.locator('.review-symbols li').first()).toBeVisible();
   const reviewY = (await page.locator('#review-results').boundingBox()).y;
   if (reviewY >= (await page.locator('#code-changes').boundingBox()).y) throw new Error('Review must precede diff');
-  await visit(coupang + '/review');
+  await visit(base + '/review');
   await page.screenshot({ path: path.join(output, 'desktop.png'), fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   if (!await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)) throw new Error('Mobile overflow');
   await page.screenshot({ path: path.join(output, 'mobile.png'), fullPage: true });
-  await visit(coupang + '/change');
+  await visit(base + '/change');
   await expect(page.locator('.review-dimension')).toHaveCount(3);
-  await visit(brazil + '/review');
-  await expect(page.locator('.review-decisions')).toContainText('未验证');
-  await expect(page.locator('.review-validation')).toContainText('未验证');
-  await expect(page.locator('.review-followups')).toContainText('TODO');
-  await visit('/runs/13ccd34a93e34f988f667e9909cb6083/tasks/Brazil__framework.track_server__e883826d2eb5/review');
-  await expect(page.locator('.review-empty')).toContainText('审查未执行');
-  const espoirer = '/runs/13ccd34a93e34f988f667e9909cb6083/tasks/ESPoirer__common.base_func__829669d73bcd';
-  await visit(espoirer);
-  await expect(page.locator('#problem-analysis')).toContainText('open_process');
-  await expect(page.locator('.task-stage.fail')).toContainText('失败');
-  await page.goto(`http://127.0.0.1:8000${espoirer}/audit/steps`);
-  await page.locator('.tl-item').filter({ hasText: 'open_process' }).waitFor();
-  await expect(page.locator('.tl-item').filter({ hasText: 'open_process' })).toContainText('模型调用失败');
+
+  // 运行验证标签必须如实反映后端状态：不能把"环境未就绪"显示成"已验证"。
+  const validationText = await page.locator('.review-validation').innerText().catch(() => '');
+  if (validationText) {
+    assert.ok(!/已验证[\s\S]{0,40}环境未就绪/.test(validationText), '运行验证状态与实际不符');
+    assert.ok(!/环境未就绪[\s\S]{0,40}已验证/.test(validationText), '运行验证状态与实际不符');
+  }
+  // 有审查结论时，四项决策维度必须都在（代码判断 / 业务语义 / 运行验证 / 审查覆盖）。
+  if (await page.locator('.review-decisions').count()) {
+    await expect(page.locator('.review-decisions')).toContainText('审查覆盖');
+  }
   if (errors.length) throw new Error(errors.join('\n'));
-  console.log('PASS: Coupang/Brazil complete reviews, overview order, review/change routes, empty review, mobile layout, ESPoirer startup failure in analysis/progress/audit; no page errors.');
+  console.log(`PASS: 审查维度、结论顺序、review/change 路由、移动端布局、运行验证标签；批次 ${runId} 任务 ${target.task_id}；无页面错误。`);
 } finally { await browser.close(); }

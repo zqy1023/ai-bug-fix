@@ -416,7 +416,7 @@ def _v1_detail(run_id: str) -> dict[str, Any]:
     checkpoint_has_interrupt = False
     checkpoint_read_failed = False
     try:
-        from workflow.engine.wiring import build_graph
+        from workflow.engine.graph import build_graph
         graph = build_graph(store=store)
         snapshot = graph.get_state({"configurable": {"thread_id": run_id}})
         next_nodes = [str(item) for item in (getattr(snapshot, "next", ()) or ())]

@@ -162,6 +162,14 @@ def public_exception(error: BaseException, *, prefix: str) -> str:
         if isinstance(cause, GitCommandError):
             message += "；" + public_exception(cause, prefix="Git")
         return f"{prefix}：{message}（错误类型：{error_type}）"
+    # ToolPolicyError 的消息本身就是可对外展示的原因（"读取范围不符合角色白名单"
+    # / "Agent 授权目标不存在" 等），不带路径与凭据。丢掉它只剩一个类型名，
+    # 事后无法定位是哪一条校验没过。
+    # 惰性导入：core.policy 依赖 core.contracts，这里再反向 import 会形成环。
+    from core.policy import ToolPolicyError
+
+    if isinstance(error, ToolPolicyError):
+        return f"{prefix}（错误类型：{error_type}：{' '.join(str(error).split())}）"
     return f"{prefix}（错误类型：{error_type}）"
 
 

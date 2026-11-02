@@ -22,8 +22,21 @@ def task_outcome(task: dict[str, Any]) -> str:
     if review and (review.get("contract_error") or str(review.get("verdict") or "").upper() == "FAIL"
                    or review.get("code_verdict") in {"FAIL", "UNKNOWN"}):
         return "FAILED"
-    if review.get("code_verdict") == "PASS" and (review.get("dimensions", {}).get("business") or {}).get("status") == "unverified" and review.get("semantic_verified") is False:
-        return "FAILED"
+    # 「业务维度 unverified」不再单独判失败。
+    #
+    # 复现是审查的一环，不是交付门槛。业务维度 unverified 只说明"这段行为没有
+    # 被真实执行检验过"，可能是采集环境未就绪、原始请求缺字段，也可能是审查方
+    # 缺业务语义依据。它不构成"修复错了"的证据——真正的失败信号是
+    # code_verdict=FAIL/UNKNOWN、三维度出现 failed、findings/required_changes 非空，
+    # 这些都已在上面的判定与 delivery_allowed 里处理。
+    # 复现结果由 ``reproduction`` 如实记录，并写进交付文档。
+    if str(review.get("verdict") or "").upper() == "MANUAL":
+        from agents.review.contract import delivery_allowed, judge
+        # 只有审查结论本身协议完备时，才用它的放行判定覆盖交付事实；
+        # 历史记录里 review 可能只有局部字段（缺 dimensions/coverage），
+        # 那种情况不能凭不完整的结论判失败，继续按交付事实推导。
+        if judge(review).valid and not delivery_allowed(review):
+            return "FAILED"
     failed_agent = bool(report.get("repair_failure_kind")) or review_step.get("status") == "failed" or any(
                        step.get("name") in {"unified_fixer_agent", "review_agent"}
                        and ((step.get("output") or {}).get("failure_kind")
@@ -33,20 +46,24 @@ def task_outcome(task: dict[str, Any]) -> str:
     if failed_agent:
         return "FAILED"
     from agents.review.contract import judge
-    from core.policy import external_skip
+    from core.disposition import (
+        model_skip_proposal,
+        skip_approved_by_review,
+        unresolved_blocks_delivery,
+    )
 
     repair_step = next((step for step in steps if step.get("name") == "unified_fixer_agent"), {})
     repair = repair_step.get("output") or {
         "status": report.get("locate_status"), "attribution_type": report.get("attribution_type"),
         "skip_reason": report.get("skip_reason"),
     }
-    # A model's skip is a proposal. A persisted terminal label cannot approve it
-    # or hide a later rejection; deterministic platform skips need no model review.
-    if external_skip(repair) and not judge(review).passed:
+    # 判定统一走 core.disposition：模型跳过是"提议"，落终态标签不能替它背书，
+    # 也不能掩盖后续的审查否决。平台确定性跳过不需要模型审查。
+    if model_skip_proposal(repair) and not skip_approved_by_review(repair, review):
         return "FAILED"
     if review.get("review_kind") == "analysis_disposition" and not judge(review).passed:
         return "FAILED"
-    if review.get("review_kind") != "analysis_disposition" and review.get("unresolved_issues"):
+    if unresolved_blocks_delivery(review):
         return "FAILED"
     if report.get("skip_reason") or repair.get("skip_reason"):
         return "SKIPPED"

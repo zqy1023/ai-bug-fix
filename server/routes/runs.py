@@ -6,7 +6,6 @@ import threading
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from server.routes.common import *
@@ -59,9 +58,9 @@ def _busy_run(store) -> tuple[str, str] | None:
 
 def _run_config_payload(*, force: bool = False) -> dict[str, Any]:
     """提供新建运行的有效默认值与上限；设置来源为 Nacos。"""
-    from infrastructure.llm.models import model_options, model_options_by_role
-    from core.policy import AgentPolicy, resolve_policy
     from config.nacos import load_nacos_config, nacos_target
+    from core.policy import AgentPolicy, resolve_policy
+    from infrastructure.llm.models import model_options, model_options_by_role
 
     config = _config()
     nacos = nacos_target()
@@ -87,6 +86,8 @@ def _run_config_payload(*, force: bool = False) -> dict[str, Any]:
             overrides["unified_model"] = str(policy_values["unified_model"])
         if policy_values.get("review_model"):
             overrides["review_model"] = str(policy_values["review_model"])
+        if policy_values.get("small_model"):
+            overrides["small_model"] = str(policy_values["small_model"])
 
     defaults = V1StartRunRequest().model_dump(mode="json")
     try:
@@ -126,6 +127,7 @@ class V1RunDefaultsUpdate(BaseModel):
     max_attempts: int | None = Field(default=None, ge=1, le=5)
     unified_model: str | None = Field(default=None, max_length=200)
     review_model: str | None = Field(default=None, max_length=200)
+    small_model: str | None = Field(default=None, max_length=200)
 
 
 def _agent_policy_values() -> dict[str, Any]:
@@ -144,12 +146,12 @@ def v1_update_run_config(
     _: None = Depends(_authorize),
 ) -> dict[str, Any]:
     """写入 Nacos 配置；本地不保存覆盖，写失败直接返回 503。"""
-    from infrastructure.llm.models import model_options
     from config.nacos import NacosUnavailable, publish_nacos_values
+    from infrastructure.llm.models import model_options
 
     updates = request.model_dump(exclude_unset=True)
     catalog = {item.model_id for item in model_options(_config())}
-    for key in ("unified_model", "review_model"):
+    for key in ("unified_model", "review_model", "small_model"):
         value = updates.get(key)
         if value and value not in catalog:
             raise HTTPException(status_code=400, detail=f"{key} 不在可用模型目录中")
@@ -163,9 +165,9 @@ def v1_update_run_config(
         if source in updates:
             nacos_updates[target] = updates[source]
 
-    if "unified_model" in updates or "review_model" in updates:
+    if any(key in updates for key in ("unified_model", "review_model", "small_model")):
         policy = _agent_policy_values()
-        for source in ("unified_model", "review_model"):
+        for source in ("unified_model", "review_model", "small_model"):
             if source in updates:
                 value = updates[source]
                 if value:
@@ -195,9 +197,8 @@ def v1_reset_run_config(_: None = Depends(_authorize)) -> dict[str, Any]:
         "AI_REPAIR_MAX_ATTEMPTS": None,
     }
     policy = _agent_policy_values()
-    if "unified_model" in policy or "review_model" in policy:
-        policy.pop("unified_model", None)
-        policy.pop("review_model", None)
+    for key in ("unified_model", "review_model", "small_model"):
+        policy.pop(key, None)
     nacos_updates["AI_REPAIR_AGENT_POLICY"] = (
         json.dumps(policy, ensure_ascii=False) if policy else None
     )
@@ -396,7 +397,7 @@ def v1_start_run(
                 _STARTED_RUNS.add(run_id)
 
             try:
-                from workflow.engine.entrypoint import prepare_run
+                from workflow.engine.graph import prepare_run
                 prepare_run(run_id, overrides=payload, queued=True)
             except Exception as exc:
                 raise HTTPException(
@@ -440,7 +441,7 @@ def v1_get_checkpoint(run_id: str, _: None = Depends(_authorize)) -> dict[str, A
     store = _store()
     _v1_detail(run_id)
     try:
-        from workflow.engine.wiring import build_graph
+        from workflow.engine.graph import build_graph
 
         graph = build_graph(store=store)
         snapshot = graph.get_state({"configurable": {"thread_id": run_id}})
@@ -461,7 +462,7 @@ def v1_list_checkpoints(
     store = _store()
     _v1_detail(run_id)
     try:
-        from workflow.engine.wiring import build_graph
+        from workflow.engine.graph import build_graph
 
         graph = build_graph(store=store)
         history = graph.get_state_history({"configurable": {"thread_id": run_id}})

@@ -240,6 +240,29 @@ def _compact_path(value: str, workspace: str | Path) -> str:
     return path.as_posix()
 
 
+def _evidence_with_references(
+    evidence: Mapping[str, Any] | None, state: Mapping[str, Any]
+) -> dict[str, Any]:
+    """构造 Prompt 证据，并把修复方的证据引用一并带进 ``evidence``。
+
+    审查子图按 ``state["repair"]["source_evidence"]`` 放开这些文件的读取权限，
+    权限校验（``ToolPolicy``）则按 ``context["evidence"]`` 计算同一份白名单。
+    两边取不同的来源就会数量对不上，直接把审查判成"读取范围不符合角色白名单"
+    （真实批次里 Maersk、Sweden 因此崩掉）。这里把引用统一放进 ``evidence``，
+    让两边必然看到同一份数据。
+    """
+    payload = dict(evidence or {})
+    if state.get("retry_context"):
+        payload["previous_attempt"] = state["retry_context"]
+    repair = state.get("repair")
+    if isinstance(repair, Mapping):
+        references = repair.get("source_evidence")
+        if references:
+            payload.setdefault("repair", {})
+            payload["repair"] = {**payload["repair"], "source_evidence": list(references)}
+    return payload
+
+
 def prompt_context(
     role: AgentRole,
     state: dict[str, Any],
@@ -286,7 +309,7 @@ def prompt_context(
         framework=framework,
         problem=problem,
         source_snapshot=source_snapshot or {},
-        evidence={**evidence, **({"previous_attempt": state["retry_context"]} if state.get("retry_context") else {})},
+        evidence=_evidence_with_references(evidence, state),
         changed_files=changed_files,
         diff_summary=diff_summary,
         allowed_scope=allowed_scope,
@@ -297,6 +320,7 @@ def prompt_context(
         retry_feedback=retry_feedback,
         source_project_path=source_project_path,
         project_rules=project_rules,
+        agent_policy=dict(state.get("agent_policy") or {}),
     )
 
 

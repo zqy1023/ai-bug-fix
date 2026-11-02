@@ -7,7 +7,7 @@ import json
 from typing import Any
 
 from core.errors import StepFailed
-from workflow.engine.evidence_version import evidence_version
+from workflow.engine.handoff import evidence_version
 from core.contracts import StepSpec
 from .models import ApprovalInput, ApprovalOutput
 from .node import run
@@ -15,7 +15,7 @@ from .node import run
 
 def _input(state: dict[str, Any]) -> dict[str, Any]:
     task = dict(state.get("task") or {})
-    from workflow.engine.confirmation import confirmation
+    from workflow.engine.routes import confirmation
 
     # 审批发生在交付之后：审批身份以正式交付结果为准；旧顺序（审批→交付）
     # 挂起的任务恢复时还没有交付记录，回退到准备阶段的候选。

@@ -38,6 +38,7 @@ export interface DeliveryView {
 export interface AgentPolicy {
   unified_model?: string;
   review_model?: string;
+  small_model?: string;
   analyze_legacy?: boolean;
   reproduce?: boolean;
   acceptance?: boolean;

@@ -3,12 +3,35 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
+
+# 正则元字符与通配符：归一化搜索词时剔除，"解析.*异常" 与 "解析异常" 视为同一个词。
+_SEARCH_NOISE = re.compile(r"[.*+?()\[\]{}^$|\\\-]")
+
+# 中英文与空白：归一化搜索词时压缩空白、统一小写。
+_SEARCH_SPACES = re.compile(r"\s+")
+
+
+def _search_key(pattern: str) -> str:
+    """把搜索模式归一化成"搜索词"，让正则变体计入同一计数。
+
+    模型会用 ``解析异常`` / ``解析.*异常`` / ``解析\\s*异常`` 等不同写法搜同一个东西；
+    按完整参数计数时这些都算"新搜索"，可以无限绕开限制。归一化后按词计数，
+    才能真正限制"对同一个目标反复检索"。
+    """
+    text = _SEARCH_NOISE.sub("", str(pattern or "")).strip().lower()
+    return _SEARCH_SPACES.sub("", text)
 
 
 class ToolBudget:
     """放行量受预算限制，连续拒绝停止无效循环。"""
+
+    # 同一搜索词最多检索几次：模型换个正则就能绕开"同参重复"限制，
+    # 实测一批任务 41 次工具调用里 32 次是 Grep，预算被搜索耗光后
+    # 轮数耗尽、拿不到结论。超过此数就要求改用文件路径直接读取。
+    _MAX_SEARCH_PER_KEYWORD = 3
 
     def __init__(self, limit: int, turn_limit: int = 0, *, writable: bool = False) -> None:
         self.limit = limit
@@ -19,8 +42,16 @@ class ToolBudget:
         self.denied = 0
         self.consecutive_denials = 0
         self.signatures: dict[str, int] = {}
+        # 搜索词计数：按 pattern 累计，不受正则变体影响。
+        self.search_counts: dict[str, int] = {}
         self.stop_reason = ""
         self.stop_kind = ""
+        # exploration_stopped：探索类工具已停止（连续拒绝或预算耗尽），
+        # 但写入与验证读取仍放行。
+        self.exploration_stopped = False
+        # write_calls：已放行的写入次数。写入有独立配额（write_reserve），
+        # 探索停止不影响它，但配额用完必须停——否则模型可以无限改文件。
+        self.write_calls = 0
         self.blocked_writes = 0
         self.write_reserve = min(2, max(0, limit - 1)) if writable else 0
         self.exploration_calls = 0
@@ -36,15 +67,27 @@ class ToolBudget:
             except OSError:
                 pass
         signature = hashlib.sha256(json.dumps(signature_data, sort_keys=True, default=str).encode()).hexdigest()
+        # 搜索按**搜索词**计重，不按完整参数：模型换个正则就能绕开"同参重复"限制，
+        # 实测一批任务 41 次工具调用里 32 次是 Grep（同一个词"解析异常"搜了两次、
+        # 其余是各种正则变体），把探索预算耗光后轮数耗尽、拿不到任何结论。
+        # 这里按搜索词累计次数上限，逼模型转向"定位到文件后读一次"。
+        search_key = ""
+        if name in {"Grep", "Glob"}:
+            search_key = _search_key(str(values.get("pattern") or values.get("glob") or ""))
         if decision == "allow":
             self.signatures[signature] = self.signatures.get(signature, 0) + 1
             writing = name in {"Edit", "Write"}
             path = str(Path(str(values.get("file_path") or "")).resolve())
             verifying = name == "Read" and path in self.pending_verification
-            if self.allowed >= self.limit:
+            if writing and self.write_calls >= self.write_reserve:
+                # 写入配额用完：探索停止不影响它，但配额用完必须停，
+                # 否则模型可以无限改文件。
+                decision, reason = "deny", f"授权修改次数已达上限 {self.write_reserve}；停止修改并输出当前结论与缺口"
+                self.stop_kind = "tool_budget_exhausted"
+            elif self.allowed >= self.limit and not (writing or verifying):
                 decision, reason = "deny", f"工具放行预算 {self.limit} 已耗尽；停止工具调用并输出当前结论与缺口"
                 self.stop_kind = "tool_budget_exhausted"
-            elif self.stop_kind and not ((writing or verifying) and self.stop_kind in {"turn_budget_exhausted", "exploration_budget_exhausted"}):
+            elif self.stop_kind and not (writing or verifying):
                 decision, reason = "deny", self.stop_reason or "探索已停止；立即使用已有证据输出结构化结论"
             elif not writing and not verifying and self.turn_limit and self.turns >= self.turn_limit:
                 decision, reason = "deny", "探索轮数已到上限；使用已有证据完成授权范围内的修改并输出结构化结论，不再探索"
@@ -52,6 +95,11 @@ class ToolBudget:
             elif not writing and not verifying and self.exploration_calls >= self.limit - self.write_reserve:
                 decision, reason = "deny", "探索工具预算已用完；剩余预算仅用于授权修改和结构化交接"
                 self.stop_kind = "exploration_budget_exhausted"
+            elif search_key and self.search_counts.get(search_key, 0) >= self._MAX_SEARCH_PER_KEYWORD:
+                decision, reason = "deny", (
+                    f"同一搜索词已检索 {self.search_counts[search_key]} 次；"
+                    "停止重复检索，用已找到的文件路径直接读取并给出结论"
+                )
             elif self.signatures[signature] > 2 and not verifying:
                 decision, reason = "deny", "相同工具参数及文件版本已读取两次；请使用已有证据，停止重复探索"
             elif name == "Edit" and "old_string" in values and values.get("old_string") == values.get("new_string"):
@@ -61,10 +109,13 @@ class ToolBudget:
             path = str(Path(str(values.get("file_path") or "")).resolve())
             if name in {"Edit", "Write"}:
                 self.pending_verification.add(path)
+                self.write_calls += 1
             elif name == "Read" and path in self.pending_verification:
                 self.pending_verification.remove(path)
             if name not in {"Edit", "Write"}:
                 self.exploration_calls += 1
+            if search_key:
+                self.search_counts[search_key] = self.search_counts.get(search_key, 0) + 1
             self.consecutive_denials = 0
         else:
             if name in {"Edit", "Write"}:
@@ -74,6 +125,11 @@ class ToolBudget:
             if self.stop_kind or self.consecutive_denials >= 3:
                 self.stop_kind = self.stop_kind or "tool_access_blocked"
                 self.stop_reason = reason
+                # 连续拒绝说明**探索**该停了，但写入与验证读取必须继续放行：
+                # 模型可能已经定位到文件正准备改，此时把它一起停掉会让
+                # 本可完成的修复变成"工具被拒、无结论"。写保护由权限层
+                # （allowed_write_roots）负责，不该由探索收敛顺带取消。
+                self.exploration_stopped = True
         return decision, reason
 
     def hook_output(self, name: str, values: dict[str, Any], decision: str, reason: str) -> dict[str, Any]:
