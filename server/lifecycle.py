@@ -33,15 +33,20 @@ from server.control_store import _audit_control, _control_db
 logger = logging.getLogger("server.lifecycle")
 
 def _start_lifecycle_heartbeat(
-    run_id: str, owner_id: str, lease_token: str,
+    run_id: str, owner_id: str, lease_token: str, *, claim: bool = True,
 ) -> tuple[threading.Event, threading.Thread]:
     """原子获取跨进程租约后启动心跳；进程内锁不再承担跨进程互斥职责。"""
     store = _store()
     lifecycle = LifecycleStore(store.root)
-    if not lifecycle.claim_worker_lease(
-        run_id, owner_id=owner_id, lease_token=lease_token, ttl_seconds=30,
+    if claim:
+        if not lifecycle.claim_worker_lease(
+            run_id, owner_id=owner_id, lease_token=lease_token, ttl_seconds=300,
+        ):
+            raise WorkerLeaseBusy(f"Run 已由其它 worker 持有有效租约: {run_id}")
+    elif not lifecycle.owns_worker_lease(
+        run_id, owner_id=owner_id, lease_token=lease_token,
     ):
-        raise WorkerLeaseBusy(f"Run 已由其它 worker 持有有效租约: {run_id}")
+        raise WorkerLeaseLost(f"预先获取的 Run 租约已过期或被替换: {run_id}")
     stop = threading.Event()
 
     def pulse() -> None:
@@ -310,7 +315,8 @@ def _record_background_failure(
         logger.exception("无法写入后台失败报告 run_id=%s", run_id)
 
 def _run_workflow_background_v1(
-    run_id: str, overrides: dict[str, Any], run_lock: Any = None
+    run_id: str, overrides: dict[str, Any], run_lock: Any = None,
+    worker_lease: tuple[str, str] | None = None,
 ) -> None:
     from workflow.engine.graph import run_workflow
     if run_lock is None:
@@ -321,12 +327,15 @@ def _run_workflow_background_v1(
             return
     heartbeat_stop: threading.Event | None = None
     heartbeat_thread: threading.Thread | None = None
-    lease_owner = f"{settings.service_name}:{uuid.uuid4().hex[:12]}"
-    lease_token = uuid.uuid4().hex
+    lease_owner, lease_token = worker_lease or (
+        f"{settings.service_name}:{uuid.uuid4().hex[:12]}", uuid.uuid4().hex,
+    )
     lease_acquired = False
     try:
         store = _store()
-        heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(run_id, lease_owner, lease_token)
+        heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(
+            run_id, lease_owner, lease_token, claim=worker_lease is None,
+        )
         lease_acquired = True
         LifecycleStore(store.root).update_run(
             run_id, status="running", phase="workflow_startup", current_step="", error={},
@@ -369,6 +378,7 @@ def _resume_workflow_background(
     run_id: str,
     run_lock: Any = None,
     resume_payload: dict[str, Any] | None = None,
+    worker_lease: tuple[str, str] | None = None,
 ) -> None:
     if run_lock is None:
         with _RUN_LOCKS_GUARD:
@@ -378,15 +388,18 @@ def _resume_workflow_background(
             return
     heartbeat_stop: threading.Event | None = None
     heartbeat_thread: threading.Thread | None = None
-    lease_owner = f"{settings.service_name}:{uuid.uuid4().hex[:12]}"
-    lease_token = uuid.uuid4().hex
+    lease_owner, lease_token = worker_lease or (
+        f"{settings.service_name}:{uuid.uuid4().hex[:12]}", uuid.uuid4().hex,
+    )
     lease_acquired = False
     try:
         from infrastructure.llm.config import load_config, workflow_recursion_limit
         from workflow.engine.graph import build_graph, build_services
 
         store = _store()
-        heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(run_id, lease_owner, lease_token)
+        heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(
+            run_id, lease_owner, lease_token, claim=worker_lease is None,
+        )
         lease_acquired = True
         LifecycleStore(store.root).update_run(
             run_id, status="running", phase="workflow_resume", current_step="", error={},
