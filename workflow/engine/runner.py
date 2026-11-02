@@ -1087,14 +1087,31 @@ class StepRunner:
 
     def run(self, request: StepRunRequest) -> dict[str, Any]:
         spec = self.validate(request)
-        running = self._mark_running(spec, request)
-        thread = threading.Thread(
-            target=self._execute,
-            args=(spec, request),
-            name=f"step-run-{request.run_id}-{spec.name}",
-            daemon=True,
-        )
-        thread.start()
+        lifecycle = LifecycleStore(self._store.root)
+        lease_owner = f"{settings.service_name}:single-step:{uuid.uuid4().hex[:12]}"
+        lease_token = uuid.uuid4().hex
+        if not lifecycle.claim_worker_lease(
+            request.run_id, owner_id=lease_owner, lease_token=lease_token,
+            ttl_seconds=30,
+        ):
+            raise StepRunnerError(
+                f"Run 正由其它 worker 执行，拒绝单步写入: {request.run_id}",
+                code="RUN_LEASE_BUSY",
+            )
+        try:
+            running = self._mark_running(spec, request)
+            thread = threading.Thread(
+                target=self._execute,
+                args=(spec, request, lease_owner, lease_token),
+                name=f"step-run-{request.run_id}-{spec.name}",
+                daemon=True,
+            )
+            thread.start()
+        except BaseException:
+            lifecycle.release_worker_lease(
+                request.run_id, owner_id=lease_owner, lease_token=lease_token,
+            )
+            raise
         return {
             "run_id": request.run_id,
             "task_id": request.task_id,
@@ -1129,18 +1146,24 @@ class StepRunner:
         )
         return record
 
-    def _execute(self, spec: PluginSpec, request: StepRunRequest) -> None:
+    def _execute(
+        self, spec: PluginSpec, request: StepRunRequest,
+        lease_owner: str | None = None, lease_token: str | None = None,
+    ) -> None:
         continuing = False
         lifecycle = LifecycleStore(self._store.root)
-        lease_owner = f"{settings.service_name}:single-step:{uuid.uuid4().hex[:12]}"
-        lease_token = uuid.uuid4().hex
+        lease_owner = lease_owner or f"{settings.service_name}:single-step:{uuid.uuid4().hex[:12]}"
+        lease_token = lease_token or uuid.uuid4().hex
         lease_acquired = False
         try:
-            if not lifecycle.claim_worker_lease(
+            if not lifecycle.owns_worker_lease(
                 request.run_id, owner_id=lease_owner, lease_token=lease_token,
-                ttl_seconds=30,
             ):
-                raise WorkerLeaseBusy(f"Run 正由其它 worker 执行，拒绝单步写入: {request.run_id}")
+                if not lifecycle.claim_worker_lease(
+                    request.run_id, owner_id=lease_owner, lease_token=lease_token,
+                    ttl_seconds=30,
+                ):
+                    raise WorkerLeaseBusy(f"Run 正由其它 worker 执行，拒绝单步写入: {request.run_id}")
             lease_acquired = True
             from infrastructure.storage.reports import archive_retry_reports
             archive_retry_reports(self._store, request.run_id, request.task_id)
