@@ -31,6 +31,48 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def start_worker_lease_heartbeat(
+    lifecycle: "LifecycleStore",
+    run_id: str,
+    *,
+    owner_id: str,
+    lease_token: str,
+    interval_seconds: int = 5,
+    ttl_seconds: int = 30,
+):
+    """为当前 worker 续租；续租失败会停止心跳，节点 fencing 随后拒绝旧 worker。"""
+    import threading
+
+    if interval_seconds < 1 or ttl_seconds < 5:
+        raise ValueError("worker lease heartbeat 参数无效")
+    if not lifecycle.owns_worker_lease(
+        run_id, owner_id=owner_id, lease_token=lease_token,
+    ):
+        raise WorkerLeaseLost(f"无法为非持有者启动 Run 心跳: {run_id}")
+    stop = threading.Event()
+
+    def pulse() -> None:
+        while not stop.wait(interval_seconds):
+            try:
+                if not lifecycle.heartbeat_worker_lease(
+                    run_id, owner_id=owner_id, lease_token=lease_token,
+                    ttl_seconds=ttl_seconds,
+                ):
+                    logger.error("Run worker lease lost; heartbeat stopped run_id=%s", run_id)
+                    stop.set()
+                    return
+            except Exception:
+                logger.exception("Run worker lease heartbeat failed run_id=%s", run_id)
+                stop.set()
+                return
+
+    thread = threading.Thread(
+        target=pulse, name=f"run-heartbeat-{run_id}", daemon=True,
+    )
+    thread.start()
+    return stop, thread
+
+
 class LifecycleStore:
     """仅从当前运行的 SQLite 读取和更新生命周期。"""
 
@@ -262,4 +304,4 @@ class _Unset:
 _UNSET = _Unset()
 
 
-__all__ = ["LifecycleStore", "WorkerLeaseBusy", "WorkerLeaseLost"]
+__all__ = ["LifecycleStore", "WorkerLeaseBusy", "WorkerLeaseLost", "start_worker_lease_heartbeat"]
