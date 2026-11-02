@@ -93,6 +93,19 @@ class LifecycleStore:
                 current_expiry = now
             if current_token and current_expiry > now:
                 return current
+            # 兼容升级前只写 worker_active/heartbeat_at 的旧 worker；
+            # 最近心跳仍有效时不能被新版本立即抢占。
+            if not current_token and current.get("worker_active"):
+                try:
+                    legacy_heartbeat = datetime.fromisoformat(
+                        str(current.get("heartbeat_at") or "")
+                    )
+                    if legacy_heartbeat.tzinfo is None:
+                        legacy_heartbeat = legacy_heartbeat.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    legacy_heartbeat = now
+                if legacy_heartbeat + timedelta(seconds=ttl_seconds) > now:
+                    return current
             claimed = True
             return {
                 **current,
