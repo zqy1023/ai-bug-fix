@@ -47,29 +47,6 @@ class ApprovalDecision(BaseModel):
     retry_target: str | None = None
 
 
-def _config():
-    import sys
-    _mod = sys.modules.get("server.api") or sys.modules.get("server.routes")
-    if _mod and "_config" in _mod.__dict__ and _mod.__dict__["_config"] is not _config:
-        return _mod.__dict__["_config"]()
-    try:
-        return load_config()
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=public_exception(exc, prefix="运行配置不可用"),
-        ) from exc
-
-
-def _store() -> RecordStore:
-    import sys
-    _mod = sys.modules.get("server.api") or sys.modules.get("server.routes")
-    if _mod and "_store" in _mod.__dict__ and _mod.__dict__["_store"] is not _store:
-        return _mod.__dict__["_store"]()
-    config = _config()
-    return RecordStore(config.runtime_dir)
-
-
 def _has_pending_approval_interrupt(store: RecordStore, run_id: str) -> bool:
     """判断心跳失效的 Run 是否仍有可恢复的审批断点。"""
     try:
@@ -900,7 +877,9 @@ def _checkpoint_projection(snapshot: Any) -> dict[str, Any]:
 
 
 # 基础身份校验和文件解析函数只在 server.context 维护。
-from server.context import _ID_PATTERN, _authorize, _parse_time, _read_json, _safe_id
+from server.context import (
+    _ID_PATTERN, _authorize, _config, _parse_time, _read_json, _safe_id, _store,
+)
 
 # Run 级线程锁与运行标记只在 server.context 维护，避免 API 路由和 worker
 # 各自持有一套互不知情的进程内锁表。
