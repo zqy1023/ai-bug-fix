@@ -24,7 +24,7 @@ def _control_flags(runtime_dir: str | Path, run_id: str) -> tuple[bool, bool]:
     if not run_id or not database.is_file():
         return False, False
     try:
-        with closing(sqlite3.connect(str(database), timeout=1)) as connection:
+        with closing(open_sqlite(database, timeout=1)) as connection:
             row = connection.execute(
                 "SELECT pause_requested, cancel_requested FROM run_control WHERE run_id = ?",
                 (run_id,),
