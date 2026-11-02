@@ -32,18 +32,21 @@ def open_sqlite(
         timeout=timeout,
         check_same_thread=check_same_thread,
     )
-    if row_factory is not None:
-        connection.row_factory = row_factory
-    if busy_timeout_ms is not None:
-        connection.execute(f"PRAGMA busy_timeout={max(0, int(busy_timeout_ms))}")
-    if journal_mode:
-        # journal_mode 只接受 SQLite 支持的固定枚举，避免拼接任意 SQL。
-        mode = journal_mode.upper()
-        if mode not in {"DELETE", "TRUNCATE", "PERSIST", "MEMORY", "WAL", "OFF"}:
-            connection.close()
-            raise ValueError(f"不支持的 SQLite journal_mode: {journal_mode}")
-        connection.execute(f"PRAGMA journal_mode={mode}")
-    return connection
+    try:
+        if row_factory is not None:
+            connection.row_factory = row_factory
+        if busy_timeout_ms is not None:
+            connection.execute(f"PRAGMA busy_timeout={max(0, int(busy_timeout_ms))}")
+        if journal_mode:
+            # journal_mode 只接受 SQLite 支持的固定枚举，避免拼接任意 SQL。
+            mode = journal_mode.upper()
+            if mode not in {"DELETE", "TRUNCATE", "PERSIST", "MEMORY", "WAL", "OFF"}:
+                raise ValueError(f"不支持的 SQLite journal_mode: {journal_mode}")
+            connection.execute(f"PRAGMA journal_mode={mode}")
+        return connection
+    except BaseException:
+        connection.close()
+        raise
 
 
 __all__ = ["open_sqlite"]
