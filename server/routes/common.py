@@ -690,49 +690,6 @@ class V1ApprovalDecision(BaseModel):
     retry_target: RetryTarget | None = None
 
 
-def _control_db():
-    """Durable idempotency, stop-request and audit metadata, separate from workflow artifacts."""
-    import sqlite3
-    config = _config()
-    runtime_dir = config.runtime_dir
-    runtime_dir.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(
-        str(runtime_dir / "workbench-control.sqlite3"),
-        timeout=config.workbench_sqlite_timeout_seconds,
-    )
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute(f"PRAGMA busy_timeout={config.workbench_sqlite_busy_timeout_ms}")
-    connection.executescript("""
-        CREATE TABLE IF NOT EXISTS idempotency_keys (
-            key TEXT PRIMARY KEY, payload_hash TEXT NOT NULL, run_id TEXT NOT NULL, created_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS run_control (
-            run_id TEXT PRIMARY KEY, pause_requested INTEGER NOT NULL DEFAULT 0,
-            cancel_requested INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS control_audit (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, task_id TEXT NOT NULL DEFAULT '',
-            action TEXT NOT NULL, actor TEXT NOT NULL DEFAULT 'unknown', reason TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL
-        );
-    """)
-    connection.commit()
-    return connection
-
-
-def _audit_control(run_id: str, task_id: str, action: str, actor: str, reason: str = "") -> None:
-    connection = _control_db()
-    try:
-        connection.execute(
-            "INSERT INTO control_audit(run_id,task_id,action,actor,reason,created_at) VALUES(?,?,?,?,?,?)",
-            (run_id, task_id, action, actor[:160], reason[:1000], datetime.now(timezone.utc).isoformat()),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-
 def _v1_status(value: str) -> str:
     status = (value or "").lower()
     aliases = {"pending": "queued", "accepted": "queued", "completed": "succeeded", "success": "succeeded"}
@@ -981,6 +938,9 @@ def _checkpoint_projection(snapshot: Any) -> dict[str, Any]:
 # Run 级线程锁与运行标记只在 server.context 维护，避免 API 路由和 worker
 # 各自持有一套互不知情的进程内锁表。
 from server.context import _RUN_LOCKS, _RUN_LOCKS_GUARD, _STARTED_RUNS, _run_lock
+
+# 控制库连接、Schema 初始化和审计写入只由 server.control_store 维护。
+from server.control_store import _audit_control, _control_db
 
 # Run 生命周期与后台 worker 的唯一实现位于 server.lifecycle；
 # 路由层只复用，不再维护第二套心跳、报告收敛和工作区清理逻辑。
