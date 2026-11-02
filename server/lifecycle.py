@@ -69,6 +69,12 @@ def _start_lifecycle_heartbeat(
     return stop, thread
 
 
+def _owns_worker_lease(run_id: str, owner_id: str, lease_token: str) -> bool:
+    return LifecycleStore(_store().root).owns_worker_lease(
+        run_id, owner_id=owner_id, lease_token=lease_token,
+    )
+
+
 def _clear_worker_active(run_id: str, owner_id: str, lease_token: str) -> bool:
     """仅释放当前 worker 自己的租约，旧 worker 不得清除新持有者状态。"""
     for attempt in range(2):
@@ -337,8 +343,11 @@ def _run_workflow_background_v1(
     except WorkerLeaseLost as exc:
         logger.warning("旧 worker 已失去执行权，放弃后续状态收敛 run_id=%s error=%s", run_id, exc)
     except Exception as exc:
-        logger.exception("工作流后台执行失败 run_id=%s", run_id)
-        _record_background_failure(run_id, exc)
+        if lease_acquired and not _owns_worker_lease(run_id, lease_owner, lease_token):
+            logger.warning("worker 已失去 Run 所有权，忽略迟到异常 run_id=%s", run_id)
+        else:
+            logger.exception("工作流后台执行失败 run_id=%s", run_id)
+            _record_background_failure(run_id, exc)
     finally:
         if heartbeat_stop is not None:
             heartbeat_stop.set()
@@ -444,6 +453,8 @@ def _resume_workflow_background(
             from workflow.engine.routes import assert_workflow_version
             assert_workflow_version(_store().load_run(run_id))
             final_state = graph.invoke(None, config=config)
+        if not _owns_worker_lease(run_id, lease_owner, lease_token):
+            raise WorkerLeaseLost(f"Run lease lost before resume settlement: {run_id}")
         # 本次恢复已成功推进 checkpoint；清理之前后台异常写入的失败标记，避免 UI 继续把已恢复运行判为 FAILED。
         failure_path = store.run_dir(run_id) / "reports" / "run_failure.json"
         if failure_path.is_file():
@@ -468,9 +479,12 @@ def _resume_workflow_background(
     except WorkerLeaseLost as exc:
         logger.warning("旧 worker 已失去执行权，放弃后续状态收敛 run_id=%s error=%s", run_id, exc)
     except Exception as exc:
-        logger.exception("恢复工作流失败 run_id=%s", run_id)
-        phase = "approval_recovery" if resume_payload is not None else "workflow_resume"
-        _record_background_failure(run_id, exc, phase=phase)
+        if lease_acquired and not _owns_worker_lease(run_id, lease_owner, lease_token):
+            logger.warning("恢复 worker 已失去 Run 所有权，忽略迟到异常 run_id=%s", run_id)
+        else:
+            logger.exception("恢复工作流失败 run_id=%s", run_id)
+            phase = "approval_recovery" if resume_payload is not None else "workflow_resume"
+            _record_background_failure(run_id, exc, phase=phase)
     finally:
         if heartbeat_stop is not None:
             heartbeat_stop.set()
