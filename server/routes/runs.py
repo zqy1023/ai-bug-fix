@@ -607,6 +607,8 @@ def v1_resume_run(run_id: str, background: BackgroundTasks, _: None = Depends(_a
         if detail["status"] not in {"running", "queued", "paused", "pause_requested", "failed"} or not detail["checkpoint"]["resumable"]:
             raise HTTPException(status_code=409, detail="执行当前没有可恢复的 checkpoint")
         worker_lease = _claim_worker_lease(run_id)
+        from infrastructure.storage.reports import archive_retry_reports
+        archive_retry_reports(_store(), run_id)
         connection = _control_db()
         try:
             connection.execute(
