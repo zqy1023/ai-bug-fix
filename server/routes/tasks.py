@@ -247,14 +247,8 @@ def v1_retry_task(
         # status/audit I/O follows it; artifacts are cleaned best-effort below.
         graph.update_state(cfg, patch, as_node=TASK_DISPATCH)
         checkpoint_updated = True
-        for report_path in (
-            store.task_dir(run_id, task_id) / "reports" / "final.json",
-            store.run_dir(run_id) / "reports" / "final.json",
-        ):
-            try:
-                report_path.unlink(missing_ok=True)
-            except OSError:
-                logger.warning("旧终态报告清理失败 run_id=%s task_id=%s path=%s", run_id, task_id, report_path, exc_info=True)
+        from infrastructure.storage.reports import archive_retry_reports
+        archive_retry_reports(store, run_id, task_id)
         try:
             _audit_control(
                 run_id, task_id, "task.retry_requested", "api",
@@ -435,11 +429,8 @@ def v1_run_step(
                 "worker_lease_token": lease_token,
             })
             lifecycle.update_run(run_id, status="running", error={}, allow_reactivate=True)
-            previous_report = store.run_dir(run_id) / "reports/final.json"
-            if previous_report.is_file():
-                archive = previous_report.parent / "history" / ("before-step-" + uuid.uuid4().hex + ".json")
-                archive.parent.mkdir(parents=True, exist_ok=True)
-                previous_report.replace(archive)
+            from infrastructure.storage.reports import archive_retry_reports
+            archive_retry_reports(store, run_id, task_id)
             continue_task_after_step(store, run_id, task_id, selected.step_name, payload, runtime, services)
             parent = build_graph(store=store, services=services, config=runtime)
             cfg = {"configurable": {"thread_id": run_id}, "recursion_limit": workflow_recursion_limit(
