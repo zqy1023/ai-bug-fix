@@ -193,3 +193,112 @@ def test_recent_legacy_worker_heartbeat_blocks_rollout_claim(tmp_path):
     assert not lifecycle.claim_worker_lease(
         "run-1", owner_id="new-worker", lease_token="new-token", ttl_seconds=30,
     )
+
+
+def test_write_guard_blocks_lease_takeover_until_persistent_write_finishes(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    import pytest
+
+    from infrastructure.storage.lifecycle import WorkerLeaseLost
+
+    lifecycle = LifecycleStore(tmp_path)
+    database = lifecycle._database("run-guard")
+    assert lifecycle.claim_worker_lease(
+        "run-guard", owner_id="worker-a", lease_token="token-a", ttl_seconds=30,
+    )
+    entered = Event()
+    release = Event()
+
+    def protected_write():
+        with database.worker_lease_guard(owner_id="worker-a", lease_token="token-a"):
+            entered.set()
+            assert release.wait(timeout=5)
+
+    def replacement_claim():
+        return lifecycle.claim_worker_lease(
+            "run-guard", owner_id="worker-b", lease_token="token-b", ttl_seconds=30,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        writer = pool.submit(protected_write)
+        assert entered.wait(timeout=5)
+        takeover = pool.submit(replacement_claim)
+        assert not takeover.done()
+        release.set()
+        writer.result(timeout=5)
+        assert takeover.result(timeout=5) is False
+
+    # Once the original lease expires and is replaced, stale writes are rejected.
+    database.update(
+        "", "lifecycle",
+        lambda state: {**state, "worker_lease_expires_at": "2000-01-01T00:00:00+00:00"},
+    )
+    assert lifecycle.claim_worker_lease(
+        "run-guard", owner_id="worker-b", lease_token="token-b", ttl_seconds=30,
+    )
+    with pytest.raises(WorkerLeaseLost):
+        with database.worker_lease_guard(owner_id="worker-a", lease_token="token-a"):
+            pass
+
+
+def test_lifecycle_updates_are_fenced_when_store_has_worker_identity(tmp_path):
+    import pytest
+
+    from infrastructure.storage.lifecycle import WorkerLeaseLost
+
+    lifecycle = LifecycleStore(tmp_path)
+    assert lifecycle.claim_worker_lease(
+        "run-fenced", owner_id="worker-a", lease_token="token-a", ttl_seconds=30,
+    )
+    fenced = LifecycleStore(tmp_path, worker_lease=("worker-a", "token-a"))
+    fenced.update_run("run-fenced", status="running", phase="worker-a")
+
+    lifecycle._database("run-fenced").update(
+        "", "lifecycle",
+        lambda state: {
+            **state,
+            "worker_lease_expires_at": "2000-01-01T00:00:00+00:00",
+        },
+    )
+    assert lifecycle.claim_worker_lease(
+        "run-fenced", owner_id="worker-b", lease_token="token-b", ttl_seconds=30,
+    )
+    with pytest.raises(WorkerLeaseLost):
+        fenced.update_run("run-fenced", status="failed", phase="stale-worker")
+    assert lifecycle.read_run("run-fenced")["phase"] == "worker-a"
+
+
+def test_append_artifact_rejects_stale_worker_after_lease_handoff(tmp_path):
+    import pytest
+
+    from infrastructure.storage.lifecycle import WorkerLeaseLost
+    from infrastructure.storage.store import RecordStore
+
+    lifecycle = LifecycleStore(tmp_path)
+    store = RecordStore(tmp_path)
+    assert lifecycle.claim_worker_lease(
+        "run-artifact", owner_id="worker-a", lease_token="token-a", ttl_seconds=30,
+    )
+    store.set_worker_lease("run-artifact", "worker-a", "token-a")
+    store.append_artifact(
+        "run-artifact", "metrics/agent.jsonl", {"call": 1}, "task-1",
+    )
+    assert len(store.read_metrics("run-artifact", "task-1")) == 1
+
+    lifecycle._database("run-artifact").update(
+        "", "lifecycle",
+        lambda state: {
+            **state,
+            "worker_lease_expires_at": "2000-01-01T00:00:00+00:00",
+        },
+    )
+    assert lifecycle.claim_worker_lease(
+        "run-artifact", owner_id="worker-b", lease_token="token-b", ttl_seconds=30,
+    )
+    with pytest.raises(WorkerLeaseLost):
+        store.append_artifact(
+            "run-artifact", "metrics/agent.jsonl", {"call": "stale"}, "task-1",
+        )
+    assert len(store.read_metrics("run-artifact", "task-1")) == 1

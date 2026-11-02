@@ -248,6 +248,34 @@ def _agent_node(
         task = dict(state.get("task") or {})
         started = time.perf_counter()
         try:
+            lease_token = str(services.metadata.get("worker_lease_token") or "") if services else ""
+            current_workspace = str(state.get("ai_workspace_path") or "")
+            worker_suffix = f"-worker-{lease_token[:12]}" if lease_token else ""
+            if lease_token and current_workspace and worker_suffix not in Path(current_workspace).name:
+                if services is None or services.workspaces is None:
+                    raise StepFailed("租约执行缺少工作区隔离服务，拒绝复用共享可写目录")
+                worker_key = f"{run_id}-{task_id}{worker_suffix}"
+                if kind == "unified_fixer":
+                    task_context = dict(state.get("task") or {})
+                    framework = str(
+                        state.get("framework")
+                        or (state.get("evidence") or {}).get("framework")
+                        or task_context.get("framework")
+                        or ""
+                    )
+                    isolated = services.workspaces.create_task_workspace(
+                        str(state.get("source_project_path") or ""),
+                        worker_key,
+                        baseline_dir=str(state.get("baseline_dir") or ""),
+                        carrier=str(task_context.get("carrier") or ""),
+                        framework=framework,
+                    )
+                else:
+                    isolated = services.workspaces.fork_task_workspace(
+                        current_workspace, worker_key,
+                    )
+                state = {**state, "ai_workspace_path": str(isolated)}
+                task = dict(state.get("task") or {})
             if state.get("retry_context"):
                 state = {**state, "retry_context": stage_retry_evidence(store, state)}
             if kind == "unified_fixer":
@@ -331,6 +359,7 @@ def _agent_node(
                 "retry_target": spec.name,
                 "terminal_status": "failed",
                 "attempt": int(state.get("attempt") or 1),
+                "ai_workspace_path": str(state.get("ai_workspace_path") or ""),
             }
             return apply_step_result(
                 store,
@@ -486,6 +515,7 @@ def _agent_node(
                 "retry_target": spec.name,
                 "terminal_status": "failed",
                 "attempt": int(state.get("attempt") or 1),
+                "ai_workspace_path": str(state.get("ai_workspace_path") or ""),
             }
             return apply_step_result(
                 store,
@@ -543,6 +573,7 @@ def _agent_node(
             "retry_reason": reason if failed else "",
             "retry_target": "",
             "attempt": int(state.get("attempt") or 1),
+            "ai_workspace_path": str(state.get("ai_workspace_path") or ""),
             "terminal_status": (
                 "manual"
                 if (kind == "unified_fixer" and view.status in {"MANUAL", "ANALYSIS_ONLY"})
@@ -1481,6 +1512,8 @@ def run_workflow(
     resolved, config, store = prepare_run(
         run_id, overrides=overrides, allow_prepared=prepared
     )
+    if worker_lease:
+        store.set_worker_lease(resolved, worker_lease[0], worker_lease[1])
     try:
         source_repo = config.source_repo
         services = build_services(config=config, source_repo=source_repo)
@@ -1525,7 +1558,8 @@ def run_workflow(
             resolved, owner_id=worker_lease[0], lease_token=worker_lease[1],
         ):
             raise WorkerLeaseLost(f"Run lease lost before report generation: {resolved}")
-        _write_run_report_if_terminal(store, resolved, graph, final_state=final_state)
+        with store._write_guard(resolved):
+            _write_run_report_if_terminal(store, resolved, graph, final_state=final_state)
         return final_state
     except WorkerLeaseLost:
         # 租约失效的旧 worker 不得生成失败报告或关闭继任 worker 的会话。
@@ -1535,7 +1569,8 @@ def run_workflow(
             resolved, owner_id=worker_lease[0], lease_token=worker_lease[1],
         ):
             raise WorkerLeaseLost(f"Run lease lost while handling failure: {resolved}") from exc
-        _write_run_report(store, resolved, error=exc)
+        with store._write_guard(resolved):
+            _write_run_report(store, resolved, error=exc)
         raise
     finally:
         if worker_lease is None:

@@ -20,7 +20,7 @@ import shutil
 import tempfile
 import time
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +29,7 @@ from core.keys import safe_name
 from core import utc_now
 from core.contracts import SCHEMA_VERSION, ArtifactRef, StepError, StepRecord
 from infrastructure.storage.atomic import atomic_write_text
-from infrastructure.storage.lifecycle import LifecycleStore
+from infrastructure.storage.lifecycle import LifecycleStore, WorkerLeaseLost
 from infrastructure.storage.database import RecordDatabase
 from infrastructure.storage.policy import artifact_mode
 from core.contracts import RecordView
@@ -88,6 +88,33 @@ class RecordStore:
         self.root = Path(root).resolve()
         (self.root / "runs").mkdir(parents=True, exist_ok=True)
         self._lock = _root_lock(self.root)
+        self._worker_leases: dict[str, tuple[str, str]] = {}
+        self._worker_leases_lock = threading.RLock()
+
+    def set_worker_lease(self, run_id: str, owner_id: str, lease_token: str) -> None:
+        """按 Run 绑定租约身份，允许同一 Store 并发服务不同 Run。"""
+        if not run_id or not owner_id or not lease_token:
+            raise ValueError("run_id and worker lease identity are required")
+        with self._worker_leases_lock:
+            self._worker_leases[run_id] = (owner_id, lease_token)
+
+    def clear_worker_lease(self, run_id: str) -> None:
+        """结束指定 Run 的 worker 生命周期，不影响同一 Store 的其它 Run。"""
+        with self._worker_leases_lock:
+            self._worker_leases.pop(run_id, None)
+
+    def _worker_lease_for(self, run_id: str) -> tuple[str, str] | None:
+        with self._worker_leases_lock:
+            return self._worker_leases.get(run_id)
+
+    def _write_guard(self, run_id: str):
+        lease = self._worker_lease_for(run_id)
+        if lease is None:
+            return nullcontext()
+        owner_id, lease_token = lease
+        return self.database(run_id).worker_lease_guard(
+            owner_id=owner_id, lease_token=lease_token,
+        )
 
     def run_dir(self, run_id: str) -> Path:
         """一次执行的目录。"""
@@ -148,7 +175,7 @@ class RecordStore:
             )
         # 先拿跨进程锁再拿进程内锁：等另一个进程写完期间不能占着进程内锁，
         # 否则任务板的所有投影读都会被一起拖住。
-        with _process_lock(self.run_dir(run_id) / ".steps.lock"), self._lock:
+        with self._write_guard(run_id) as guard_connection, _process_lock(self.run_dir(run_id) / ".steps.lock"), self._lock:
             payload = self._read_steps(run_id)
             if task_id:
                 tasks = payload.setdefault("tasks", [])
@@ -192,7 +219,7 @@ class RecordStore:
                 previous = slot.get(record.name)
                 if isinstance(previous, dict) and previous.get("finished_at") and previous != body:
                     identity = hashlib.sha256(json.dumps(previous, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-                    self.database(run_id).append(task_id, "step_history", previous, identity=identity)
+                    self.database(run_id).append(task_id, "step_history", previous, identity=identity, connection=guard_connection)
                 slot[record.name] = body
             else:
                 payload[record.name] = body
@@ -205,6 +232,8 @@ class RecordStore:
             self._write_steps(run_id, payload)
         try:
             self._update_lifecycle(run_id, task_id, record)
+        except WorkerLeaseLost:
+            raise
         except Exception:
             # Audit history is authoritative; lifecycle projection failure must be visible
             # in logs but must not overwrite a successfully persisted step record.
@@ -215,7 +244,7 @@ class RecordStore:
         return self.steps_path(run_id)
 
     def _update_lifecycle(self, run_id: str, task_id: str, record: StepRecord) -> None:
-        lifecycle = LifecycleStore(self.root)
+        lifecycle = LifecycleStore(self.root, worker_lease=self._worker_lease_for(run_id))
         phase = record.name
         error = record.error.model_dump(mode="json") if record.error else {}
         if not task_id:
@@ -303,12 +332,13 @@ class RecordStore:
         if record is None:
             raise StepFailed("任务子图退出但缺少终态步骤记录")
         from workflow.stages.finalize.node import refresh_completed_report
-        refresh_completed_report(self, run_id, task_id)
+        with self._write_guard(run_id):
+            refresh_completed_report(self, run_id, task_id)
         self._update_lifecycle(run_id, task_id, record)
         if str(record.output.get("delivery_status") or "").upper() == "BLOCKED":
-            LifecycleStore(self.root).update_task(run_id, task_id, workspace_released=False)
+            LifecycleStore(self.root, worker_lease=self._worker_lease_for(run_id)).update_task(run_id, task_id, workspace_released=False)
             return
-        LifecycleStore(self.root).update_task(run_id, task_id, workspace_released=True)
+        LifecycleStore(self.root, worker_lease=self._worker_lease_for(run_id)).update_task(run_id, task_id, workspace_released=True)
         from infrastructure.workspace.workspace_gc import collect_configured_workspaces
         from infrastructure.llm.config import load_config
         from dataclasses import replace
@@ -316,7 +346,7 @@ class RecordStore:
 
     def report_progress(self, run_id: str, step: str, message: str, counts: dict[str, int]) -> None:
         """记录不含原始日志的处理进度，供轮询和事件流展示。"""
-        LifecycleStore(self.root).update_run(
+        LifecycleStore(self.root, worker_lease=self._worker_lease_for(run_id)).update_run(
             run_id, progress={"step": step, "message": message, "counts": counts},
             progress_at=utc_now(),
         )
@@ -403,6 +433,13 @@ class RecordStore:
 
     def write_artifact(self, run_id: str, relative: str, value: Any, task_id: str = "") -> str:
         """写大产物，返回相对任务/执行目录的路径。不进入 steps.json。"""
+        with self._write_guard(run_id) as guard_connection:
+            return self._write_artifact_guarded(run_id, relative, value, task_id, guard_connection)
+
+    def _write_artifact_guarded(
+        self, run_id: str, relative: str, value: Any, task_id: str = "",
+        guard_connection: Any = None,
+    ) -> str:
         _, target = self._target(run_id, relative, task_id)
         target.parent.mkdir(parents=True, exist_ok=True)
         # 建目录之后再确认一次：父目录可能本身就是指向根目录之外符号链接。
@@ -422,7 +459,7 @@ class RecordStore:
                     previous_value = {"raw": previous.decode("utf-8", errors="replace")}
                 self.database(run_id).append(
                     task_id, "artifact_history", {"path": relative, "value": previous_value},
-                    identity=f"{relative}:{identity}",
+                    identity=f"{relative}:{identity}", connection=guard_connection,
                 )
         # 临时文件与目标同目录：同文件系统才能原子替换，写完整才返回引用。
         # 临时名必须唯一：固定的 "<name>.tmp" 会让两个写者共用一个文件互相截断，
@@ -476,16 +513,19 @@ class RecordStore:
 
     def append_artifact(self, run_id: str, relative: str, value: Any, task_id: str = "") -> str:
         """追加 JSONL 运行指标，不覆盖同一任务的历史调用。"""
-        base, target = self._target(run_id, relative, task_id)
-        if relative == "metrics/agent.jsonl":
-            self.database(run_id).append(task_id, "agent_metrics", value)
-            return relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if not target.parent.resolve().is_relative_to(base.resolve()):
-            raise StepFailed(f"产物目录越界: {relative!r}", code="ARTIFACT_PATH_INVALID")
-        with target.open("a", encoding="utf-8") as file_obj:
-            file_obj.write(json.dumps(value, ensure_ascii=False, default=str) + "\n")
-        return target.relative_to(self._base(run_id, task_id)).as_posix()
+        with self._write_guard(run_id) as guard_connection:
+            base, target = self._target(run_id, relative, task_id)
+            if relative == "metrics/agent.jsonl":
+                self.database(run_id).append(
+                    task_id, "agent_metrics", value, connection=guard_connection,
+                )
+                return relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if not target.parent.resolve().is_relative_to(base.resolve()):
+                raise StepFailed(f"产物目录越界: {relative!r}", code="ARTIFACT_PATH_INVALID")
+            with target.open("a", encoding="utf-8") as file_obj:
+                file_obj.write(json.dumps(value, ensure_ascii=False, default=str) + "\n")
+            return target.relative_to(self._base(run_id, task_id)).as_posix()
 
     def database(self, run_id: str) -> RecordDatabase:
         """本轮小记录的集中存储。"""
@@ -508,7 +548,7 @@ class RecordStore:
         with path.open("x", encoding="utf-8") as file_obj:
             json.dump(body, file_obj, ensure_ascii=False, indent=2)
 
-        LifecycleStore(self.root).update_run(
+        LifecycleStore(self.root, worker_lease=self._worker_lease_for(run_id)).update_run(
             run_id, status="queued", phase="queued", current_step="",
             started_at=None, finished_at=None, error={}, terminal_reason="",
         )

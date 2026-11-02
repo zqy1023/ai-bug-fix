@@ -267,6 +267,32 @@ class WorkspaceManager:
             raise
         return target
 
+    def fork_task_workspace(
+        self, source_workspace: str | Path, task_key: str,
+    ) -> Path:
+        """把已完成阶段的任务工作区复制到当前 worker 独占目录。
+
+        旧 worker 即使在租约丢失后仍有未取消的 Agent 工具调用，也只能继续
+        写旧目录；继任 worker 使用副本，不会与旧执行者共享可写文件。
+        """
+        source = Path(source_workspace).resolve()
+        if not source.is_dir():
+            raise WorkspaceError("待隔离的任务工作区不存在")
+        if self._root is None:
+            self._root = self._config.root_dir or Path(tempfile.mkdtemp(prefix="ai-repair-"))
+        allowed_root = (self._root / "ai").resolve()
+        if not source.is_relative_to(allowed_root):
+            raise WorkspaceError("任务工作区不在 AI 隔离根目录内")
+        target = self._target(task_key)
+        try:
+            shutil.copytree(source, target, symlinks=False)
+            if (target / ".git").exists():
+                raise WorkspaceError("AI 工作区禁止包含 .git")
+        except Exception:
+            self._cleanup_path(target)
+            raise
+        return target
+
     def reset_task_workspace(
         self,
         workspace: str | Path,

@@ -39,7 +39,7 @@ def _start_lifecycle_heartbeat(
 ) -> tuple[threading.Event, threading.Thread]:
     """原子获取跨进程租约后启动心跳；进程内锁不再承担跨进程互斥职责。"""
     store = _store()
-    lifecycle = LifecycleStore(store.root)
+    lifecycle = LifecycleStore(store.root, worker_lease=store._worker_lease_for(run_id))
     if claim:
         if not lifecycle.claim_worker_lease(
             run_id, owner_id=owner_id, lease_token=lease_token, ttl_seconds=300,
@@ -99,7 +99,7 @@ def _clear_worker_active(run_id: str, owner_id: str, lease_token: str) -> bool:
 
 def _complete_run_lifecycle(run_id: str, store: RecordStore) -> None:
     """Settle the run only after graph.invoke has returned; waiting interrupts are not failures."""
-    lifecycle = LifecycleStore(store.root)
+    lifecycle = LifecycleStore(store.root, worker_lease=store._worker_lease_for(run_id))
     report = _read_json(store.run_dir(run_id) / "reports" / "final.json", {})
     if isinstance(report, dict) and report:
         result = str(report.get("result") or report.get("status") or "").upper()
@@ -166,7 +166,7 @@ def _settle_task_lifecycles_after_run_failure(
 ) -> None:
     from core.contracts import StepError
 
-    lifecycle = LifecycleStore(store.root)
+    lifecycle = LifecycleStore(store.root, worker_lease=store._worker_lease_for(run_id))
     payload = _read_json(store.steps_path(run_id), {})
     slots = payload.get("tasks", []) if isinstance(payload, dict) else []
     if not isinstance(slots, list):
@@ -207,21 +207,26 @@ def _settle_task_lifecycles_after_run_failure(
 def _discard_retry_archive(store: RecordStore, run_id: str) -> None:
     """恢复已产生新报告后清掉启动时归档的上一轮报告。"""
     reports = store.run_dir(run_id) / "reports"
-    for name in ("run_failure.json", "final.json"):
-        try:
-            (reports / f"{name}.retry_previous").unlink(missing_ok=True)
-        except OSError:
-            logger.warning(
-                "清理归档报告失败 run_id=%s name=%s", run_id, name, exc_info=True
-            )
+    with store._write_guard(run_id):
+        for name in ("run_failure.json", "final.json"):
+            try:
+                (reports / f"{name}.retry_previous").unlink(missing_ok=True)
+            except OSError:
+                logger.warning(
+                    "清理归档报告失败 run_id=%s name=%s", run_id, name, exc_info=True
+                )
 
 def _record_background_failure(
     run_id: str,
     error: Exception,
     *,
     phase: str = "workflow_startup",
+    worker_lease: tuple[str, str] | None = None,
 ) -> None:
     """将图外异常写成可查询的终态产物，避免后台任务失败后 Run 永久显示运行中。"""
+    store = _store()
+    if worker_lease is not None:
+        store.set_worker_lease(run_id, worker_lease[0], worker_lease[1])
     try:
         logger.error("后台工作流异常 run_id=%s", run_id, exc_info=(type(error), error, error.__traceback__))
         # 取消优先于异常：用户停止后节点抛出的异常不能把本轮改写成 FAILED，
@@ -229,7 +234,7 @@ def _record_background_failure(
         from infrastructure.storage.run_control import cancellation_requested
 
         try:
-            cancelled = cancellation_requested(_store().root, run_id)
+            cancelled = cancellation_requested(store.root, run_id)
         except Exception:
             cancelled = False
         if cancelled:
@@ -239,10 +244,11 @@ def _record_background_failure(
             )
             from workflow.engine.graph import _write_run_report
 
-            _write_run_report(_store(), run_id)
-            LifecycleStore(_store().root).update_run(run_id, status="cancelled", worker_active=False)
+            with store._write_guard(run_id):
+                _write_run_report(store, run_id)
+            LifecycleStore(store.root, worker_lease=store._worker_lease_for(run_id)).update_run(run_id, status="cancelled", worker_active=False)
             return
-        directory = _store().run_dir(_safe_id(run_id))
+        directory = store.run_dir(_safe_id(run_id))
         if not directory.is_dir():
             return
         report_dir = directory / "reports"
@@ -262,7 +268,7 @@ def _record_background_failure(
         )
         terminal_step = phase
         if phase in {"workflow_startup", "workflow_resume"}:
-            failed = [record for record in _store().list_steps(run_id) if record.status == "failed"]
+            failed = [record for record in store.list_steps(run_id) if record.status == "failed"]
             if failed:
                 record = failed[-1]
                 terminal_step = record.name
@@ -282,17 +288,18 @@ def _record_background_failure(
             "next_action": next_action,
             "failed_at": now,
         }
-        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        temporary.replace(target)
+        with store._write_guard(run_id):
+            temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary.replace(target)
         try:
-            lifecycle = LifecycleStore(_store().root)
+            lifecycle = LifecycleStore(store.root, worker_lease=store._worker_lease_for(run_id))
             lifecycle.update_run(
                 run_id, status="failed", phase=terminal_step, current_step=terminal_step,
                 error_type=type(error).__name__, error_message=reason,
                 terminal_reason=reason, next_action=next_action,
             )
             _settle_task_lifecycles_after_run_failure(
-                run_id, _store(), phase=phase, reason=reason, next_action=next_action,
+                run_id, store, phase=phase, reason=reason, next_action=next_action,
             )
         except Exception:
             logger.exception("后台失败报告已保存，但生命周期收敛失败 run_id=%s", run_id)
@@ -315,8 +322,9 @@ def _record_background_failure(
             "task_count": int(existing_report.get("task_count") or 0),
             "task_results": existing_report.get("task_results") if isinstance(existing_report.get("task_results"), list) else [],
         }
-        final_tmp.write_text(json.dumps(final_report, ensure_ascii=False, indent=2), encoding="utf-8")
-        final_tmp.replace(final_path)
+        with store._write_guard(run_id):
+            final_tmp.write_text(json.dumps(final_report, ensure_ascii=False, indent=2), encoding="utf-8")
+            final_tmp.replace(final_path)
     except Exception:
         logger.exception("无法写入后台失败报告 run_id=%s", run_id)
 
@@ -343,7 +351,8 @@ def _run_workflow_background_v1(
             run_id, lease_owner, lease_token, claim=worker_lease is None,
         )
         lease_acquired = True
-        LifecycleStore(store.root).update_run(
+        store.set_worker_lease(run_id, lease_owner, lease_token)
+        LifecycleStore(store.root, worker_lease=(lease_owner, lease_token)).update_run(
             run_id, status="running", phase="workflow_startup", current_step="", error={},
             allow_reactivate=True,
         )
@@ -360,7 +369,7 @@ def _run_workflow_background_v1(
             logger.warning("worker 已失去 Run 所有权，忽略迟到异常 run_id=%s", run_id)
         else:
             logger.exception("工作流后台执行失败 run_id=%s", run_id)
-            _record_background_failure(run_id, exc)
+            _record_background_failure(run_id, exc, worker_lease=(lease_owner, lease_token))
     finally:
         if heartbeat_stop is not None:
             heartbeat_stop.set()
@@ -407,7 +416,8 @@ def _resume_workflow_background(
             run_id, lease_owner, lease_token, claim=worker_lease is None,
         )
         lease_acquired = True
-        LifecycleStore(store.root).update_run(
+        store.set_worker_lease(run_id, lease_owner, lease_token)
+        LifecycleStore(store.root, worker_lease=(lease_owner, lease_token)).update_run(
             run_id, status="running", phase="workflow_resume", current_step="", error={},
             terminal_reason="", error_type="", error_message="", next_action="",
             allow_reactivate=True,
@@ -454,40 +464,41 @@ def _resume_workflow_background(
             # 必须直接把决定交给 checkpoint；绝不能因快照未显示 interrupt 而重新 invoke(None)。
             if detached:
                 from workflow.engine.routes import assert_workflow_version
-                assert_workflow_version(_store().load_run(run_id))
+                assert_workflow_version(store.load_run(run_id))
                 final_state = graph.invoke(None, config=config) if snapshot.next else dict(snapshot.values)
             else:
                 from workflow.engine.routes import assert_workflow_version
-                assert_workflow_version(_store().load_run(run_id))
+                assert_workflow_version(store.load_run(run_id))
                 final_state = graph.invoke(Command(resume=resume_payload), config=config)
         elif has_interrupt:
             from langgraph.types import Command
 
             from workflow.engine.routes import assert_workflow_version
-            assert_workflow_version(_store().load_run(run_id))
+            assert_workflow_version(store.load_run(run_id))
             final_state = graph.invoke(Command(resume={"control": "resume"}), config=config)
         else:
             from workflow.engine.routes import assert_workflow_version
-            assert_workflow_version(_store().load_run(run_id))
+            assert_workflow_version(store.load_run(run_id))
             final_state = graph.invoke(None, config=config)
         if not _owns_worker_lease(run_id, lease_owner, lease_token):
             raise WorkerLeaseLost(f"Run lease lost before resume settlement: {run_id}")
         if not _owns_worker_lease(run_id, lease_owner, lease_token):
             raise WorkerLeaseLost(f"Run lease lost before resume settlement: {run_id}")
         # 本次恢复已成功推进 checkpoint；清理之前后台异常写入的失败标记，避免 UI 继续把已恢复运行判为 FAILED。
-        failure_path = store.run_dir(run_id) / "reports" / "run_failure.json"
-        if failure_path.is_file():
-            failure_path.unlink()
-        stale_run_report = store.run_dir(run_id) / "reports" / "final.json"
-        stale_payload = _read_json(stale_run_report, {})
-        # 上一次终态的 FAILED 报告（含业务阶段失败）在本次恢复推进 checkpoint 后
-        # 全部作废：终态结束会被新报告覆盖，等待审批则不能让旧失败顶替当前状态。
-        if (
-            isinstance(stale_payload, dict)
-            and str(stale_payload.get("result") or stale_payload.get("status") or "").upper()
-            in {"FAILED", "FAIL"}
-        ):
-            stale_run_report.unlink(missing_ok=True)
+        with store._write_guard(run_id):
+            failure_path = store.run_dir(run_id) / "reports" / "run_failure.json"
+            if failure_path.is_file():
+                failure_path.unlink()
+            stale_run_report = store.run_dir(run_id) / "reports" / "final.json"
+            stale_payload = _read_json(stale_run_report, {})
+            # 上一次终态的 FAILED 报告（含业务阶段失败）在本次恢复推进 checkpoint 后
+            # 全部作废：终态结束会被新报告覆盖，等待审批则不能让旧失败顶替当前状态。
+            if (
+                isinstance(stale_payload, dict)
+                and str(stale_payload.get("result") or stale_payload.get("status") or "").upper()
+                in {"FAILED", "FAIL"}
+            ):
+                stale_run_report.unlink(missing_ok=True)
         from workflow.engine.graph import _write_run_report_if_terminal
         _write_run_report_if_terminal(store, run_id, graph, final_state=final_state)
         _complete_run_lifecycle(run_id, store)
@@ -503,7 +514,7 @@ def _resume_workflow_background(
         else:
             logger.exception("恢复工作流失败 run_id=%s", run_id)
             phase = "approval_recovery" if resume_payload is not None else "workflow_resume"
-            _record_background_failure(run_id, exc, phase=phase)
+            _record_background_failure(run_id, exc, phase=phase, worker_lease=(lease_owner, lease_token))
     finally:
         if heartbeat_stop is not None:
             heartbeat_stop.set()
