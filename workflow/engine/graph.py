@@ -817,6 +817,35 @@ def _compose_phase(
     return node
 
 
+def _guard_worker_lease(
+    name: str,
+    node: Callable[..., Any],
+    store: RecordStore,
+    services: WorkflowServices,
+) -> Callable[..., Any]:
+    """在每个图节点前后校验 worker fencing token，拒绝失去租约的旧执行者。"""
+    owner_id = str(services.metadata.get("worker_lease_owner") or "")
+    lease_token = str(services.metadata.get("worker_lease_token") or "")
+    if not owner_id or not lease_token:
+        return node
+
+    def guarded(state: dict[str, Any]) -> dict[str, Any]:
+        run_id = str(state.get("run_id") or "")
+        if not run_id or not LifecycleStore(store.root).owns_worker_lease(
+            run_id, owner_id=owner_id, lease_token=lease_token,
+        ):
+            raise RuntimeError(f"Run worker lease lost before node: {name}")
+        result = node(state)
+        if not LifecycleStore(store.root).owns_worker_lease(
+            run_id, owner_id=owner_id, lease_token=lease_token,
+        ):
+            raise RuntimeError(f"Run worker lease lost after node: {name}")
+        return result
+
+    guarded.__name__ = name
+    return guarded
+
+
 def build_nodes(
     store: RecordStore,
     services: WorkflowServices,
@@ -834,9 +863,18 @@ def build_nodes(
     for agent in registered_agents():
         nodes[agent.name] = build_agent_node(agent, store, overrides.get(agent.kind), services=services)
 
+    # 所有基础节点统一套用 fencing；组合阶段内部的子步骤也会经过同一守卫。
+    nodes = {
+        name: _guard_worker_lease(name, node, store, services)
+        for name, node in nodes.items()
+    }
     for phase_name, step_names in PHASE_COMPOSITIONS.items():
-        nodes[phase_name] = _compose_phase(step_names, nodes, store=store)
-    nodes[SOURCE_SYNC] = _source_sync_node(config or load_config(), store)
+        nodes[phase_name] = _guard_worker_lease(
+            phase_name, _compose_phase(step_names, nodes, store=store), store, services,
+        )
+    nodes[SOURCE_SYNC] = _guard_worker_lease(
+        SOURCE_SYNC, _source_sync_node(config or load_config(), store), store, services,
+    )
     return nodes
 
 
