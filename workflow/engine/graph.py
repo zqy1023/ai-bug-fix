@@ -1521,13 +1521,25 @@ def run_workflow(
                 ),
             },
         )
+        if worker_lease and not LifecycleStore(store.root).owns_worker_lease(
+            resolved, owner_id=worker_lease[0], lease_token=worker_lease[1],
+        ):
+            raise WorkerLeaseLost(f"Run lease lost before report generation: {resolved}")
         _write_run_report_if_terminal(store, resolved, graph, final_state=final_state)
         return final_state
+    except WorkerLeaseLost:
+        # 租约失效的旧 worker 不得生成失败报告或关闭继任 worker 的会话。
+        raise
     except Exception as exc:
+        if worker_lease and not LifecycleStore(store.root).owns_worker_lease(
+            resolved, owner_id=worker_lease[0], lease_token=worker_lease[1],
+        ):
+            raise WorkerLeaseLost(f"Run lease lost while handling failure: {resolved}") from exc
         _write_run_report(store, resolved, error=exc)
         raise
     finally:
-        close_sessions(resolved, None)
+        if worker_lease is None:
+            close_sessions(resolved, None)
 
 
 def _uncaught_reason(error: BaseException) -> str:
