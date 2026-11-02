@@ -32,32 +32,52 @@ from server.control_store import _audit_control, _control_db
 
 logger = logging.getLogger("server.lifecycle")
 
-def _start_lifecycle_heartbeat(run_id: str) -> tuple[threading.Event, threading.Thread]:
-    """Keep an explicit lease while a worker owns the run lock, including long Agent calls."""
+class WorkerLeaseBusy(RuntimeError):
+    """Run 已由另一个服务进程持有有效执行租约。"""
+
+
+def _start_lifecycle_heartbeat(
+    run_id: str, owner_id: str, lease_token: str,
+) -> tuple[threading.Event, threading.Thread]:
+    """原子获取跨进程租约后启动心跳；进程内锁不再承担跨进程互斥职责。"""
     store = _store()
     lifecycle = LifecycleStore(store.root)
+    if not lifecycle.claim_worker_lease(
+        run_id, owner_id=owner_id, lease_token=lease_token, ttl_seconds=30,
+    ):
+        raise WorkerLeaseBusy(f"Run 已由其它 worker 持有有效租约: {run_id}")
     stop = threading.Event()
 
     def pulse() -> None:
         while not stop.wait(5):
             try:
-                lifecycle.update_run(run_id, heartbeat_at=datetime.now(timezone.utc).isoformat(), worker_active=True)
+                if not lifecycle.heartbeat_worker_lease(
+                    run_id, owner_id=owner_id, lease_token=lease_token,
+                    ttl_seconds=30,
+                ):
+                    logger.error("Run 租约已丢失，停止续租 run_id=%s", run_id)
+                    stop.set()
+                    return
             except Exception:
-                logger.exception("更新运行心跳失败 run_id=%s", run_id)
+                # 不能把存储故障当成续租成功；租约过期后其它进程可能接管。
+                logger.exception("续租失败，Run 执行所有权无法确认 run_id=%s", run_id)
+                stop.set()
+                return
 
     thread = threading.Thread(target=pulse, name=f"run-heartbeat-{run_id}", daemon=True)
     thread.start()
     return stop, thread
 
-def _clear_worker_active(run_id: str) -> None:
-    """清理 Run 的活动租约。
 
-    与工作区回收解耦：生命周期写入失败重试一次，仍然失败只记录日志，
-    后续工作区回收照常执行，不能因为一个字段写不进去就跳过清理。
-    """
+def _clear_worker_active(run_id: str, owner_id: str, lease_token: str) -> None:
+    """仅释放当前 worker 自己的租约，旧 worker 不得清除新持有者状态。"""
     for attempt in range(2):
         try:
-            LifecycleStore(_store().root).update_run(run_id, worker_active=False)
+            released = LifecycleStore(_store().root).release_worker_lease(
+                run_id, owner_id=owner_id, lease_token=lease_token,
+            )
+            if not released:
+                logger.warning("Run 租约已变更，跳过旧 worker 清理 run_id=%s", run_id)
             return
         except Exception:
             logger.exception(
@@ -298,15 +318,21 @@ def _run_workflow_background_v1(
             return
     heartbeat_stop: threading.Event | None = None
     heartbeat_thread: threading.Thread | None = None
+    lease_owner = f"{settings.service_name}:{uuid.uuid4().hex[:12]}"
+    lease_token = uuid.uuid4().hex
+    lease_acquired = False
     try:
         store = _store()
+        heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(run_id, lease_owner, lease_token)
+        lease_acquired = True
         LifecycleStore(store.root).update_run(
-            run_id, status="running", phase="workflow_startup", current_step="", error={}, worker_active=True,
+            run_id, status="running", phase="workflow_startup", current_step="", error={},
             allow_reactivate=True,
         )
-        heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(run_id)
         run_workflow(run_id, overrides=overrides, prepared=True)
         _complete_run_lifecycle(run_id, store)
+    except WorkerLeaseBusy as exc:
+        logger.warning("%s", exc)
     except Exception as exc:
         logger.exception("工作流后台执行失败 run_id=%s", run_id)
         _record_background_failure(run_id, exc)
@@ -315,16 +341,17 @@ def _run_workflow_background_v1(
             heartbeat_stop.set()
         if heartbeat_thread is not None:
             heartbeat_thread.join(timeout=1)
-        from infrastructure.llm.runtime import close_sessions
-        close_sessions(run_id)
-        _clear_worker_active(run_id)
-        try:
-            from infrastructure.workspace.workspace_gc import (
-                collect_configured_workspaces,
-            )
-            collect_configured_workspaces(_config())
-        except Exception:
-            logger.exception("回收配置工作区失败 run_id=%s", run_id)
+        if lease_acquired:
+            from infrastructure.llm.runtime import close_sessions
+            close_sessions(run_id)
+            _clear_worker_active(run_id, lease_owner, lease_token)
+            try:
+                from infrastructure.workspace.workspace_gc import (
+                    collect_configured_workspaces,
+                )
+                collect_configured_workspaces(_config())
+            except Exception:
+                logger.exception("回收配置工作区失败 run_id=%s", run_id)
         run_lock.release()
         with _RUN_LOCKS_GUARD:
             _STARTED_RUNS.discard(run_id)
@@ -342,17 +369,21 @@ def _resume_workflow_background(
             return
     heartbeat_stop: threading.Event | None = None
     heartbeat_thread: threading.Thread | None = None
+    lease_owner = f"{settings.service_name}:{uuid.uuid4().hex[:12]}"
+    lease_token = uuid.uuid4().hex
+    lease_acquired = False
     try:
         from infrastructure.llm.config import load_config, workflow_recursion_limit
         from workflow.engine.graph import build_graph, build_services
 
         store = _store()
+        heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(run_id, lease_owner, lease_token)
+        lease_acquired = True
         LifecycleStore(store.root).update_run(
-            run_id, status="running", phase="workflow_resume", current_step="", error={}, worker_active=True,
+            run_id, status="running", phase="workflow_resume", current_step="", error={},
             terminal_reason="", error_type="", error_message="", next_action="",
             allow_reactivate=True,
         )
-        heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(run_id)
         runtime_config = load_config()
         # 恢复时让 checkpoint 指向的 sync_source_repo 节点执行；
         # 不能在 graph.invoke 之前再次同步，否则原生重试仍然无法接管。
@@ -428,25 +459,28 @@ def _resume_workflow_background(
         _complete_run_lifecycle(run_id, store)
         if (store.run_dir(run_id) / "reports" / "final.json").is_file():
             _discard_retry_archive(store, run_id)
+    except WorkerLeaseBusy as exc:
+        logger.warning("%s", exc)
     except Exception as exc:
         logger.exception("恢复工作流失败 run_id=%s", run_id)
         phase = "approval_recovery" if resume_payload is not None else "workflow_resume"
         _record_background_failure(run_id, exc, phase=phase)
     finally:
-        from infrastructure.llm.runtime import close_sessions
-        close_sessions(run_id)
         if heartbeat_stop is not None:
             heartbeat_stop.set()
         if heartbeat_thread is not None:
             heartbeat_thread.join(timeout=1)
-        _clear_worker_active(run_id)
-        try:
-            from infrastructure.workspace.workspace_gc import (
-                collect_configured_workspaces,
-            )
-            collect_configured_workspaces(_config())
-        except Exception:
-            logger.exception("回收恢复 Run 的工作区失败 run_id=%s", run_id)
+        if lease_acquired:
+            from infrastructure.llm.runtime import close_sessions
+            close_sessions(run_id)
+            _clear_worker_active(run_id, lease_owner, lease_token)
+            try:
+                from infrastructure.workspace.workspace_gc import (
+                    collect_configured_workspaces,
+                )
+                collect_configured_workspaces(_config())
+            except Exception:
+                logger.exception("回收恢复 Run 的工作区失败 run_id=%s", run_id)
         run_lock.release()
 
 def _reinvestigate_task(run_id: str, task_id: str, background: BackgroundTasks) -> dict[str, Any]:
