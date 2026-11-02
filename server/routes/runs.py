@@ -518,15 +518,10 @@ def v1_retry_run(run_id: str, background: BackgroundTasks, _: None = Depends(_au
         if checkpoint.get("resumable"):
             mode = "resume"
             worker = _resume_workflow_background
-            # 与 restart 模式同口径：请求即把上一轮失败的报告与生命周期错误
-            # 移出当前视图。这里归档而不是删除——恢复失败时
-            # _record_background_failure 仍要读回上一轮的任务明细，不能因为
-            # 一次失败的重试把历史报告清空。
-            reports = store.run_dir(run_id) / "reports"
-            for name in ("run_failure.json", "final.json"):
-                previous = reports / name
-                if previous.is_file():
-                    previous.replace(reports / f"{name}.retry_previous")
+            # Run/Task 报告统一归档：当前视图立即清空，失败兜底仍保留
+            # final.json.retry_previous 中的上一轮任务明细。
+            from infrastructure.storage.reports import archive_retry_reports
+            archive_retry_reports(store, run_id)
             LifecycleStore(store.root).update_run(
                 run_id, status="retrying", phase="retry_queued", current_step="",
                 error={}, error_type="", error_message="", terminal_reason="",
@@ -552,9 +547,8 @@ def v1_retry_run(run_id: str, background: BackgroundTasks, _: None = Depends(_au
             temporary = run_json.with_name("run.json.retry.tmp")
             temporary.write_text(json.dumps(run_meta, ensure_ascii=False, indent=2), encoding="utf-8")
             temporary.replace(run_json)
-            reports = store.run_dir(run_id) / "reports"
-            (reports / "run_failure.json").unlink(missing_ok=True)
-            (reports / "final.json").unlink(missing_ok=True)
+            from infrastructure.storage.reports import archive_retry_reports
+            archive_retry_reports(store, run_id)
             LifecycleStore(store.root).update_run(
                 run_id, status="queued", phase="retry_queued", current_step="",
                 started_at=None, finished_at=None, error={},
