@@ -23,6 +23,8 @@ jobs:
           python -m pip install --upgrade pip
           grep -v '^yq_common @' requirements.txt > /tmp/requirements-ci.txt
           python -m pip install -r /tmp/requirements-ci.txt pytest
+      - name: Compile backend modules
+        run: python -m compileall -q server core infrastructure workflow agents
       - name: Run lifecycle and execution-control regressions
         run: |
           python -m pytest -q \
