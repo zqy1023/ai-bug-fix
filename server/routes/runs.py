@@ -599,12 +599,14 @@ def v1_resume_run(run_id: str, background: BackgroundTasks, _: None = Depends(_a
         raise HTTPException(status_code=409, detail="该执行正在进行其他控制操作")
 
     # 检查点和状态必须在取得执行锁后重新读取，避免并发控制请求在校验后改变状态。
+    worker_lease: tuple[str, str] | None = None
     try:
         detail = _v1_detail(run_id)
         # 本控制操作持有的锁也会被投影算作 worker_active，暂停标记此时可能
         # 显示为 pause_requested；锁已保证没有另一个后台执行器，仍可恢复。
         if detail["status"] not in {"running", "queued", "paused", "pause_requested", "failed"} or not detail["checkpoint"]["resumable"]:
             raise HTTPException(status_code=409, detail="执行当前没有可恢复的 checkpoint")
+        worker_lease = _claim_worker_lease(run_id)
         connection = _control_db()
         try:
             connection.execute(
@@ -616,16 +618,20 @@ def v1_resume_run(run_id: str, background: BackgroundTasks, _: None = Depends(_a
         finally:
             connection.close()
     except Exception:
+        if worker_lease is not None:
+            _release_worker_lease(run_id, worker_lease)
         lock.release()
         raise
 
     try:
         _audit_control(run_id, "", "run.resume_requested", "api")
     except Exception:
+        if worker_lease is not None:
+            _release_worker_lease(run_id, worker_lease)
         lock.release()
         logger.exception("写入恢复操作审计失败 run_id=%s", run_id)
         raise HTTPException(status_code=503, detail="恢复未提交：写入控制审计失败")
-    background.add_task(_resume_workflow_background, run_id, lock)
+    background.add_task(_resume_workflow_background, run_id, lock, None, worker_lease)
     return {"run_id": run_id, "status": "resume_requested", "message": "已提交检查点恢复；请观察运行状态变化"}
 
 
