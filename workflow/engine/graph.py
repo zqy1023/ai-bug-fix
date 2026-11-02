@@ -197,12 +197,28 @@ def build_agent_node(
     else:
         raise PluginError(f"未注册的 Agent 子图: {kind}")
 
-    model_node = _agent_node(spec, build(runtime), store)
+    model_node = _agent_node(spec, build(runtime), store, services)
     return model_node
 
 
+def _assert_agent_lease(
+    services: WorkflowServices | None, store: RecordStore, run_id: str, step_name: str,
+) -> None:
+    if services is None:
+        return
+    owner_id = str(services.metadata.get("worker_lease_owner") or "")
+    lease_token = str(services.metadata.get("worker_lease_token") or "")
+    if not owner_id and not lease_token:
+        return
+    if not owner_id or not lease_token or not LifecycleStore(store.root).owns_worker_lease(
+        run_id, owner_id=owner_id, lease_token=lease_token,
+    ):
+        raise WorkerLeaseLost(f"Run worker lease lost in Agent node: {step_name}")
+
+
 def _agent_node(
-    spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore
+    spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore,
+    services: WorkflowServices | None = None,
 ) -> Callable[..., Any]:
     kind = spec.kind
     view_model = spec.output_model
@@ -211,6 +227,7 @@ def _agent_node(
     def node(state: dict[str, Any]) -> dict[str, Any]:
         run_id = str(state.get("run_id") or "")
         task_id = str(state.get("task_id") or "")
+        _assert_agent_lease(services, store, run_id, spec.name)
         if pause_requested(store.root, run_id) and not state.get("_single_step"):
             waiting = StepRecord(
                 name=spec.name,
@@ -288,7 +305,10 @@ def _agent_node(
                     "source_project_path": str(state.get("source_project_path") or ""),
                     "agent_policy": dict(state.get("agent_policy") or {}),
                 }
+        except WorkerLeaseLost:
+            raise
         except Exception as error:
+            _assert_agent_lease(services, store, run_id, spec.name)
             record = StepRecord(
                 name=spec.name,
                 title=spec.title,
@@ -339,6 +359,7 @@ def _agent_node(
         )
         refs: list[ArtifactRef] = []
         try:
+            _assert_agent_lease(services, store, run_id, spec.name)
             store.save(
                 run_id,
                 record,
@@ -347,6 +368,7 @@ def _agent_node(
                 output_view=spec.output_record,
             )
             final = graph.invoke(graph_input)
+            _assert_agent_lease(services, store, run_id, spec.name)
             reproduction = (final.get("_audit") or {}).get("reproduction")
             if kind == "unified_fixer" and reproduction:
                 refs.append(ArtifactRef(name="request_reproduction", path=store.write_artifact(
@@ -443,7 +465,10 @@ def _agent_node(
                     )
                 )
             record.artifacts = list(refs)
+        except WorkerLeaseLost:
+            raise
         except Exception as error:
+            _assert_agent_lease(services, store, run_id, spec.name)
             record.status = "failed"
             record.result = None
             record.output = {"failure_reason": public_exception(error, prefix="Agent 执行异常")}
@@ -486,6 +511,7 @@ def _agent_node(
         record.execution, record.assessment = formal.execution, formal.assessment
         if formal.execution.status == "failed":
             record.status = "failed"
+        _assert_agent_lease(services, store, run_id, spec.name)
         store.save(
             run_id,
             record,
