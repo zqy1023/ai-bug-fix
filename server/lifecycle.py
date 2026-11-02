@@ -32,24 +32,45 @@ from server.control_store import _audit_control, _control_db
 
 logger = logging.getLogger("server.lifecycle")
 
-def _start_lifecycle_heartbeat(run_id: str) -> tuple[threading.Event, threading.Thread]:
-    """Keep an explicit lease while a worker owns the run lock, including long Agent calls."""
+class WorkerLeaseBusy(RuntimeError):
+    """另一个进程仍持有该 Run 的有效执行租约。"""
+
+
+def _start_lifecycle_heartbeat(
+    run_id: str, owner_id: str, lease_token: str,
+) -> tuple[threading.Event, threading.Thread]:
+    """先原子取得跨进程租约，再启动心跳；本地线程锁只负责进程内去重。"""
     store = _store()
     lifecycle = LifecycleStore(store.root)
+    if not lifecycle.claim_worker_lease(
+        run_id, owner_id=owner_id, lease_token=lease_token, ttl_seconds=30,
+    ):
+        raise WorkerLeaseBusy(f"Run 已由其它 worker 持有有效租约: {run_id}")
     stop = threading.Event()
 
     def pulse() -> None:
         while not stop.wait(5):
             try:
-                lifecycle.update_run(run_id, heartbeat_at=datetime.now(timezone.utc).isoformat(), worker_active=True)
+                renewed = lifecycle.heartbeat_worker_lease(
+                    run_id, owner_id=owner_id, lease_token=lease_token,
+                    ttl_seconds=30,
+                )
+                if not renewed:
+                    logger.error("Run 执行租约丢失，worker 必须停止写入 run_id=%s", run_id)
+                    stop.set()
+                    return
             except Exception:
-                logger.exception("更新运行心跳失败 run_id=%s", run_id)
+                logger.exception("续租失败 run_id=%s", run_id)
+                stop.set()
+                return
 
     thread = threading.Thread(target=pulse, name=f"run-heartbeat-{run_id}", daemon=True)
     thread.start()
     return stop, thread
 
-def _clear_worker_active(run_id: str) -> None:
+def _clear_worker_active(
+    run_id: str, owner_id: str, lease_token: str,
+) -> None:
     """清理 Run 的活动租约。
 
     与工作区回收解耦：生命周期写入失败重试一次，仍然失败只记录日志，
@@ -57,7 +78,11 @@ def _clear_worker_active(run_id: str) -> None:
     """
     for attempt in range(2):
         try:
-            LifecycleStore(_store().root).update_run(run_id, worker_active=False)
+            released = LifecycleStore(_store().root).release_worker_lease(
+                run_id, owner_id=owner_id, lease_token=lease_token,
+            )
+            if not released:
+                logger.warning("Run 租约已被替换或不再属于当前 worker run_id=%s", run_id)
             return
         except Exception:
             logger.exception(
@@ -298,15 +323,19 @@ def _run_workflow_background_v1(
             return
     heartbeat_stop: threading.Event | None = None
     heartbeat_thread: threading.Thread | None = None
+    lease_owner = f"{settings.service_name if hasattr(settings, 'service_name') else 'worker'}:{threading.get_ident()}"
+    lease_token = uuid.uuid4().hex
     try:
         store = _store()
+        heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(run_id, lease_owner, lease_token)
         LifecycleStore(store.root).update_run(
-            run_id, status="running", phase="workflow_startup", current_step="", error={}, worker_active=True,
+            run_id, status="running", phase="workflow_startup", current_step="", error={},
             allow_reactivate=True,
         )
-        heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(run_id)
         run_workflow(run_id, overrides=overrides, prepared=True)
         _complete_run_lifecycle(run_id, store)
+    except WorkerLeaseBusy as exc:
+        logger.warning("%s", exc)
     except Exception as exc:
         logger.exception("工作流后台执行失败 run_id=%s", run_id)
         _record_background_failure(run_id, exc)
@@ -317,7 +346,8 @@ def _run_workflow_background_v1(
             heartbeat_thread.join(timeout=1)
         from infrastructure.llm.runtime import close_sessions
         close_sessions(run_id)
-        _clear_worker_active(run_id)
+        if heartbeat_stop is not None:
+            _clear_worker_active(run_id, lease_owner, lease_token)
         try:
             from infrastructure.workspace.workspace_gc import (
                 collect_configured_workspaces,
@@ -342,17 +372,19 @@ def _resume_workflow_background(
             return
     heartbeat_stop: threading.Event | None = None
     heartbeat_thread: threading.Thread | None = None
+    lease_owner = f"{settings.service_name if hasattr(settings, 'service_name') else 'worker'}:{threading.get_ident()}"
+    lease_token = uuid.uuid4().hex
     try:
         from infrastructure.llm.config import load_config, workflow_recursion_limit
         from workflow.engine.graph import build_graph, build_services
 
         store = _store()
+        heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(run_id, lease_owner, lease_token)
         LifecycleStore(store.root).update_run(
-            run_id, status="running", phase="workflow_resume", current_step="", error={}, worker_active=True,
+            run_id, status="running", phase="workflow_resume", current_step="", error={},
             terminal_reason="", error_type="", error_message="", next_action="",
             allow_reactivate=True,
         )
-        heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(run_id)
         runtime_config = load_config()
         # 恢复时让 checkpoint 指向的 sync_source_repo 节点执行；
         # 不能在 graph.invoke 之前再次同步，否则原生重试仍然无法接管。
@@ -428,6 +460,8 @@ def _resume_workflow_background(
         _complete_run_lifecycle(run_id, store)
         if (store.run_dir(run_id) / "reports" / "final.json").is_file():
             _discard_retry_archive(store, run_id)
+    except WorkerLeaseBusy as exc:
+        logger.warning("%s", exc)
     except Exception as exc:
         logger.exception("恢复工作流失败 run_id=%s", run_id)
         phase = "approval_recovery" if resume_payload is not None else "workflow_resume"
@@ -439,7 +473,8 @@ def _resume_workflow_background(
             heartbeat_stop.set()
         if heartbeat_thread is not None:
             heartbeat_thread.join(timeout=1)
-        _clear_worker_active(run_id)
+        if heartbeat_stop is not None:
+            _clear_worker_active(run_id, lease_owner, lease_token)
         try:
             from infrastructure.workspace.workspace_gc import (
                 collect_configured_workspaces,
