@@ -13,7 +13,7 @@ from fastapi import BackgroundTasks, HTTPException
 
 from core.contracts import StepError
 from core.policy import legacy_analysis_required
-from infrastructure.storage.lifecycle import LifecycleStore
+from infrastructure.storage.lifecycle import LifecycleStore, WorkerLeaseLost
 from infrastructure.storage.store import RecordStore
 from infrastructure.storage.redaction import public_exception
 from core.policy import AgentPolicy
@@ -69,7 +69,7 @@ def _start_lifecycle_heartbeat(
     return stop, thread
 
 
-def _clear_worker_active(run_id: str, owner_id: str, lease_token: str) -> None:
+def _clear_worker_active(run_id: str, owner_id: str, lease_token: str) -> bool:
     """仅释放当前 worker 自己的租约，旧 worker 不得清除新持有者状态。"""
     for attempt in range(2):
         try:
@@ -78,7 +78,7 @@ def _clear_worker_active(run_id: str, owner_id: str, lease_token: str) -> None:
             )
             if not released:
                 logger.warning("Run 租约已变更，跳过旧 worker 清理 run_id=%s", run_id)
-            return
+            return released
         except Exception:
             logger.exception(
                 "清理 Run 活动租约失败 run_id=%s attempt=%s",
@@ -341,10 +341,9 @@ def _run_workflow_background_v1(
             heartbeat_stop.set()
         if heartbeat_thread is not None:
             heartbeat_thread.join(timeout=1)
-        if lease_acquired:
+        if lease_acquired and _clear_worker_active(run_id, lease_owner, lease_token):
             from infrastructure.llm.runtime import close_sessions
             close_sessions(run_id)
-            _clear_worker_active(run_id, lease_owner, lease_token)
             try:
                 from infrastructure.workspace.workspace_gc import (
                     collect_configured_workspaces,
@@ -463,6 +462,8 @@ def _resume_workflow_background(
             _discard_retry_archive(store, run_id)
     except WorkerLeaseBusy as exc:
         logger.warning("%s", exc)
+    except WorkerLeaseLost as exc:
+        logger.warning("旧 worker 已失去执行权，放弃后续状态收敛 run_id=%s error=%s", run_id, exc)
     except Exception as exc:
         logger.exception("恢复工作流失败 run_id=%s", run_id)
         phase = "approval_recovery" if resume_payload is not None else "workflow_resume"
@@ -472,10 +473,9 @@ def _resume_workflow_background(
             heartbeat_stop.set()
         if heartbeat_thread is not None:
             heartbeat_thread.join(timeout=1)
-        if lease_acquired:
+        if lease_acquired and _clear_worker_active(run_id, lease_owner, lease_token):
             from infrastructure.llm.runtime import close_sessions
             close_sessions(run_id)
-            _clear_worker_active(run_id, lease_owner, lease_token)
             try:
                 from infrastructure.workspace.workspace_gc import (
                     collect_configured_workspaces,
