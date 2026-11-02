@@ -62,7 +62,7 @@ class RecordDatabase:
                     or expires <= datetime.now(timezone.utc)
                 ):
                     raise WorkerLeaseLost("worker lease lost before persistent write")
-                yield
+                yield connection
                 connection.commit()
             except BaseException:
                 connection.rollback()
@@ -95,12 +95,24 @@ class RecordDatabase:
             )
         return value
 
-    def append(self, scope: str, stream: str, value: Any, *, identity: str | None = None) -> None:
-        """追加指标或历史；历史按内容哈希去重。"""
-        with closing(self._connect()) as connection, connection:
+    def append(
+        self, scope: str, stream: str, value: Any, *,
+        identity: str | None = None, connection: sqlite3.Connection | None = None,
+    ) -> None:
+        """追加指标或历史；可复用租约事务连接，避免嵌套写锁。"""
+        parameters = (
+            scope, stream, identity, json.dumps(value, ensure_ascii=False, default=str),
+        )
+        if connection is not None:
             connection.execute(
                 "INSERT OR IGNORE INTO events(scope,stream,identity,body) VALUES(?,?,?,?)",
-                (scope, stream, identity, json.dumps(value, ensure_ascii=False, default=str)),
+                parameters,
+            )
+            return
+        with closing(self._connect()) as owned, owned:
+            owned.execute(
+                "INSERT OR IGNORE INTO events(scope,stream,identity,body) VALUES(?,?,?,?)",
+                parameters,
             )
 
     def rows(self, stream: str, scope: str | None = None) -> list[dict[str, Any]]:

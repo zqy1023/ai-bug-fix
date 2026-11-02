@@ -192,7 +192,7 @@ class RecordStore:
                 previous = slot.get(record.name)
                 if isinstance(previous, dict) and previous.get("finished_at") and previous != body:
                     identity = hashlib.sha256(json.dumps(previous, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-                    self.database(run_id).append(task_id, "step_history", previous, identity=identity)
+                    self.database(run_id).append(task_id, "step_history", previous, identity=identity, connection=guard_connection)
                 slot[record.name] = body
             else:
                 payload[record.name] = body
@@ -424,7 +424,7 @@ class RecordStore:
                     previous_value = {"raw": previous.decode("utf-8", errors="replace")}
                 self.database(run_id).append(
                     task_id, "artifact_history", {"path": relative, "value": previous_value},
-                    identity=f"{relative}:{identity}",
+                    identity=f"{relative}:{identity}", connection=guard_connection,
                 )
         # 临时文件与目标同目录：同文件系统才能原子替换，写完整才返回引用。
         # 临时名必须唯一：固定的 "<name>.tmp" 会让两个写者共用一个文件互相截断，
