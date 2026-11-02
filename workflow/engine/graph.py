@@ -52,6 +52,7 @@ from infrastructure.git.source import (
 from infrastructure.llm.config import RuntimeConfig, load_config, workflow_recursion_limit
 from infrastructure.llm.runtime import close_sessions
 from infrastructure.storage.policy import debug_artifacts
+from infrastructure.storage.lifecycle import LifecycleStore
 from infrastructure.storage.sqlite import open_sqlite
 from infrastructure.storage.redaction import public_exception
 from infrastructure.storage.run_control import cancellation_requested, pause_requested
@@ -1448,6 +1449,7 @@ def run_workflow(
     *,
     overrides: dict[str, Any] | None = None,
     prepared: bool = False,
+    worker_lease: tuple[str, str] | None = None,
 ) -> dict[str, Any]:
     """执行一次完整工作流。"""
     resolved, config, store = prepare_run(
@@ -1455,9 +1457,15 @@ def run_workflow(
     )
     try:
         source_repo = config.source_repo
+        services = build_services(config=config, source_repo=source_repo)
+        if worker_lease:
+            services.metadata.update({
+                "worker_lease_owner": worker_lease[0],
+                "worker_lease_token": worker_lease[1],
+            })
         graph = build_graph(
             store=store,
-            services=build_services(config=config, source_repo=source_repo),
+            services=services,
             config=config,
         )
         final_state = graph.invoke(
