@@ -281,7 +281,7 @@ def test_append_artifact_rejects_stale_worker_after_lease_handoff(tmp_path):
     assert lifecycle.claim_worker_lease(
         "run-artifact", owner_id="worker-a", lease_token="token-a", ttl_seconds=30,
     )
-    store.set_worker_lease("worker-a", "token-a")
+    store.set_worker_lease("run-artifact", "worker-a", "token-a")
     store.append_artifact(
         "run-artifact", "metrics/agent.jsonl", {"call": 1}, "task-1",
     )

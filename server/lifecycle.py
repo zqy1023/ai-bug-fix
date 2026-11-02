@@ -39,7 +39,7 @@ def _start_lifecycle_heartbeat(
 ) -> tuple[threading.Event, threading.Thread]:
     """原子获取跨进程租约后启动心跳；进程内锁不再承担跨进程互斥职责。"""
     store = _store()
-    lifecycle = LifecycleStore(store.root, worker_lease=store._worker_lease)
+    lifecycle = LifecycleStore(store.root, worker_lease=store._worker_lease_for(run_id))
     if claim:
         if not lifecycle.claim_worker_lease(
             run_id, owner_id=owner_id, lease_token=lease_token, ttl_seconds=300,
@@ -99,7 +99,7 @@ def _clear_worker_active(run_id: str, owner_id: str, lease_token: str) -> bool:
 
 def _complete_run_lifecycle(run_id: str, store: RecordStore) -> None:
     """Settle the run only after graph.invoke has returned; waiting interrupts are not failures."""
-    lifecycle = LifecycleStore(store.root, worker_lease=store._worker_lease)
+    lifecycle = LifecycleStore(store.root, worker_lease=store._worker_lease_for(run_id))
     report = _read_json(store.run_dir(run_id) / "reports" / "final.json", {})
     if isinstance(report, dict) and report:
         result = str(report.get("result") or report.get("status") or "").upper()
@@ -166,7 +166,7 @@ def _settle_task_lifecycles_after_run_failure(
 ) -> None:
     from core.contracts import StepError
 
-    lifecycle = LifecycleStore(store.root, worker_lease=store._worker_lease)
+    lifecycle = LifecycleStore(store.root, worker_lease=store._worker_lease_for(run_id))
     payload = _read_json(store.steps_path(run_id), {})
     slots = payload.get("tasks", []) if isinstance(payload, dict) else []
     if not isinstance(slots, list):
@@ -226,7 +226,7 @@ def _record_background_failure(
     """将图外异常写成可查询的终态产物，避免后台任务失败后 Run 永久显示运行中。"""
     store = _store()
     if worker_lease is not None:
-        store.set_worker_lease(worker_lease[0], worker_lease[1])
+        store.set_worker_lease(run_id, worker_lease[0], worker_lease[1])
     try:
         logger.error("后台工作流异常 run_id=%s", run_id, exc_info=(type(error), error, error.__traceback__))
         # 取消优先于异常：用户停止后节点抛出的异常不能把本轮改写成 FAILED，
@@ -246,7 +246,7 @@ def _record_background_failure(
 
             with store._write_guard(run_id):
                 _write_run_report(store, run_id)
-            LifecycleStore(store.root, worker_lease=store._worker_lease).update_run(run_id, status="cancelled", worker_active=False)
+            LifecycleStore(store.root, worker_lease=store._worker_lease_for(run_id)).update_run(run_id, status="cancelled", worker_active=False)
             return
         directory = store.run_dir(_safe_id(run_id))
         if not directory.is_dir():
@@ -292,7 +292,7 @@ def _record_background_failure(
             temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             temporary.replace(target)
         try:
-            lifecycle = LifecycleStore(store.root, worker_lease=store._worker_lease)
+            lifecycle = LifecycleStore(store.root, worker_lease=store._worker_lease_for(run_id))
             lifecycle.update_run(
                 run_id, status="failed", phase=terminal_step, current_step=terminal_step,
                 error_type=type(error).__name__, error_message=reason,
@@ -351,7 +351,7 @@ def _run_workflow_background_v1(
             run_id, lease_owner, lease_token, claim=worker_lease is None,
         )
         lease_acquired = True
-        store.set_worker_lease(lease_owner, lease_token)
+        store.set_worker_lease(run_id, lease_owner, lease_token)
         LifecycleStore(store.root, worker_lease=(lease_owner, lease_token)).update_run(
             run_id, status="running", phase="workflow_startup", current_step="", error={},
             allow_reactivate=True,
@@ -416,7 +416,7 @@ def _resume_workflow_background(
             run_id, lease_owner, lease_token, claim=worker_lease is None,
         )
         lease_acquired = True
-        store.set_worker_lease(lease_owner, lease_token)
+        store.set_worker_lease(run_id, lease_owner, lease_token)
         LifecycleStore(store.root, worker_lease=(lease_owner, lease_token)).update_run(
             run_id, status="running", phase="workflow_resume", current_step="", error={},
             terminal_reason="", error_type="", error_message="", next_action="",

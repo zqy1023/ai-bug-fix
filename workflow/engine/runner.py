@@ -1104,7 +1104,7 @@ class StepRunner:
                 code="RUN_LEASE_BUSY",
             )
         try:
-            self._store.set_worker_lease(lease_owner, lease_token)
+            self._store.set_worker_lease(request.run_id, lease_owner, lease_token)
             from infrastructure.storage.reports import archive_retry_reports
             with self._store._write_guard(request.run_id):
                 archive_retry_reports(self._store, request.run_id, request.task_id)
@@ -1117,7 +1117,7 @@ class StepRunner:
             )
             thread.start()
         except BaseException:
-            self._store.clear_worker_lease()
+            self._store.clear_worker_lease(request.run_id)
             lifecycle.release_worker_lease(
                 request.run_id, owner_id=lease_owner, lease_token=lease_token,
             )
@@ -1142,11 +1142,11 @@ class StepRunner:
             attempt=existing.attempt if existing else 0,
             started_at=utc_now(),
         )
-        LifecycleStore(self._store.root, worker_lease=self._store._worker_lease).update_run(
+        LifecycleStore(self._store.root, worker_lease=self._store._worker_lease_for(request.run_id)).update_run(
             request.run_id, allow_reactivate=True, status="running",
             phase="single_step", current_step=spec.name, error={},
         )
-        LifecycleStore(self._store.root, worker_lease=self._store._worker_lease).update_task(
+        LifecycleStore(self._store.root, worker_lease=self._store._worker_lease_for(request.run_id)).update_task(
             request.run_id, request.task_id,
             allow_reactivate=True, status="running", current_step=spec.name,
             terminal_step="", terminal_reason="", error={},
@@ -1161,7 +1161,7 @@ class StepRunner:
         lease_owner: str | None = None, lease_token: str | None = None,
     ) -> None:
         continuing = False
-        lifecycle = LifecycleStore(self._store.root, worker_lease=self._store._worker_lease)
+        lifecycle = LifecycleStore(self._store.root, worker_lease=self._store._worker_lease_for(request.run_id))
         lease_owner = lease_owner or f"{settings.service_name}:single-step:{uuid.uuid4().hex[:12]}"
         lease_token = lease_token or uuid.uuid4().hex
         lease_acquired = False
@@ -1318,12 +1318,12 @@ class StepRunner:
                 )
                 if released:
                     close_sessions(request.run_id, request.task_id or None)
-            self._store.clear_worker_lease()
+            self._store.clear_worker_lease(request.run_id)
             if self._on_finish is not None:
                 self._on_finish()
 
     def _continuation_failed(self, request: StepRunRequest, message: str) -> None:
-        LifecycleStore(self._store.root, worker_lease=self._store._worker_lease).update_task(
+        LifecycleStore(self._store.root, worker_lease=self._store._worker_lease_for(request.run_id)).update_task(
             request.run_id,
             request.task_id,
             status="failed",
@@ -1337,7 +1337,7 @@ class StepRunner:
     def _mark_single_step_failed(
         self, spec: PluginSpec, request: StepRunRequest, message: str
     ) -> None:
-        LifecycleStore(self._store.root, worker_lease=self._store._worker_lease).update_task(
+        LifecycleStore(self._store.root, worker_lease=self._store._worker_lease_for(request.run_id)).update_task(
             request.run_id,
             request.task_id,
             status="failed",

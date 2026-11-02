@@ -88,22 +88,30 @@ class RecordStore:
         self.root = Path(root).resolve()
         (self.root / "runs").mkdir(parents=True, exist_ok=True)
         self._lock = _root_lock(self.root)
-        self._worker_lease: tuple[str, str] | None = None
+        self._worker_leases: dict[str, tuple[str, str]] = {}
+        self._worker_leases_lock = threading.RLock()
 
-    def set_worker_lease(self, owner_id: str, lease_token: str) -> None:
-        """为当前执行绑定租约身份；不带租约的离线/CLI Store 保持兼容。"""
-        if not owner_id or not lease_token:
-            raise ValueError("worker lease identity is incomplete")
-        self._worker_lease = (owner_id, lease_token)
+    def set_worker_lease(self, run_id: str, owner_id: str, lease_token: str) -> None:
+        """按 Run 绑定租约身份，允许同一 Store 并发服务不同 Run。"""
+        if not run_id or not owner_id or not lease_token:
+            raise ValueError("run_id and worker lease identity are required")
+        with self._worker_leases_lock:
+            self._worker_leases[run_id] = (owner_id, lease_token)
 
-    def clear_worker_lease(self) -> None:
-        """结束 worker 生命周期，避免复用 Store 时携带过期身份。"""
-        self._worker_lease = None
+    def clear_worker_lease(self, run_id: str) -> None:
+        """结束指定 Run 的 worker 生命周期，不影响同一 Store 的其它 Run。"""
+        with self._worker_leases_lock:
+            self._worker_leases.pop(run_id, None)
+
+    def _worker_lease_for(self, run_id: str) -> tuple[str, str] | None:
+        with self._worker_leases_lock:
+            return self._worker_leases.get(run_id)
 
     def _write_guard(self, run_id: str):
-        if self._worker_lease is None:
+        lease = self._worker_lease_for(run_id)
+        if lease is None:
             return nullcontext()
-        owner_id, lease_token = self._worker_lease
+        owner_id, lease_token = lease
         return self.database(run_id).worker_lease_guard(
             owner_id=owner_id, lease_token=lease_token,
         )
@@ -236,7 +244,7 @@ class RecordStore:
         return self.steps_path(run_id)
 
     def _update_lifecycle(self, run_id: str, task_id: str, record: StepRecord) -> None:
-        lifecycle = LifecycleStore(self.root, worker_lease=self._worker_lease)
+        lifecycle = LifecycleStore(self.root, worker_lease=self._worker_lease_for(run_id))
         phase = record.name
         error = record.error.model_dump(mode="json") if record.error else {}
         if not task_id:
@@ -328,9 +336,9 @@ class RecordStore:
             refresh_completed_report(self, run_id, task_id)
         self._update_lifecycle(run_id, task_id, record)
         if str(record.output.get("delivery_status") or "").upper() == "BLOCKED":
-            LifecycleStore(self.root, worker_lease=self._worker_lease).update_task(run_id, task_id, workspace_released=False)
+            LifecycleStore(self.root, worker_lease=self._worker_lease_for(run_id)).update_task(run_id, task_id, workspace_released=False)
             return
-        LifecycleStore(self.root, worker_lease=self._worker_lease).update_task(run_id, task_id, workspace_released=True)
+        LifecycleStore(self.root, worker_lease=self._worker_lease_for(run_id)).update_task(run_id, task_id, workspace_released=True)
         from infrastructure.workspace.workspace_gc import collect_configured_workspaces
         from infrastructure.llm.config import load_config
         from dataclasses import replace
@@ -338,7 +346,7 @@ class RecordStore:
 
     def report_progress(self, run_id: str, step: str, message: str, counts: dict[str, int]) -> None:
         """记录不含原始日志的处理进度，供轮询和事件流展示。"""
-        LifecycleStore(self.root, worker_lease=self._worker_lease).update_run(
+        LifecycleStore(self.root, worker_lease=self._worker_lease_for(run_id)).update_run(
             run_id, progress={"step": step, "message": message, "counts": counts},
             progress_at=utc_now(),
         )
@@ -540,7 +548,7 @@ class RecordStore:
         with path.open("x", encoding="utf-8") as file_obj:
             json.dump(body, file_obj, ensure_ascii=False, indent=2)
 
-        LifecycleStore(self.root, worker_lease=self._worker_lease).update_run(
+        LifecycleStore(self.root, worker_lease=self._worker_lease_for(run_id)).update_run(
             run_id, status="queued", phase="queued", current_step="",
             started_at=None, finished_at=None, error={}, terminal_reason="",
         )

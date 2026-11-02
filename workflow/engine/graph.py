@@ -1512,6 +1512,8 @@ def run_workflow(
     resolved, config, store = prepare_run(
         run_id, overrides=overrides, allow_prepared=prepared
     )
+    if worker_lease:
+        store.set_worker_lease(resolved, worker_lease[0], worker_lease[1])
     try:
         source_repo = config.source_repo
         services = build_services(config=config, source_repo=source_repo)
