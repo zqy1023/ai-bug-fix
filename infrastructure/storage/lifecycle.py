@@ -141,6 +141,25 @@ class LifecycleStore:
         self._database(run_id).update("", "lifecycle", transform)
         return renewed
 
+    def owns_worker_lease(
+        self, run_id: str, *, owner_id: str, lease_token: str,
+    ) -> bool:
+        """检查当前 worker 是否仍持有未过期租约。"""
+        state = self.read_run(run_id)
+        try:
+            expires = datetime.fromisoformat(
+                str(state.get("worker_lease_expires_at") or "")
+            )
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return False
+        return (
+            state.get("worker_lease_owner") == owner_id
+            and state.get("worker_lease_token") == lease_token
+            and expires > datetime.now(timezone.utc)
+        )
+
     def release_worker_lease(
         self, run_id: str, *, owner_id: str, lease_token: str,
     ) -> bool:
