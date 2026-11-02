@@ -19,6 +19,10 @@ _TERMINAL = {"succeeded", "partial_failed", "failed", "cancelled", "manual", "sk
 logger = logging.getLogger(__name__)
 
 
+class WorkerLeaseLost(RuntimeError):
+    """当前 worker 已失去 Run 执行租约，不能继续推进或清理运行资源。"""
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -241,4 +245,4 @@ class _Unset:
 _UNSET = _Unset()
 
 
-__all__ = ["LifecycleStore"]
+__all__ = ["LifecycleStore", "WorkerLeaseLost"]
