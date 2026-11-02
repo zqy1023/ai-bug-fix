@@ -25,7 +25,7 @@ jobs:
           python -m pip install -r /tmp/requirements-ci.txt pytest
       - name: Run lifecycle and execution-control regressions
         run: |
-          pytest -q \
+          python -m pytest -q \
             tests/test_lifecycle_worker_lease.py \
             tests/test_step_retry_lifecycle.py \
             tests/test_cancel_stop.py \
