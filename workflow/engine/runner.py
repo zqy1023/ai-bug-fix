@@ -1092,7 +1092,7 @@ class StepRunner:
 
     def run(self, request: StepRunRequest) -> dict[str, Any]:
         spec = self.validate(request)
-        lifecycle = LifecycleStore(self._store.root, worker_lease=(lease_owner, lease_token))
+        lifecycle = LifecycleStore(self._store.root)
         lease_owner = f"{settings.service_name}:single-step:{uuid.uuid4().hex[:12]}"
         lease_token = uuid.uuid4().hex
         if not lifecycle.claim_worker_lease(
