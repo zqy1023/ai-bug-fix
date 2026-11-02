@@ -7,7 +7,6 @@ from infrastructure.workspace.workspace import WorkspaceConfig, WorkspaceError, 
 
 def test_fork_task_workspace_isolates_successor_from_stale_worker(tmp_path):
     manager = WorkspaceManager(WorkspaceConfig(root_dir=tmp_path))
-    manager._root = tmp_path
     stale_workspace = tmp_path / "ai" / "run-task-worker-old"
     stale_workspace.mkdir(parents=True)
     (stale_workspace / "carrier.py").write_text("old worker state", encoding="utf-8")

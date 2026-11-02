@@ -279,7 +279,7 @@ class WorkspaceManager:
         if not source.is_dir():
             raise WorkspaceError("待隔离的任务工作区不存在")
         if self._root is None:
-            raise WorkspaceError("工作区管理器尚未初始化")
+            self._root = self._config.root_dir or Path(tempfile.mkdtemp(prefix="ai-repair-"))
         allowed_root = (self._root / "ai").resolve()
         if not source.is_relative_to(allowed_root):
             raise WorkspaceError("任务工作区不在 AI 隔离根目录内")
