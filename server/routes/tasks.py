@@ -126,7 +126,9 @@ def v1_retry_task(
     workspace_archive: Path | None = None
     workspace_original: Path | None = None
     checkpoint_updated = False
+    worker_lease: tuple[str, str] | None = None
     try:
+        worker_lease = _claim_worker_lease(run_id)
         runtime_config = load_config()
         graph = build_graph(
             store=store,
@@ -257,6 +259,8 @@ def v1_retry_task(
         except Exception:
             logger.exception("Task 重试已提交，但审计写入失败 run_id=%s task_id=%s", run_id, task_id)
     except Exception:
+        if worker_lease is not None:
+            _release_worker_lease(run_id, worker_lease)
         compensation_failures: list[tuple[str, OSError]] = []
         if not checkpoint_updated:
             if baseline_archive is not None and baseline_archive.exists() and baseline_original is not None:
@@ -308,7 +312,7 @@ def v1_retry_task(
             ) from compensation_failures[0][1]
         raise
 
-    background.add_task(_resume_workflow_background, run_id, lock)
+    background.add_task(_resume_workflow_background, run_id, lock, None, worker_lease)
     return {
         "run_id": run_id,
         "task_id": task_id,
