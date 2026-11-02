@@ -425,16 +425,16 @@ def v1_run_step(
         from infrastructure.storage.lifecycle import WorkerLeaseLost
         lease_owner = f"{settings.service_name}:single-step:{uuid.uuid4().hex[:12]}"
         lease_token = uuid.uuid4().hex
-        stop, heartbeat = _start_lifecycle_heartbeat(run_id, lease_owner, lease_token)
-        runtime = load_config()
-        services = build_services(config=runtime, source_repo=runtime.source_repo)
-        services.metadata.update({
-            "worker_lease_owner": lease_owner,
-            "worker_lease_token": lease_token,
-        })
         lifecycle = LifecycleStore(store.root)
-        lifecycle.update_run(run_id, status="running", error={}, allow_reactivate=True)
+        stop, heartbeat = _start_lifecycle_heartbeat(run_id, lease_owner, lease_token)
         try:
+            runtime = load_config()
+            services = build_services(config=runtime, source_repo=runtime.source_repo)
+            services.metadata.update({
+                "worker_lease_owner": lease_owner,
+                "worker_lease_token": lease_token,
+            })
+            lifecycle.update_run(run_id, status="running", error={}, allow_reactivate=True)
             previous_report = store.run_dir(run_id) / "reports/final.json"
             if previous_report.is_file():
                 archive = previous_report.parent / "history" / ("before-step-" + uuid.uuid4().hex + ".json")
