@@ -354,7 +354,7 @@ class WorkerLeaseLost(RuntimeError):
     """当前执行进程已失去 Run 租约，禁止继续写入步骤记录。"""
 
 
-def _assert_worker_lease(services: WorkflowServices, run_id: str, step_name: str) -> None:
+def _assert_worker_lease(services: WorkflowServices, store: RecordStore, run_id: str, step_name: str) -> None:
     owner_id = str(services.metadata.get("worker_lease_owner") or "")
     lease_token = str(services.metadata.get("worker_lease_token") or "")
     if not owner_id and not lease_token:
@@ -363,7 +363,7 @@ def _assert_worker_lease(services: WorkflowServices, run_id: str, step_name: str
         raise WorkerLeaseLost(f"{step_name}: worker lease identity is incomplete")
     from infrastructure.storage.lifecycle import LifecycleStore
 
-    if not LifecycleStore(services.metadata.get("runtime_dir") or ".").owns_worker_lease(
+    if not LifecycleStore(store.root).owns_worker_lease(
         run_id, owner_id=owner_id, lease_token=lease_token,
     ):
         raise WorkerLeaseLost(f"{step_name}: worker lease lost")
@@ -386,7 +386,7 @@ def run_stage(
     if spec.task_level and not task_id:
         raise StepFailed(f"{spec.name} 缺少真实 task_id，拒绝生成调试身份")
 
-    _assert_worker_lease(services, run_id, spec.name)
+    _assert_worker_lease(services, store, run_id, spec.name)
     started = time.perf_counter()
     previous_record = store.load(run_id, spec.name, task_id)
     previous_attempt = previous_record.attempt if previous_record else 0
