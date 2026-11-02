@@ -29,6 +29,7 @@ jobs:
         run: |
           python -m pytest -q \
             tests/test_lifecycle_worker_lease.py \
+            tests/test_workspace_worker_fencing.py \
             tests/test_retry_report_archival.py \
             tests/test_server_service_consolidation.py \
             tests/test_step_retry_lifecycle.py \
