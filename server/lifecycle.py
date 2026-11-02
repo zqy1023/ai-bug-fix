@@ -13,7 +13,7 @@ from fastapi import BackgroundTasks, HTTPException
 
 from core.contracts import StepError
 from core.policy import legacy_analysis_required
-from infrastructure.storage.lifecycle import LifecycleStore, WorkerLeaseLost
+from infrastructure.storage.lifecycle import LifecycleStore, WorkerLeaseBusy, WorkerLeaseLost
 from infrastructure.storage.store import RecordStore
 from infrastructure.storage.redaction import public_exception
 from core.policy import AgentPolicy
@@ -31,10 +31,6 @@ from server.context import (
 from server.control_store import _audit_control, _control_db
 
 logger = logging.getLogger("server.lifecycle")
-
-class WorkerLeaseBusy(RuntimeError):
-    """Run 已由另一个服务进程持有有效执行租约。"""
-
 
 def _start_lifecycle_heartbeat(
     run_id: str, owner_id: str, lease_token: str,
