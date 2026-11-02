@@ -268,3 +268,37 @@ def test_lifecycle_updates_are_fenced_when_store_has_worker_identity(tmp_path):
     with pytest.raises(WorkerLeaseLost):
         fenced.update_run("run-fenced", status="failed", phase="stale-worker")
     assert lifecycle.read_run("run-fenced")["phase"] == "worker-a"
+
+
+def test_append_artifact_rejects_stale_worker_after_lease_handoff(tmp_path):
+    import pytest
+
+    from infrastructure.storage.lifecycle import WorkerLeaseLost
+    from infrastructure.storage.store import RecordStore
+
+    lifecycle = LifecycleStore(tmp_path)
+    store = RecordStore(tmp_path)
+    assert lifecycle.claim_worker_lease(
+        "run-artifact", owner_id="worker-a", lease_token="token-a", ttl_seconds=30,
+    )
+    store.set_worker_lease("worker-a", "token-a")
+    store.append_artifact(
+        "run-artifact", "metrics/agent.jsonl", {"call": 1}, "task-1",
+    )
+    assert len(store.read_metrics("run-artifact", "task-1")) == 1
+
+    lifecycle._database("run-artifact").update(
+        "", "lifecycle",
+        lambda state: {
+            **state,
+            "worker_lease_expires_at": "2000-01-01T00:00:00+00:00",
+        },
+    )
+    assert lifecycle.claim_worker_lease(
+        "run-artifact", owner_id="worker-b", lease_token="token-b", ttl_seconds=30,
+    )
+    with pytest.raises(WorkerLeaseLost):
+        store.append_artifact(
+            "run-artifact", "metrics/agent.jsonl", {"call": "stale"}, "task-1",
+        )
+    assert len(store.read_metrics("run-artifact", "task-1")) == 1

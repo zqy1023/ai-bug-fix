@@ -505,16 +505,19 @@ class RecordStore:
 
     def append_artifact(self, run_id: str, relative: str, value: Any, task_id: str = "") -> str:
         """追加 JSONL 运行指标，不覆盖同一任务的历史调用。"""
-        base, target = self._target(run_id, relative, task_id)
-        if relative == "metrics/agent.jsonl":
-            self.database(run_id).append(task_id, "agent_metrics", value)
-            return relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if not target.parent.resolve().is_relative_to(base.resolve()):
-            raise StepFailed(f"产物目录越界: {relative!r}", code="ARTIFACT_PATH_INVALID")
-        with target.open("a", encoding="utf-8") as file_obj:
-            file_obj.write(json.dumps(value, ensure_ascii=False, default=str) + "\n")
-        return target.relative_to(self._base(run_id, task_id)).as_posix()
+        with self._write_guard(run_id) as guard_connection:
+            base, target = self._target(run_id, relative, task_id)
+            if relative == "metrics/agent.jsonl":
+                self.database(run_id).append(
+                    task_id, "agent_metrics", value, connection=guard_connection,
+                )
+                return relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if not target.parent.resolve().is_relative_to(base.resolve()):
+                raise StepFailed(f"产物目录越界: {relative!r}", code="ARTIFACT_PATH_INVALID")
+            with target.open("a", encoding="utf-8") as file_obj:
+                file_obj.write(json.dumps(value, ensure_ascii=False, default=str) + "\n")
+            return target.relative_to(self._base(run_id, task_id)).as_posix()
 
     def database(self, run_id: str) -> RecordDatabase:
         """本轮小记录的集中存储。"""
