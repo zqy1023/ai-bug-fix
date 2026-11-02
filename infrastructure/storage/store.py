@@ -29,7 +29,7 @@ from core.keys import safe_name
 from core import utc_now
 from core.contracts import SCHEMA_VERSION, ArtifactRef, StepError, StepRecord
 from infrastructure.storage.atomic import atomic_write_text
-from infrastructure.storage.lifecycle import LifecycleStore
+from infrastructure.storage.lifecycle import LifecycleStore, WorkerLeaseLost
 from infrastructure.storage.database import RecordDatabase
 from infrastructure.storage.policy import artifact_mode
 from core.contracts import RecordView
@@ -205,6 +205,8 @@ class RecordStore:
             self._write_steps(run_id, payload)
         try:
             self._update_lifecycle(run_id, task_id, record)
+        except WorkerLeaseLost:
+            raise
         except Exception:
             # Audit history is authoritative; lifecycle projection failure must be visible
             # in logs but must not overwrite a successfully persisted step record.

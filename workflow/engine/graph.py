@@ -1525,7 +1525,8 @@ def run_workflow(
             resolved, owner_id=worker_lease[0], lease_token=worker_lease[1],
         ):
             raise WorkerLeaseLost(f"Run lease lost before report generation: {resolved}")
-        _write_run_report_if_terminal(store, resolved, graph, final_state=final_state)
+        with store._write_guard(resolved):
+            _write_run_report_if_terminal(store, resolved, graph, final_state=final_state)
         return final_state
     except WorkerLeaseLost:
         # 租约失效的旧 worker 不得生成失败报告或关闭继任 worker 的会话。
@@ -1535,7 +1536,8 @@ def run_workflow(
             resolved, owner_id=worker_lease[0], lease_token=worker_lease[1],
         ):
             raise WorkerLeaseLost(f"Run lease lost while handling failure: {resolved}") from exc
-        _write_run_report(store, resolved, error=exc)
+        with store._write_guard(resolved):
+            _write_run_report(store, resolved, error=exc)
         raise
     finally:
         if worker_lease is None:

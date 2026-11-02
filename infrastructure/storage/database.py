@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from contextlib import closing
+from contextlib import closing, contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from infrastructure.storage.sqlite import open_sqlite
 
@@ -28,6 +29,44 @@ class RecordDatabase:
             "CREATE INDEX IF NOT EXISTS events_stream ON events(stream,scope,id);"
         )
         return connection
+
+    @contextmanager
+    def worker_lease_guard(self, *, owner_id: str, lease_token: str) -> Iterator[None]:
+        """在同一 SQLite 写事务中校验租约并执行受保护写入。
+
+        BEGIN IMMEDIATE 持有数据库写锁直到调用方完成写入，因此新的 worker
+        不能在校验与写入之间接管租约。调用方不得在 guard 内再次打开本库写事务。
+        """
+        from infrastructure.storage.lifecycle import WorkerLeaseLost
+
+        if not owner_id or not lease_token:
+            raise WorkerLeaseLost("worker lease identity is incomplete")
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    "SELECT body FROM state WHERE scope='' AND name='lifecycle'"
+                ).fetchone()
+                state = json.loads(row[0]) if row else {}
+                try:
+                    expires = datetime.fromisoformat(
+                        str(state.get("worker_lease_expires_at") or "")
+                    )
+                    if expires.tzinfo is None:
+                        expires = expires.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    expires = datetime.min.replace(tzinfo=timezone.utc)
+                if (
+                    state.get("worker_lease_owner") != owner_id
+                    or state.get("worker_lease_token") != lease_token
+                    or expires <= datetime.now(timezone.utc)
+                ):
+                    raise WorkerLeaseLost("worker lease lost before persistent write")
+                yield
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
 
     def get(self, scope: str, name: str) -> dict[str, Any] | None:
         """读取状态；不存在时返回空。"""

@@ -193,3 +193,51 @@ def test_recent_legacy_worker_heartbeat_blocks_rollout_claim(tmp_path):
     assert not lifecycle.claim_worker_lease(
         "run-1", owner_id="new-worker", lease_token="new-token", ttl_seconds=30,
     )
+
+
+def test_write_guard_blocks_lease_takeover_until_persistent_write_finishes(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    import pytest
+
+    from infrastructure.storage.lifecycle import WorkerLeaseLost
+
+    lifecycle = LifecycleStore(tmp_path)
+    database = lifecycle._database("run-guard")
+    assert lifecycle.claim_worker_lease(
+        "run-guard", owner_id="worker-a", lease_token="token-a", ttl_seconds=30,
+    )
+    entered = Event()
+    release = Event()
+
+    def protected_write():
+        with database.worker_lease_guard(owner_id="worker-a", lease_token="token-a"):
+            entered.set()
+            assert release.wait(timeout=5)
+
+    def replacement_claim():
+        return lifecycle.claim_worker_lease(
+            "run-guard", owner_id="worker-b", lease_token="token-b", ttl_seconds=30,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        writer = pool.submit(protected_write)
+        assert entered.wait(timeout=5)
+        takeover = pool.submit(replacement_claim)
+        assert not takeover.done()
+        release.set()
+        writer.result(timeout=5)
+        assert takeover.result(timeout=5) is False
+
+    # Once the original lease expires and is replaced, stale writes are rejected.
+    database.update(
+        "", "lifecycle",
+        lambda state: {**state, "worker_lease_expires_at": "2000-01-01T00:00:00+00:00"},
+    )
+    assert lifecycle.claim_worker_lease(
+        "run-guard", owner_id="worker-b", lease_token="token-b", ttl_seconds=30,
+    )
+    with pytest.raises(WorkerLeaseLost):
+        with database.worker_lease_guard(owner_id="worker-a", lease_token="token-a"):
+            pass

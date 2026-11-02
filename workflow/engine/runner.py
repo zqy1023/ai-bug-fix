@@ -1104,8 +1104,10 @@ class StepRunner:
                 code="RUN_LEASE_BUSY",
             )
         try:
+            self._store.set_worker_lease(lease_owner, lease_token)
             from infrastructure.storage.reports import archive_retry_reports
-            archive_retry_reports(self._store, request.run_id, request.task_id)
+            with self._store._write_guard(request.run_id):
+                archive_retry_reports(self._store, request.run_id, request.task_id)
             running = self._mark_running(spec, request)
             thread = threading.Thread(
                 target=self._execute,
@@ -1115,6 +1117,7 @@ class StepRunner:
             )
             thread.start()
         except BaseException:
+            self._store.clear_worker_lease()
             lifecycle.release_worker_lease(
                 request.run_id, owner_id=lease_owner, lease_token=lease_token,
             )
@@ -1315,6 +1318,7 @@ class StepRunner:
                 )
                 if released:
                     close_sessions(request.run_id, request.task_id or None)
+            self._store.clear_worker_lease()
             if self._on_finish is not None:
                 self._on_finish()
 
