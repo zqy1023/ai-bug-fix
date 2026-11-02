@@ -42,6 +42,11 @@ def _authorize(authorization: str | None = Header(default=None)) -> None:
         raise HTTPException(status_code=401, detail="需要有效的工作台 Bearer Token")
 
 def _config():
+    import sys
+
+    module = sys.modules.get("server.api") or sys.modules.get("server.routes")
+    if module and "_config" in module.__dict__ and module.__dict__["_config"] is not _config:
+        return module.__dict__["_config"]()
     try:
         return load_config()
     except Exception as exc:
@@ -51,6 +56,11 @@ def _config():
         ) from exc
 
 def _store() -> RecordStore:
+    import sys
+
+    module = sys.modules.get("server.api") or sys.modules.get("server.routes")
+    if module and "_store" in module.__dict__ and module.__dict__["_store"] is not _store:
+        return module.__dict__["_store"]()
     config = _config()
     return RecordStore(config.runtime_dir)
 
