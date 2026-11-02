@@ -1142,6 +1142,8 @@ class StepRunner:
             ):
                 raise WorkerLeaseBusy(f"Run 正由其它 worker 执行，拒绝单步写入: {request.run_id}")
             lease_acquired = True
+            from infrastructure.storage.reports import archive_retry_reports
+            archive_retry_reports(self._store, request.run_id, request.task_id)
             code, record, payload = execute_once(
                 spec,
                 run_id=request.run_id,
