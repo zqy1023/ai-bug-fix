@@ -7,40 +7,44 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
-from config.settings import settings
-
 logger = logging.getLogger(__name__)
 
 
+class ControlStoreUnavailable(RuntimeError):
+    """控制存储不可用；调用方必须停止副作用执行，不能按“未请求”处理。"""
+
+
 def _control_flags(runtime_dir: str | Path, run_id: str) -> tuple[bool, bool]:
-    """返回 (pause_requested, cancel_requested)；控制库不可用时不伪造控制请求。"""
+    """返回 (pause_requested, cancel_requested)。
+
+    控制库尚未创建时表示当前没有持久化控制请求；但库已存在却无法读取时，
+    必须 fail closed，防止暂停/取消信号因数据库故障而被静默忽略。
+    """
     database = Path(runtime_dir) / "workbench-control.sqlite3"
     if not run_id or not database.is_file():
         return False, False
     try:
-        with closing(sqlite3.connect(
-            str(database),
-            timeout=1,
-        )) as connection:
+        with closing(sqlite3.connect(str(database), timeout=1)) as connection:
             row = connection.execute(
-                "SELECT pause_requested, cancel_requested FROM run_control WHERE run_id = ?", (run_id,)
+                "SELECT pause_requested, cancel_requested FROM run_control WHERE run_id = ?",
+                (run_id,),
             ).fetchone()
             return (bool(row[0]), bool(row[1])) if row else (False, False)
     except sqlite3.Error as error:
-        # 控制库读不到时不能伪造"未请求"，但也绝不能静默：用户的取消/暂停
-        # 会就此失效，工作流继续跑完整轮，日志里还得留得下痕迹。
-        logger.warning("读取运行控制信号失败（run_id=%s）：%s", run_id, error)
-        return False, False
+        logger.exception("读取运行控制信号失败（run_id=%s）", run_id)
+        raise ControlStoreUnavailable(
+            f"运行控制存储不可用，已阻止后续执行（run_id={run_id}）"
+        ) from error
 
 
 def pause_requested(runtime_dir: str | Path, run_id: str) -> bool:
-    """读取持久化暂停意图。"""
+    """读取持久化暂停意图；控制存储故障时抛出异常而不是静默放行。"""
     return _control_flags(runtime_dir, run_id)[0]
 
 
 def cancellation_requested(runtime_dir: str | Path, run_id: str) -> bool:
-    """读取持久化取消意图；不存在控制库时视为未请求。"""
+    """读取持久化取消意图；控制存储故障时抛出异常而不是静默放行。"""
     return _control_flags(runtime_dir, run_id)[1]
 
 
-__all__ = ["cancellation_requested", "pause_requested"]
+__all__ = ["ControlStoreUnavailable", "cancellation_requested", "pause_requested"]
