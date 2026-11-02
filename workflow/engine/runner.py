@@ -42,7 +42,9 @@ from core.contracts import (
 )
 from core.errors import StepFailed
 from infrastructure.llm.runtime import close_sessions
-from infrastructure.storage.lifecycle import LifecycleStore, WorkerLeaseBusy, WorkerLeaseLost
+from infrastructure.storage.lifecycle import (
+    LifecycleStore, WorkerLeaseBusy, WorkerLeaseLost, start_worker_lease_heartbeat,
+)
 from infrastructure.storage.redaction import public_exception
 from infrastructure.storage.run_control import cancellation_requested, pause_requested
 from infrastructure.storage.store import RecordStore
@@ -1155,6 +1157,8 @@ class StepRunner:
         lease_owner = lease_owner or f"{settings.service_name}:single-step:{uuid.uuid4().hex[:12]}"
         lease_token = lease_token or uuid.uuid4().hex
         lease_acquired = False
+        heartbeat_stop = None
+        heartbeat_thread = None
         try:
             if not lifecycle.owns_worker_lease(
                 request.run_id, owner_id=lease_owner, lease_token=lease_token,
@@ -1165,6 +1169,10 @@ class StepRunner:
                 ):
                     raise WorkerLeaseBusy(f"Run 正由其它 worker 执行，拒绝单步写入: {request.run_id}")
             lease_acquired = True
+            heartbeat_stop, heartbeat_thread = start_worker_lease_heartbeat(
+                lifecycle, request.run_id, owner_id=lease_owner, lease_token=lease_token,
+                interval_seconds=5, ttl_seconds=30,
+            )
             from infrastructure.storage.reports import archive_retry_reports
             archive_retry_reports(self._store, request.run_id, request.task_id)
             code, record, payload = execute_once(
@@ -1186,6 +1194,10 @@ class StepRunner:
                 and record.status in {"succeeded", "waiting"}
             ):
                 # 单步节点结束后释放租约，再把执行权交给完整工作流 continuation。
+                if heartbeat_stop is not None:
+                    heartbeat_stop.set()
+                if heartbeat_thread is not None:
+                    heartbeat_thread.join(timeout=1)
                 if not lifecycle.release_worker_lease(
                     request.run_id, owner_id=lease_owner, lease_token=lease_token,
                 ):
@@ -1279,6 +1291,10 @@ class StepRunner:
                     spec.name,
                 )
         finally:
+            if heartbeat_stop is not None:
+                heartbeat_stop.set()
+            if heartbeat_thread is not None:
+                heartbeat_thread.join(timeout=1)
             if lease_acquired:
                 still_owner = lifecycle.owns_worker_lease(
                     request.run_id, owner_id=lease_owner, lease_token=lease_token,
