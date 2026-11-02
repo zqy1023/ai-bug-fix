@@ -511,8 +511,10 @@ def v1_retry_run(run_id: str, background: BackgroundTasks, _: None = Depends(_au
         lock = _run_lock(run_id)
     if not lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="该 Run 仍被后台工作线程占用，状态正在收敛")
+    worker_lease: tuple[str, str] | None = None
 
     try:
+        worker_lease = _claim_worker_lease(run_id)
         checkpoint = detail.get("checkpoint") if isinstance(detail.get("checkpoint"), dict) else {}
         run_meta = store.load_run(run_id)
         if checkpoint.get("resumable"):
@@ -570,13 +572,15 @@ def v1_retry_run(run_id: str, background: BackgroundTasks, _: None = Depends(_au
             connection.close()
         _audit_control(run_id, "", "run.retry_requested", "api", f"mode={mode}")
     except Exception:
+        if worker_lease is not None:
+            _release_worker_lease(run_id, worker_lease)
         lock.release()
         raise
 
     if mode == "resume":
-        background.add_task(_resume_workflow_background, run_id, lock)
+        background.add_task(_resume_workflow_background, run_id, lock, None, worker_lease)
     else:
-        background.add_task(worker, run_id, overrides, lock)
+        background.add_task(worker, run_id, overrides, lock, worker_lease)
     return {
         "run_id": run_id,
         "status": "retry_requested",
