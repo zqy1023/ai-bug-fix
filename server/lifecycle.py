@@ -177,7 +177,7 @@ def _settle_task_lifecycles_after_run_failure(
         task_id = slot["task_id"]
         state = lifecycle.read_task(run_id, task_id)
         status = str(state.get("status") or "")
-        if phase in {"approval_recovery", "worker_timeout"} and status == "waiting_approval":
+        if phase == "approval_recovery" and status == "waiting_approval":
             continue
         if status in {"succeeded", "partial_failed", "failed", "cancelled", "manual", "skipped", "blocked"}:
             continue
