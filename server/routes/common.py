@@ -11,9 +11,7 @@ import logging
 import os
 import re
 import secrets
-import threading
 import uuid
-from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -41,15 +39,6 @@ SERVICE_VERSION = settings.service_version
 
 _ID_MAX_LENGTH = 160
 _ID_PATTERN = re.compile(rf"^[A-Za-z0-9_.-]{{1,{_ID_MAX_LENGTH}}}$")
-# Run 级执行锁按 run_id 累积，从不回收会让长驻进程缓慢泄漏内存。
-# 用 OrderedDict + 守护锁实现简单 LRU：命中即 move_to_end，超过
-# _RUN_LOCKS_LIMIT 时淘汰最旧条目。淘汰不强制回收使用中的锁——
-# 正在运行的线程仍持有锁对象引用，淘汰只让后续请求重建锁；
-# 并发正确性由 non-blocking acquire 与生命周期落盘共同保证。
-_RUN_LOCKS: OrderedDict[str, threading.Lock] = OrderedDict()
-_RUN_LOCKS_GUARD = threading.Lock()
-_RUN_LOCKS_LIMIT = 4096
-_STARTED_RUNS: set[str] = set()
 logger = logging.getLogger("server.api")
 
 
@@ -105,23 +94,6 @@ def _read_json(path: Path, default: Any = None) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return default
-
-
-def _run_lock(run_id: str) -> threading.Lock:
-    """获取（或创建）run 的执行锁；必须在 _RUN_LOCKS_GUARD 内调用。
-
-    命中即 move_to_end 触碰 LRU 顺序；超过 _RUN_LOCKS_LIMIT 时淘汰最旧条目。
-    使用中的锁对象仍被运行线程持有，淘汰只让后续请求重建锁，属可接受的取舍。
-    """
-    lock = _RUN_LOCKS.get(run_id)
-    if lock is None:
-        lock = threading.Lock()
-        _RUN_LOCKS[run_id] = lock
-    else:
-        _RUN_LOCKS.move_to_end(run_id)
-    while len(_RUN_LOCKS) > _RUN_LOCKS_LIMIT:
-        _RUN_LOCKS.popitem(last=False)
-    return lock
 
 
 def _has_pending_approval_interrupt(store: RecordStore, run_id: str) -> bool:
@@ -1005,6 +977,10 @@ def _checkpoint_projection(snapshot: Any) -> dict[str, Any]:
 
 
 
+
+# Run 级线程锁与运行标记只在 server.context 维护，避免 API 路由和 worker
+# 各自持有一套互不知情的进程内锁表。
+from server.context import _RUN_LOCKS, _RUN_LOCKS_GUARD, _STARTED_RUNS, _run_lock
 
 # Run 生命周期与后台 worker 的唯一实现位于 server.lifecycle；
 # 路由层只复用，不再维护第二套心跳、报告收敛和工作区清理逻辑。
