@@ -658,7 +658,9 @@ def _submit_approval(
         lock = _run_lock(run_id)
     if not lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="该 run 正在执行恢复操作")
+    worker_lease: tuple[str, str] | None = None
     try:
+        worker_lease = _claim_worker_lease(run_id)
         fingerprint = str(approval_input.get("approval_fingerprint") or "")
         resume_payload = {"decision": decision, "approval_fingerprint": fingerprint, "task_id": task_id}
         if decision == "REJECT":
@@ -667,8 +669,10 @@ def _submit_approval(
                 "retry_target": str(request.retry_target),
             })
         # Transfer lock ownership only after the background task is enqueued.
-        background.add_task(_resume_workflow_background, run_id, lock, resume_payload)
+        background.add_task(_resume_workflow_background, run_id, lock, resume_payload, worker_lease)
     except BaseException:
+        if worker_lease is not None:
+            _release_worker_lease(run_id, worker_lease)
         lock.release()
         raise
     return {"run_id": run_id, "task_id": task_id, "decision": decision, "status": "resume_requested"}
