@@ -325,9 +325,11 @@ def _run_workflow_background_v1(
     heartbeat_thread: threading.Thread | None = None
     lease_owner = f"{settings.service_name if hasattr(settings, 'service_name') else 'worker'}:{threading.get_ident()}"
     lease_token = uuid.uuid4().hex
+    lease_acquired = False
     try:
         store = _store()
         heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(run_id, lease_owner, lease_token)
+        lease_acquired = True
         LifecycleStore(store.root).update_run(
             run_id, status="running", phase="workflow_startup", current_step="", error={},
             allow_reactivate=True,
@@ -344,17 +346,18 @@ def _run_workflow_background_v1(
             heartbeat_stop.set()
         if heartbeat_thread is not None:
             heartbeat_thread.join(timeout=1)
-        from infrastructure.llm.runtime import close_sessions
-        close_sessions(run_id)
-        if heartbeat_stop is not None:
-            _clear_worker_active(run_id, lease_owner, lease_token)
-        try:
-            from infrastructure.workspace.workspace_gc import (
-                collect_configured_workspaces,
-            )
-            collect_configured_workspaces(_config())
-        except Exception:
-            logger.exception("回收配置工作区失败 run_id=%s", run_id)
+        if lease_acquired:
+            from infrastructure.llm.runtime import close_sessions
+            close_sessions(run_id)
+            if heartbeat_stop is not None:
+                _clear_worker_active(run_id, lease_owner, lease_token)
+            try:
+                from infrastructure.workspace.workspace_gc import (
+                    collect_configured_workspaces,
+                )
+                collect_configured_workspaces(_config())
+            except Exception:
+                logger.exception("回收配置工作区失败 run_id=%s", run_id)
         run_lock.release()
         with _RUN_LOCKS_GUARD:
             _STARTED_RUNS.discard(run_id)
@@ -374,12 +377,14 @@ def _resume_workflow_background(
     heartbeat_thread: threading.Thread | None = None
     lease_owner = f"{settings.service_name if hasattr(settings, 'service_name') else 'worker'}:{threading.get_ident()}"
     lease_token = uuid.uuid4().hex
+    lease_acquired = False
     try:
         from infrastructure.llm.config import load_config, workflow_recursion_limit
         from workflow.engine.graph import build_graph, build_services
 
         store = _store()
         heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(run_id, lease_owner, lease_token)
+        lease_acquired = True
         LifecycleStore(store.root).update_run(
             run_id, status="running", phase="workflow_resume", current_step="", error={},
             terminal_reason="", error_type="", error_message="", next_action="",
@@ -467,21 +472,22 @@ def _resume_workflow_background(
         phase = "approval_recovery" if resume_payload is not None else "workflow_resume"
         _record_background_failure(run_id, exc, phase=phase)
     finally:
-        from infrastructure.llm.runtime import close_sessions
-        close_sessions(run_id)
         if heartbeat_stop is not None:
             heartbeat_stop.set()
         if heartbeat_thread is not None:
             heartbeat_thread.join(timeout=1)
-        if heartbeat_stop is not None:
-            _clear_worker_active(run_id, lease_owner, lease_token)
-        try:
-            from infrastructure.workspace.workspace_gc import (
-                collect_configured_workspaces,
-            )
-            collect_configured_workspaces(_config())
-        except Exception:
-            logger.exception("回收恢复 Run 的工作区失败 run_id=%s", run_id)
+        if lease_acquired:
+            from infrastructure.llm.runtime import close_sessions
+            close_sessions(run_id)
+            if heartbeat_stop is not None:
+                _clear_worker_active(run_id, lease_owner, lease_token)
+            try:
+                from infrastructure.workspace.workspace_gc import (
+                    collect_configured_workspaces,
+                )
+                collect_configured_workspaces(_config())
+            except Exception:
+                logger.exception("回收恢复 Run 的工作区失败 run_id=%s", run_id)
         run_lock.release()
 
 def _reinvestigate_task(run_id: str, task_id: str, background: BackgroundTasks) -> dict[str, Any]:
