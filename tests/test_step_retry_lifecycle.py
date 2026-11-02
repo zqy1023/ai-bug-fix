@@ -47,6 +47,7 @@ def test_single_step_rejects_busy_run_before_marking_task_running(tmp_path):
         "run", owner_id="existing-worker", lease_token="existing-token", ttl_seconds=30,
     )
     runner = StepRunner(store)
+    runner.validate = Mock(return_value=SPEC)
     runner._mark_running = Mock(side_effect=AssertionError("must not mutate lifecycle"))
     request = StepRunRequest(run_id="run", task_id="task", step_name=SPEC.name)
 
