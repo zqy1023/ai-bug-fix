@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -20,7 +19,6 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from pydantic import BaseModel, Field, model_validator
 
 from core.policy import APPROVAL_RETRY_TARGETS, RetryTarget
-from infrastructure.llm.config import load_config
 from infrastructure.storage.lifecycle import LifecycleStore
 from infrastructure.storage.store import RecordStore
 from infrastructure.storage.redaction import public_exception
@@ -30,8 +28,6 @@ from server.projections import run_timestamps, task_stages
 from server.view_models import delivery_view, run_actions, task_retry_action
 
 from config.nacos import nacos_get
-from config.settings import settings
-
 SERVICE_NAME = settings.service_name
 SERVICE_VERSION = settings.service_version
 
