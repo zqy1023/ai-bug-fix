@@ -149,8 +149,9 @@ def run_validation(state: dict[str, Any]) -> dict[str, Any]:
             result[kind]["reason"] = "执行策略关闭验收，未执行验证，不能视为通过"
         return result
     try:
-        config = json.loads(nacos_get("AI_REPAIR_VALIDATION_COMMANDS", "{}"))
-        if not isinstance(config, dict) or set(config) - {"replay", "request", "timeout_seconds"}:
+        frozen = state.get("execution_config") or {}
+        config = frozen.get("validation_commands") if "validation_commands" in frozen else json.loads(nacos_get("AI_REPAIR_VALIDATION_COMMANDS", "{}"))
+        if not isinstance(config, dict) or set(config) - {"replay", "request", "timeout_seconds", "expectations"}:
             raise ValueError("验证配置只接受 replay、request、timeout_seconds")
         timeout = int(config.get("timeout_seconds", 60))
         if not 1 <= timeout <= 600:
@@ -196,6 +197,7 @@ def run_validation(state: dict[str, Any]) -> dict[str, Any]:
                     _apply_phase(project, baseline_path, Path(workspace), files, phase)
                     input_path = base / "input.json"
                     input_path.write_text(json.dumps({"problem": problem, "phase": phase, "kind": kind,
+                        "expected": (config.get("expectations") or {}).get(str(state.get("carrier") or problem.get("carrier") or ""), {}),
                         "evidence_version": version, "input_id": result["input_id"]}, ensure_ascii=False), encoding="utf-8")
                     tokens = {"{workspace}": str(project), "{input_path}": str(input_path),
                               "{phase}": phase, "{carrier}": str(state.get("carrier") or "")}

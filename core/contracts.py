@@ -214,6 +214,7 @@ class RepairHandoff(FrozenModel):
 
     model_config = ConfigDict(extra="ignore", frozen=True)
     status: str = "MANUAL"
+    acceptance_contract: dict[str, Any] = Field(default_factory=dict)
     root_cause: str = ""
     category: str = "unknown"
     attribution_type: str = "pending"
@@ -248,6 +249,7 @@ class TaskPolicy(ContractModel):
     require_push: bool = False
     agent_policy: dict[str, Any] = Field(default_factory=dict)
     policy_sources: dict[str, Any] = Field(default_factory=dict)
+    execution_config: dict[str, Any] = Field(default_factory=dict)
 
 
 class TaskControl(ContractModel):
@@ -316,7 +318,7 @@ class RunChannels(ContractModel):
     log_service_prefix: str = ""
     log_excluded_messages: list[str] = Field(default_factory=list)
     log_excluded_biztypes: list[str] = Field(default_factory=list)
-    log_hours: int = 1
+    log_hours: int = 24
     log_limit: int = 0
 
 
@@ -701,13 +703,24 @@ class StepRecord(FrozenModel):
     attempt: int = 0
     started_at: str = ""
     finished_at: str = ""
-    duration_ms: float = 0.0
+    duration_ms: float = Field(default=0.0, ge=0)
     summary: str = ""
     error: StepError | None = None
     artifacts: list[ArtifactRef] = Field(default_factory=list)
     input: dict[str, Any] = Field(default_factory=dict)
     output: dict[str, Any] = Field(default_factory=dict)
     schema_version: int = SCHEMA_VERSION
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_duration(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "elapsed_ms" in value:
+            value = dict(value)
+            elapsed = value.pop("elapsed_ms")
+            if "duration_ms" in value and float(value["duration_ms"]) != float(elapsed):
+                raise ValueError("duration_ms 与历史 elapsed_ms 不一致")
+            value.setdefault("duration_ms", elapsed)
+        return value
 
     @model_validator(mode="after")
     def _error_matches_status(self) -> StepRecord:

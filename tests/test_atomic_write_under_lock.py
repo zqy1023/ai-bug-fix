@@ -44,7 +44,8 @@ def test_permission_error_is_retried_then_falls_back(tmp_path):
 
 
 def test_always_locked_target_still_gets_content(tmp_path):
-    """持续占用时退回直接覆盖：内容不能整份丢。"""
+    """持续占用不截断旧版本，完整新版本保留为可恢复临时文件。"""
+    import pytest
     target = tmp_path / "final.json"
     target.write_text("old", encoding="utf-8")
 
@@ -52,9 +53,13 @@ def test_always_locked_target_still_gets_content(tmp_path):
         raise PermissionError(5, "拒绝访问")
 
     with patch.object(Path, "replace", locked):
-        atomic_write_json(target, {"fresh": True})
+        with pytest.raises(PermissionError):
+            atomic_write_json(target, {"fresh": True})
 
-    assert json.loads(target.read_text(encoding="utf-8")) == {"fresh": True}
+    assert target.read_text(encoding="utf-8") == "old"
+    candidates = list(tmp_path.glob("final.json.*.tmp"))
+    assert len(candidates) == 1
+    assert json.loads(candidates[0].read_text(encoding="utf-8")) == {"fresh": True}
 
 
 def test_store_and_report_share_the_same_atomic_writer():

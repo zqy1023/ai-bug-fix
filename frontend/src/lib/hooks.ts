@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from './api';
 import { subscribeRunEvents, type StreamState } from './events';
@@ -9,6 +9,7 @@ import { reviewOf } from './taskReview';
 export function useRunEvents(runId?: string, enabled = true) {
   const queryClient = useQueryClient();
   const [streamState, setStreamState] = useState<StreamState>('connecting');
+  const stream = useRef<StreamState>('connecting');
   const run = useQuery({
     queryKey: ['run', runId], queryFn: () => api.run(runId as string), enabled: Boolean(runId && enabled),
     // 终态后批次不再变化：SSE 会主动断开（服务端终态关闭流），此处的轮询只是
@@ -18,8 +19,9 @@ export function useRunEvents(runId?: string, enabled = true) {
   const terminal = run.data?.terminal === true;
   useEffect(() => {
     if (!runId || !enabled || terminal) return undefined;
-    const refresh = (lists = false) => {
-      for (const key of ['board', 'task', 'step', 'model-calls', 'agent-call', 'artifact-content', 'task-changes', 'checkpoints', 'control-audit']) {
+    const refresh = (lists = false, liveCallsOnly = false) => {
+      const keys = liveCallsOnly ? ['model-calls', 'agent-call'] : ['board', 'task', 'step', 'model-calls', 'agent-call', 'artifact-content', 'task-changes', 'checkpoints', 'control-audit'];
+      for (const key of keys) {
         void queryClient.invalidateQueries({ queryKey: [key, runId] }, { cancelRefetch: false });
       }
       if (lists) {
@@ -27,18 +29,21 @@ export function useRunEvents(runId?: string, enabled = true) {
         void queryClient.invalidateQueries({ queryKey: ['dashboard'] }, { cancelRefetch: false });
       }
     };
+    let previousRevision = '';
     const stop = subscribeRunEvents(runId, {
-      onState: setStreamState,
+      onState: state => {stream.current = state; setStreamState(state);},
       onSnapshot: (snapshot) => {
         queryClient.setQueryData(['run', runId], snapshot);
-        refresh(true);
+        const revision = JSON.stringify([snapshot.status, snapshot.completed_tasks,
+          snapshot.tasks.map(task => [task.task_id, task.result, task.current_step, task.attempt, task.steps_count])]);
+        if (revision !== previousRevision) {refresh(true); previousRevision = revision;}
       },
     });
     // Agent 对话追加不会总改变批次快照；轮询兜底覆盖流断线及节点长时间执行。
     // terminal 时上面的 effect 已提前返回（不订阅、不建定时器），终态批次不再变化。
     const timer = window.setInterval(() => {
-      if (document.visibilityState !== 'hidden') refresh();
-    }, 5_000);
+      if (document.visibilityState !== 'hidden') refresh(false, stream.current === 'open');
+    }, 10_000);
     return () => { stop(); window.clearInterval(timer); };
   }, [enabled, queryClient, runId, terminal]);
   return { streamState, terminal, updatedAt: run.dataUpdatedAt, error: run.error };

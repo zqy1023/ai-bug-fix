@@ -160,11 +160,16 @@ export function TaskAuditPage() {
                   <dt>节点执行记录</dt><dd>{stepQuery.data.step.status}</dd>
                   <dt>尝试</dt><dd>{stepQuery.data.context.attempt}</dd>
                   <dt>耗时</dt><dd>{formatDuration(stepQuery.data.step.duration_ms)}</dd>
+                  {stepQuery.data.context.changed_files.length ? <><dt>改动文件</dt><dd>{stepQuery.data.context.changed_files.join('、')}</dd></> : null}
+                  {stepQuery.data.context.delivery_status ? <><dt>交付</dt><dd>{stepQuery.data.context.delivery_status}</dd></> : null}
+                  {Object.entries(stepQuery.data.context.counts).flatMap(([name, count]) => [<dt key={`${name}-label`}>{name}</dt>, <dd key={`${name}-value`}>{count}</dd>])}
                 </dl>
               </CardBody>
             </Card>
-            {stepQuery.data.step.input ? <Card><CardHead title="输入" /><CardBody><JsonBlock value={stepQuery.data.step.input} maxHeight={240} /></CardBody></Card> : null}
-            {stepQuery.data.step.output ? <Card><CardHead title="输出" /><CardBody><JsonBlock value={stepQuery.data.step.output} maxHeight={320} /></CardBody></Card> : null}
+            <details><summary>查看完整输入与输出</summary>
+              {stepQuery.data.step.input ? <Card><CardHead title="输入" /><CardBody><JsonBlock value={stepQuery.data.step.input} maxHeight={240} /></CardBody></Card> : null}
+              {stepQuery.data.step.output ? <Card><CardHead title="输出" /><CardBody><JsonBlock value={stepQuery.data.step.output} maxHeight={320} /></CardBody></Card> : null}
+            </details>
             {stepQuery.data.step.error ? <Card><CardHead title="错误" /><CardBody><p className="note">{stepQuery.data.step.error.message}</p></CardBody></Card> : null}
             {stepQuery.data.artifacts.length > 0 ? (
               <Card>

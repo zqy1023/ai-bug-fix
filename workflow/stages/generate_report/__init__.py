@@ -87,6 +87,7 @@ def _input(state: dict[str, Any]) -> dict[str, Any]:
             "acceptance_id": fingerprint({
                 "review": review_payload,
                 "acceptance_criteria": unified_payload.get("acceptance_criteria") or [],
+                "initial_acceptance": unified_payload.get("acceptance_contract") or {},
                 "manual_confirmation_required": manual_required,
             }),
             "revision_id": version["patch_id"],

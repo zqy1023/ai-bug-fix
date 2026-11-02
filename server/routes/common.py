@@ -186,101 +186,43 @@ def _run_payload(store: RecordStore, run_id: str) -> dict[str, Any]:
     lock_active = bool(run_lock and run_lock.locked())
     heartbeat_at = _parse_time(run_lifecycle.get("heartbeat_at"))
     heartbeat_fresh = bool(heartbeat_at and (datetime.now(timezone.utc) - heartbeat_at).total_seconds() <= 30)
-    worker_active = lock_active or (
-        bool(run_lifecycle.get("worker_active")) and heartbeat_fresh
+    lease_active = lifecycle_store.owns_worker_lease(
+        run_id, owner_id=str(run_lifecycle.get("worker_lease_owner") or ""),
+        lease_token=str(run_lifecycle.get("worker_lease_token") or ""),
+    ) if run_lifecycle.get("worker_lease_token") else False
+    worker_active = lock_active or lease_active or (
+        not run_lifecycle.get("worker_lease_token") and bool(run_lifecycle.get("worker_active")) and heartbeat_fresh
     )
 
-    if lifecycle_status == "waiting_approval":
-        # 人工审批已移除：历史等待审批的 Run 不能继续占用全局串行位，
-        # 也不能让任务永久停在 WAITING_APPROVAL。
-        removed_reason = "人工审批已移除，历史待审批任务已结束；如需继续请重新创建批次。"
-        lifecycle_store.update_run(
-            run_id, status="failed", phase="request_approval",
-            error_type="APPROVAL_REMOVED", error_message=removed_reason,
-            terminal_reason=removed_reason,
-            next_action="重新创建批次并等待 AI 审查与自动交付。",
-        )
-        run_lifecycle = lifecycle_store.read_run(run_id)
+    # GET 仅生成投影，不能在读到旧心跳后改写另一个进程刚接管的状态。
+    # 真正的状态收敛由持有租约的 worker 或显式恢复操作完成。
+    stale = lifecycle_status in {"queued", "running", "retrying", "pause_requested", "cancel_requested"} and not worker_active
+    legacy_wait = lifecycle_status == "waiting_approval" and not worker_active
+    if stale or legacy_wait:
+        reason = ("旧审批检查点只读；请新建当前流程执行。" if legacy_wait else
+                  "后台工作线程心跳已超时，请从 Run 控制栏恢复或重试。")
+        run_lifecycle = {**run_lifecycle, "status": "failed", "worker_active": False,
+                         "error_type": "APPROVAL_REMOVED" if legacy_wait else "WORKER_HEARTBEAT_TIMEOUT",
+                         "error_message": reason, "terminal_reason": reason,
+                         "next_action": "检查原始记录后显式恢复或重试。", "recovery_required": True}
         lifecycle_status = "failed"
-        run_failure = {
-            "status": "FAILED", "error_type": "APPROVAL_REMOVED",
-            "message": removed_reason, "terminal_step": "request_approval",
-            "terminal_reason": removed_reason,
-            "next_action": "重新创建批次并等待 AI 审查与自动交付。",
-        }
-        worker_active = False
-        _settle_task_lifecycles_after_run_failure(
-            run_id, store, phase="approval_removed", reason=removed_reason,
-            next_action="重新创建批次并等待 AI 审查与自动交付。",
-        )
+        run_failure = run_failure or {"status": "FAILED", "error_type": run_lifecycle["error_type"],
+                                      "message": reason, "terminal_reason": reason}
+    if not worker_active and (run_failure or run_report):
         for task in tasks:
-            current = lifecycle_store.read_task(run_id, task["task_id"])
-            task["lifecycle"] = current
-            task["status"] = str(current.get("status") or task["status"]).upper()
+            life = task.get("lifecycle") or {}
+            if str(life.get("status") or task.get("status") or "").upper() not in {
+                "RUNNING", "RETRYING", "PENDING", "WAITING_APPROVAL", "WAITING", "CANCEL_REQUESTED", "PAUSE_REQUESTED"
+            } or not task.get("steps"):
+                continue
+            finalized_task = any(step.get("name") == "finalize_execution" and step.get("status") == "succeeded"
+                                 for step in task["steps"])
+            task["lifecycle"] = {**life, "status": "succeeded" if finalized_task else "failed",
+                                 "terminal_reason": str(run_failure.get("message") or "任务未完成收尾，请检查后恢复。"),
+                                 "recovery_required": not finalized_task}
+            task["status"] = "SUCCESS" if finalized_task else "FAILED"
             task["approval_pending"] = False
         results = [str(task["status"]).upper() for task in tasks]
-
-    if not worker_active and (run_failure or run_report) and lifecycle_status in {"", "failed", "partial_failed", "succeeded", "cancelled"}:
-        if any(task["status"] in {"RUNNING", "RETRYING", "PENDING", "WAITING_APPROVAL"} for task in tasks):
-            report = run_failure or run_report
-            _settle_task_lifecycles_after_run_failure(
-                run_id, store, phase=str(report.get("terminal_step") or "workflow_exit"),
-                reason=str(report.get("message") or report.get("terminal_reason") or "本轮工作流已退出，任务没有完成收尾。"),
-                next_action=str(report.get("next_action") or "检查任务失败节点后重试。"),
-            )
-            for task in tasks:
-                current = lifecycle_store.read_task(run_id, task["task_id"])
-                if current:
-                    task["lifecycle"] = current
-                    task["status"] = str(current.get("status") or task["status"]).upper()
-                    task["approval_pending"] = task["status"] == "WAITING_APPROVAL"
-            results = [str(task["status"]).upper() for task in tasks]
-
-    if lifecycle_status in {"queued", "running", "retrying", "pause_requested", "cancel_requested"} and not worker_active:
-        waiting_approval = any(task["approval_pending"] for task in tasks)
-        if waiting_approval and _has_pending_approval_interrupt(store, run_id):
-            # 进程退出但审批断点仍可恢复：保留待审批状态，允许人工继续，
-            # 不能把它误写成“心跳失败”而关闭审批入口。
-            resume_reason = "后台工作线程已退出，但仍有可恢复的审批断点；请完成审批或从 Run 恢复。"
-            lifecycle_store.update_run(
-                run_id, status="waiting_approval", phase="request_approval",
-                current_step="request_approval",
-                error_type="WORKER_HEARTBEAT_TIMEOUT", error_message=resume_reason,
-                terminal_reason="",
-                next_action="在交付审批页完成决策，或从 Run 控制栏恢复执行。",
-            )
-            run_lifecycle = lifecycle_store.read_run(run_id)
-            lifecycle_status = "waiting_approval"
-            worker_active = False
-        else:
-            # A crashed process must not leave an active badge forever.
-            stale_reason = "后台工作线程心跳已超时，执行不再被视为活动状态。请检查失败节点后重试。"
-            lifecycle_store.update_run(
-                run_id, status="failed", phase=str(run_lifecycle.get("phase") or "worker"),
-                error_type="WORKER_HEARTBEAT_TIMEOUT", error_message=stale_reason,
-                terminal_reason=stale_reason,
-                next_action="检查失败节点；可从 Run 控制栏重试，或在任务详情单步重试。",
-            )
-            run_lifecycle = lifecycle_store.read_run(run_id)
-            lifecycle_status = "failed"
-            run_failure = run_failure or {
-                "status": "FAILED", "error_type": "WORKER_HEARTBEAT_TIMEOUT",
-                "message": stale_reason, "terminal_step": str(run_lifecycle.get("phase") or "worker"),
-                "terminal_reason": stale_reason,
-                "next_action": "检查失败节点；可从 Run 控制栏重试，或在任务详情单步重试。",
-            }
-            worker_active = False
-            _settle_task_lifecycles_after_run_failure(
-                run_id, store, phase="worker_timeout", reason=stale_reason,
-                next_action="检查后台异常后使用 Run 级重试恢复。",
-            )
-            for task in tasks:
-                current = lifecycle_store.read_task(run_id, task["task_id"])
-                task["lifecycle"] = current
-                if current.get("status") == "failed":
-                    task["status"] = "FAILED"
-                    task["approval_pending"] = False
-            results = [str(task["status"]).upper() for task in tasks]
 
     lifecycle_to_run = {
         "queued": "queued", "running": "running", "retrying": "running",
@@ -527,6 +469,18 @@ def _pending_approvals(_: None = Depends(_authorize)) -> dict[str, Any]:
     return {"items": approvals, "total": len(approvals)}
 
 
+def _public_artifact_target(base: Path, path: str) -> Path:
+    relative = Path(path)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise HTTPException(status_code=400, detail="非法产物路径")
+    if not relative.parts or relative.parts[0] not in {"artifacts", "reports", "audit", "workflow", "metrics"} or relative.suffix in {".tmp", ".sqlite3", ".db"}:
+        raise HTTPException(status_code=404, detail="该路径不是公开运行产物")
+    target = (base / relative).resolve()
+    if not target.is_relative_to(base) or not target.is_file():
+        raise HTTPException(status_code=404, detail="产物不存在")
+    return target
+
+
 def _artifact_content(
     run_id: str,
     path: str = Query(..., min_length=1, max_length=500),
@@ -544,17 +498,17 @@ def _artifact_content(
     if relative.is_absolute() or ".." in relative.parts:
         raise HTTPException(status_code=400, detail="非法产物路径")
     if path == "metrics/agent.jsonl":
+        _audit_control(run_id, task_id, "artifact.read", "api", path)
         return JSONResponse(content={"path": path, "task_id": task_id,
                                      "content": store.read_metrics(run_id, task_id)})
-    target = (base / relative).resolve()
-    if not target.is_relative_to(base) or not target.is_file():
-        raise HTTPException(status_code=404, detail="产物不存在")
+    target = _public_artifact_target(base, path)
     if target.stat().st_size > 2 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="产物超过 2MB，请使用本地文件工具检查")
     try:
         value = json.loads(target.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         value = target.read_text(encoding="utf-8", errors="replace")
+    _audit_control(run_id, task_id, "artifact.read", "api", path)
     return JSONResponse(content={"path": path, "task_id": task_id, "content": value})
 
 
@@ -567,48 +521,7 @@ def _submit_approval(
     background: BackgroundTasks,
     _: None = Depends(_authorize),
 ) -> dict[str, Any]:
-    _require_current_workflow(run_id)
-    decision = request.decision.upper()
-    if decision not in {"APPROVE", "REJECT"}:
-        raise HTTPException(status_code=422, detail="变更审批 decision 只能是 APPROVE 或 REJECT")
-    if decision == "REJECT" and not request.retry_target:
-        raise HTTPException(status_code=422, detail="驳回必须明确指定回退节点")
-    if decision == "REJECT" and request.retry_target not in APPROVAL_RETRY_TARGETS:
-        raise HTTPException(status_code=422, detail="无效的驳回回退节点")
-    run_id, task_id = _safe_id(run_id), _safe_id(task_id)
-    store = _store()
-    run = _run_payload(store, run_id)
-    task = next((item for item in run["tasks"] if item["task_id"] == task_id), None)
-    if task is None:
-        raise HTTPException(status_code=404, detail="任务不存在")
-    steps = task.get("steps") if isinstance(task.get("steps"), list) else []
-    approval_step = _latest_approval_step(steps)
-    approval_input = approval_step.get("input") if isinstance(approval_step, dict) and isinstance(approval_step.get("input"), dict) else {}
-    if not task.get("approval_pending"):
-        raise HTTPException(status_code=409, detail="该任务当前没有可恢复的人工决策中断；历史终态任务不能原地续跑")
-
-    with _RUN_LOCKS_GUARD:
-        lock = _run_lock(run_id)
-    if not lock.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="该 run 正在执行恢复操作")
-    worker_lease: tuple[str, str] | None = None
-    try:
-        worker_lease = _claim_worker_lease(run_id)
-        fingerprint = str(approval_input.get("approval_fingerprint") or "")
-        resume_payload = {"decision": decision, "approval_fingerprint": fingerprint, "task_id": task_id}
-        if decision == "REJECT":
-            resume_payload.update({
-                "reason": str(request.reason or "").strip()[:1000],
-                "retry_target": str(request.retry_target),
-            })
-        # Transfer lock ownership only after the background task is enqueued.
-        background.add_task(_resume_workflow_background, run_id, lock, resume_payload, worker_lease)
-    except BaseException:
-        if worker_lease is not None:
-            _release_worker_lease(run_id, worker_lease)
-        lock.release()
-        raise
-    return {"run_id": run_id, "task_id": task_id, "decision": decision, "status": "resume_requested"}
+    raise HTTPException(status_code=410, detail="旧中间审批入口已停用，请使用绑定候选及 commit 的最终审批")
 
 # Versioned control-plane contract consumed by frontend/src/lib/api.ts.
 

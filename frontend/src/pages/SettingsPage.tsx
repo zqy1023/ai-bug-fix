@@ -28,7 +28,7 @@ interface Draft {
 function draftOf(config?: RunConfig): Draft {
   const defaults = config?.defaults;
   return {
-    log_hours: defaults?.log_hours ?? 12,
+    log_hours: defaults?.log_hours ?? 24,
     log_limit: defaults?.log_limit ?? 0,
     max_attempts: defaults?.max_attempts ?? 3,
     unified_model: defaults?.agent_policy?.unified_model ?? '',
@@ -233,7 +233,7 @@ export function SettingsPage() {
                     </dl>
                     <dl className="kv">
                       <dt>新文件</dt><dd>{policy.allow_new_files ? '允许' : '不允许'}</dd>
-                      <dt>自动回修</dt><dd>{policy.automatic_repair ? `是（${policy.max_repairs ?? 1} 次）` : '否'}</dd>
+                      <dt>自动回修</dt><dd>{policy.automatic_repair ? `是（${policy.max_repairs ?? 3} 次）` : '否'}</dd>
                       <dt>远程推送</dt><dd>{policy.remote_push ? '是' : '否'}</dd>
                     </dl>
                   </div>

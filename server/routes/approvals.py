@@ -1,124 +1,131 @@
-"""审批控制路由。"""
+"""发布后的最终人工审批，不恢复旧审批检查点，也不自动合并。"""
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
+from datetime import datetime, timedelta, timezone
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
-from fastapi.responses import JSONResponse
-
-from server.routes.common import *
+from core.contracts import WORKFLOW_VERSION
+from core.policy import APPROVAL_RETRY_TARGETS
+from infrastructure.storage.final_approval import decide_approval
+from server.context import _authorize, _safe_id, _store
+from server.routes.common import _all_run_ids
 
 router = APIRouter()
 
-@router.get("/api/v1/approvals")
-def v1_list_approvals(
-    status: str = Query(default="pending", pattern="^(pending|approved|rejected|expired)$"),
-    _: None = Depends(_authorize),
-) -> dict[str, Any]:
-    pending = _pending_approvals()
-    store = _store()
-    run_cache: dict[str, dict[str, Any]] = {}
-    items = []
-    for item in pending.get("items", []):
-        if status != "pending":
-            continue
-        step = item.get("approval_step") or {}
-        approval_input = step.get("input") if isinstance(step.get("input"), dict) else {}
-        output = step.get("output") if isinstance(step.get("output"), dict) else {}
-        run_id, task_id = str(item.get("run_id") or ""), str(item.get("task_id") or "")
-        if run_id not in run_cache:
-            try:
-                run_cache[run_id] = _run_payload(store, run_id)
-            except (HTTPException, OSError, ValueError):
-                run_cache[run_id] = {}
-        task = next(
-            (value for value in run_cache[run_id].get("tasks", []) if str(value.get("task_id") or "") == task_id),
-            {},
-        )
-        steps = task.get("steps") if isinstance(task.get("steps"), list) else []
-        repair_step = next((value for value in reversed(steps) if value.get("name") == "unified_fixer_agent"), {})
-        review_step = next((value for value in reversed(steps) if value.get("name") == "review_agent"), {})
-        repair_output = repair_step.get("output") if isinstance(repair_step.get("output"), dict) else {}
-        review_output = review_step.get("output") if isinstance(review_step.get("output"), dict) else {}
-        repair_plan = repair_output.get("change_plan") if isinstance(repair_output.get("change_plan"), dict) else {}
-        review_plan = review_output.get("change_plan") if isinstance(review_output.get("change_plan"), dict) else {}
-        # 审查 Agent 新提出的 project 方案覆盖早先 carrier 方案，和工作流实际将审批的状态保持一致。
-        if str(review_plan.get("scope") or "").lower() == "project" and isinstance(review_plan.get("edits"), list) and review_plan.get("edits"):
-            plan = review_plan
-        else:
-            plan = repair_plan or review_plan
-        raw_edits = plan.get("edits") if isinstance(plan.get("edits"), list) else []
-        edits = [
-            {
-                "path": str(edit.get("path") or ""),
-                "action": str(edit.get("action") or "update"),
-                "note": str(edit.get("note") or ""),
-            }
-            for edit in raw_edits if isinstance(edit, dict) and str(edit.get("path") or "").strip()
-        ]
-        files = plan.get("changed_files") or plan.get("files") or [edit["path"] for edit in edits] or approval_input.get("changed_files") or repair_output.get("changed_files")
-        if not isinstance(files, list):
-            files = []
-        scope = str(plan.get("scope") or approval_input.get("recommended_scope") or "").lower()
-        summary = str(
-            plan.get("rationale") or repair_output.get("summary") or review_output.get("summary")
-            or output.get("summary") or output.get("reason") or "需要人工确认变更方案"
-        )
-        safe_plan = {
-            "scope": "project" if scope == "project" else "carrier",
-            "rationale": str(plan.get("rationale") or summary),
-            "edits": edits,
-        }
-        candidate_steps = [_formal_step_payload(store, run_id, task_id, value) for value in steps
-                           if value.get("name") in {"generate_report", "submit_changes", "prepare_delivery", "publish_delivery"}]
-        candidate = delivery_view(candidate_steps)
-        from core.contracts import WORKFLOW_VERSION
-        from server.view_models import ActionAvailability
-        metadata = store.load_run(run_id)
-        current = metadata.get("workflow_version") == WORKFLOW_VERSION
-        approve = ActionAvailability(
-            enabled=current and candidate.phase in {"prepared", "published"} and bool(candidate.candidate_id),
-            reason="" if current and candidate.phase in {"prepared", "published"} and candidate.candidate_id else "缺少有效交付候选或记录属于历史工作流",
-        )
-        reject = ActionAvailability(enabled=current, reason="" if current else "历史工作流只读，请创建新执行")
-        items.append({
-            "delivery": candidate.model_dump(mode="json"),
-            "actions": {"approve": approve.model_dump(mode="json"), "reject": reject.model_dump(mode="json")},
-            "approval_id": f"{run_id}:{task_id}", "run_id": run_id, "task_id": task_id,
-            "carrier": item.get("carrier") or "", "biztype": item.get("biztype") or "",
-            "scope": safe_plan["scope"], "status": "pending", "summary": summary,
-            "changed_files": list(dict.fromkeys(str(value) for value in files if str(value).strip())),
-            "change_plan": safe_plan,
 
-            "problem": task.get("problem") or item.get("problem") or {},
-            "created_at": item.get("updated_at") or datetime.now(timezone.utc).isoformat(), "expires_at": None,
-        })
+class FinalDecision(BaseModel):
+    decision: Literal["approve", "reject", "close"]
+    candidate_id: str = Field(min_length=1)
+    commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    reason: str = Field(default="", max_length=2000)
+    reason_code: Literal["business", "scope", "regression", "evidence", "other"] = "other"
+    retry_target: str = "unified_fixer_agent"
+
+
+@router.get("/api/v1/approvals")
+def v1_list_approvals(status: str = Query(default="pending", pattern="^(pending|approved|rejected|closed)$"),
+                      _: None = Depends(_authorize)) -> dict[str, Any]:
+    store = _store()
+    items = []
+    for run_id in _all_run_ids(store):
+        current = store.load_run(run_id).get("workflow_version") == WORKFLOW_VERSION
+        for item in store.database(run_id).states("final_approval"):
+            if item.get("status") == status:
+                items.append({**item, "approval_id": f"{run_id}:{item['task_id']}",
+                              "read_only": not current, "detail_url": f"/runs/{run_id}/tasks/{item['task_id']}/change"})
     return {"items": items, "total": len(items)}
 
 
-@router.post("/api/v1/approvals/{approval_id}/decision")
-def v1_decide_approval(
-    approval_id: str, request: V1ApprovalDecision, background: BackgroundTasks,
-    authorization: str | None = Header(default=None),
-    _: None = Depends(_authorize),
-) -> dict[str, Any]:
-    if request.decision == "reject" and not request.retry_target:
-        raise HTTPException(status_code=422, detail="驳回必须明确指定回退节点")
-    if ":" not in approval_id:
-        raise HTTPException(status_code=400, detail="无效的审批 ID")
-    run_id, task_id = approval_id.split(":", 1)
-    run_id, task_id = _safe_id(run_id), _safe_id(task_id)
-    _require_current_workflow(run_id)
-    actor = "bearer-token" if authorization else "local-user"
-    _audit_control(run_id, task_id, "approval." + request.decision, actor, request.reason)
-    return _submit_approval(
-        run_id,
-        task_id,
-        ApprovalDecision(
-            decision=request.decision.upper(),
-            reason=request.reason,
-            retry_target=request.retry_target or "unified_fixer_agent",
-        ),
-        background=background,
-    )
+def drain_approval_retries(run_id: str) -> None:
+    """空闲时消费持久化驳回队列；忙时保留 pending，不阻塞其他任务。"""
+    from infrastructure.storage.lifecycle import LifecycleStore
+    from workflow.engine.runner import StepRunnerError
+    from server.routes.tasks import v1_run_step
+    from server.routes.common import V1StepRunRequest
 
+    store = _store()
+    lifecycle = LifecycleStore(store.root)
+    life = lifecycle.read_run(run_id)
+    if life.get("worker_active") and lifecycle.owns_worker_lease(
+        run_id, owner_id=str(life.get("worker_lease_owner") or ""), lease_token=str(life.get("worker_lease_token") or "")):
+        return
+    for item in store.database(run_id).states("final_approval"):
+        if item.get("status") != "rejected" or item.get("retry_status") not in {"pending", "starting"}:
+            continue
+        if item.get("retry_status") == "starting":
+            try:
+                started = datetime.fromisoformat(item.get("retry_started_at") or "")
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=timezone.utc)
+                if started + timedelta(seconds=30) > datetime.now(timezone.utc):
+                    continue
+            except ValueError:
+                pass
+        task_id = item["task_id"]
+        if lifecycle.read_task(run_id, task_id).get("manually_closed"):
+            continue
+        database = store.database(run_id)
+        claimed = False
+        claim_stamp = datetime.now(timezone.utc).isoformat()
+
+        def claim(current):
+            nonlocal claimed
+            if (current.get("status") == "rejected" and current.get("commit") == item["commit"]
+                    and current.get("retry_status") == item.get("retry_status")
+                    and current.get("retry_started_at") == item.get("retry_started_at")):
+                claimed = True
+                return {**current, "retry_status": "starting", "retry_started_at": claim_stamp}
+            return current
+
+        database.update(task_id, "final_approval", claim)
+        if not claimed:
+            continue
+        try:
+            v1_run_step(run_id, task_id, item["retry_target"],
+                        V1StepRunRequest(confirm_write=True, continue_after=True), None, None)
+            database.update(task_id, "final_approval", lambda value: {**value, "retry_status": "queued"}
+                            if value.get("commit") == item["commit"] and value.get("retry_started_at") == claim_stamp and value.get("status") == "rejected" else value)
+        except (StepRunnerError, HTTPException) as error:
+            database.update(task_id, "final_approval", lambda value: {**value, "retry_status": "pending",
+                                                                    "retry_error": str(error)}
+                            if value.get("commit") == item["commit"] and value.get("retry_started_at") == claim_stamp and value.get("status") == "rejected" else value)
+        return
+
+
+@router.post("/api/v1/approvals/{approval_id}/decision")
+def v1_decide_approval(approval_id: str, request: FinalDecision, background: BackgroundTasks,
+                      _: None = Depends(_authorize)) -> dict[str, Any]:
+    if ":" not in approval_id:
+        raise HTTPException(status_code=400, detail="审批身份必须包含 Run 和 Task")
+    run_id, task_id = map(_safe_id, approval_id.split(":", 1))
+    store = _store()
+    if store.load_run(run_id).get("workflow_version") != WORKFLOW_VERSION:
+        raise HTTPException(status_code=409, detail="历史审批只读")
+    if request.retry_target not in APPROVAL_RETRY_TARGETS:
+        raise HTTPException(status_code=422, detail="无效的回退节点")
+    try:
+        result = decide_approval(store, run_id, task_id, candidate_id=request.candidate_id,
+                                 commit=request.commit, decision=request.decision,
+                                 reason=request.reason, retry_target=request.retry_target, reason_code=request.reason_code)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if request.decision == "reject":
+        background.add_task(drain_approval_retries, run_id)
+    return {**result, "message": "审批已记录；合并必须由人工执行"}
+
+
+@router.post("/api/v1/approvals/{approval_id}/retry", status_code=202)
+def v1_retry_approval(approval_id: str, background: BackgroundTasks, _: None = Depends(_authorize)):
+    if ":" not in approval_id:
+        raise HTTPException(status_code=400, detail="审批身份无效")
+    run_id, task_id = map(_safe_id, approval_id.split(":", 1))
+    store = _store()
+    if store.load_run(run_id).get("workflow_version") != WORKFLOW_VERSION:
+        raise HTTPException(status_code=409, detail="历史审批只读")
+    value = store.database(run_id).get(task_id, "final_approval") or {}
+    if value.get("status") != "rejected" or value.get("retry_status") not in {"pending", "starting"}:
+        raise HTTPException(status_code=409, detail="没有待重试的驳回决定")
+    background.add_task(drain_approval_retries, run_id)
+    return {"status": "retry_requested"}

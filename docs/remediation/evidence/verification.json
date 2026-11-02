@@ -1,0 +1,34 @@
+{
+  "recorded_at": "2026-11-02T08:59:55.257534+00:00",
+  "baseline": "aadbae9ea2ac4736a3a5aa3b2bb31e6b7dbcea9a",
+  "backend": {
+    "tests": 376,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "frontend": {
+    "typecheck": "passed",
+    "production_build": "passed",
+    "status_assertions": 24
+  },
+  "browser": {
+    "approved": true,
+    "manual_merge": true,
+    "actual_diff_visible": true,
+    "browser_errors": [],
+    "scope": "隔离真实API与前端；无外部模型/Git/承运商调用"
+  },
+  "compileall": "passed",
+  "diff_check": "passed",
+  "ci_yaml_parse": "passed",
+  "boundaries": [
+    "隔离真实 API 和浏览器",
+    "真实本地裸 Git 远端",
+    "不调用外部 ES/模型/承运商",
+    "人工合并"
+  ],
+  "ci_isolation": "测试模型名由 CI 显式注入；缓存测试私有日志/指标仅作为初始化边界桩，未绕过平台缓存实现",
+  "acceptance_base_commit": "886248ab387ffa0a93e929317005e3b4ec1c5351",
+  "acceptance_findings": "见 docs/remediation/acceptance.md；补偿/恢复租约、失败清理、准备阶段恢复与人工关闭竞争均新增回归"
+}

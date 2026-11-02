@@ -43,7 +43,7 @@ class UnifiedFixerContractTests(unittest.TestCase):
             state = {'run_id': 'test-run', 'task_id': 'test-task', 'attempt': 1,
                      'carrier': 'TEST', 'workspace_path': directory,
                      'problem': {'service_name': 'test', 'biztype': 'test', 'carrier': 'TEST'},
-                     'evidence': {'framework': 'spiders'}, 'agent_policy': {'unified_model': 'test-model'}}
+                     'evidence': {'framework': 'spiders'}, 'agent_policy': {'unified_model': 'test-model', 'analyze_legacy': True}}
             payload = {'status': 'FIXED', 'changed_files': ['spiders/TEST/main.py'],
                        'root_cause': '从源码确认的真实原因', 'source_evidence': [{'path': 'spiders/TEST/main.py', 'note': '证据'}]}
             calls = []
@@ -77,7 +77,7 @@ class UnifiedFixerContractTests(unittest.TestCase):
                 state = {'run_id': 'r', 'task_id': 't', 'carrier': 'TEST', 'attempt': 1,
                          'workspace_path': directory,
                          'problem': {'service_name': 'test', 'biztype': 'test', 'carrier': 'TEST'},
-                         'evidence': {'framework': framework, 'legacy_dependency': dependency}}
+                         'evidence': {'framework': framework, 'legacy_dependency': dependency}, 'agent_policy': {'analyze_legacy': True}}
                 runtime = SimpleNamespace(config=UnifiedFixerConfig(), agent_runner=runner)
                 with patch('agents.unified_fixer.provider.invoke_with_audit', side_effect=lambda req, invoke: invoke()):
                     result = run_unified_fixer(state, runtime)
@@ -101,7 +101,7 @@ class UnifiedFixerContractTests(unittest.TestCase):
             state = {'run_id': 'r', 'task_id': 't', 'carrier': 'TEST', 'attempt': 1,
                      'workspace_path': directory,
                      'problem': {'service_name': 'test', 'biztype': 'test', 'carrier': 'TEST'},
-                     'evidence': {'framework': 'spiders'}}
+                     'evidence': {'framework': 'spiders'}, 'agent_policy': {'analyze_legacy': True}}
             config = UnifiedFixerConfig(timeout_seconds=30, max_turns=1,
                                        max_tool_calls=2, max_context_chars=4000)
             with patch('agents.unified_fixer.graph.create_provider', side_effect=factory):

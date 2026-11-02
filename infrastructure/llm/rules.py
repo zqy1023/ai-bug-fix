@@ -25,11 +25,11 @@ ALL_RULES: tuple[str, ...] = (
 # 修复方加载编码规则；双方必载业务状态规则，避免空事件等表达漏选。
 _ROLE_RULES: dict[str, tuple[str, ...]] = {
     "unified_fixer": ("coding", "diagnosis", "notfound"),
-    "review": ("diagnosis", "notfound"),
+    "review": ("coding", "diagnosis", "notfound"),
 }
 
 _NOTFOUND_HINTS = ("notfound", "not found", "无单", "no data", "nodata")
-_TIME_HINTS = ("时间", "时区", "datetime", "timezone", "date_time", "时间戳")
+_TIME_HINTS = ("时间", "时区", "datetime", "timezone", "date_time", "时间戳", "unconverted data", "strptime", "time_shift", "%f", "time data", "does not match format")
 _FRAMEWORK_HINTS = ("read_html", "process_html", "trackresponsemodel", "track_model")
 _BLOCK_HINTS = (
     "waf", "验证码", "captcha", "blocked", "access denied", "you are a bot",

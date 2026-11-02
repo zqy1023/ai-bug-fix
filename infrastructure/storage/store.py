@@ -457,6 +457,13 @@ class RecordStore:
                     previous_value = json.loads(previous)
                 except (ValueError, UnicodeDecodeError):
                     previous_value = {"raw": previous.decode("utf-8", errors="replace")}
+                if len(previous) > 65536:
+                    history_relative = f"artifacts/history/{identity}.json"
+                    history_path = base / history_relative
+                    history_path.parent.mkdir(parents=True, exist_ok=True)
+                    if not history_path.exists():
+                        atomic_write_text(history_path, previous.decode("utf-8"))
+                    previous_value = {"artifact_ref": history_relative, "sha256": identity, "size_bytes": len(previous)}
                 self.database(run_id).append(
                     task_id, "artifact_history", {"path": relative, "value": previous_value},
                     identity=f"{relative}:{identity}", connection=guard_connection,

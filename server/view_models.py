@@ -62,6 +62,8 @@ def task_retry_action(*, current: bool, worker_active: bool, run_failed: bool,
     names = {step.get("name") for step in task.get("steps") or []}
     if not current:
         reason = "历史工作流只读，请创建新执行"
+    elif (task.get("lifecycle") or {}).get("manually_closed"):
+        reason = "任务已人工关闭，不能自动重试"
     elif worker_active:
         reason = "后台仍在执行，请等待停止后重试"
     elif run_failed:

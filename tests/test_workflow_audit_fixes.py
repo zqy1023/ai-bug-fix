@@ -51,8 +51,6 @@ def test_command_timeout_stops_descendant_process(tmp_path: Path) -> None:
 def test_runtime_configuration_cache_is_outside_source_and_receipt_is_hashed(tmp_path: Path, monkeypatch) -> None:
     import nacos.client
     from infrastructure.workspace.runtime_environment import initialize_framework_runtime, runtime_configuration_receipt
-    from yq_common.log_utils import LogUtils
-    from yq_common.prometheus_utils.prometheus_utils import PrometheusUtils
 
     project = tmp_path / 'project'
     project.mkdir()
@@ -60,7 +58,14 @@ def test_runtime_configuration_cache_is_outside_source_and_receipt_is_hashed(tmp
     monkeypatch.chdir(project)
     monkeypatch.setenv('AI_REPAIR_RUNTIME_STATE_DIR', str(tmp_path / 'state'))
     monkeypatch.setitem(nacos.client.DEFAULTS, 'SNAPSHOT_BASE', nacos.client.DEFAULTS['SNAPSHOT_BASE'])
-    with patch.object(LogUtils, 'initialize'), patch.object(PrometheusUtils, 'initialize'):
+    # 此回归验证平台缓存路径与回执，不依赖私有日志/指标服务的实现。
+    dependencies = {
+        'yq_common': SimpleNamespace(__path__=[]),
+        'yq_common.log_utils': SimpleNamespace(LogUtils=SimpleNamespace(initialize=Mock())),
+        'yq_common.prometheus_utils': SimpleNamespace(__path__=[]),
+        'yq_common.prometheus_utils.prometheus_utils': SimpleNamespace(PrometheusUtils=SimpleNamespace(initialize=Mock())),
+    }
+    with patch.dict(sys.modules, dependencies):
         initialize_framework_runtime()
     snapshot = Path(nacos.client.DEFAULTS['SNAPSHOT_BASE'])
     assert not snapshot.is_relative_to(project)

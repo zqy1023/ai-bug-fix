@@ -91,6 +91,7 @@ class UnifiedFixerOutput(FrozenModel):
     passed: bool = False
     result: Literal["passed", "failed"] = "failed"
     skip_reason: str = ""
+    acceptance_contract: dict[str, Any] = Field(default_factory=dict)
 
 
 class UnifiedFixerView(UnifiedFixerOutput):

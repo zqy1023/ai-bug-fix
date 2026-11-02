@@ -108,10 +108,10 @@ def _clone_repo(git_root: Path, target: Path) -> Repo:
             return Repo.clone_from(
                 str(git_root), str(target),
                 multi_options=["--config=core.longpaths=true"],
-            allow_unsafe_options=True,  # 仅允许本函数固定的 longpaths 配置。
+                allow_unsafe_options=True,  # 仅允许本函数固定的 longpaths 配置。
             )
-        except Exception:
-            raise local_error from None
+        except Exception as fallback_error:
+            raise DeliveryError("交付克隆的本地硬链接和普通复制均失败；保留实际失败链") from fallback_error
 
 
 def _is_ref_rejected(error: Exception) -> bool:
@@ -444,12 +444,13 @@ class GitBranchDelivery:
                 try:
                     remote_url = repo.git.remote("get-url", self._config.remote_name).strip()
                     self._reject_existing_remote_branch(
-                        delivery_repo, remote_url, str(branch), commit.hexsha
+                        delivery_repo, remote_url, str(branch), commit.hexsha,
+                        expected_previous=str(state.get("supersedes_commit") or ""),
                     )
                     with _git_environment(delivery_repo, self._config.git_env):
                         delivery_repo.git.push(
                             remote_url, f"HEAD:refs/heads/{branch}",
-                            f"--force-with-lease=refs/heads/{branch}:",
+                            f"--force-with-lease=refs/heads/{branch}:{state.get('supersedes_commit') or ''}",
                         )
                     self._verify_remote_branch(
                         delivery_repo, remote_url, str(branch), commit.hexsha
@@ -584,10 +585,11 @@ class GitBranchDelivery:
             with _git_environment(repo, self._config.git_env):
                 output = repo.git.ls_remote(remote, f"refs/heads/{branch}")
                 refs = [line.split()[0] for line in output.splitlines() if line.split()[-1:] == [f"refs/heads/{branch}"]]
-                if refs and refs[0] != commit:
+                previous = str(state.get("supersedes_commit") or "")
+                if refs and refs[0] != commit and refs[0] != previous:
                     raise DeliveryError("远端修复分支已指向其他提交，拒绝覆盖", status="GIT_BRANCH_EXISTS", commit=commit)
-                if not refs:
-                    repo.git.push(remote, f"{commit}:refs/heads/{branch}", f"--force-with-lease=refs/heads/{branch}:")
+                if not refs or refs[0] != commit:
+                    repo.git.push(remote, f"{commit}:refs/heads/{branch}", f"--force-with-lease=refs/heads/{branch}:{previous}")
             self._verify_remote_branch(repo, remote, branch, commit)
             self._drop_published_local_state(
                 repo,
@@ -637,6 +639,7 @@ class GitBranchDelivery:
         remote_url: str,
         branch: str,
         commit: str,
+        *, expected_previous: str = "",
     ) -> None:
         """远端已有同名修复分支时提前失败，不靠 push 的 non-fast-forward 兜底。
 
@@ -651,7 +654,7 @@ class GitBranchDelivery:
             # 查询不到远端时交给 push 自己判断，避免把网络抖动当成分支冲突。
             return
         target = f"refs/heads/{branch}"
-        if any(line.split()[-1:] == [target] for line in output.splitlines()):
+        if any(line.split()[-1:] == [target] and line.split()[0] != expected_previous for line in output.splitlines()):
             raise DeliveryError(
                 f"远端已存在同名修复分支，拒绝覆盖: {branch}",
                 status="GIT_BRANCH_EXISTS",

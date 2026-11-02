@@ -78,8 +78,7 @@ def _read_json(path: Path, default: Any = None) -> Any:
 def _run_lock(run_id: str) -> threading.Lock:
     """获取（或创建）run 的执行锁；必须在 _RUN_LOCKS_GUARD 内调用。
 
-    命中即 move_to_end 触碰 LRU 顺序；超过 _RUN_LOCKS_LIMIT 时淘汰最旧条目。
-    使用中的锁对象仍被运行线程持有，淘汰只让后续请求重建锁，属可接受的取舍。
+    锁身份必须稳定；不能因为容量限制替换仍被持有或等待的锁。
     """
     lock = _RUN_LOCKS.get(run_id)
     if lock is None:
@@ -87,8 +86,6 @@ def _run_lock(run_id: str) -> threading.Lock:
         _RUN_LOCKS[run_id] = lock
     else:
         _RUN_LOCKS.move_to_end(run_id)
-    while len(_RUN_LOCKS) > _RUN_LOCKS_LIMIT:
-        _RUN_LOCKS.popitem(last=False)
     return lock
 
 def _parse_time(value: Any) -> datetime | None:

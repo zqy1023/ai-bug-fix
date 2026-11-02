@@ -123,6 +123,10 @@ def run_unified_fixer(state: UnifiedFixerState, runtime: Any) -> dict[str, Any]:
         "max_provider_attempts": 1 if is_legacy else config.max_provider_attempts,
     })
     rule_ids = select_rules(role="unified_fixer", framework=framework, problem=problem, evidence=evidence)
+    from core.acceptance import freeze_acceptance
+    frozen_acceptance = freeze_acceptance(workspace, problem, str(source_snapshot.get("baseline_dir") or ""),
+                                          dict(state.get("agent_policy") or {}))
+    evidence["initial_acceptance"] = frozen_acceptance
     # 小任务用精简角色提示词：位置已知时不需要再教它怎么探索。
     role_variant = "analysis" if is_legacy else "small" if tier.name == "small" else ""
 
@@ -263,6 +267,11 @@ def run_unified_fixer(state: UnifiedFixerState, runtime: Any) -> dict[str, Any]:
             missing = [name for name in declared if not (workspace / name).is_file()
                        and name not in before]
             syntax_ok, syntax_err = _ast_check_files(workspace, changed_files, baseline_dir)
+            if syntax_ok:
+                from core.conventions import convention_errors
+                errors = convention_errors(baseline_dir, str(workspace), changed_files)
+                if errors:
+                    syntax_ok, syntax_err = False, "; ".join(errors)
             if missing:
                 syntax_ok, syntax_err = False, f"声明的变更文件不存在: {', '.join(missing)}"
             if syntax_ok or is_legacy or parsed.get("status") != "FIXED" or healing_attempts >= config.max_self_healing_turns:
@@ -295,6 +304,7 @@ def run_unified_fixer(state: UnifiedFixerState, runtime: Any) -> dict[str, Any]:
         parsed.update(status="MANUAL", summary=str(parsed["reason"]), blocked_reason=str(parsed["reason"]))
     parsed.pop("reason", None)  # Provider 解析错误通过 blocked_reason 对外保留。
     parsed.setdefault("status", "MANUAL")
+    parsed["acceptance_contract"] = frozen_acceptance
     parsed["changed_files"] = changed_files
     parsed["self_check"] = {
         "syntax_valid": syntax_ok, "syntax_error": syntax_err if not syntax_ok else "",

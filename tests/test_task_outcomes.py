@@ -117,7 +117,7 @@ def test_board_counts_filters_and_summary_use_same_mutually_exclusive_outcomes()
     summary = task_counts(tasks, [])
     board = paginate_tasks(tasks, 1, 20)
     assert board['counts'] == {'pending': 1, 'active': 0, 'paused': 0, 'changed_delivered': 1,
-                               'unchanged_delivered': 1, 'failed': 1, 'skipped': 1}
+                               'unchanged_delivered': 1, 'failed': 1, 'skipped': 1, 'cancelled': 0}
     assert summary['tasks_completed'] == 4 and summary['tasks_success'] == 2
     assert [task['result'] for task in board['tasks']] == [
         'CHANGED_DELIVERED', 'UNCHANGED_DELIVERED', 'SKIPPED', 'FAILED', 'PENDING']

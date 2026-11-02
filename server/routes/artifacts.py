@@ -27,12 +27,12 @@ def download_artifact(run_id: str, path: str = Query(..., min_length=1, max_leng
     if path == "metrics/agent.jsonl":
         content = "".join(json.dumps(row, ensure_ascii=False) + "\n"
                           for row in store.read_metrics(run_id, task_id))
+        _audit_control(run_id, task_id, "artifact.download", "api", path)
         return Response(content, media_type="application/x-ndjson", headers={
             "Content-Disposition": 'attachment; filename="agent.jsonl"',
         })
-    target = (base / relative).resolve()
-    if not target.is_relative_to(base) or not target.is_file():
-        raise HTTPException(status_code=404, detail="产物不存在")
+    target = _public_artifact_target(base, path)
+    _audit_control(run_id, task_id, "artifact.download", "api", path)
     return FileResponse(target, filename=target.name, media_type="application/octet-stream")
 
 

@@ -107,7 +107,7 @@ class AgentPolicy(BaseModel):
     # small_model：证据充分的小任务（single-tier：字段/栈帧明确）的廉价模型。
     # 留空表示不分层，全部用 unified_model。
     small_model: str = ""
-    analyze_legacy: bool = True
+    analyze_legacy: bool = False
     reproduce: bool = True
     acceptance: bool = True
     repair_legacy: bool = False

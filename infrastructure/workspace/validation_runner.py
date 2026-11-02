@@ -18,12 +18,15 @@ def main() -> None:
     if payload["kind"] == "replay":
         request["response"] = payload["problem"]["response"]
     receipt = {"passed": False, "reproduced": False, "assertions": [], "environment": environment_receipt()}
+    entered_target = False
     try:
         sys.path.insert(0, str(Path.cwd()))
         initialize_framework_runtime()
         from framework.models import TrackModel
         from framework.track_server import TrackServer
-        response = asyncio.run(TrackServer().track(TrackModel.model_validate(request)))
+        model = TrackModel.model_validate(request)
+        entered_target = True
+        response = asyncio.run(TrackServer().track(model))
         receipt["response"] = response.model_dump(mode="json")
         errors = [getattr(item.error_type, "name", "") for item in response.items]
         receipt["reproduced"] = "ProcessError" in errors
@@ -50,6 +53,15 @@ def main() -> None:
                 and bool(getattr(item.track_result, "track_result_events", None))
                 for item in response.items)},
         ]
+        expected = payload.get("expected") or {}
+        if expected:
+            expected_error = expected.get("error_type")
+            if expected_error not in {"ServiceError", "ProcessError", "WebError"} or not expected.get("reason_contains"):
+                raise ValueError("错误处理验收必须由可信配置明确指定错误类型和原因")
+            checks[-1] = {"name": "明确业务错误符合配置的错误协议和原因", "passed": bool(response.items) and all(
+                getattr(item.error_type, "name", "") == expected_error
+                and expected["reason_contains"] in str(getattr(item, "error_msg", None) or getattr(item, "error_message", None) or getattr(item, "message", ""))
+                and not getattr(item, "track_result", None) for item in response.items)}
         receipt.update(assertions=checks, passed=all(item["passed"] for item in checks), error_types=errors,
                        outcome="assertions_failed" if not receipt["passed"] else "passed")
         receipt["reason"] = "业务断言通过" if receipt["passed"] else "原始请求未返回全部有效轨迹，业务断言未通过"
@@ -58,7 +70,7 @@ def main() -> None:
     except Exception as error:
         # 环境/执行异常与"断言未通过"必须分开：前者说明验证根本没跑起来，
         # 不能记成业务未通过——那会让正确的修复被误判为失败。
-        receipt.update(outcome="environment_unavailable",
+        receipt.update(outcome="assertions_failed" if entered_target else "environment_unavailable",
                        reason=f"验证环境或执行失败: {type(error).__name__}: {error}",
                        execution_error=traceback.format_exc())
     receipt['runtime_configuration'] = runtime_configuration_receipt()

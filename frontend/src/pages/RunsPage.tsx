@@ -123,7 +123,7 @@ export function RunsPage() {
                       <tr key={run.run_id} style={{ cursor: 'pointer' }} onClick={() => navigate(`/runs/${run.run_id}`)}>
                         <td>
                           <div className="row-title mono">{shortId(run.run_id, 8)}</div>
-                          <div className="row-sub">{run.task_count} 个任务 · {run.operator || 'kirby'}</div>
+                          <div className="row-sub">{run.task_count} 个任务 · {run.operator || '未记录'}</div>
                         </td>
                         <td><RunStatusBadge status={run.status} /></td>
                         <td>
