@@ -6,7 +6,7 @@ status used by APIs and the workbench. The two must not be conflated.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +62,107 @@ class LifecycleStore:
             {"run_id": run_id, "task_id": task_id, "status": "pending"}, changes,
             allow_reactivate=allow_reactivate,
         )
+
+    def claim_worker_lease(
+        self, run_id: str, *, owner_id: str, lease_token: str,
+        ttl_seconds: int = 30,
+    ) -> bool:
+        """原子获取 Run 执行租约；租约未过期时拒绝其它 worker 接管。"""
+        if not owner_id or not lease_token or ttl_seconds < 5:
+            raise ValueError("worker lease 参数无效")
+        now = datetime.now(timezone.utc)
+        expires = now + timedelta(seconds=ttl_seconds)
+        claimed = False
+
+        def transform(current: dict[str, Any]) -> dict[str, Any]:
+            nonlocal claimed
+            try:
+                active_expiry = datetime.fromisoformat(
+                    str(current.get("worker_lease_expires_at") or "")
+                )
+                if active_expiry.tzinfo is None:
+                    active_expiry = active_expiry.replace(tzinfo=timezone.utc)
+            except ValueError:
+                active_expiry = now
+            if active_expiry > now and current.get("worker_lease_token"):
+                return current
+            claimed = True
+            return {
+                **current,
+                "worker_lease_owner": owner_id,
+                "worker_lease_token": lease_token,
+                "worker_lease_expires_at": expires.isoformat(),
+                "worker_lease_acquired_at": now.isoformat(),
+                "heartbeat_at": now.isoformat(),
+                "worker_active": True,
+            }
+
+        self._database(run_id).update("", "lifecycle", transform)
+        return claimed
+
+    def heartbeat_worker_lease(
+        self, run_id: str, *, owner_id: str, lease_token: str,
+        ttl_seconds: int = 30,
+    ) -> bool:
+        """仅租约持有者可续租；过期租约不能由迟到心跳复活。"""
+        if ttl_seconds < 5:
+            raise ValueError("worker lease ttl_seconds 必须大于等于 5")
+        now = datetime.now(timezone.utc)
+        expires = now + timedelta(seconds=ttl_seconds)
+        renewed = False
+
+        def transform(current: dict[str, Any]) -> dict[str, Any]:
+            nonlocal renewed
+            try:
+                active_expiry = datetime.fromisoformat(
+                    str(current.get("worker_lease_expires_at") or "")
+                )
+                if active_expiry.tzinfo is None:
+                    active_expiry = active_expiry.replace(tzinfo=timezone.utc)
+            except ValueError:
+                return current
+            if (
+                current.get("worker_lease_owner") != owner_id
+                or current.get("worker_lease_token") != lease_token
+                or active_expiry <= now
+            ):
+                return current
+            renewed = True
+            return {
+                **current,
+                "worker_lease_expires_at": expires.isoformat(),
+                "heartbeat_at": now.isoformat(),
+                "worker_active": True,
+            }
+
+        self._database(run_id).update("", "lifecycle", transform)
+        return renewed
+
+    def release_worker_lease(
+        self, run_id: str, *, owner_id: str, lease_token: str,
+    ) -> bool:
+        """释放操作带 fencing token，旧 worker 不能清除新 worker 的租约。"""
+        released = False
+
+        def transform(current: dict[str, Any]) -> dict[str, Any]:
+            nonlocal released
+            if (
+                current.get("worker_lease_owner") != owner_id
+                or current.get("worker_lease_token") != lease_token
+            ):
+                return current
+            released = True
+            return {
+                **current,
+                "worker_active": False,
+                "worker_lease_owner": "",
+                "worker_lease_token": "",
+                "worker_lease_expires_at": None,
+                "worker_lease_released_at": _now(),
+            }
+
+        self._database(run_id).update("", "lifecycle", transform)
+        return released
 
     def _database(self, run_id: str) -> RecordDatabase:
         return RecordDatabase(self.root / safe_name(run_id))
