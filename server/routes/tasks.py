@@ -422,11 +422,18 @@ def v1_run_step(
             build_services,
             continue_task_after_step,
         )
+        from infrastructure.storage.lifecycle import WorkerLeaseLost
+        lease_owner = f"{settings.service_name}:single-step:{uuid.uuid4().hex[:12]}"
+        lease_token = uuid.uuid4().hex
+        stop, heartbeat = _start_lifecycle_heartbeat(run_id, lease_owner, lease_token)
         runtime = load_config()
         services = build_services(config=runtime, source_repo=runtime.source_repo)
+        services.metadata.update({
+            "worker_lease_owner": lease_owner,
+            "worker_lease_token": lease_token,
+        })
         lifecycle = LifecycleStore(store.root)
-        lifecycle.update_run(run_id, status="running", worker_active=True, error={}, allow_reactivate=True)
-        stop, heartbeat = _start_lifecycle_heartbeat(run_id)
+        lifecycle.update_run(run_id, status="running", error={}, allow_reactivate=True)
         try:
             previous_report = store.run_dir(run_id) / "reports/final.json"
             if previous_report.is_file():
@@ -441,15 +448,26 @@ def v1_run_step(
             final_state = dict(snapshot.values or {})
             if snapshot.next and final_state.get("task_id") == task_id:
                 final_state = parent.invoke(None, config=cfg)
+            if not lifecycle.owns_worker_lease(
+                run_id, owner_id=lease_owner, lease_token=lease_token,
+            ):
+                raise WorkerLeaseLost(f"Run lease lost before single-step continuation settlement: {run_id}")
             _write_run_report_if_terminal(store, run_id, parent, final_state=final_state)
             _complete_run_lifecycle(run_id, store)
+        except WorkerLeaseLost:
+            raise
         except Exception as error:
-            _record_background_failure(run_id, error, phase="workflow_resume")
+            if lifecycle.owns_worker_lease(
+                run_id, owner_id=lease_owner, lease_token=lease_token,
+            ):
+                _record_background_failure(run_id, error, phase="workflow_resume")
             raise
         finally:
             stop.set()
             heartbeat.join(timeout=1)
-            lifecycle.update_run(run_id, worker_active=False)
+            if _clear_worker_active(run_id, lease_owner, lease_token):
+                from infrastructure.llm.runtime import close_sessions
+                close_sessions(run_id)
 
     runner = StepRunner(store, run_status=_status, on_finish=run_lock.release, on_continue=_continue)
     try:
