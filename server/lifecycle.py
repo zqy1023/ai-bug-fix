@@ -61,7 +61,10 @@ def _claim_worker_lease(run_id: str, *, ttl_seconds: int = 300) -> tuple[str, st
     if not LifecycleStore(_store().root).claim_worker_lease(
         run_id, owner_id=owner_id, lease_token=lease_token, ttl_seconds=ttl_seconds,
     ):
-        raise WorkerLeaseBusy(f"Run 已由其它 worker 持有有效租约: {run_id}")
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "RUN_LEASE_BUSY", "message": f"Run 已由其它 worker 持有有效租约: {run_id}"},
+        )
     return owner_id, lease_token
 
 
