@@ -329,7 +329,7 @@ def _run_workflow_background_v1(
             run_id, status="running", phase="workflow_startup", current_step="", error={},
             allow_reactivate=True,
         )
-        run_workflow(run_id, overrides=overrides, prepared=True)
+        run_workflow(run_id, overrides=overrides, prepared=True, worker_lease=(lease_owner, lease_token))
         _complete_run_lifecycle(run_id, store)
     except WorkerLeaseBusy as exc:
         logger.warning("%s", exc)
@@ -388,12 +388,14 @@ def _resume_workflow_background(
         # 恢复时让 checkpoint 指向的 sync_source_repo 节点执行；
         # 不能在 graph.invoke 之前再次同步，否则原生重试仍然无法接管。
         source_repo = runtime_config.source_repo
+        services = build_services(config=runtime_config, source_repo=source_repo)
+        services.metadata.update({
+            "worker_lease_owner": lease_owner,
+            "worker_lease_token": lease_token,
+        })
         graph = build_graph(
             store=store,
-            services=build_services(
-                config=runtime_config,
-                source_repo=source_repo,
-            ),
+            services=services,
             config=runtime_config,
         )
         loader = getattr(store, "load_run", None)
@@ -417,7 +419,7 @@ def _resume_workflow_background(
             task_id = str(resume_payload.get("task_id") or "")
             detached = bool(task_id) and resume_task_approval(
                 store, run_id, task_id, resume_payload, runtime_config,
-                build_services(config=runtime_config, source_repo=source_repo),
+                services,
             )
             # 嵌套任务子图的 interrupt 在部分 LangGraph 版本中不一定完整暴露在父快照的
             # task.interrupts 上。审批接口已校验当前任务处于待决状态且持有 run 锁，因此
