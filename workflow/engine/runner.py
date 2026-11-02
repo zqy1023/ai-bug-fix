@@ -42,7 +42,7 @@ from core.contracts import (
 )
 from core.errors import StepFailed
 from infrastructure.llm.runtime import close_sessions
-from infrastructure.storage.lifecycle import LifecycleStore, WorkerLeaseLost
+from infrastructure.storage.lifecycle import LifecycleStore, WorkerLeaseBusy, WorkerLeaseLost
 from infrastructure.storage.redaction import public_exception
 from infrastructure.storage.run_control import cancellation_requested, pause_requested
 from infrastructure.storage.store import RecordStore
@@ -943,6 +943,7 @@ def execute_once(
     confirm_write: bool = False,
     services: WorkflowServices | None = None,
     continuation: bool = False,
+    worker_lease: tuple[str, str] | None = None,
 ) -> tuple[int, StepRecord | None, dict[str, Any]]:
     """同步执行一个步骤或 Agent，返回 (退出码, 步骤记录, 节点结果)。"""
     _require_identity(spec, run_id, task_id)
@@ -972,25 +973,33 @@ def execute_once(
             + 1
         )
 
+    if services is None:
+        from infrastructure.llm.config import load_config
+        from workflow.engine.graph import build_services
+
+        config = load_config()
+        source_repo = config.source_repo
+        if not isinstance(spec, AgentSpec):
+            from infrastructure.git.source import sync_source_repo
+            source_repo = sync_source_repo(config)
+        services = build_services(config=config, source_repo=source_repo)
+    if worker_lease:
+        services.metadata.update({
+            "worker_lease_owner": worker_lease[0],
+            "worker_lease_token": worker_lease[1],
+        })
+
     if isinstance(spec, AgentSpec):
         from workflow.engine.graph import build_agent_node
         node = build_agent_node(spec, store, services=services)
     else:
-        from infrastructure.git.source import sync_source_repo
-        from infrastructure.llm.config import load_config
-        from workflow.engine.graph import build_services
-
-        if services is None:
-            config = load_config()
-            services = build_services(
-                config=config, source_repo=sync_source_repo(config)
-            )
         node = bind(spec, store, services)
 
     try:
         result = node(state)
     finally:
-        close_sessions(run_id, task_id or None)
+        if worker_lease is None:
+            close_sessions(run_id, task_id or None)
     record = store.load(run_id, spec.name, task_id if spec.task_level else "")
     payload = result if isinstance(result, dict) else {}
     return (0 if payload.get("last_result") == "passed" else 1), record, payload
