@@ -410,7 +410,7 @@ def run_stage(
             )
         parsed = spec.input_model.model_validate(spec.input_builder(state))
         record.input = dump_model(parsed)
-        _assert_worker_lease(services, run_id, spec.name)
+        _assert_worker_lease(services, store, run_id, spec.name)
         store.save(run_id, record, task_id, **_views(spec))
         run_context = RunContext(
             run_id=run_id,
@@ -429,7 +429,7 @@ def run_stage(
         )
         output = spec.runner(context, parsed)
         artifacts = context.artifacts
-        _assert_worker_lease(services, run_id, spec.name)
+        _assert_worker_lease(services, store, run_id, spec.name)
         checked = spec.output_model.model_validate(dump_model(output))
     except WorkerLeaseLost:
         raise
@@ -444,17 +444,17 @@ def run_stage(
         store.save(run_id, record, task_id, **_views(spec))
         raise
     except StepFailed as error:
-        _assert_worker_lease(services, run_id, spec.name)
+        _assert_worker_lease(services, store, run_id, spec.name)
         return _save_fail(
             spec, store, state, record, task_id, artifacts, started, error, **_views(spec)
         )
     except (ValidationError, KeyError, ValueError) as error:
-        _assert_worker_lease(services, run_id, spec.name)
+        _assert_worker_lease(services, store, run_id, spec.name)
         return _save_fail(
             spec, store, state, record, task_id, artifacts, started, StepFailed(str(error)), **_views(spec)
         )
     except Exception as error:
-        _assert_worker_lease(services, run_id, spec.name)
+        _assert_worker_lease(services, store, run_id, spec.name)
         logger.exception("步骤 %s 执行异常", spec.name)
         reason = public_exception(error, prefix=f"步骤 {spec.name} 执行异常")
         return _save_fail(
@@ -474,7 +474,7 @@ def run_stage(
             **_views(spec),
         )
 
-    _assert_worker_lease(services, run_id, spec.name)
+    _assert_worker_lease(services, store, run_id, spec.name)
     output_payload = dump_model(checked)
     status, business = map_outcome(
         kind="ok",
@@ -1054,6 +1054,8 @@ class StepRunner:
                 code="RUN_ACTIVE",
             )
         task_steps = self._store.list_steps(request.run_id, request.task_id)
+        if LifecycleStore(self._store.root).read_task(request.run_id, request.task_id).get("manually_closed"):
+            raise StepRunnerError("任务已人工关闭", code="TASK_CLOSED")
         latest_approval = next(
             (
                 record
@@ -1103,11 +1105,16 @@ class StepRunner:
                 f"Run 正由其它 worker 执行，拒绝单步写入: {request.run_id}",
                 code="RUN_LEASE_BUSY",
             )
+        retry_operation = None
+        thread_started = False
         try:
             self._store.set_worker_lease(request.run_id, lease_owner, lease_token)
+            from infrastructure.storage.retry import RetryOperation
+            from dataclasses import asdict
+            retry_operation = RetryOperation(self._store, request.run_id, request.task_id, kind="single_step")
+            retry_operation.save(step_request=asdict(request))
             from infrastructure.storage.reports import archive_retry_reports
-            with self._store._write_guard(request.run_id):
-                archive_retry_reports(self._store, request.run_id, request.task_id)
+            archive_retry_reports(self._store, request.run_id, request.task_id)
             running = self._mark_running(spec, request)
             thread = threading.Thread(
                 target=self._execute,
@@ -1115,8 +1122,13 @@ class StepRunner:
                 name=f"step-run-{request.run_id}-{spec.name}",
                 daemon=True,
             )
+            retry_operation.save("committed")
             thread.start()
+            thread_started = True
         except BaseException:
+            if retry_operation is not None and not thread_started:
+                retry_operation.save("preparing")
+                retry_operation.rollback()
             self._store.clear_worker_lease(request.run_id)
             lifecycle.release_worker_lease(
                 request.run_id, owner_id=lease_owner, lease_token=lease_token,
@@ -1199,16 +1211,11 @@ class StepRunner:
                 and record is not None
                 and record.status in {"succeeded", "waiting"}
             ):
-                # 单步节点结束后释放租约，再把执行权交给完整工作流 continuation。
+                # continuation 沿用同一租约；中途释放会让另一批次插入执行槽。
                 if heartbeat_stop is not None:
                     heartbeat_stop.set()
                 if heartbeat_thread is not None:
                     heartbeat_thread.join(timeout=1)
-                if not lifecycle.release_worker_lease(
-                    request.run_id, owner_id=lease_owner, lease_token=lease_token,
-                ):
-                    raise WorkerLeaseLost(f"单步结束时无法释放 Run 租约: {request.run_id}")
-                lease_acquired = False
                 close_sessions(request.run_id, request.task_id or None)
                 continuing = True
                 self._on_continue(request, payload)
@@ -1313,6 +1320,9 @@ class StepRunner:
                         phase="single_step", current_step=spec.name,
                         error=task.get("error", {}) if failed else {},
                     )
+                if still_owner:
+                    from infrastructure.storage.retry import finish_retry
+                    finish_retry(self._store, request.run_id, (lease_owner, lease_token))
                 released = lifecycle.release_worker_lease(
                     request.run_id, owner_id=lease_owner, lease_token=lease_token,
                 )

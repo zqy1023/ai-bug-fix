@@ -5,10 +5,34 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from server.routes.common import *
+from server.run_service import _formal_step_payload, _load_model_calls, _step_context
 
 router = APIRouter()
+
+
+class CloseTaskRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+@router.post("/api/v1/runs/{run_id}/tasks/{task_id}/close")
+def v1_close_task(run_id: str, task_id: str, request: CloseTaskRequest, _: None = Depends(_authorize)):
+    if not request.reason.strip():
+        raise HTTPException(status_code=422, detail="关闭任务必须说明原因")
+    run_id, task_id = _safe_id(run_id), _safe_id(task_id)
+    _require_current_workflow(run_id)
+    store = _store()
+    v1_get_task(run_id, task_id, None)
+    from infrastructure.storage.execution_scope import execution_scope
+    with execution_scope(store.root):
+        lifecycle = LifecycleStore(store.root)
+        if lifecycle.read_run(run_id).get("worker_active"):
+            raise HTTPException(status_code=409, detail="后台仍执行，请先停止批次再关闭任务")
+        lifecycle.update_task(run_id, task_id, status="cancelled", manually_closed=True,
+                              terminal_reason=request.reason.strip(), next_action="已由人工关闭，不自动恢复")
+    return {"run_id": run_id, "task_id": task_id, "status": "cancelled"}
 
 
 @router.get("/api/v1/runs/{run_id}/tasks/{task_id}/problem-log")
@@ -57,17 +81,19 @@ def v1_get_task(run_id: str, task_id: str, _: None = Depends(_authorize)) -> dic
     run_error = payload.get("run_error") or {}
     from core.contracts import WORKFLOW_VERSION
     current = run_meta.get("workflow_version") == WORKFLOW_VERSION
+    from core.task_outcome import task_outcome
+    outcome = task_outcome(source)
     retry = task_retry_action(
         current=current, worker_active=bool(payload.get("worker_active")),
         run_failed=(store.run_dir(run_id) / "reports/run_failure.json").is_file(),
         run_status=_v1_run_summary(payload)["status"],
-        task={**source, "result": source.get("status"), "steps": steps},
+        task={**source, "result": source.get("status") if outcome == "SKIPPED" else outcome, "steps": steps},
     )
-    from core.task_outcome import task_outcome
-    outcome = task_outcome(source)
     return {
         "read_only": not current,
-        "actions": {"retry": retry.model_dump(mode="json")},
+        "actions": {"retry": retry.model_dump(mode="json"), "close": {
+            "enabled": current and not bool(payload.get("worker_active")) and not bool((source.get("lifecycle") or {}).get("manually_closed")),
+            "reason": "后台执行时请先停止批次；历史任务及已关闭任务只读"}},
         "delivery": delivery_view(steps).model_dump(mode="json"),
         "run_id": run_id,
         "run_status": _v1_run_summary(payload)["status"],
@@ -108,6 +134,8 @@ def v1_retry_task(
     detail = _v1_detail(run_id)
     task_detail = v1_get_task(run_id, task_id, None)
     task_payload = task_detail["task"]
+    if (task_payload.get("lifecycle") or {}).get("manually_closed"):
+        raise HTTPException(status_code=409, detail="任务已人工关闭，不能自动重试")
     action = task_detail["actions"]["retry"]
     if not action["enabled"]:
         raise HTTPException(status_code=409, detail=action["reason"])
@@ -126,9 +154,11 @@ def v1_retry_task(
     workspace_archive: Path | None = None
     workspace_original: Path | None = None
     checkpoint_updated = False
+    retry_operation = None
     worker_lease: tuple[str, str] | None = None
     try:
         worker_lease = _claim_worker_lease(run_id)
+        store.set_worker_lease(run_id, *worker_lease)
         runtime_config = load_config()
         graph = build_graph(
             store=store,
@@ -150,6 +180,8 @@ def v1_retry_task(
         if any(getattr(task, "interrupts", ()) for task in (getattr(snapshot, "tasks", ()) or ())):
             raise HTTPException(status_code=409, detail="当前 Run 存在中断等待，必须先完成暂停或审批决策")
 
+        from infrastructure.storage.retry import RetryOperation
+        retry_operation = RetryOperation(store, run_id, task_id, kind="task_retry")
         original_tasks = list(values.get("tasks") or [])
         task_index = next(
             (index for index, item in enumerate(original_tasks)
@@ -189,6 +221,7 @@ def v1_retry_task(
                 baseline_archive = baseline_original.with_name(
                     f"{baseline_original.name}.previous-attempt-{next_attempt}-{uuid.uuid4().hex[:8]}"
                 )
+                retry_operation.moving(baseline_original, baseline_archive)
                 baseline_original.replace(baseline_archive)
 
         # prepare_workspace refuses to overwrite a task directory. Archive the old writable
@@ -203,6 +236,7 @@ def v1_retry_task(
             workspace_archive = workspace_original.with_name(
                 f"{workspace_original.name}.previous-attempt-{next_attempt}-{uuid.uuid4().hex[:8]}"
             )
+            retry_operation.moving(workspace_original, workspace_archive)
             workspace_original.replace(workspace_archive)
 
         appended_task = {**original_task, "_workflow_attempt": next_attempt}
@@ -247,10 +281,10 @@ def v1_retry_task(
 
         # Checkpoint mutation is the commit point for the retry request. No fallible
         # status/audit I/O follows it; artifacts are cleaned best-effort below.
-        graph.update_state(cfg, patch, as_node=TASK_DISPATCH)
-        checkpoint_updated = True
         from infrastructure.storage.reports import archive_retry_reports
         archive_retry_reports(store, run_id, task_id)
+        retry_operation.checkpoint(graph, cfg, patch, as_node=TASK_DISPATCH)
+        checkpoint_updated = True
         try:
             _audit_control(
                 run_id, task_id, "task.retry_requested", "api",
@@ -259,6 +293,9 @@ def v1_retry_task(
         except Exception:
             logger.exception("Task 重试已提交，但审计写入失败 run_id=%s task_id=%s", run_id, task_id)
     except Exception:
+        if retry_operation is not None:
+            checkpoint_updated = retry_operation.value["phase"] != "preparing"
+            retry_operation.rollback()
         if worker_lease is not None:
             _release_worker_lease(run_id, worker_lease)
         compensation_failures: list[tuple[str, OSError]] = []
@@ -312,7 +349,15 @@ def v1_retry_task(
             ) from compensation_failures[0][1]
         raise
 
-    background.add_task(_resume_workflow_background, run_id, lock, None, worker_lease)
+    try:
+        background.add_task(_resume_workflow_background, run_id, lock, None, worker_lease)
+        retry_operation.save("queued")
+    except Exception:
+        retry_operation.save("recovery_required")
+        if worker_lease is not None:
+            _release_worker_lease(run_id, worker_lease)
+        lock.release()
+        raise HTTPException(status_code=503, detail="重试已提交但尚未入队，请恢复该 Run；已保留重试意图")
     return {
         "run_id": run_id,
         "task_id": task_id,
@@ -421,10 +466,12 @@ def v1_run_step(
             continue_task_after_step,
         )
         from infrastructure.storage.lifecycle import WorkerLeaseLost
-        lease_owner = f"{settings.service_name}:single-step:{uuid.uuid4().hex[:12]}"
-        lease_token = uuid.uuid4().hex
-        lifecycle = LifecycleStore(store.root)
-        stop, heartbeat = _start_lifecycle_heartbeat(run_id, lease_owner, lease_token)
+        bound_lease = store._worker_lease_for(run_id)
+        if bound_lease is None:
+            raise WorkerLeaseLost("单步 continuation 缺少原执行租约")
+        lease_owner, lease_token = bound_lease
+        lifecycle = LifecycleStore(store.root, worker_lease=bound_lease)
+        stop, heartbeat = _start_lifecycle_heartbeat(run_id, lease_owner, lease_token, claim=False)
         try:
             runtime = load_config()
             services = build_services(config=runtime, source_repo=runtime.source_repo)

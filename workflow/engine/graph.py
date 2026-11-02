@@ -1285,6 +1285,14 @@ def build_graph(
 
     def run_task(state: dict[str, Any]) -> dict[str, Any]:
         state = dict(state)
+        life = LifecycleStore(resolved_store.root).read_task(str(state["run_id"]), str(state["task_id"]))
+        if life.get("manually_closed"):
+            return {"terminal_status": "CANCELLED", "last_result": "passed",
+                    "task_summary": {"task_id": state["task_id"], "result": "SKIPPED", "terminal_reason": "人工关闭"}}
+        # 子图不携带整批任务、已收集结果和父图步骤正文，避免每个节点重复落盘。
+        for key in ("tasks", "task_results", "task_cursor"):
+            state.pop(key, None)
+        state["step_outcomes"] = {}
         task = dict(state.get("task") or {})
         previous_context = task.pop("_retry_context", None)
         state["task"] = task
@@ -1339,32 +1347,9 @@ def resume_task_approval(
     config: RuntimeConfig,
     services: WorkflowServices,
 ) -> bool:
-    """恢复当前版本的独立审批检查点。"""
-    from langgraph.types import Command
-    from workflow.engine.routes import assert_workflow_version
-
-    assert_workflow_version(store.load_run(run_id))
-    graph = build_task_graph(
-        build_nodes(store, services, config=config),
-        workspace_manager=getattr(services, "workspaces", None),
-        checkpointer=_checkpoint_saver(config.runtime_dir),
-        transition_store=store,
-        retry_context_builder=lambda state: capture_retry_context(state, store),
-        workspace_root=config.workspace_root,
-    )
-    checkpoint_config = task_config(run_id, task_id)
-    pointer = store.task_dir(run_id, task_id) / "workflow" / "checkpoint.json"
-    if pointer.is_file():
-        checkpoint_config = store.read_artifact(run_id, "workflow/checkpoint.json", task_id)
-    snapshot = graph.get_state(checkpoint_config)
-    if not snapshot.values:
-        raise StepFailed("缺少当前版本的审批检查点，禁止从旧记录补造执行状态")
-    if not any(task.interrupts for task in snapshot.tasks):
-        raise StepFailed("该任务检查点没有待恢复的审批")
-    result = invoke_task(graph, Command(resume=payload), checkpoint_config)
-    if not result.get("__interrupt__"):
-        store.complete_task(run_id, task_id)
-    return True
+    """旧审批入口只保留显式拒绝；新审批不进入执行图。"""
+    raise StepFailed("旧 request_approval 检查点仅供历史查看；请使用发布后的最终审批接口",
+                     code="LEGACY_APPROVAL_READ_ONLY")
 
 
 def continue_task_after_step(
@@ -1475,6 +1460,8 @@ def prepare_run(
         "require_push": False,
         "startup_state": "queued" if queued else "started",
     }
+    from config.nacos import nacos_get
+    metadata["execution_config"] = {"validation_commands": json.loads(nacos_get("AI_REPAIR_VALIDATION_COMMANDS", "{}"))}
     if "agent_policy" in options and isinstance(options["agent_policy"], dict):
         metadata["agent_policy"] = options["agent_policy"]
     run_json = store.run_dir(resolved) / "run.json"
@@ -1486,7 +1473,7 @@ def prepare_run(
             raise RuntimeError(f"执行 {resolved} 不是待启动状态，拒绝重复启动")
         mismatches = [
             key for key, value in metadata.items()
-            if key != "startup_state" and existing.get(key) != value
+            if key not in {"startup_state", "execution_config"} and existing.get(key) != value
         ]
         if mismatches:
             raise RuntimeError(f"执行 {resolved} 已存在，但配置不匹配：{', '.join(mismatches)}")
@@ -1540,6 +1527,7 @@ def run_workflow(
                 "log_limit": config.limit,
                 "workflow_version": WORKFLOW_VERSION,
                 "agent_policy": dict(store.load_run(resolved).get("agent_policy") or {}),
+                "execution_config": dict(store.load_run(resolved).get("execution_config") or {}),
                 "attempt": 1,
                 "max_attempts": config.max_attempts,
                 "review_mode": config.review_mode,

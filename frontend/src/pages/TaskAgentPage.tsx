@@ -190,7 +190,7 @@ function Conversation({ events }: { events: AgentEvent[] }) {
                     <span className="tool-name">{event.tool}</span>
                     <span className="tool-args">{summarize(event.input)}</span>
                   </div>
-                  <pre>{JSON.stringify(event.input ?? {}, null, 2)}</pre>
+                  <details><summary>查看工具参数</summary><pre>{JSON.stringify(event.input ?? {}, null, 2)}</pre></details>
                 </div>
               </div>
             </div>

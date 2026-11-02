@@ -9,6 +9,14 @@ from workflow.stages.generate_report.models import DeliveryInput, DeliveryOutput
 from workflow.stages.generate_report.node import run
 
 
+def publish_and_register(ctx, data):
+    output = run(ctx, data)
+    if output.commit and (output.pushed or output.local_branch):
+        from infrastructure.storage.final_approval import register_approval
+        register_approval(ctx.store, ctx.run.run_id, data.task_id, output.model_dump(mode="json"))
+    return output
+
+
 def input_of(state):
     candidate = state.get("delivery_candidate")
     candidate_id = (
@@ -39,7 +47,7 @@ def _patch(output: dict[str, Any]) -> dict[str, Any]:
 SPEC = StepSpec(
     name="submit_changes",
     title="提交候选分支",
-    runner=run,
+    runner=publish_and_register,
     input_model=DeliveryInput,
     output_model=DeliveryOutput,
     input_builder=input_of,

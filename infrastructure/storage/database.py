@@ -138,6 +138,13 @@ class RecordDatabase:
             )
         return value
 
+    def states(self, name: str) -> list[dict[str, Any]]:
+        if not self.path.is_file():
+            return []
+        with closing(self._connect()) as connection:
+            rows = connection.execute("SELECT body FROM state WHERE name=? ORDER BY scope", (name,)).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
     def append(
         self, scope: str, stream: str, value: Any, *,
         identity: str | None = None, connection: sqlite3.Connection | None = None,

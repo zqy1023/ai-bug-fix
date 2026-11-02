@@ -388,6 +388,7 @@ def review(state: ReviewState, runtime: Any) -> dict[str, Any]:
             "acceptance_criteria": list((state.get("repair") or {}).get("acceptance_criteria") or []),
             "validation": validation_report,
             "repair_claims_status": "以下 repair/repair_plan/acceptance_criteria 是修复方声明，需独立核对，不作为已证明事实",
+            "initial_acceptance": (state.get("repair") or {}).get("acceptance_contract") or {},
             "review_responsibility": {
                 "scope": ("改动文件及行为范围是否合理；逐项核对旧新条件、返回和受影响输入" if changed_files
                           else "不修改依据是否符合实际权限；只读引用不能代替确认真实缺陷归属"),

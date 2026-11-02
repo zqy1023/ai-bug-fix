@@ -14,11 +14,12 @@ export function runStatus(status?: string | null): StatusMeta {
   if (value === 'running' || value === 'queued' || value === 'pause_requested') {
     return { label: '执行中', tone: 'info' };
   }
+  if (value === 'cancel_requested') return { label: '正在停止', tone: 'warn' };
   if (value === 'paused') return { label: '已暂停', tone: 'idle' };
   if (value === 'succeeded') return { label: '已完成', tone: 'ok' };
   if (value === 'partial_failed') return { label: '部分失败', tone: 'warn' };
   if (value === 'failed') return { label: '失败', tone: 'danger' };
-  if (value === 'cancelled' || value === 'cancel_requested') return { label: '已停止', tone: 'idle' };
+  if (value === 'cancelled') return { label: '已停止', tone: 'idle' };
   if (value === 'waiting_approval') return { label: '执行中', tone: 'info' };
   return { label: '执行中', tone: 'info' };
 }
@@ -26,6 +27,11 @@ export function runStatus(status?: string | null): StatusMeta {
 export function taskStatus(result?: string | null, lifecycleStatus?: string | null): StatusMeta {
   const value = String(result || '').toUpperCase();
   const life = String(lifecycleStatus || '').toLowerCase();
+  if (life === 'running' || life === 'retrying') return { label: '执行中', tone: 'info' };
+  if (life === 'queued' || life === 'pending') return { label: '未开始', tone: 'idle' };
+  if (life === 'cancel_requested') return { label: '正在停止', tone: 'warn' };
+  if (life === 'cancelled') return { label: '已停止', tone: 'idle' };
+  if (life === 'paused') return { label: '已暂停', tone: 'idle' };
   if (value === 'CHANGED_DELIVERED') return { label: '已改动交付', tone: 'ok' };
   if (value === 'UNCHANGED_DELIVERED') return { label: '无改动交付', tone: 'info' };
   if (life === 'paused' || value === 'PAUSED') return { label: '已暂停', tone: 'idle' };
@@ -48,6 +54,8 @@ export function isRunEnded(status?: string | null): boolean {
 }
 
 export function needsAttention(task: { result?: string | null; lifecycle?: { status?: string } | null }): boolean {
+  const life = String(task.lifecycle?.status || '').toLowerCase();
+  if (['queued', 'pending', 'running', 'retrying', 'paused', 'cancel_requested', 'cancelled'].includes(life)) return false;
   const value = String(task.result || '').toUpperCase();
   return ['FAILED', 'FAIL', 'REJECTED'].includes(value);
 }

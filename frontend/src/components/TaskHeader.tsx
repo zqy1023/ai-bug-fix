@@ -1,4 +1,5 @@
 import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { durationFrom, formatDuration } from '../lib/format';
@@ -16,6 +17,11 @@ export function TaskHeader({ detail, active }: { detail: TaskDetailResponse; act
   const meta = taskStatus(task.result, task.lifecycle?.status);
   useLiveClock(meta.label === '执行中');
   const retry = detail.actions?.retry;
+  const [closeReason, setCloseReason] = useState<string | null>(null);
+  const closeMutation = useMutation({mutationFn: () => api.closeTask(runId, taskId, closeReason ?? ''),
+    onSuccess: () => {setCloseReason(null); void queryClient.invalidateQueries({queryKey: ['task', runId, taskId]});
+      void queryClient.invalidateQueries({queryKey: ['board', runId]}); push('任务已人工关闭');},
+    onError: error => push('关闭失败', String(error), 'danger')});
   const duration = task.duration_ms ?? task.report.elapsed_ms
     ?? durationFrom(task.lifecycle?.started_at, task.lifecycle?.finished_at);
 
@@ -52,6 +58,7 @@ export function TaskHeader({ detail, active }: { detail: TaskDetailResponse; act
         actions={
           <>
             <TaskStatusBadge result={task.result} lifecycle={task.lifecycle?.status} />
+            {detail.actions?.close?.enabled ? <button className="btn" onClick={() => setCloseReason('')}>关闭任务</button> : null}
             {retry ? (
               <button
                 className="btn primary"
@@ -65,6 +72,11 @@ export function TaskHeader({ detail, active }: { detail: TaskDetailResponse; act
           </>
         }
       />
+
+      {closeReason !== null ? <div className="note"><label>关闭原因 <input value={closeReason} maxLength={2000}
+        onChange={event => setCloseReason(event.target.value)} /></label>{' '}
+        <button className="btn" disabled={!closeReason.trim() || closeMutation.isPending} onClick={() => closeMutation.mutate()}>确认关闭，不再自动恢复</button>{' '}
+        <button className="btn" onClick={() => setCloseReason(null)}>取消</button></div> : null}
 
       <Tabs
         active={active}

@@ -1,0 +1,32 @@
+{
+  "recorded_at": "2026-11-02T08:29:33.675341+00:00",
+  "baseline": "aadbae9ea2ac4736a3a5aa3b2bb31e6b7dbcea9a",
+  "backend": {
+    "tests": 367,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "post_full_run_affected_api_regression": "16 passed",
+  "frontend": {
+    "typecheck": "passed",
+    "production_build": "passed",
+    "status_assertions": 24
+  },
+  "browser": {
+    "approved": true,
+    "manual_merge": true,
+    "actual_diff_visible": true,
+    "browser_errors": [],
+    "scope": "隔离真实API与前端；无外部模型/Git/承运商调用"
+  },
+  "compileall": "passed",
+  "diff_check": "passed",
+  "ci_yaml_parse": "passed",
+  "boundaries": [
+    "隔离真实 API 和浏览器",
+    "真实本地裸 Git 远端",
+    "不调用外部 ES/模型/承运商",
+    "人工合并"
+  ]
+}

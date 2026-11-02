@@ -19,42 +19,64 @@ def _move_to_history(source: Path, history_dir: Path, *, label: str) -> str | No
 
 
 def archive_retry_reports(store: Any, run_id: str, task_id: str | None = None) -> list[str]:
-    """清空本轮当前报告视图，同时保留可审计历史和失败恢复所需的 Run 备份。
+    with store._write_guard(run_id):
+        return _archive_retry_reports(store, run_id, task_id)
 
-    Run final.json/run_failure.json 固定归档到 *.retry_previous，供后台恢复失败
-    时重建失败报告；如果已有旧备份，先移入 reports/history，避免覆盖或丢失。
-    Task 报告只进入各自 history，不参与 Run 失败兜底。
-    """
-    run_dir = store.run_dir(run_id)
-    reports = run_dir / "reports"
+
+def _archive_retry_reports(store: Any, run_id: str, task_id: str | None = None) -> list[str]:
+    """先持久化文件移动计划；失败补偿，进程中断后下次调用恢复未完成计划。"""
+    import json
+    from infrastructure.storage.atomic import atomic_write_json
+
+    root = store.run_dir(run_id).resolve()
+    journal_root = root / "retry" / "archives"
+    journal_root.mkdir(parents=True, exist_ok=True)
+
+    def rollback(moves):
+        for source_text, target_text in reversed(moves):
+            source, target = Path(source_text).resolve(), Path(target_text).resolve()
+            if not source.is_relative_to(root) or not target.is_relative_to(root):
+                raise ValueError("报告归档计划路径越界")
+            if target.exists() and not source.exists():
+                source.parent.mkdir(parents=True, exist_ok=True)
+                target.replace(source)
+
+    for journal in journal_root.glob("*.json"):
+        pending = json.loads(journal.read_text(encoding="utf-8"))
+        if pending.get("phase") == "preparing":
+            rollback(pending["moves"])
+            atomic_write_json(journal, {**pending, "phase": "rolled_back"})
+
+    reports = root / "reports"
     reports.mkdir(parents=True, exist_ok=True)
-    history = reports / "history"
-    archived: list[str] = []
-
+    moves = []
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     for name in ("run_failure.json", "final.json"):
-        source = reports / name
-        retained = reports / f"{name}.retry_previous"
+        source, retained = reports / name, reports / f"{name}.retry_previous"
         if retained.is_file():
-            previous = _move_to_history(
-                retained, history, label=f"previous-{name.replace('.', '-')}",
-            )
-            if previous:
-                archived.append(previous)
+            target = reports / "history" / f"previous-{name.replace('.', '-')}-{stamp}-{uuid4().hex[:8]}{retained.suffix}"
+            moves.append((str(retained), str(target)))
         if source.is_file():
-            source.replace(retained)
-            archived.append(str(retained))
-
-    if task_id:
-        task_reports = [store.task_dir(run_id, task_id) / "reports" / "final.json"]
-    else:
-        tasks_root = run_dir / "tasks"
-        task_reports = list(tasks_root.glob("*/reports/final.json")) if tasks_root.is_dir() else []
-    for source in task_reports:
-        task_history = source.parent / "history"
-        previous = _move_to_history(source, task_history, label="final")
-        if previous:
-            archived.append(previous)
-    return archived
+            moves.append((str(source), str(retained)))
+    tasks = ([store.task_dir(run_id, task_id) / "reports/final.json"] if task_id else
+             list((root / "tasks").glob("*/reports/final.json")))
+    for source in tasks:
+        if source.is_file():
+            moves.append((str(source), str(source.parent / "history" / f"final-{stamp}-{uuid4().hex[:8]}.json")))
+    journal = journal_root / f"{uuid4().hex}.json"
+    plan = {"phase": "preparing", "moves": moves}
+    atomic_write_json(journal, plan)
+    try:
+        for source_text, target_text in moves:
+            source, target = Path(source_text), Path(target_text)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source.replace(target)
+        atomic_write_json(journal, {**plan, "phase": "completed"})
+    except BaseException:
+        rollback(moves)
+        atomic_write_json(journal, {**plan, "phase": "rolled_back"})
+        raise
+    return [target for _, target in moves]
 
 
 __all__ = ["archive_retry_reports"]

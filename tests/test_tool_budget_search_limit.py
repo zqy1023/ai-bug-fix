@@ -16,11 +16,11 @@ def test_same_search_word_is_stopped_after_repeat():
     budget = ToolBudget(limit=64, writable=True)
     for index in range(3):
         # 参数各不相同（只有搜索词相同）——这正是模型绕开"同参"限制的方式。
-        values = {"pattern": "解析异常", "path": f"gathers/TEST/dir{index}"}
+        values = {"pattern": "解析异常", "path": "gathers/TEST", "head_limit": index + 1}
         decision, _ = budget.decide("Grep", values, "allow", "")
         assert decision == "allow", f"第 {index + 1} 次应放行"
 
-    decision, reason = budget.decide("Grep", {"pattern": "解析异常", "path": "gathers/TEST/dir3"}, "allow", "")
+    decision, reason = budget.decide("Grep", {"pattern": "解析异常", "path": "gathers/TEST"}, "allow", "")
     assert decision == "deny", "同一搜索词超过上限后必须拒绝"
     assert "检索" in reason
 
@@ -37,10 +37,10 @@ def test_regex_variant_of_same_word_still_counts():
     """换个正则写同一个词，仍然算同一个搜索词（上限内放行，超出即拒）。"""
     budget = ToolBudget(limit=64, writable=True)
     for index in range(3):
-        decision, _ = budget.decide("Grep", {"pattern": "解析异常", "path": f"a{index}"}, "allow", "")
+        decision, _ = budget.decide("Grep", {"pattern": "解析异常", "path": "same-scope", "head_limit": index + 1}, "allow", "")
         assert decision == "allow", f"第 {index + 1} 次应放行（上限 3）"
     # 第 4 次：即使换了正则写法，也算同一个搜索词 → 拒绝
-    decision, reason = budget.decide("Grep", {"pattern": "解析.*异常", "path": "c"}, "allow", "")
+    decision, reason = budget.decide("Grep", {"pattern": "解析.*异常", "path": "same-scope"}, "allow", "")
     assert decision == "deny", "同一搜索词的正则变体应计入同一计数"
     assert "检索" in reason
 
@@ -57,7 +57,7 @@ def test_search_limit_does_not_break_write_budget():
     """搜索被限不影响写入与验证读取。"""
     budget = ToolBudget(limit=64, writable=True)
     for index in range(5):
-        budget.decide("Grep", {"pattern": "同一个词", "path": f"d{index}"}, "allow", "")
+        budget.decide("Grep", {"pattern": "同一个词", "path": "same-root", "head_limit": index + 1}, "allow", "")
     decision, _ = budget.decide("Edit", {"file_path": "gathers/TEST/main.py", "old_string": "a", "new_string": "b"}, "allow", "")
     assert decision == "allow", "写入不应被搜索限制挡住"
 
@@ -71,9 +71,9 @@ def test_write_still_allowed_after_exploration_stopped():
     """
     budget = ToolBudget(limit=64, writable=True)
     for index in range(5):
-        budget.decide("Grep", {"pattern": "同一个词", "path": f"d{index}"}, "allow", "")
+        budget.decide("Grep", {"pattern": "同一个词", "path": "same-root", "head_limit": index + 1}, "allow", "")
     # 探索已停止（连续拒绝触发收敛）
-    decision, _ = budget.decide("Grep", {"pattern": "同一个词", "path": "x"}, "allow", "")
+    decision, _ = budget.decide("Grep", {"pattern": "同一个词", "path": "same-root", "head_limit": 9}, "allow", "")
     assert decision == "deny", "探索类工具应被拒绝"
     # 写入与验证读取仍放行
     decision, _ = budget.decide("Edit", {"file_path": "gathers/TEST/main.py", "old_string": "a", "new_string": "b"}, "allow", "")

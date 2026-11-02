@@ -195,21 +195,18 @@ class AgentReviewFlowTests(unittest.TestCase):
 
     def test_published_analysis_report_can_be_confirmed(self):
         from server.routes import approvals
+        from infrastructure.storage.final_approval import register_approval
         for version, enabled in ((WORKFLOW_VERSION, True), ('old', False)):
-            with self.subTest(version=version):
-                store = Mock()
-                store.load_run.return_value = {'workflow_version': version}
-                steps = [{'name': 'generate_report'}, {'name': 'submit_changes'}]
-                candidate = SimpleNamespace(phase='published', candidate_id='candidate',
-                                            model_dump=lambda **kwargs: {'phase': 'published'})
-                pending = {'items': [{'run_id': 'run', 'task_id': 'task', 'approval_step': {}}]}
-                with patch.object(approvals, '_pending_approvals', return_value=pending), \
-                     patch.object(approvals, '_store', return_value=store), \
-                     patch.object(approvals, '_run_payload', return_value={'tasks': [{'task_id': 'task', 'steps': steps}]}), \
-                     patch.object(approvals, '_formal_step_payload', side_effect=lambda *args: args[-1]), \
-                     patch.object(approvals, 'delivery_view', return_value=candidate):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as directory:
+                store = RecordStore(directory)
+                store.create_run('run', {'workflow_version': version})
+                register_approval(store, 'run', 'task', {'candidate_id': 'candidate',
+                                  'commit': 'a' * 40, 'repair_branch': 'candidate'})
+                with patch.object(approvals, '_store', return_value=store):
                     result = approvals.v1_list_approvals(status='pending')
-                self.assertEqual(result['items'][0]['actions']['approve']['enabled'], enabled)
+                self.assertEqual(len(result['items']), 1)
+                self.assertEqual(not result['items'][0]['read_only'], enabled)
+                self.assertTrue(result['items'][0]['manual_merge'])
 
 
 if __name__ == '__main__':

@@ -43,6 +43,11 @@ export function RunTasksPage() {
   const navigate = useNavigate();
 
   const run = useQuery({ queryKey: ['run', runId], queryFn: () => api.run(runId), enabled: Boolean(runId) });
+  const retryOperation = useQuery({queryKey: ['retry-operation', runId], queryFn: () => api.retryOperation(runId),
+    enabled: Boolean(runId), refetchInterval: 10000});
+  const recovery = useMutation({mutationFn: () => api.recoverRetry(runId), onSuccess: () => {
+    push('已恢复重试意图'); void queryClient.invalidateQueries({queryKey: ['run', runId]});
+    void retryOperation.refetch();}, onError: error => push('恢复失败', String(error), 'danger')});
   const board = useQuery({
     queryKey: ['board', runId, category, keyword, page],
     queryFn: () => api.board(runId, { page, page_size: 20, category, keyword }),
@@ -140,6 +145,8 @@ export function RunTasksPage() {
         }
         actions={
           <>
+            {!detail.worker_active && ['preparing', 'committing', 'committed', 'queued', 'recovery_required'].includes(retryOperation.data?.phase ?? '') ?
+              <button className="btn" disabled={recovery.isPending} onClick={() => recovery.mutate()}>恢复未完成重试</button> : null}
             {canPause || pauseRequested ? (
               <button
                 className="btn"
@@ -250,6 +257,7 @@ export function RunTasksPage() {
                     ['failed', '失败'],
                     ['skipped', '已跳过'],
                     ['paused', '已暂停'],
+                    ['cancelled', '已停止'],
                   ].map(([key, label]) => (
                     <button key={key} className={`chip${category === key ? ' active' : ''}`} onClick={() => setFilter(key)}>
                       {label} <span className="n">{key === 'all' ? allTotal : counts[key] ?? 0}</span>
@@ -334,7 +342,7 @@ export function RunTasksPage() {
                 <dt>开始</dt><dd>{formatBatchTime(detail.started_at)}</dd>
                 <dt>任务</dt><dd>{detail.task_count}</dd>
                 <dt>审查方式</dt><dd>AI 自动审查</dd>
-                <dt>操作人</dt><dd>{detail.operator || 'kirby'}</dd>
+                <dt>操作人</dt><dd>{detail.operator || '未记录'}</dd>
               </dl>
               <div className="divider" />
               <div className="row between" style={{ marginBottom: 6 }}>

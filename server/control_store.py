@@ -37,6 +37,9 @@ def _ensure_control_schema(connection) -> None:
             action TEXT NOT NULL, actor TEXT NOT NULL DEFAULT 'unknown', reason TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS execution_scope (
+            scope TEXT PRIMARY KEY, run_id TEXT NOT NULL, token TEXT NOT NULL, expires_at TEXT NOT NULL
+        );
     """)
     connection.commit()
 

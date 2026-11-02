@@ -21,7 +21,7 @@ import {
 } from '../components/ui';
 
 function needsTasks(tasks: Array<{ result: string; carrier: string; task_id: string; terminal_reason: string; runId: string; updated?: string }>) {
-  return tasks.filter((task) => needsAttention({ result: task.result }));
+  return tasks.filter((task) => needsAttention(task));
 }
 
 export function OverviewPage() {

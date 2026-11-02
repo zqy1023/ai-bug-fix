@@ -14,6 +14,7 @@ import { TaskPromptPage } from './pages/TaskPromptPage';
 import { TaskArtifactsPage } from './pages/TaskArtifactsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { NotFoundPage } from './pages/NotFoundPage';
+import { ApprovalsPage } from './pages/ApprovalsPage';
 
 export function AppRouter() {
   return (
@@ -33,6 +34,7 @@ export function AppRouter() {
           <Route path="/runs/:runId/tasks/:taskId/audit/prompt" element={<TaskPromptPage />} />
           <Route path="/runs/:runId/tasks/:taskId/audit/artifacts" element={<TaskArtifactsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/approvals" element={<ApprovalsPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>
       </Routes>

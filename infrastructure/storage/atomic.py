@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import time
+from uuid import uuid4
 from pathlib import Path
 
 # 重试次数与退避上限：与记录存储此前验证过的口径一致。
@@ -24,11 +25,10 @@ REPLACE_RETRY_CAP = 0.1
 def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
     """把文本原子写入 ``path``：先写临时文件，再替换目标。
 
-    目标文件被其他进程占用时做有界指数退避重试；仍失败则**直接覆盖写入**，
-    至少不丢内容（临时文件保留，便于事后核对与人工重放）。
+    目标文件被占用时有界重试。失败保留旧目标和唯一临时文件，绝不截断旧版本。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary = path.with_name(f"{path.name}.{uuid4().hex}.tmp")
     with temporary.open("w", encoding=encoding) as file_obj:
         file_obj.write(text)
         file_obj.flush()
@@ -46,12 +46,9 @@ def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None
                 break
             time.sleep(delay)
             delay = min(delay * 2, REPLACE_RETRY_CAP)
-    # 仍被占用：直接覆盖。内容可能不完整，但比整份丢失好。
-    try:
-        path.write_text(text, encoding=encoding)
-    except OSError as error:
-        # 连直接覆盖都失败（权限/磁盘）：临时文件仍在，可事后人工重放。
-        raise error from last_error
+    raise PermissionError(
+        f"原子替换失败，旧目标保持不变；完整候选保留于 {temporary}"
+    ) from last_error
 
 
 def atomic_write_json(path: Path, value: object, *, indent: int = 2) -> None:

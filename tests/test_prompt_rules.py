@@ -71,9 +71,9 @@ class SelectRulesTests(unittest.TestCase):
                 problem={"blame": "code"}, evidence={},
             ))
 
-    def test_review_does_not_duplicate_coding_rules(self):
+    def test_review_independently_checks_coding_rules(self):
         selected = _rules(role="review", problem={"blame": "code", "error": "boom"})
-        self.assertNotIn("coding", selected)
+        self.assertIn("coding", selected)
 
     def test_notfound_rules_are_mandatory_even_for_no_events_error(self):
         for role in ("unified_fixer", "review"):

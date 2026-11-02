@@ -1,0 +1,21 @@
+[
+  {
+    "branch": "fix/write-boundary-fencing",
+    "sha": "268bbf33ef0788fb3130f2a7abf1fdb8ac6a6848",
+    "backup_tag": "refs/tags/archive/remediation-20261102/fix-write-boundary-fencing",
+    "deleted": true
+  },
+  {
+    "branch": "refactor/workflow-governance-batch",
+    "sha": "09c636c3ce4316be460717c056827b32311caca4",
+    "backup_tag": "refs/tags/archive/remediation-20261102/refactor-workflow-governance-batch",
+    "deleted": true
+  },
+  {
+    "branch": "fix/durable-run-lease",
+    "sha": "a5b1ffeffcdc8eb792d374bb53e9c1ae253fa58c",
+    "backup_tag": "refs/tags/archive/remediation-20261102/fix-durable-run-lease",
+    "deleted": true,
+    "note": "未认定该分支单独合并；保留远端不可变归档，可按原 SHA 恢复分支"
+  }
+]

@@ -7,10 +7,8 @@
 2. **一条报错日志只追一个入口文件，不全改** —— ``changed_files`` 无上限。
 3. **改前先读 ``main.py`` 路由确认分派，再改终端文件** —— 提示词里没有强制步骤。
 
-这里只做**事实提取**，不做拦截：把"本轮新增了几个函数""改了几个文件"
-"是否读过入口路由"作为结构化证据写进提示词与审查材料，让模型和审查方
-看到具体数字，而不是靠自觉。真正的取舍留给审查 Agent 判断——平台不该用
-一条 AST 规则直接否掉一个合理的两文件修复。
+事实提取供独立审查使用；新增 helper 和既有换行风格由确定性检查约束。
+修改文件数量仍作为证据，不能仅凭数量否决有依据的多文件修复。
 """
 
 from __future__ import annotations
@@ -18,6 +16,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 from typing import Any
+from collections import Counter
 
 # 路由入口文件名：新框架用 main.py 分派 gather_channel。
 ROUTER_FILE = "main.py"
@@ -49,11 +48,48 @@ def new_functions(baseline_dir: str | Path, workspace: str | Path, changed_files
     for name in changed_files:
         if Path(name).suffix != ".py":
             continue
-        before = {key.split("@", 1)[0] for key in _functions(before_root / name)}
-        after = {key.split("@", 1)[0] for key in _functions(after_root / name)}
-        for function in sorted(after - before):
+        before = _scoped_functions(before_root / name)
+        after = _scoped_functions(after_root / name)
+        for function in sorted((after - before).elements()):
             added.append(f"{name}::{function}")
     return added
+
+
+def _scoped_functions(path: Path) -> Counter[str]:
+    if not path.is_file():
+        return Counter()
+    tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+    found: Counter[str] = Counter()
+
+    def visit(node: ast.AST, parents: tuple[str, ...] = ()) -> None:
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            parents = (*parents, node.name)
+            if not isinstance(node, ast.ClassDef):
+                found[".".join(parents)] += 1
+        for child in ast.iter_child_nodes(node):
+            visit(child, parents)
+
+    visit(tree)
+    return found
+
+
+def convention_errors(baseline_dir: str, workspace: str, changed_files: list[str]) -> list[str]:
+    """客观硬约束不接受模型自批例外；风格偏好仍由独立审查判断。"""
+    if not baseline_dir:
+        return []
+    errors = []
+    for item in new_functions(baseline_dir, workspace, changed_files):
+        symbol = item.split("::", 1)[1].split(".")
+        if not (len(symbol) == 2 and symbol[-1] in {"__init__", "read_html", "process_html", "on_finish"}):
+            errors.append(f"禁止新增辅助函数：{item}")
+    for name in changed_files:
+        before, after = Path(baseline_dir) / name, Path(workspace) / name
+        if not before.is_file() or not after.is_file() or after.suffix != ".py":
+            continue
+        old, new = before.read_bytes(), after.read_bytes()
+        if b"\r\n" in old and b"\r\n" not in new:
+            after.write_bytes(new.replace(b"\n", b"\r\n"))
+    return errors
 
 
 def convention_facts(

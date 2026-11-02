@@ -378,6 +378,8 @@ def _check_tool_access(
         not any(_path_is_under(base, path) for base in roots) for path in paths
     ):
         return "deny", f"scope_denied: 目标 carrier 外文件不允许直接写入。{_SCOPE_DENIED_HINT}"
+    if tool_name in {"Write", "Edit"} and any(path.name in {"final.json", "task_summary.md"} for path in paths):
+        return "deny", "platform_artifact: 终态报告和交付摘要仅由平台生成，不允许模型写入"
     return "allow", "允许访问工作区"
 
 

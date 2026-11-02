@@ -84,6 +84,9 @@ def _clear_worker_active(run_id: str, owner_id: str, lease_token: str) -> bool:
     """仅释放当前 worker 自己的租约，旧 worker 不得清除新持有者状态。"""
     for attempt in range(2):
         try:
+            if _owns_worker_lease(run_id, owner_id, lease_token):
+                from infrastructure.storage.retry import finish_retry
+                finish_retry(_store(), run_id, (owner_id, lease_token))
             released = LifecycleStore(_store().root).release_worker_lease(
                 run_id, owner_id=owner_id, lease_token=lease_token,
             )
@@ -386,6 +389,12 @@ def _run_workflow_background_v1(
             except Exception:
                 logger.exception("回收配置工作区失败 run_id=%s", run_id)
         run_lock.release()
+        if lease_acquired:
+            try:
+                from server.routes.approvals import drain_approval_retries
+                drain_approval_retries(run_id)
+            except Exception:
+                logger.exception("最终审批回修队列保留待恢复 run_id=%s", run_id)
         with _RUN_LOCKS_GUARD:
             _STARTED_RUNS.discard(run_id)
 
@@ -447,6 +456,8 @@ def _resume_workflow_background(
                 task_count_hint=int(run_meta.get("log_limit") or 50),
             ),
         }
+        from infrastructure.storage.retry import recover_retry
+        recover_retry(store, run_id, graph, config)
         snapshot = graph.get_state(config)
         has_interrupt = any(getattr(task, "interrupts", ()) for task in (getattr(snapshot, "tasks", ()) or ()))
         if resume_payload is not None:
@@ -531,6 +542,12 @@ def _resume_workflow_background(
             except Exception:
                 logger.exception("回收恢复 Run 的工作区失败 run_id=%s", run_id)
         run_lock.release()
+        if lease_acquired:
+            try:
+                from server.routes.approvals import drain_approval_retries
+                drain_approval_retries(run_id)
+            except Exception:
+                logger.exception("最终审批回修队列保留待恢复 run_id=%s", run_id)
 
 def _reinvestigate_task(run_id: str, task_id: str, background: BackgroundTasks) -> dict[str, Any]:
     """为人工任务建立独立调查 Run，保留原报告、分支、回执和审批检查点。"""

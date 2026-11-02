@@ -53,7 +53,7 @@ class ToolBudget:
         # 探索停止不影响它，但配额用完必须停——否则模型可以无限改文件。
         self.write_calls = 0
         self.blocked_writes = 0
-        self.write_reserve = min(2, max(0, limit - 1)) if writable else 0
+        self.write_reserve = min(6, max(2, limit // 4), max(0, limit - 1)) if writable else 0
         self.exploration_calls = 0
         self.pending_verification: set[str] = set()
 
@@ -73,7 +73,8 @@ class ToolBudget:
         # 这里按搜索词累计次数上限，逼模型转向"定位到文件后读一次"。
         search_key = ""
         if name in {"Grep", "Glob"}:
-            search_key = _search_key(str(values.get("pattern") or values.get("glob") or ""))
+            scope = str(Path(str(values.get("path") or ".")).resolve())
+            search_key = scope + ":" + _search_key(str(values.get("pattern") or values.get("glob") or ""))
         if decision == "allow":
             self.signatures[signature] = self.signatures.get(signature, 0) + 1
             writing = name in {"Edit", "Write"}
@@ -84,7 +85,7 @@ class ToolBudget:
                 # 否则模型可以无限改文件。
                 decision, reason = "deny", f"授权修改次数已达上限 {self.write_reserve}；停止修改并输出当前结论与缺口"
                 self.stop_kind = "tool_budget_exhausted"
-            elif self.allowed >= self.limit and not (writing or verifying):
+            elif self.allowed >= self.limit:
                 decision, reason = "deny", f"工具放行预算 {self.limit} 已耗尽；停止工具调用并输出当前结论与缺口"
                 self.stop_kind = "tool_budget_exhausted"
             elif self.stop_kind and not (writing or verifying):

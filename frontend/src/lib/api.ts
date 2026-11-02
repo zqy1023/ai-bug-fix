@@ -44,6 +44,12 @@ export class ApiError extends Error {
   }
 }
 
+export interface FinalApproval {
+  approval_id: string; run_id: string; task_id: string; status: string;
+  candidate_id: string; commit: string; branch: string; read_only: boolean;
+  detail_url: string; reason?: string; retry_status?: string;
+}
+
 type ErrorBody = { detail?: unknown; message?: string; code?: string };
 
 function errorFrom(body: ErrorBody | null, status: number): ApiError {
@@ -106,6 +112,12 @@ function queryString(values: Record<string, unknown>): string {
 }
 
 export const api = {
+  approvals: (status = 'pending') => request<{items: FinalApproval[]; total: number}>(`/approvals?status=${encode(status)}`),
+  decideApproval: (item: FinalApproval, decision: 'approve' | 'reject' | 'close', reason: string, reasonCode: string, retryTarget: string) =>
+    request(`/approvals/${encode(item.approval_id)}/decision`, {method: 'POST', body: JSON.stringify({
+      candidate_id: item.candidate_id, commit: item.commit, decision, reason, reason_code: reasonCode, retry_target: retryTarget,
+    })}),
+  retryApproval: (item: FinalApproval) => request(`/approvals/${encode(item.approval_id)}/retry`, {method: 'POST'}),
   health: () => request<HealthResponse>('/health'),
   dashboard: () => request<DashboardSummary>('/dashboard/summary'),
   runConfig: () => request<RunConfig>('/run-config'),
@@ -153,6 +165,10 @@ export const api = {
       `/runs/${encode(runId)}/tasks/${encode(taskId)}/retry`,
       { method: 'POST' },
     ),
+  closeTask: (runId: string, taskId: string, reason: string) =>
+    request(`/runs/${encode(runId)}/tasks/${encode(taskId)}/close`, {method: 'POST', body: JSON.stringify({reason})}),
+  retryOperation: (runId: string) => request<{phase?: string; kind?: string}>(`/runs/${encode(runId)}/retry-operation`),
+  recoverRetry: (runId: string) => request(`/runs/${encode(runId)}/retry-operation/recover`, {method: 'POST'}),
   step: (runId: string, taskId: string, stepName: string) =>
     request<StepDetailResponse>(`/runs/${encode(runId)}/tasks/${encode(taskId)}/steps/${encode(stepName)}`),
   runStep: (runId: string, taskId: string, stepName: string, confirmWrite: boolean, continueAfter = false) =>

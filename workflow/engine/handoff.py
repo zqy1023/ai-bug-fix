@@ -48,6 +48,7 @@ class WorkflowState(TypedDict, total=False):
     approval_result: dict[str, Any]
     analysis_report: dict[str, Any]
     workflow_version: int
+    execution_config: dict[str, Any]
     agent_policy: dict[str, Any]
     policy_sources: dict[str, Any]
     validation_recovery_counts: dict[str, int]
@@ -99,6 +100,8 @@ class WorkflowState(TypedDict, total=False):
     repair_branch: str
     approval_cleanup_failed: bool
     approval_recovery_blocked: bool
+    review_contract_error: str
+    analysis_checks: dict[str, Any]
     task_summary: dict[str, Any]
     analysis_only: bool
 
@@ -108,6 +111,7 @@ class RunState(TypedDict, total=False):
 
     step_outcomes: dict[str, Any]
     workflow_version: int
+    execution_config: dict[str, Any]
     agent_policy: dict[str, Any]
     policy_sources: dict[str, Any]
     schema_version: int
@@ -136,6 +140,7 @@ class RunState(TypedDict, total=False):
     task_results: Annotated[list[dict[str, Any]], operator.add]
     last_result: str
     next_step: str
+    retry_operation_id: str
 
 
 # ---------------------------------------------------------------------------

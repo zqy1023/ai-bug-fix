@@ -73,10 +73,10 @@ export function AppShell() {
 
         <div className="rail-ws">
           <span>默认工作空间</span>
-          <span className="caret">▾</span>
         </div>
 
         <nav className="rail-nav">
+          <NavLink to="/approvals" className={navClass}><Icon name="check" />最终审批</NavLink>
           <NavLink to="/" end className={navClass}>
             <Icon name="grid" />
             概览
@@ -98,9 +98,9 @@ export function AppShell() {
             {health.isError ? '服务不可达' : health.data?.status === 'ok' ? '服务正常 · 全局串行' : '检查中'}
           </div>
           <div className="user">
-            <span className="avatar">K</span>
+            <span className="avatar">操</span>
             <div>
-              <div style={{ color: '#cbd5e1', fontSize: 12 }}>kirby</div>
+              <div style={{ color: '#cbd5e1', fontSize: 12 }}>当前工作台</div>
               <div style={{ color: '#64748b', fontSize: 10 }}>默认操作人</div>
             </div>
           </div>
@@ -124,12 +124,6 @@ export function AppShell() {
                 style={{ border: 0, outline: 0, background: 'transparent', flex: 1, minWidth: 0, color: 'inherit' }}
               />
             </form>
-            <button className="btn ghost" aria-label="通知" style={{ padding: 4 }}>
-              <Icon name="bell" size={18} />
-            </button>
-            <span className="avatar" style={{ width: 28, height: 28, borderRadius: '50%', background: '#f1f5f9', display: 'grid', placeItems: 'center', fontSize: 11 }}>
-              K
-            </span>
           </div>
         </header>
         <main className="page">

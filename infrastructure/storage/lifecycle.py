@@ -166,7 +166,18 @@ class LifecycleStore:
                 "heartbeat_at": now.isoformat(),
             }
 
-        self._database(run_id).update("", "lifecycle", transform)
+        from infrastructure.storage.execution_scope import execution_scope
+        with execution_scope(self.root.parent) as connection:
+            row = connection.execute("SELECT run_id,expires_at FROM execution_scope WHERE scope='global'").fetchone()
+            if row and row[0] != run_id and row[1] > now.isoformat():
+                return False
+            self._database(run_id).update("", "lifecycle", transform)
+            if claimed:
+                connection.execute(
+                    "INSERT INTO execution_scope VALUES('global',?,?,?) ON CONFLICT(scope) DO UPDATE SET "
+                    "run_id=excluded.run_id,token=excluded.token,expires_at=excluded.expires_at",
+                    (run_id, lease_token, expires.isoformat()),
+                )
         return claimed
 
     def heartbeat_worker_lease(
@@ -204,7 +215,14 @@ class LifecycleStore:
                 "worker_active": True,
             }
 
-        self._database(run_id).update("", "lifecycle", transform)
+        from infrastructure.storage.execution_scope import execution_scope
+        with execution_scope(self.root.parent) as connection:
+            row = connection.execute("SELECT run_id,token FROM execution_scope WHERE scope='global'").fetchone()
+            if not row or tuple(row) != (run_id, lease_token):
+                return False
+            self._database(run_id).update("", "lifecycle", transform)
+            if renewed:
+                connection.execute("UPDATE execution_scope SET expires_at=? WHERE scope='global'", (expires.isoformat(),))
         return renewed
 
     def owns_worker_lease(
@@ -249,7 +267,12 @@ class LifecycleStore:
                 "worker_lease_released_at": _now(),
             }
 
-        self._database(run_id).update("", "lifecycle", transform)
+        from infrastructure.storage.execution_scope import execution_scope
+        with execution_scope(self.root.parent) as connection:
+            self._database(run_id).update("", "lifecycle", transform)
+            if released:
+                connection.execute("DELETE FROM execution_scope WHERE scope='global' AND run_id=? AND token=?",
+                                   (run_id, lease_token))
         return released
 
     def _database(self, run_id: str) -> RecordDatabase:

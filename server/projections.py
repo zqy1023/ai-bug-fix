@@ -47,9 +47,9 @@ def task_counts(tasks: list[dict[str, Any]], run_steps: list[dict[str, Any]]) ->
         "tasks_failed": categories.count("failed"), "tasks_manual": 0,
         "tasks_blocked": 0, "tasks_waiting_approval": 0,
         "tasks_pending": categories.count("pending"), "tasks_running": categories.count("active"),
-        "tasks_skipped": categories.count("skipped"), "tasks_cancelled": 0,
+        "tasks_skipped": categories.count("skipped"), "tasks_cancelled": categories.count("cancelled"),
         "tasks_inactive": categories.count("skipped"),
-        "tasks_completed": sum(categories.count(key) for key in ("changed_delivered", "unchanged_delivered", "failed", "skipped")),
+        "tasks_completed": sum(categories.count(key) for key in ("changed_delivered", "unchanged_delivered", "failed", "skipped", "cancelled")),
         "steps_total": len(run_steps) + sum(len(task.get("steps") or []) for task in tasks),
     }
 

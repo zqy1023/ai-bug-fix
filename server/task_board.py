@@ -3,11 +3,13 @@
 from typing import Any
 from core.task_outcome import task_outcome
 
-CATEGORIES = ("pending", "active", "paused", "changed_delivered", "unchanged_delivered", "skipped", "failed")
+CATEGORIES = ("pending", "active", "paused", "changed_delivered", "unchanged_delivered", "skipped", "failed", "cancelled")
 
 
 def task_category(task: dict[str, Any]) -> str:
     """任务类别与任务详情使用同一终态归约，不把审查 MANUAL 当任务状态。"""
+    if str((task.get("lifecycle") or {}).get("status") or task.get("status") or "").lower() == "cancelled":
+        return "cancelled"
     outcome = task_outcome(task)
     return {"PENDING": "pending", "RUNNING": "active"}.get(outcome, outcome.lower())
 

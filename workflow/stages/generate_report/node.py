@@ -254,6 +254,9 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
             )
         # 交付面副本与后续 task_summary 都使用脱敏后的报告；内部审计产物不动。
         repair_report = _delivery_report(repair_report)
+        approval = store.database(ctx.run.run_id).get(data.task_id, "final_approval") if store is not None else None
+        supersedes = (str(approval.get("commit") or "") if approval and approval.get("status") == "rejected"
+                      and approval.get("branch") == data.repair_branch else "")
         result = ctx.services.delivery.deliver(
             {
                 "run_id": ctx.run.run_id,
@@ -261,6 +264,7 @@ def run(ctx: StepContext, data: DeliveryInput) -> DeliveryOutput:
                 "task_id": data.task_id,
                 "repair_report": repair_report,
                 "delivery_receipt": receipt,
+                "supersedes_commit": supersedes,
                 "persist_delivery": persist_delivery,
                 "carrier": data.carrier,
                 "repair_branch": data.repair_branch,

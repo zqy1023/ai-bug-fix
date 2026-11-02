@@ -1,0 +1,7 @@
+{
+  "approved": true,
+  "manual_merge": true,
+  "actual_diff_visible": true,
+  "browser_errors": [],
+  "scope": "隔离真实API与前端；无外部模型/Git/承运商调用"
+}

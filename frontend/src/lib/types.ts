@@ -267,7 +267,7 @@ export interface OriginalProblemLog {
 
 export interface TaskDetailResponse {
   read_only?: boolean;
-  actions?: { retry: ActionAvailability };
+  actions?: { retry: ActionAvailability; close?: ActionAvailability };
   delivery?: DeliveryView;
   run_id: string;
   run_status: RunStatus;
