@@ -1,0 +1,60 @@
+name: workflow-governance-ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, refactor/workflow-governance-batch]
+
+permissions:
+  contents: read
+
+jobs:
+  backend-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          grep -v '^yq_common @' requirements.txt > /tmp/requirements-ci.txt
+          python -m pip install -r /tmp/requirements-ci.txt pytest
+      - name: Compile backend modules
+        run: python -m compileall -q server core infrastructure workflow agents
+      - name: Run lifecycle and execution-control regressions
+        run: |
+          python -m pytest -q \
+            tests/test_lifecycle_worker_lease.py \
+            tests/test_retry_report_archival.py \
+            tests/test_server_service_consolidation.py \
+            tests/test_step_retry_lifecycle.py \
+            tests/test_cancel_stop.py \
+            tests/test_worker_timeout_settlement.py
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install backend dependencies required by contract generation
+        run: |
+          grep -v '^yq_common @' requirements.txt > /tmp/requirements-ci.txt
+          python -m pip install -r /tmp/requirements-ci.txt
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+      - name: Build frontend
+        working-directory: frontend
+        run: pnpm build

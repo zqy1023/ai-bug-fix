@@ -511,22 +511,19 @@ def v1_retry_run(run_id: str, background: BackgroundTasks, _: None = Depends(_au
         lock = _run_lock(run_id)
     if not lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="该 Run 仍被后台工作线程占用，状态正在收敛")
+    worker_lease: tuple[str, str] | None = None
 
     try:
+        worker_lease = _claim_worker_lease(run_id)
         checkpoint = detail.get("checkpoint") if isinstance(detail.get("checkpoint"), dict) else {}
         run_meta = store.load_run(run_id)
         if checkpoint.get("resumable"):
             mode = "resume"
             worker = _resume_workflow_background
-            # 与 restart 模式同口径：请求即把上一轮失败的报告与生命周期错误
-            # 移出当前视图。这里归档而不是删除——恢复失败时
-            # _record_background_failure 仍要读回上一轮的任务明细，不能因为
-            # 一次失败的重试把历史报告清空。
-            reports = store.run_dir(run_id) / "reports"
-            for name in ("run_failure.json", "final.json"):
-                previous = reports / name
-                if previous.is_file():
-                    previous.replace(reports / f"{name}.retry_previous")
+            # Run/Task 报告统一归档：当前视图立即清空，失败兜底仍保留
+            # final.json.retry_previous 中的上一轮任务明细。
+            from infrastructure.storage.reports import archive_retry_reports
+            archive_retry_reports(store, run_id)
             LifecycleStore(store.root).update_run(
                 run_id, status="retrying", phase="retry_queued", current_step="",
                 error={}, error_type="", error_message="", terminal_reason="",
@@ -552,9 +549,8 @@ def v1_retry_run(run_id: str, background: BackgroundTasks, _: None = Depends(_au
             temporary = run_json.with_name("run.json.retry.tmp")
             temporary.write_text(json.dumps(run_meta, ensure_ascii=False, indent=2), encoding="utf-8")
             temporary.replace(run_json)
-            reports = store.run_dir(run_id) / "reports"
-            (reports / "run_failure.json").unlink(missing_ok=True)
-            (reports / "final.json").unlink(missing_ok=True)
+            from infrastructure.storage.reports import archive_retry_reports
+            archive_retry_reports(store, run_id)
             LifecycleStore(store.root).update_run(
                 run_id, status="queued", phase="retry_queued", current_step="",
                 started_at=None, finished_at=None, error={},
@@ -576,13 +572,15 @@ def v1_retry_run(run_id: str, background: BackgroundTasks, _: None = Depends(_au
             connection.close()
         _audit_control(run_id, "", "run.retry_requested", "api", f"mode={mode}")
     except Exception:
+        if worker_lease is not None:
+            _release_worker_lease(run_id, worker_lease)
         lock.release()
         raise
 
     if mode == "resume":
-        background.add_task(_resume_workflow_background, run_id, lock)
+        background.add_task(_resume_workflow_background, run_id, lock, None, worker_lease)
     else:
-        background.add_task(worker, run_id, overrides, lock)
+        background.add_task(worker, run_id, overrides, lock, worker_lease)
     return {
         "run_id": run_id,
         "status": "retry_requested",
@@ -601,12 +599,16 @@ def v1_resume_run(run_id: str, background: BackgroundTasks, _: None = Depends(_a
         raise HTTPException(status_code=409, detail="该执行正在进行其他控制操作")
 
     # 检查点和状态必须在取得执行锁后重新读取，避免并发控制请求在校验后改变状态。
+    worker_lease: tuple[str, str] | None = None
     try:
         detail = _v1_detail(run_id)
         # 本控制操作持有的锁也会被投影算作 worker_active，暂停标记此时可能
         # 显示为 pause_requested；锁已保证没有另一个后台执行器，仍可恢复。
         if detail["status"] not in {"running", "queued", "paused", "pause_requested", "failed"} or not detail["checkpoint"]["resumable"]:
             raise HTTPException(status_code=409, detail="执行当前没有可恢复的 checkpoint")
+        worker_lease = _claim_worker_lease(run_id)
+        from infrastructure.storage.reports import archive_retry_reports
+        archive_retry_reports(_store(), run_id)
         connection = _control_db()
         try:
             connection.execute(
@@ -618,16 +620,20 @@ def v1_resume_run(run_id: str, background: BackgroundTasks, _: None = Depends(_a
         finally:
             connection.close()
     except Exception:
+        if worker_lease is not None:
+            _release_worker_lease(run_id, worker_lease)
         lock.release()
         raise
 
     try:
         _audit_control(run_id, "", "run.resume_requested", "api")
     except Exception:
+        if worker_lease is not None:
+            _release_worker_lease(run_id, worker_lease)
         lock.release()
         logger.exception("写入恢复操作审计失败 run_id=%s", run_id)
         raise HTTPException(status_code=503, detail="恢复未提交：写入控制审计失败")
-    background.add_task(_resume_workflow_background, run_id, lock)
+    background.add_task(_resume_workflow_background, run_id, lock, None, worker_lease)
     return {"run_id": run_id, "status": "resume_requested", "message": "已提交检查点恢复；请观察运行状态变化"}
 
 
@@ -641,14 +647,22 @@ def v1_cancel_run(
         raise HTTPException(status_code=409, detail="执行当前不是可请求停止的状态")
     # 已经挂起的 interrupt 不会自行观察取消标志；恢复检查点让它进入取消收尾。
     paused_lock = None
+    cancel_lease: tuple[str, str] | None = None
     if detail["status"] == "paused":
         with _RUN_LOCKS_GUARD:
             paused_lock = _run_lock(run_id)
         if not paused_lock.acquire(blocking=False):
             raise HTTPException(status_code=409, detail="执行正在恢复或仍未完全暂停，请稍后重试")
+        try:
+            cancel_lease = _claim_worker_lease(run_id)
+        except Exception:
+            paused_lock.release()
+            raise
     try:
         connection = _control_db()
     except Exception:
+        if cancel_lease is not None:
+            _release_worker_lease(run_id, cancel_lease)
         if paused_lock is not None:
             paused_lock.release()
         raise
@@ -660,13 +674,15 @@ def v1_cancel_run(
         )
         connection.commit()
     except Exception:
+        if cancel_lease is not None:
+            _release_worker_lease(run_id, cancel_lease)
         if paused_lock is not None:
             paused_lock.release()
         raise
     finally:
         connection.close()
     if paused_lock is not None:
-        background.add_task(_resume_workflow_background, run_id, paused_lock)
+        background.add_task(_resume_workflow_background, run_id, paused_lock, None, cancel_lease)
     try:
         _audit_control(run_id, "", "run.cancel_requested", "api")
     except Exception:

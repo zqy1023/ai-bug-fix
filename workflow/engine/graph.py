@@ -52,6 +52,7 @@ from infrastructure.git.source import (
 from infrastructure.llm.config import RuntimeConfig, load_config, workflow_recursion_limit
 from infrastructure.llm.runtime import close_sessions
 from infrastructure.storage.policy import debug_artifacts
+from infrastructure.storage.lifecycle import LifecycleStore, WorkerLeaseLost
 from infrastructure.storage.sqlite import open_sqlite
 from infrastructure.storage.redaction import public_exception
 from infrastructure.storage.run_control import cancellation_requested, pause_requested
@@ -196,12 +197,28 @@ def build_agent_node(
     else:
         raise PluginError(f"未注册的 Agent 子图: {kind}")
 
-    model_node = _agent_node(spec, build(runtime), store)
+    model_node = _agent_node(spec, build(runtime), store, services)
     return model_node
 
 
+def _assert_agent_lease(
+    services: WorkflowServices | None, store: RecordStore, run_id: str, step_name: str,
+) -> None:
+    if services is None:
+        return
+    owner_id = str(services.metadata.get("worker_lease_owner") or "")
+    lease_token = str(services.metadata.get("worker_lease_token") or "")
+    if not owner_id and not lease_token:
+        return
+    if not owner_id or not lease_token or not LifecycleStore(store.root).owns_worker_lease(
+        run_id, owner_id=owner_id, lease_token=lease_token,
+    ):
+        raise WorkerLeaseLost(f"Run worker lease lost in Agent node: {step_name}")
+
+
 def _agent_node(
-    spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore
+    spec: AgentSpec, graph: CompiledStateGraph, store: RecordStore,
+    services: WorkflowServices | None = None,
 ) -> Callable[..., Any]:
     kind = spec.kind
     view_model = spec.output_model
@@ -210,6 +227,7 @@ def _agent_node(
     def node(state: dict[str, Any]) -> dict[str, Any]:
         run_id = str(state.get("run_id") or "")
         task_id = str(state.get("task_id") or "")
+        _assert_agent_lease(services, store, run_id, spec.name)
         if pause_requested(store.root, run_id) and not state.get("_single_step"):
             waiting = StepRecord(
                 name=spec.name,
@@ -287,7 +305,10 @@ def _agent_node(
                     "source_project_path": str(state.get("source_project_path") or ""),
                     "agent_policy": dict(state.get("agent_policy") or {}),
                 }
+        except WorkerLeaseLost:
+            raise
         except Exception as error:
+            _assert_agent_lease(services, store, run_id, spec.name)
             record = StepRecord(
                 name=spec.name,
                 title=spec.title,
@@ -338,6 +359,7 @@ def _agent_node(
         )
         refs: list[ArtifactRef] = []
         try:
+            _assert_agent_lease(services, store, run_id, spec.name)
             store.save(
                 run_id,
                 record,
@@ -346,6 +368,7 @@ def _agent_node(
                 output_view=spec.output_record,
             )
             final = graph.invoke(graph_input)
+            _assert_agent_lease(services, store, run_id, spec.name)
             reproduction = (final.get("_audit") or {}).get("reproduction")
             if kind == "unified_fixer" and reproduction:
                 refs.append(ArtifactRef(name="request_reproduction", path=store.write_artifact(
@@ -442,7 +465,10 @@ def _agent_node(
                     )
                 )
             record.artifacts = list(refs)
+        except WorkerLeaseLost:
+            raise
         except Exception as error:
+            _assert_agent_lease(services, store, run_id, spec.name)
             record.status = "failed"
             record.result = None
             record.output = {"failure_reason": public_exception(error, prefix="Agent 执行异常")}
@@ -485,6 +511,7 @@ def _agent_node(
         record.execution, record.assessment = formal.execution, formal.assessment
         if formal.execution.status == "failed":
             record.status = "failed"
+        _assert_agent_lease(services, store, run_id, spec.name)
         store.save(
             run_id,
             record,
@@ -817,6 +844,35 @@ def _compose_phase(
     return node
 
 
+def _guard_worker_lease(
+    name: str,
+    node: Callable[..., Any],
+    store: RecordStore,
+    services: WorkflowServices,
+) -> Callable[..., Any]:
+    """在每个图节点前后校验 worker fencing token，拒绝失去租约的旧执行者。"""
+    owner_id = str(services.metadata.get("worker_lease_owner") or "")
+    lease_token = str(services.metadata.get("worker_lease_token") or "")
+    if not owner_id or not lease_token:
+        return node
+
+    def guarded(state: dict[str, Any]) -> dict[str, Any]:
+        run_id = str(state.get("run_id") or "")
+        if not run_id or not LifecycleStore(store.root).owns_worker_lease(
+            run_id, owner_id=owner_id, lease_token=lease_token,
+        ):
+            raise WorkerLeaseLost(f"Run worker lease lost before node: {name}")
+        result = node(state)
+        if not LifecycleStore(store.root).owns_worker_lease(
+            run_id, owner_id=owner_id, lease_token=lease_token,
+        ):
+            raise WorkerLeaseLost(f"Run worker lease lost after node: {name}")
+        return result
+
+    guarded.__name__ = name
+    return guarded
+
+
 def build_nodes(
     store: RecordStore,
     services: WorkflowServices,
@@ -834,9 +890,18 @@ def build_nodes(
     for agent in registered_agents():
         nodes[agent.name] = build_agent_node(agent, store, overrides.get(agent.kind), services=services)
 
+    # 所有基础节点统一套用 fencing；组合阶段内部的子步骤也会经过同一守卫。
+    nodes = {
+        name: _guard_worker_lease(name, node, store, services)
+        for name, node in nodes.items()
+    }
     for phase_name, step_names in PHASE_COMPOSITIONS.items():
-        nodes[phase_name] = _compose_phase(step_names, nodes, store=store)
-    nodes[SOURCE_SYNC] = _source_sync_node(config or load_config(), store)
+        nodes[phase_name] = _guard_worker_lease(
+            phase_name, _compose_phase(step_names, nodes, store=store), store, services,
+        )
+    nodes[SOURCE_SYNC] = _guard_worker_lease(
+        SOURCE_SYNC, _source_sync_node(config or load_config(), store), store, services,
+    )
     return nodes
 
 
@@ -1410,6 +1475,7 @@ def run_workflow(
     *,
     overrides: dict[str, Any] | None = None,
     prepared: bool = False,
+    worker_lease: tuple[str, str] | None = None,
 ) -> dict[str, Any]:
     """执行一次完整工作流。"""
     resolved, config, store = prepare_run(
@@ -1417,9 +1483,15 @@ def run_workflow(
     )
     try:
         source_repo = config.source_repo
+        services = build_services(config=config, source_repo=source_repo)
+        if worker_lease:
+            services.metadata.update({
+                "worker_lease_owner": worker_lease[0],
+                "worker_lease_token": worker_lease[1],
+            })
         graph = build_graph(
             store=store,
-            services=build_services(config=config, source_repo=source_repo),
+            services=services,
             config=config,
         )
         final_state = graph.invoke(
@@ -1449,13 +1521,25 @@ def run_workflow(
                 ),
             },
         )
+        if worker_lease and not LifecycleStore(store.root).owns_worker_lease(
+            resolved, owner_id=worker_lease[0], lease_token=worker_lease[1],
+        ):
+            raise WorkerLeaseLost(f"Run lease lost before report generation: {resolved}")
         _write_run_report_if_terminal(store, resolved, graph, final_state=final_state)
         return final_state
+    except WorkerLeaseLost:
+        # 租约失效的旧 worker 不得生成失败报告或关闭继任 worker 的会话。
+        raise
     except Exception as exc:
+        if worker_lease and not LifecycleStore(store.root).owns_worker_lease(
+            resolved, owner_id=worker_lease[0], lease_token=worker_lease[1],
+        ):
+            raise WorkerLeaseLost(f"Run lease lost while handling failure: {resolved}") from exc
         _write_run_report(store, resolved, error=exc)
         raise
     finally:
-        close_sessions(resolved, None)
+        if worker_lease is None:
+            close_sessions(resolved, None)
 
 
 def _uncaught_reason(error: BaseException) -> str:

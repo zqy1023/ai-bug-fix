@@ -13,7 +13,9 @@ from fastapi import BackgroundTasks, HTTPException
 
 from core.contracts import StepError
 from core.policy import legacy_analysis_required
-from infrastructure.storage.lifecycle import LifecycleStore
+from infrastructure.storage.lifecycle import (
+    LifecycleStore, WorkerLeaseBusy, WorkerLeaseLost, start_worker_lease_heartbeat,
+)
 from infrastructure.storage.store import RecordStore
 from infrastructure.storage.redaction import public_exception
 from core.policy import AgentPolicy
@@ -32,38 +34,68 @@ from server.control_store import _audit_control, _control_db
 
 logger = logging.getLogger("server.lifecycle")
 
-def _start_lifecycle_heartbeat(run_id: str) -> tuple[threading.Event, threading.Thread]:
-    """Keep an explicit lease while a worker owns the run lock, including long Agent calls."""
+def _start_lifecycle_heartbeat(
+    run_id: str, owner_id: str, lease_token: str, *, claim: bool = True,
+) -> tuple[threading.Event, threading.Thread]:
+    """原子获取跨进程租约后启动心跳；进程内锁不再承担跨进程互斥职责。"""
     store = _store()
     lifecycle = LifecycleStore(store.root)
-    stop = threading.Event()
+    if claim:
+        if not lifecycle.claim_worker_lease(
+            run_id, owner_id=owner_id, lease_token=lease_token, ttl_seconds=300,
+        ):
+            raise WorkerLeaseBusy(f"Run 已由其它 worker 持有有效租约: {run_id}")
+    elif not lifecycle.owns_worker_lease(
+        run_id, owner_id=owner_id, lease_token=lease_token,
+    ):
+        raise WorkerLeaseLost(f"预先获取的 Run 租约已过期或被替换: {run_id}")
+    return start_worker_lease_heartbeat(
+        lifecycle, run_id, owner_id=owner_id, lease_token=lease_token,
+        interval_seconds=5, ttl_seconds=30,
+    )
 
-    def pulse() -> None:
-        while not stop.wait(5):
-            try:
-                lifecycle.update_run(run_id, heartbeat_at=datetime.now(timezone.utc).isoformat(), worker_active=True)
-            except Exception:
-                logger.exception("更新运行心跳失败 run_id=%s", run_id)
 
-    thread = threading.Thread(target=pulse, name=f"run-heartbeat-{run_id}", daemon=True)
-    thread.start()
-    return stop, thread
+def _claim_worker_lease(run_id: str, *, ttl_seconds: int = 300) -> tuple[str, str]:
+    owner_id = f"{settings.service_name}:control:{uuid.uuid4().hex[:12]}"
+    lease_token = uuid.uuid4().hex
+    if not LifecycleStore(_store().root).claim_worker_lease(
+        run_id, owner_id=owner_id, lease_token=lease_token, ttl_seconds=ttl_seconds,
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "RUN_LEASE_BUSY", "message": f"Run 已由其它 worker 持有有效租约: {run_id}"},
+        )
+    return owner_id, lease_token
 
-def _clear_worker_active(run_id: str) -> None:
-    """清理 Run 的活动租约。
 
-    与工作区回收解耦：生命周期写入失败重试一次，仍然失败只记录日志，
-    后续工作区回收照常执行，不能因为一个字段写不进去就跳过清理。
-    """
+def _release_worker_lease(run_id: str, lease: tuple[str, str]) -> bool:
+    return LifecycleStore(_store().root).release_worker_lease(
+        run_id, owner_id=lease[0], lease_token=lease[1],
+    )
+
+
+def _owns_worker_lease(run_id: str, owner_id: str, lease_token: str) -> bool:
+    return LifecycleStore(_store().root).owns_worker_lease(
+        run_id, owner_id=owner_id, lease_token=lease_token,
+    )
+
+
+def _clear_worker_active(run_id: str, owner_id: str, lease_token: str) -> bool:
+    """仅释放当前 worker 自己的租约，旧 worker 不得清除新持有者状态。"""
     for attempt in range(2):
         try:
-            LifecycleStore(_store().root).update_run(run_id, worker_active=False)
-            return
+            released = LifecycleStore(_store().root).release_worker_lease(
+                run_id, owner_id=owner_id, lease_token=lease_token,
+            )
+            if not released:
+                logger.warning("Run 租约已变更，跳过旧 worker 清理 run_id=%s", run_id)
+            return released
         except Exception:
             logger.exception(
                 "清理 Run 活动租约失败 run_id=%s attempt=%s",
                 run_id, attempt + 1,
             )
+    return False
 
 def _complete_run_lifecycle(run_id: str, store: RecordStore) -> None:
     """Settle the run only after graph.invoke has returned; waiting interrupts are not failures."""
@@ -145,7 +177,7 @@ def _settle_task_lifecycles_after_run_failure(
         task_id = slot["task_id"]
         state = lifecycle.read_task(run_id, task_id)
         status = str(state.get("status") or "")
-        if phase in {"approval_recovery", "worker_timeout"} and status == "waiting_approval":
+        if phase == "approval_recovery" and status == "waiting_approval":
             continue
         if status in {"succeeded", "partial_failed", "failed", "cancelled", "manual", "skipped", "blocked"}:
             continue
@@ -155,7 +187,9 @@ def _settle_task_lifecycles_after_run_failure(
             store.complete_task(run_id, task_id)
             continue
         for record in records:
-            if record.status == "running":
+            if record.status == "running" or (
+                phase == "worker_timeout" and record.status == "waiting"
+            ):
                 finished = datetime.now(timezone.utc)
                 started = _parse_time(record.started_at)
                 record.status = "failed"
@@ -287,7 +321,8 @@ def _record_background_failure(
         logger.exception("无法写入后台失败报告 run_id=%s", run_id)
 
 def _run_workflow_background_v1(
-    run_id: str, overrides: dict[str, Any], run_lock: Any = None
+    run_id: str, overrides: dict[str, Any], run_lock: Any = None,
+    worker_lease: tuple[str, str] | None = None,
 ) -> None:
     from workflow.engine.graph import run_workflow
     if run_lock is None:
@@ -298,33 +333,49 @@ def _run_workflow_background_v1(
             return
     heartbeat_stop: threading.Event | None = None
     heartbeat_thread: threading.Thread | None = None
+    lease_owner, lease_token = worker_lease or (
+        f"{settings.service_name}:{uuid.uuid4().hex[:12]}", uuid.uuid4().hex,
+    )
+    lease_acquired = False
     try:
         store = _store()
+        heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(
+            run_id, lease_owner, lease_token, claim=worker_lease is None,
+        )
+        lease_acquired = True
         LifecycleStore(store.root).update_run(
-            run_id, status="running", phase="workflow_startup", current_step="", error={}, worker_active=True,
+            run_id, status="running", phase="workflow_startup", current_step="", error={},
             allow_reactivate=True,
         )
-        heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(run_id)
-        run_workflow(run_id, overrides=overrides, prepared=True)
+        run_workflow(run_id, overrides=overrides, prepared=True, worker_lease=(lease_owner, lease_token))
+        if not _owns_worker_lease(run_id, lease_owner, lease_token):
+            raise WorkerLeaseLost(f"Run lease lost before lifecycle settlement: {run_id}")
         _complete_run_lifecycle(run_id, store)
+    except WorkerLeaseBusy as exc:
+        logger.warning("%s", exc)
+    except WorkerLeaseLost as exc:
+        logger.warning("旧 worker 已失去执行权，放弃后续状态收敛 run_id=%s error=%s", run_id, exc)
     except Exception as exc:
-        logger.exception("工作流后台执行失败 run_id=%s", run_id)
-        _record_background_failure(run_id, exc)
+        if lease_acquired and not _owns_worker_lease(run_id, lease_owner, lease_token):
+            logger.warning("worker 已失去 Run 所有权，忽略迟到异常 run_id=%s", run_id)
+        else:
+            logger.exception("工作流后台执行失败 run_id=%s", run_id)
+            _record_background_failure(run_id, exc)
     finally:
         if heartbeat_stop is not None:
             heartbeat_stop.set()
         if heartbeat_thread is not None:
             heartbeat_thread.join(timeout=1)
-        from infrastructure.llm.runtime import close_sessions
-        close_sessions(run_id)
-        _clear_worker_active(run_id)
-        try:
-            from infrastructure.workspace.workspace_gc import (
-                collect_configured_workspaces,
-            )
-            collect_configured_workspaces(_config())
-        except Exception:
-            logger.exception("回收配置工作区失败 run_id=%s", run_id)
+        if lease_acquired and _clear_worker_active(run_id, lease_owner, lease_token):
+            from infrastructure.llm.runtime import close_sessions
+            close_sessions(run_id)
+            try:
+                from infrastructure.workspace.workspace_gc import (
+                    collect_configured_workspaces,
+                )
+                collect_configured_workspaces(_config())
+            except Exception:
+                logger.exception("回收配置工作区失败 run_id=%s", run_id)
         run_lock.release()
         with _RUN_LOCKS_GUARD:
             _STARTED_RUNS.discard(run_id)
@@ -333,6 +384,7 @@ def _resume_workflow_background(
     run_id: str,
     run_lock: Any = None,
     resume_payload: dict[str, Any] | None = None,
+    worker_lease: tuple[str, str] | None = None,
 ) -> None:
     if run_lock is None:
         with _RUN_LOCKS_GUARD:
@@ -342,27 +394,36 @@ def _resume_workflow_background(
             return
     heartbeat_stop: threading.Event | None = None
     heartbeat_thread: threading.Thread | None = None
+    lease_owner, lease_token = worker_lease or (
+        f"{settings.service_name}:{uuid.uuid4().hex[:12]}", uuid.uuid4().hex,
+    )
+    lease_acquired = False
     try:
         from infrastructure.llm.config import load_config, workflow_recursion_limit
         from workflow.engine.graph import build_graph, build_services
 
         store = _store()
+        heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(
+            run_id, lease_owner, lease_token, claim=worker_lease is None,
+        )
+        lease_acquired = True
         LifecycleStore(store.root).update_run(
-            run_id, status="running", phase="workflow_resume", current_step="", error={}, worker_active=True,
+            run_id, status="running", phase="workflow_resume", current_step="", error={},
             terminal_reason="", error_type="", error_message="", next_action="",
             allow_reactivate=True,
         )
-        heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(run_id)
         runtime_config = load_config()
         # 恢复时让 checkpoint 指向的 sync_source_repo 节点执行；
         # 不能在 graph.invoke 之前再次同步，否则原生重试仍然无法接管。
         source_repo = runtime_config.source_repo
+        services = build_services(config=runtime_config, source_repo=source_repo)
+        services.metadata.update({
+            "worker_lease_owner": lease_owner,
+            "worker_lease_token": lease_token,
+        })
         graph = build_graph(
             store=store,
-            services=build_services(
-                config=runtime_config,
-                source_repo=source_repo,
-            ),
+            services=services,
             config=runtime_config,
         )
         loader = getattr(store, "load_run", None)
@@ -386,7 +447,7 @@ def _resume_workflow_background(
             task_id = str(resume_payload.get("task_id") or "")
             detached = bool(task_id) and resume_task_approval(
                 store, run_id, task_id, resume_payload, runtime_config,
-                build_services(config=runtime_config, source_repo=source_repo),
+                services,
             )
             # 嵌套任务子图的 interrupt 在部分 LangGraph 版本中不一定完整暴露在父快照的
             # task.interrupts 上。审批接口已校验当前任务处于待决状态且持有 run 锁，因此
@@ -409,6 +470,10 @@ def _resume_workflow_background(
             from workflow.engine.routes import assert_workflow_version
             assert_workflow_version(_store().load_run(run_id))
             final_state = graph.invoke(None, config=config)
+        if not _owns_worker_lease(run_id, lease_owner, lease_token):
+            raise WorkerLeaseLost(f"Run lease lost before resume settlement: {run_id}")
+        if not _owns_worker_lease(run_id, lease_owner, lease_token):
+            raise WorkerLeaseLost(f"Run lease lost before resume settlement: {run_id}")
         # 本次恢复已成功推进 checkpoint；清理之前后台异常写入的失败标记，避免 UI 继续把已恢复运行判为 FAILED。
         failure_path = store.run_dir(run_id) / "reports" / "run_failure.json"
         if failure_path.is_file():
@@ -428,25 +493,32 @@ def _resume_workflow_background(
         _complete_run_lifecycle(run_id, store)
         if (store.run_dir(run_id) / "reports" / "final.json").is_file():
             _discard_retry_archive(store, run_id)
+    except WorkerLeaseBusy as exc:
+        logger.warning("%s", exc)
+    except WorkerLeaseLost as exc:
+        logger.warning("旧 worker 已失去执行权，放弃后续状态收敛 run_id=%s error=%s", run_id, exc)
     except Exception as exc:
-        logger.exception("恢复工作流失败 run_id=%s", run_id)
-        phase = "approval_recovery" if resume_payload is not None else "workflow_resume"
-        _record_background_failure(run_id, exc, phase=phase)
+        if lease_acquired and not _owns_worker_lease(run_id, lease_owner, lease_token):
+            logger.warning("恢复 worker 已失去 Run 所有权，忽略迟到异常 run_id=%s", run_id)
+        else:
+            logger.exception("恢复工作流失败 run_id=%s", run_id)
+            phase = "approval_recovery" if resume_payload is not None else "workflow_resume"
+            _record_background_failure(run_id, exc, phase=phase)
     finally:
-        from infrastructure.llm.runtime import close_sessions
-        close_sessions(run_id)
         if heartbeat_stop is not None:
             heartbeat_stop.set()
         if heartbeat_thread is not None:
             heartbeat_thread.join(timeout=1)
-        _clear_worker_active(run_id)
-        try:
-            from infrastructure.workspace.workspace_gc import (
-                collect_configured_workspaces,
-            )
-            collect_configured_workspaces(_config())
-        except Exception:
-            logger.exception("回收恢复 Run 的工作区失败 run_id=%s", run_id)
+        if lease_acquired and _clear_worker_active(run_id, lease_owner, lease_token):
+            from infrastructure.llm.runtime import close_sessions
+            close_sessions(run_id)
+            try:
+                from infrastructure.workspace.workspace_gc import (
+                    collect_configured_workspaces,
+                )
+                collect_configured_workspaces(_config())
+            except Exception:
+                logger.exception("回收恢复 Run 的工作区失败 run_id=%s", run_id)
         run_lock.release()
 
 def _reinvestigate_task(run_id: str, task_id: str, background: BackgroundTasks) -> dict[str, Any]:

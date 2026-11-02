@@ -42,7 +42,9 @@ from core.contracts import (
 )
 from core.errors import StepFailed
 from infrastructure.llm.runtime import close_sessions
-from infrastructure.storage.lifecycle import LifecycleStore
+from infrastructure.storage.lifecycle import (
+    LifecycleStore, WorkerLeaseBusy, WorkerLeaseLost, start_worker_lease_heartbeat,
+)
 from infrastructure.storage.redaction import public_exception
 from infrastructure.storage.run_control import cancellation_requested, pause_requested
 from infrastructure.storage.store import RecordStore
@@ -350,6 +352,21 @@ def reset() -> None:
 # 5. 步骤执行与节点绑定引擎 (Stage Runner & Node Binding)
 # ---------------------------------------------------------------------------
 
+def _assert_worker_lease(services: WorkflowServices, store: RecordStore, run_id: str, step_name: str) -> None:
+    owner_id = str(services.metadata.get("worker_lease_owner") or "")
+    lease_token = str(services.metadata.get("worker_lease_token") or "")
+    if not owner_id and not lease_token:
+        return
+    if not owner_id or not lease_token:
+        raise WorkerLeaseLost(f"{step_name}: worker lease identity is incomplete")
+    from infrastructure.storage.lifecycle import LifecycleStore
+
+    if not LifecycleStore(store.root).owns_worker_lease(
+        run_id, owner_id=owner_id, lease_token=lease_token,
+    ):
+        raise WorkerLeaseLost(f"{step_name}: worker lease lost")
+
+
 def run_stage(
     spec: StepSpec,
     store: RecordStore,
@@ -367,6 +384,7 @@ def run_stage(
     if spec.task_level and not task_id:
         raise StepFailed(f"{spec.name} 缺少真实 task_id，拒绝生成调试身份")
 
+    _assert_worker_lease(services, store, run_id, spec.name)
     started = time.perf_counter()
     previous_record = store.load(run_id, spec.name, task_id)
     previous_attempt = previous_record.attempt if previous_record else 0
@@ -392,6 +410,7 @@ def run_stage(
             )
         parsed = spec.input_model.model_validate(spec.input_builder(state))
         record.input = dump_model(parsed)
+        _assert_worker_lease(services, run_id, spec.name)
         store.save(run_id, record, task_id, **_views(spec))
         run_context = RunContext(
             run_id=run_id,
@@ -410,8 +429,14 @@ def run_stage(
         )
         output = spec.runner(context, parsed)
         artifacts = context.artifacts
+        _assert_worker_lease(services, run_id, spec.name)
         checked = spec.output_model.model_validate(dump_model(output))
+    except WorkerLeaseLost:
+        raise
     except GraphInterrupt:
+        # Interrupt is still a write: an expired worker must not persist a stale
+        # waiting record over the replacement worker's current step state.
+        _assert_worker_lease(services, store, run_id, spec.name)
         record.status = "waiting"
         record.artifacts = list(artifacts)
         record.finished_at = utc_now()
@@ -419,14 +444,17 @@ def run_stage(
         store.save(run_id, record, task_id, **_views(spec))
         raise
     except StepFailed as error:
+        _assert_worker_lease(services, run_id, spec.name)
         return _save_fail(
             spec, store, state, record, task_id, artifacts, started, error, **_views(spec)
         )
     except (ValidationError, KeyError, ValueError) as error:
+        _assert_worker_lease(services, run_id, spec.name)
         return _save_fail(
             spec, store, state, record, task_id, artifacts, started, StepFailed(str(error)), **_views(spec)
         )
     except Exception as error:
+        _assert_worker_lease(services, run_id, spec.name)
         logger.exception("步骤 %s 执行异常", spec.name)
         reason = public_exception(error, prefix=f"步骤 {spec.name} 执行异常")
         return _save_fail(
@@ -446,6 +474,7 @@ def run_stage(
             **_views(spec),
         )
 
+    _assert_worker_lease(services, run_id, spec.name)
     output_payload = dump_model(checked)
     status, business = map_outcome(
         kind="ok",
@@ -919,6 +948,7 @@ def execute_once(
     confirm_write: bool = False,
     services: WorkflowServices | None = None,
     continuation: bool = False,
+    worker_lease: tuple[str, str] | None = None,
 ) -> tuple[int, StepRecord | None, dict[str, Any]]:
     """同步执行一个步骤或 Agent，返回 (退出码, 步骤记录, 节点结果)。"""
     _require_identity(spec, run_id, task_id)
@@ -948,25 +978,33 @@ def execute_once(
             + 1
         )
 
+    if services is None:
+        from infrastructure.llm.config import load_config
+        from workflow.engine.graph import build_services
+
+        config = load_config()
+        source_repo = config.source_repo
+        if not isinstance(spec, AgentSpec):
+            from infrastructure.git.source import sync_source_repo
+            source_repo = sync_source_repo(config)
+        services = build_services(config=config, source_repo=source_repo)
+    if worker_lease:
+        services.metadata.update({
+            "worker_lease_owner": worker_lease[0],
+            "worker_lease_token": worker_lease[1],
+        })
+
     if isinstance(spec, AgentSpec):
         from workflow.engine.graph import build_agent_node
         node = build_agent_node(spec, store, services=services)
     else:
-        from infrastructure.git.source import sync_source_repo
-        from infrastructure.llm.config import load_config
-        from workflow.engine.graph import build_services
-
-        if services is None:
-            config = load_config()
-            services = build_services(
-                config=config, source_repo=sync_source_repo(config)
-            )
         node = bind(spec, store, services)
 
     try:
         result = node(state)
     finally:
-        close_sessions(run_id, task_id or None)
+        if worker_lease is None:
+            close_sessions(run_id, task_id or None)
     record = store.load(run_id, spec.name, task_id if spec.task_level else "")
     payload = result if isinstance(result, dict) else {}
     return (0 if payload.get("last_result") == "passed" else 1), record, payload
@@ -1054,14 +1092,33 @@ class StepRunner:
 
     def run(self, request: StepRunRequest) -> dict[str, Any]:
         spec = self.validate(request)
-        running = self._mark_running(spec, request)
-        thread = threading.Thread(
-            target=self._execute,
-            args=(spec, request),
-            name=f"step-run-{request.run_id}-{spec.name}",
-            daemon=True,
-        )
-        thread.start()
+        lifecycle = LifecycleStore(self._store.root)
+        lease_owner = f"{settings.service_name}:single-step:{uuid.uuid4().hex[:12]}"
+        lease_token = uuid.uuid4().hex
+        if not lifecycle.claim_worker_lease(
+            request.run_id, owner_id=lease_owner, lease_token=lease_token,
+            ttl_seconds=30,
+        ):
+            raise StepRunnerError(
+                f"Run 正由其它 worker 执行，拒绝单步写入: {request.run_id}",
+                code="RUN_LEASE_BUSY",
+            )
+        try:
+            from infrastructure.storage.reports import archive_retry_reports
+            archive_retry_reports(self._store, request.run_id, request.task_id)
+            running = self._mark_running(spec, request)
+            thread = threading.Thread(
+                target=self._execute,
+                args=(spec, request, lease_owner, lease_token),
+                name=f"step-run-{request.run_id}-{spec.name}",
+                daemon=True,
+            )
+            thread.start()
+        except BaseException:
+            lifecycle.release_worker_lease(
+                request.run_id, owner_id=lease_owner, lease_token=lease_token,
+            )
+            raise
         return {
             "run_id": request.run_id,
             "task_id": request.task_id,
@@ -1096,27 +1153,65 @@ class StepRunner:
         )
         return record
 
-    def _execute(self, spec: PluginSpec, request: StepRunRequest) -> None:
+    def _execute(
+        self, spec: PluginSpec, request: StepRunRequest,
+        lease_owner: str | None = None, lease_token: str | None = None,
+    ) -> None:
         continuing = False
+        lifecycle = LifecycleStore(self._store.root)
+        lease_owner = lease_owner or f"{settings.service_name}:single-step:{uuid.uuid4().hex[:12]}"
+        lease_token = lease_token or uuid.uuid4().hex
+        lease_acquired = False
+        heartbeat_stop = None
+        heartbeat_thread = None
         try:
+            if not lifecycle.owns_worker_lease(
+                request.run_id, owner_id=lease_owner, lease_token=lease_token,
+            ):
+                if not lifecycle.claim_worker_lease(
+                    request.run_id, owner_id=lease_owner, lease_token=lease_token,
+                    ttl_seconds=30,
+                ):
+                    raise WorkerLeaseBusy(f"Run 正由其它 worker 执行，拒绝单步写入: {request.run_id}")
+            lease_acquired = True
+            heartbeat_stop, heartbeat_thread = start_worker_lease_heartbeat(
+                lifecycle, request.run_id, owner_id=lease_owner, lease_token=lease_token,
+                interval_seconds=5, ttl_seconds=30,
+            )
             code, record, payload = execute_once(
                 spec,
                 run_id=request.run_id,
                 task_id=request.task_id,
                 confirm_write=request.confirm_write,
                 continuation=request.continue_after,
+                worker_lease=(lease_owner, lease_token),
             )
+            if not lifecycle.owns_worker_lease(
+                request.run_id, owner_id=lease_owner, lease_token=lease_token,
+            ):
+                raise WorkerLeaseLost(f"单步执行期间 Run 租约丢失: {request.run_id}")
             if (
                 request.continue_after
                 and self._on_continue is not None
                 and record is not None
                 and record.status in {"succeeded", "waiting"}
             ):
+                # 单步节点结束后释放租约，再把执行权交给完整工作流 continuation。
+                if heartbeat_stop is not None:
+                    heartbeat_stop.set()
+                if heartbeat_thread is not None:
+                    heartbeat_thread.join(timeout=1)
+                if not lifecycle.release_worker_lease(
+                    request.run_id, owner_id=lease_owner, lease_token=lease_token,
+                ):
+                    raise WorkerLeaseLost(f"单步结束时无法释放 Run 租约: {request.run_id}")
+                lease_acquired = False
+                close_sessions(request.run_id, request.task_id or None)
                 continuing = True
                 self._on_continue(request, payload)
                 return
             if code == 0:
-                LifecycleStore(self._store.root).update_task(
+                lifecycle.update_task(
                     request.run_id,
                     request.task_id,
                     status="paused",
@@ -1135,7 +1230,7 @@ class StepRunner:
                     if record and record.summary
                     else str(payload.get("failure_reason") or f"{spec.name} 返回失败")
                 )
-                LifecycleStore(self._store.root).update_task(
+                lifecycle.update_task(
                     request.run_id,
                     request.task_id,
                     status="failed",
@@ -1158,42 +1253,68 @@ class StepRunner:
                 spec.name,
                 code,
             )
+        except WorkerLeaseBusy as exc:
+            logger.warning("%s", exc)
+        except WorkerLeaseLost as exc:
+            logger.warning("单步 worker 已失去执行权，忽略迟到结果 run_id=%s error=%s", request.run_id, exc)
         except StepRunnerError as exc:
-            if continuing:
+            if lease_acquired and not lifecycle.owns_worker_lease(
+                request.run_id, owner_id=lease_owner, lease_token=lease_token,
+            ):
+                logger.warning("单步 worker 租约已失效，忽略拒绝结果 run_id=%s", request.run_id)
+            elif continuing:
                 self._continuation_failed(request, str(exc))
                 return
-            self._write_failure(spec, request, str(exc))
-            self._mark_single_step_failed(spec, request, str(exc))
-            logger.warning(
-                "单步执行被拒绝 run_id=%s task_id=%s step=%s reason=%s",
-                request.run_id,
-                request.task_id,
-                spec.name,
-                exc,
-            )
-        except Exception as exc:
-            message = public_exception(exc, prefix="节点执行异常")
-            if continuing:
-                self._continuation_failed(request, message)
-                return
-            self._write_failure(spec, request, message)
-            self._mark_single_step_failed(spec, request, message)
-            logger.exception(
-                "单步执行失败 run_id=%s task_id=%s step=%s",
-                request.run_id,
-                request.task_id,
-                spec.name,
-            )
-        finally:
-            if not continuing:
-                lifecycle = LifecycleStore(self._store.root)
-                task = lifecycle.read_task(request.run_id, request.task_id)
-                failed = task.get("status") == "failed"
-                lifecycle.update_run(
-                    request.run_id, status="failed" if failed else "paused",
-                    phase="single_step", current_step=spec.name, worker_active=False,
-                    error=task.get("error", {}) if failed else {},
+            else:
+                self._write_failure(spec, request, str(exc))
+                self._mark_single_step_failed(spec, request, str(exc))
+                logger.warning(
+                    "单步执行被拒绝 run_id=%s task_id=%s step=%s reason=%s",
+                    request.run_id,
+                    request.task_id,
+                    spec.name,
+                    exc,
                 )
+        except Exception as exc:
+            if lease_acquired and not lifecycle.owns_worker_lease(
+                request.run_id, owner_id=lease_owner, lease_token=lease_token,
+            ):
+                logger.warning("单步 worker 租约已失效，忽略迟到异常 run_id=%s", request.run_id)
+            else:
+                message = public_exception(exc, prefix="节点执行异常")
+                if continuing:
+                    self._continuation_failed(request, message)
+                    return
+                self._write_failure(spec, request, message)
+                self._mark_single_step_failed(spec, request, message)
+                logger.exception(
+                    "单步执行失败 run_id=%s task_id=%s step=%s",
+                    request.run_id,
+                    request.task_id,
+                    spec.name,
+                )
+        finally:
+            if heartbeat_stop is not None:
+                heartbeat_stop.set()
+            if heartbeat_thread is not None:
+                heartbeat_thread.join(timeout=1)
+            if lease_acquired:
+                still_owner = lifecycle.owns_worker_lease(
+                    request.run_id, owner_id=lease_owner, lease_token=lease_token,
+                )
+                if still_owner and not continuing:
+                    task = lifecycle.read_task(request.run_id, request.task_id)
+                    failed = task.get("status") == "failed"
+                    lifecycle.update_run(
+                        request.run_id, status="failed" if failed else "paused",
+                        phase="single_step", current_step=spec.name,
+                        error=task.get("error", {}) if failed else {},
+                    )
+                released = lifecycle.release_worker_lease(
+                    request.run_id, owner_id=lease_owner, lease_token=lease_token,
+                )
+                if released:
+                    close_sessions(request.run_id, request.task_id or None)
             if self._on_finish is not None:
                 self._on_finish()
 

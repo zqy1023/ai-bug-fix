@@ -34,3 +34,28 @@ class StepRetryLifecycleTests(unittest.TestCase):
                     StepRunner(store)._execute(SPEC, request)
                 self.assertEqual(lifecycle.read_run('run')['status'], expected)
                 self.assertEqual(lifecycle.read_task('run', 'task')['status'], expected)
+
+
+def test_single_step_rejects_busy_run_before_marking_task_running(tmp_path):
+    from unittest.mock import Mock
+
+    from workflow.engine.runner import StepRunner, StepRunnerError, StepRunRequest
+
+    store = RecordStore(tmp_path)
+    lifecycle = LifecycleStore(tmp_path)
+    assert lifecycle.claim_worker_lease(
+        "run", owner_id="existing-worker", lease_token="existing-token", ttl_seconds=30,
+    )
+    runner = StepRunner(store)
+    runner.validate = Mock(return_value=SPEC)
+    runner._mark_running = Mock(side_effect=AssertionError("must not mutate lifecycle"))
+    request = StepRunRequest(run_id="run", task_id="task", step_name=SPEC.name)
+
+    try:
+        runner.run(request)
+    except StepRunnerError as error:
+        assert error.code == "RUN_LEASE_BUSY"
+    else:
+        raise AssertionError("expected RUN_LEASE_BUSY")
+    runner._mark_running.assert_not_called()
+    assert lifecycle.read_task("run", "task") == {}

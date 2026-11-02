@@ -8,12 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import re
-import secrets
-import threading
 import uuid
-from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -24,7 +19,6 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from pydantic import BaseModel, Field, model_validator
 
 from core.policy import APPROVAL_RETRY_TARGETS, RetryTarget
-from infrastructure.llm.config import load_config
 from infrastructure.storage.lifecycle import LifecycleStore
 from infrastructure.storage.store import RecordStore
 from infrastructure.storage.redaction import public_exception
@@ -34,22 +28,23 @@ from server.projections import run_timestamps, task_stages
 from server.view_models import delivery_view, run_actions, task_retry_action
 
 from config.nacos import nacos_get
-from config.settings import settings
-
+from server.context import (
+    _ID_PATTERN,
+    _RUN_LOCKS,
+    _RUN_LOCKS_GUARD,
+    _STARTED_RUNS,
+    _authorize,
+    _config,
+    _parse_time,
+    _read_json,
+    _require_current_workflow,
+    _run_lock,
+    _safe_id,
+    _store,
+)
 SERVICE_NAME = settings.service_name
 SERVICE_VERSION = settings.service_version
 
-_ID_MAX_LENGTH = 160
-_ID_PATTERN = re.compile(rf"^[A-Za-z0-9_.-]{{1,{_ID_MAX_LENGTH}}}$")
-# Run 级执行锁按 run_id 累积，从不回收会让长驻进程缓慢泄漏内存。
-# 用 OrderedDict + 守护锁实现简单 LRU：命中即 move_to_end，超过
-# _RUN_LOCKS_LIMIT 时淘汰最旧条目。淘汰不强制回收使用中的锁——
-# 正在运行的线程仍持有锁对象引用，淘汰只让后续请求重建锁；
-# 并发正确性由 non-blocking acquire 与生命周期落盘共同保证。
-_RUN_LOCKS: OrderedDict[str, threading.Lock] = OrderedDict()
-_RUN_LOCKS_GUARD = threading.Lock()
-_RUN_LOCKS_LIMIT = 4096
-_STARTED_RUNS: set[str] = set()
 logger = logging.getLogger("server.api")
 
 
@@ -60,68 +55,6 @@ class ApprovalDecision(BaseModel):
     reason: str = ""
     # retry_target：驳回后必须明确指定的工作流阶段。
     retry_target: str | None = None
-
-
-def _authorize(authorization: str | None = Header(default=None)) -> None:
-    token = nacos_get("WORKBENCH_API_TOKEN", "").strip()
-    if not token:
-        return
-    supplied = (authorization or "").removeprefix("Bearer ").strip()
-    if not supplied or not secrets.compare_digest(supplied, token):
-        raise HTTPException(status_code=401, detail="需要有效的工作台 Bearer Token")
-
-
-def _config():
-    import sys
-    _mod = sys.modules.get("server.api") or sys.modules.get("server.routes")
-    if _mod and "_config" in _mod.__dict__ and _mod.__dict__["_config"] is not _config:
-        return _mod.__dict__["_config"]()
-    try:
-        return load_config()
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=public_exception(exc, prefix="运行配置不可用"),
-        ) from exc
-
-
-def _store() -> RecordStore:
-    import sys
-    _mod = sys.modules.get("server.api") or sys.modules.get("server.routes")
-    if _mod and "_store" in _mod.__dict__ and _mod.__dict__["_store"] is not _store:
-        return _mod.__dict__["_store"]()
-    config = _config()
-    return RecordStore(config.runtime_dir)
-
-
-def _safe_id(value: str) -> str:
-    if not _ID_PATTERN.fullmatch(value) or value in {".", ".."}:
-        raise HTTPException(status_code=400, detail="无效的 ID")
-    return value
-
-
-def _read_json(path: Path, default: Any = None) -> Any:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return default
-
-
-def _run_lock(run_id: str) -> threading.Lock:
-    """获取（或创建）run 的执行锁；必须在 _RUN_LOCKS_GUARD 内调用。
-
-    命中即 move_to_end 触碰 LRU 顺序；超过 _RUN_LOCKS_LIMIT 时淘汰最旧条目。
-    使用中的锁对象仍被运行线程持有，淘汰只让后续请求重建锁，属可接受的取舍。
-    """
-    lock = _RUN_LOCKS.get(run_id)
-    if lock is None:
-        lock = threading.Lock()
-        _RUN_LOCKS[run_id] = lock
-    else:
-        _RUN_LOCKS.move_to_end(run_id)
-    while len(_RUN_LOCKS) > _RUN_LOCKS_LIMIT:
-        _RUN_LOCKS.popitem(last=False)
-    return lock
 
 
 def _has_pending_approval_interrupt(store: RecordStore, run_id: str) -> bool:
@@ -658,7 +591,9 @@ def _submit_approval(
         lock = _run_lock(run_id)
     if not lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="该 run 正在执行恢复操作")
+    worker_lease: tuple[str, str] | None = None
     try:
+        worker_lease = _claim_worker_lease(run_id)
         fingerprint = str(approval_input.get("approval_fingerprint") or "")
         resume_payload = {"decision": decision, "approval_fingerprint": fingerprint, "task_id": task_id}
         if decision == "REJECT":
@@ -667,8 +602,10 @@ def _submit_approval(
                 "retry_target": str(request.retry_target),
             })
         # Transfer lock ownership only after the background task is enqueued.
-        background.add_task(_resume_workflow_background, run_id, lock, resume_payload)
+        background.add_task(_resume_workflow_background, run_id, lock, resume_payload, worker_lease)
     except BaseException:
+        if worker_lease is not None:
+            _release_worker_lease(run_id, worker_lease)
         lock.release()
         raise
     return {"run_id": run_id, "task_id": task_id, "decision": decision, "status": "resume_requested"}
@@ -712,49 +649,6 @@ class V1ApprovalDecision(BaseModel):
     reason: str = Field(default="", max_length=1000)
     # 驳回时明确指定重跑阶段；自定义原因必须由 UI 明确选择，服务端再次白名单校验。
     retry_target: RetryTarget | None = None
-
-
-def _control_db():
-    """Durable idempotency, stop-request and audit metadata, separate from workflow artifacts."""
-    import sqlite3
-    config = _config()
-    runtime_dir = config.runtime_dir
-    runtime_dir.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(
-        str(runtime_dir / "workbench-control.sqlite3"),
-        timeout=config.workbench_sqlite_timeout_seconds,
-    )
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute(f"PRAGMA busy_timeout={config.workbench_sqlite_busy_timeout_ms}")
-    connection.executescript("""
-        CREATE TABLE IF NOT EXISTS idempotency_keys (
-            key TEXT PRIMARY KEY, payload_hash TEXT NOT NULL, run_id TEXT NOT NULL, created_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS run_control (
-            run_id TEXT PRIMARY KEY, pause_requested INTEGER NOT NULL DEFAULT 0,
-            cancel_requested INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS control_audit (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, task_id TEXT NOT NULL DEFAULT '',
-            action TEXT NOT NULL, actor TEXT NOT NULL DEFAULT 'unknown', reason TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL
-        );
-    """)
-    connection.commit()
-    return connection
-
-
-def _audit_control(run_id: str, task_id: str, action: str, actor: str, reason: str = "") -> None:
-    connection = _control_db()
-    try:
-        connection.execute(
-            "INSERT INTO control_audit(run_id,task_id,action,actor,reason,created_at) VALUES(?,?,?,?,?,?)",
-            (run_id, task_id, action, actor[:160], reason[:1000], datetime.now(timezone.utc).isoformat()),
-        )
-        connection.commit()
-    finally:
-        connection.close()
 
 
 def _v1_status(value: str) -> str:
@@ -823,16 +717,6 @@ def _v1_run_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "completed_tasks": int(summary.get("tasks_completed") or 0),
         "operator": payload.get("operator") or "系统", "created_at": created, "updated_at": payload.get("updated_at") or created,
     }
-
-
-def _parse_time(value: Any) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-    except (TypeError, ValueError):
-        return None
 
 
 def _v1_detail(run_id: str) -> dict[str, Any]:
@@ -1002,594 +886,24 @@ def _checkpoint_projection(snapshot: Any) -> dict[str, Any]:
 
 
 
-def _start_lifecycle_heartbeat(run_id: str) -> tuple[threading.Event, threading.Thread]:
-    """Keep an explicit lease while a worker owns the run lock, including long Agent calls."""
-    store = _store()
-    lifecycle = LifecycleStore(store.root)
-    stop = threading.Event()
+# 控制库连接、Schema 初始化和审计写入只由 server.control_store 维护。
+from server.control_store import _audit_control, _control_db
+
+# Run 生命周期与后台 worker 的唯一实现位于 server.lifecycle；
+# 路由层只复用，不再维护第二套心跳、报告收敛和工作区清理逻辑。
+from server.lifecycle import (
+    _claim_worker_lease,
+    _clear_worker_active,
+    _complete_run_lifecycle,
+    _discard_retry_archive,
+    _record_background_failure,
+    _reinvestigate_task,
+    _release_worker_lease,
+    _resume_workflow_background,
+    _run_workflow_background_v1,
+    _settle_task_lifecycles_after_run_failure,
+    _start_lifecycle_heartbeat,
+)
 
-    def pulse() -> None:
-        while not stop.wait(5):
-            try:
-                lifecycle.update_run(run_id, heartbeat_at=datetime.now(timezone.utc).isoformat(), worker_active=True)
-            except Exception:
-                logger.exception("更新运行心跳失败 run_id=%s", run_id)
-
-    thread = threading.Thread(target=pulse, name=f"run-heartbeat-{run_id}", daemon=True)
-    thread.start()
-    return stop, thread
-
-
-def _clear_worker_active(run_id: str) -> None:
-    """清理 Run 的活动租约。
-
-    与工作区回收解耦：生命周期写入失败重试一次，仍然失败只记录日志，
-    后续工作区回收照常执行，不能因为一个字段写不进去就跳过清理。
-    """
-    for attempt in range(2):
-        try:
-            LifecycleStore(_store().root).update_run(run_id, worker_active=False)
-            return
-        except Exception:
-            logger.exception(
-                "清理 Run 活动租约失败 run_id=%s attempt=%s",
-                run_id, attempt + 1,
-            )
-
-
-def _complete_run_lifecycle(run_id: str, store: RecordStore) -> None:
-    """Settle the run only after graph.invoke has returned; waiting interrupts are not failures."""
-    lifecycle = LifecycleStore(store.root)
-    report = _read_json(store.run_dir(run_id) / "reports" / "final.json", {})
-    if isinstance(report, dict) and report:
-        result = str(report.get("result") or report.get("status") or "").upper()
-        if result in {"SUCCESS", "SUCCEEDED", "COMPLETED", "DELIVERED"}:
-            status = "succeeded"
-        elif result in {"CANCELLED", "CANCELED"}:
-            status = "cancelled"
-        elif result == "PAUSED":
-            # 暂停/单步等待不是失败；保持可恢复状态，等待控制面继续。
-            status = "paused"
-        elif result in {"MANUAL", "MANUAL_REVIEW_REQUIRED", "INSUFFICIENT_EVIDENCE", "BLOCKED"}:
-            status = "partial_failed"
-        elif result in {"PARTIAL_FAILED", "PARTIAL_FAILURE"}:
-            status = "partial_failed"
-        else:
-            status = "failed" if result in {"FAILED", "FAIL", "ERROR", "REJECTED"} else "succeeded"
-        lifecycle.update_run(
-            run_id, status=status,
-            phase=str(report.get("terminal_step") or "workflow"),
-            current_step=str(report.get("terminal_step") or ""),
-            terminal_reason=str(report.get("terminal_reason") or ""),
-            next_action=str(report.get("next_action") or ""),
-            error_type="WORKFLOW_FAILED" if status == "failed" else "",
-            error_message=str(report.get("terminal_reason") or "") if status == "failed" else "",
-        )
-        return
-
-    run_steps = store.list_steps(run_id)
-    if any(step.status == "waiting" for step in run_steps):
-        lifecycle.update_run(run_id, status="paused", phase="paused", current_step="")
-        return
-    payload = _read_json(store.steps_path(run_id), {})
-    slots = payload.get("tasks", []) if isinstance(payload, dict) else []
-    task_states = []
-    if isinstance(slots, list):
-        for slot in slots:
-            if isinstance(slot, dict) and isinstance(slot.get("task_id"), str):
-                task_states.append(lifecycle.read_task(run_id, slot["task_id"]))
-    if any(item.get("status") == "waiting_approval" for item in task_states):
-        lifecycle.update_run(run_id, status="waiting_approval", phase="request_approval", current_step="request_approval")
-        return
-    if any(item.get("status") == "paused" for item in task_states):
-        lifecycle.update_run(run_id, status="paused", phase="paused", current_step="")
-        return
-
-    reason = "工作流已退出，但未生成终态报告或可恢复的等待状态。"
-    lifecycle.update_run(
-        run_id, status="failed", phase="workflow_exit", current_step="",
-        error_type="MISSING_TERMINAL_REPORT", error_message=reason,
-        terminal_reason=reason, next_action="检查 Run 与 Task 生命周期记录后，从 Run 控制栏重试。",
-    )
-    _settle_task_lifecycles_after_run_failure(
-        run_id, store, phase="workflow_exit", reason=reason,
-        next_action="检查失败节点后使用 Run 级重试恢复。",
-    )
-
-
-def _settle_task_lifecycles_after_run_failure(
-    run_id: str,
-    store: RecordStore,
-    *,
-    phase: str,
-    reason: str,
-    next_action: str,
-) -> None:
-    from core.contracts import StepError
-
-    lifecycle = LifecycleStore(store.root)
-    payload = _read_json(store.steps_path(run_id), {})
-    slots = payload.get("tasks", []) if isinstance(payload, dict) else []
-    if not isinstance(slots, list):
-        return
-    for slot in slots:
-        if not isinstance(slot, dict) or not isinstance(slot.get("task_id"), str):
-            continue
-        task_id = slot["task_id"]
-        state = lifecycle.read_task(run_id, task_id)
-        status = str(state.get("status") or "")
-        if phase == "approval_recovery" and status == "waiting_approval":
-            continue
-        if status in {"succeeded", "partial_failed", "failed", "cancelled", "manual", "skipped", "blocked"}:
-            continue
-        records = store.list_steps(run_id, task_id)
-        finalizer = next((record for record in records if record.name == "finalize_execution"), None)
-        if finalizer and finalizer.status == "succeeded" and not any(record.status in {"running", "waiting"} for record in records):
-            store.complete_task(run_id, task_id)
-            continue
-        for record in records:
-            if record.status in {"running", "waiting"}:
-                finished = datetime.now(timezone.utc)
-                started = _parse_time(record.started_at)
-                record.status = "failed"
-                record.finished_at = finished.isoformat()
-                record.duration_ms = max(0, (finished - started).total_seconds() * 1000) if started else 0
-                record.error = StepError(code="STEP_EXECUTION_FAILED", message=reason)
-                store.save(run_id, record, task_id)
-        lifecycle.update_task(
-            run_id, task_id, status="failed",
-            terminal_step=str(state.get("current_step") or phase),
-            terminal_reason=reason, next_action=next_action,
-            error={"code": "RUN_WORKER_FAILED", "message": reason},
-        )
-
-
-def _discard_retry_archive(store: RecordStore, run_id: str) -> None:
-    """恢复已产生新报告后清掉启动时归档的上一轮报告。"""
-    reports = store.run_dir(run_id) / "reports"
-    for name in ("run_failure.json", "final.json"):
-        try:
-            (reports / f"{name}.retry_previous").unlink(missing_ok=True)
-        except OSError:
-            logger.warning(
-                "清理归档报告失败 run_id=%s name=%s", run_id, name, exc_info=True
-            )
-
-
-def _record_background_failure(
-    run_id: str,
-    error: Exception,
-    *,
-    phase: str = "workflow_startup",
-) -> None:
-    """将图外异常写成可查询的终态产物，避免后台任务失败后 Run 永久显示运行中。"""
-    try:
-        logger.error("后台工作流异常 run_id=%s", run_id, exc_info=(type(error), error, error.__traceback__))
-        # 取消优先于异常：用户停止后节点抛出的异常不能把本轮改写成 FAILED，
-        # 也不能写出 run_failure.json 误导后续恢复判定。
-        from infrastructure.storage.run_control import cancellation_requested
-
-        try:
-            cancelled = cancellation_requested(_store().root, run_id)
-        except Exception:
-            cancelled = False
-        if cancelled:
-            logger.info(
-                "后台异常发生在停止请求之后，按 CANCELLED 收敛 run_id=%s error=%s",
-                run_id, type(error).__name__,
-            )
-            from workflow.engine.graph import _write_run_report
-
-            _write_run_report(_store(), run_id)
-            LifecycleStore(_store().root).update_run(run_id, status="cancelled", worker_active=False)
-            return
-        directory = _store().run_dir(_safe_id(run_id))
-        if not directory.is_dir():
-            return
-        report_dir = directory / "reports"
-        report_dir.mkdir(parents=True, exist_ok=True)
-        target = report_dir / "run_failure.json"
-        temporary = report_dir / "run_failure.json.tmp"
-        now = datetime.now(timezone.utc).isoformat()
-        # Persist only the redacted public exception summary: business failures retain
-        # actionable detail; unexpected exceptions reveal only their type, never raw inputs.
-        reason = public_exception(error, prefix="后台工作流异常")
-        next_action = (
-            "检查审批恢复时的服务端异常；确认环境正常后，可回到交付审批重新提交决策。"
-            if phase == "approval_recovery"
-            else "检查工作流恢复时的服务端异常；修复原因后再恢复本轮执行。"
-            if phase == "workflow_resume"
-            else "检查启动配置、工作流装配和服务端异常；修复原因后重新执行。"
-        )
-        terminal_step = phase
-        if phase in {"workflow_startup", "workflow_resume"}:
-            failed = [record for record in _store().list_steps(run_id) if record.status == "failed"]
-            if failed:
-                record = failed[-1]
-                terminal_step = record.name
-                reason = str(record.output.get("failure_reason") or record.summary or reason)
-                attempts = int(record.output.get("automatic_attempt") or record.attempt or 1)
-                retry_count = int(record.output.get("retry_count", max(0, attempts - 1)))
-                exhausted = bool(record.output.get("retry_exhausted"))
-                reason += f"；已执行 {attempts} 次（自动重试 {retry_count} 次）"
-                if exhausted:
-                    reason += "，重试次数已耗尽"
-                if record.name == "sync_source_repo":
-                    next_action = "检查远程 Git 仓库的网络连通性、TLS/证书、代理和访问凭据；排除原因后从源仓库同步节点恢复。"
-        payload = {
-            "status": "FAILED", "error_type": type(error).__name__,
-            "message": reason,
-            "terminal_step": terminal_step, "terminal_reason": reason,
-            "next_action": next_action,
-            "failed_at": now,
-        }
-        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        temporary.replace(target)
-        try:
-            lifecycle = LifecycleStore(_store().root)
-            lifecycle.update_run(
-                run_id, status="failed", phase=terminal_step, current_step=terminal_step,
-                error_type=type(error).__name__, error_message=reason,
-                terminal_reason=reason, next_action=next_action,
-            )
-            _settle_task_lifecycles_after_run_failure(
-                run_id, _store(), phase=phase, reason=reason, next_action=next_action,
-            )
-        except Exception:
-            logger.exception("后台失败报告已保存，但生命周期收敛失败 run_id=%s", run_id)
-        final_path = report_dir / "final.json"
-        existing_report = _read_json(final_path, {})
-        if not existing_report:
-            # 恢复模式启动时把上一轮报告归档为 *.retry_previous；本次恢复失败
-            # 时用它兜底，避免新报告把任务明细退化成空列表。
-            existing_report = _read_json(report_dir / "final.json.retry_previous", {})
-        if not isinstance(existing_report, dict):
-            existing_report = {}
-        final_tmp = report_dir / "final.json.tmp"
-        final_report = {
-            **existing_report,
-            "report_version": max(int(existing_report.get("report_version") or 0), 1),
-            "report_kind": "run_final", "run_id": run_id,
-            "result": "FAILED", "status": "FAILED", "terminal_step": payload["terminal_step"],
-            "terminal_reason": payload["terminal_reason"], "next_action": payload["next_action"],
-            "finished_at": now,
-            "task_count": int(existing_report.get("task_count") or 0),
-            "task_results": existing_report.get("task_results") if isinstance(existing_report.get("task_results"), list) else [],
-        }
-        final_tmp.write_text(json.dumps(final_report, ensure_ascii=False, indent=2), encoding="utf-8")
-        final_tmp.replace(final_path)
-    except Exception:
-        logger.exception("无法写入后台失败报告 run_id=%s", run_id)
-
-
-def _run_workflow_background_v1(
-    run_id: str, overrides: dict[str, Any], run_lock: Any = None
-) -> None:
-    from workflow.engine.graph import run_workflow
-    if run_lock is None:
-        with _RUN_LOCKS_GUARD:
-            run_lock = _run_lock(run_id)
-        if not run_lock.acquire(blocking=False):
-            logger.warning("跳过重复启动的工作流 run_id=%s", run_id)
-            return
-    heartbeat_stop: threading.Event | None = None
-    heartbeat_thread: threading.Thread | None = None
-    try:
-        store = _store()
-        LifecycleStore(store.root).update_run(
-            run_id, status="running", phase="workflow_startup", current_step="", error={}, worker_active=True,
-            allow_reactivate=True,
-        )
-        heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(run_id)
-        run_workflow(run_id, overrides=overrides, prepared=True)
-        _complete_run_lifecycle(run_id, store)
-    except Exception as exc:
-        logger.exception("工作流后台执行失败 run_id=%s", run_id)
-        _record_background_failure(run_id, exc)
-    finally:
-        if heartbeat_stop is not None:
-            heartbeat_stop.set()
-        if heartbeat_thread is not None:
-            heartbeat_thread.join(timeout=1)
-        from infrastructure.llm.runtime import close_sessions
-        close_sessions(run_id)
-        _clear_worker_active(run_id)
-        try:
-            from infrastructure.workspace.workspace_gc import (
-                collect_configured_workspaces,
-            )
-            collect_configured_workspaces(_config())
-        except Exception:
-            logger.exception("回收配置工作区失败 run_id=%s", run_id)
-        run_lock.release()
-        with _RUN_LOCKS_GUARD:
-            _STARTED_RUNS.discard(run_id)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def _resume_workflow_background(
-    run_id: str,
-    run_lock: Any = None,
-    resume_payload: dict[str, Any] | None = None,
-) -> None:
-    if run_lock is None:
-        with _RUN_LOCKS_GUARD:
-            run_lock = _run_lock(run_id)
-        if not run_lock.acquire(blocking=False):
-            logger.warning("跳过重复恢复的工作流 run_id=%s", run_id)
-            return
-    heartbeat_stop: threading.Event | None = None
-    heartbeat_thread: threading.Thread | None = None
-    try:
-        from infrastructure.llm.config import load_config, workflow_recursion_limit
-        from workflow.engine.graph import build_graph, build_services
-
-        store = _store()
-        LifecycleStore(store.root).update_run(
-            run_id, status="running", phase="workflow_resume", current_step="", error={}, worker_active=True,
-            terminal_reason="", error_type="", error_message="", next_action="",
-            allow_reactivate=True,
-        )
-        heartbeat_stop, heartbeat_thread = _start_lifecycle_heartbeat(run_id)
-        runtime_config = load_config()
-        # 恢复时让 checkpoint 指向的 sync_source_repo 节点执行；
-        # 不能在 graph.invoke 之前再次同步，否则原生重试仍然无法接管。
-        source_repo = runtime_config.source_repo
-        graph = build_graph(
-            store=store,
-            services=build_services(
-                config=runtime_config,
-                source_repo=source_repo,
-            ),
-            config=runtime_config,
-        )
-        loader = getattr(store, "load_run", None)
-        run_meta = loader(run_id) if callable(loader) else _read_json(store.run_dir(run_id) / "run.json", {})
-        if not isinstance(run_meta, dict):
-            run_meta = {}
-        config = {
-            "configurable": {"thread_id": run_id},
-            "recursion_limit": workflow_recursion_limit(
-                max_attempts=int(run_meta.get("max_attempts") or settings.default_max_attempts),
-                task_count_hint=int(run_meta.get("log_limit") or 50),
-            ),
-        }
-        snapshot = graph.get_state(config)
-        has_interrupt = any(getattr(task, "interrupts", ()) for task in (getattr(snapshot, "tasks", ()) or ()))
-        if resume_payload is not None:
-            from langgraph.types import Command
-
-            from workflow.engine.graph import resume_task_approval
-
-            task_id = str(resume_payload.get("task_id") or "")
-            detached = bool(task_id) and resume_task_approval(
-                store, run_id, task_id, resume_payload, runtime_config,
-                build_services(config=runtime_config, source_repo=source_repo),
-            )
-            # 嵌套任务子图的 interrupt 在部分 LangGraph 版本中不一定完整暴露在父快照的
-            # task.interrupts 上。审批接口已校验当前任务处于待决状态且持有 run 锁，因此
-            # 必须直接把决定交给 checkpoint；绝不能因快照未显示 interrupt 而重新 invoke(None)。
-            if detached:
-                from workflow.engine.routes import assert_workflow_version
-                assert_workflow_version(_store().load_run(run_id))
-                final_state = graph.invoke(None, config=config) if snapshot.next else dict(snapshot.values)
-            else:
-                from workflow.engine.routes import assert_workflow_version
-                assert_workflow_version(_store().load_run(run_id))
-                final_state = graph.invoke(Command(resume=resume_payload), config=config)
-        elif has_interrupt:
-            from langgraph.types import Command
-
-            from workflow.engine.routes import assert_workflow_version
-            assert_workflow_version(_store().load_run(run_id))
-            final_state = graph.invoke(Command(resume={"control": "resume"}), config=config)
-        else:
-            from workflow.engine.routes import assert_workflow_version
-            assert_workflow_version(_store().load_run(run_id))
-            final_state = graph.invoke(None, config=config)
-        # 本次恢复已成功推进 checkpoint；清理之前后台异常写入的失败标记，避免 UI 继续把已恢复运行判为 FAILED。
-        failure_path = store.run_dir(run_id) / "reports" / "run_failure.json"
-        if failure_path.is_file():
-            failure_path.unlink()
-        stale_run_report = store.run_dir(run_id) / "reports" / "final.json"
-        stale_payload = _read_json(stale_run_report, {})
-        # 上一次终态的 FAILED 报告（含业务阶段失败）在本次恢复推进 checkpoint 后
-        # 全部作废：终态结束会被新报告覆盖，等待审批则不能让旧失败顶替当前状态。
-        if (
-            isinstance(stale_payload, dict)
-            and str(stale_payload.get("result") or stale_payload.get("status") or "").upper()
-            in {"FAILED", "FAIL"}
-        ):
-            stale_run_report.unlink(missing_ok=True)
-        from workflow.engine.graph import _write_run_report_if_terminal
-        _write_run_report_if_terminal(store, run_id, graph, final_state=final_state)
-        _complete_run_lifecycle(run_id, store)
-        if (store.run_dir(run_id) / "reports" / "final.json").is_file():
-            _discard_retry_archive(store, run_id)
-    except Exception as exc:
-        logger.exception("恢复工作流失败 run_id=%s", run_id)
-        phase = "approval_recovery" if resume_payload is not None else "workflow_resume"
-        _record_background_failure(run_id, exc, phase=phase)
-    finally:
-        from infrastructure.llm.runtime import close_sessions
-        close_sessions(run_id)
-        if heartbeat_stop is not None:
-            heartbeat_stop.set()
-        if heartbeat_thread is not None:
-            heartbeat_thread.join(timeout=1)
-        _clear_worker_active(run_id)
-        try:
-            from infrastructure.workspace.workspace_gc import (
-                collect_configured_workspaces,
-            )
-            collect_configured_workspaces(_config())
-        except Exception:
-            logger.exception("回收恢复 Run 的工作区失败 run_id=%s", run_id)
-        run_lock.release()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-class V1StepRunRequest(BaseModel):
-    # confirm_write：写步骤必须显式确认，避免误触外部写入。
-    confirm_write: bool = False
-    # continue_after：默认不推进工作流；需要继续时必须由调用方显式要求。
-    continue_after: bool = False
-
-
-def _load_model_calls(run_id: str, task_id: str | None = None) -> list[dict[str, Any]]:
-    import sys
-    _mod = sys.modules.get("server.api") or sys.modules.get("server.routes")
-    if _mod and "_load_model_calls" in _mod.__dict__ and _mod.__dict__["_load_model_calls"] is not _load_model_calls:
-        return _mod.__dict__["_load_model_calls"](run_id, task_id)
-    import sys
-    api_mod = sys.modules.get("server.api")
-    if api_mod and "_load_model_calls" in api_mod.__dict__ and api_mod.__dict__["_load_model_calls"] is not _load_model_calls:
-        return api_mod.__dict__["_load_model_calls"](run_id, task_id)
-    """从运行目录读取 Provider 真实落盘记录，消除内存伪数据。"""
-    from infrastructure.storage.database import model_calls
-    return model_calls(_store().run_dir(run_id), task_id)
-
-def _formal_step_payload(store: RecordStore, run_id: str, task_id: str, record: dict) -> dict:
-    """任务、步骤和审批共享正式输出，禁止使用截断审计摘要推断候选身份。"""
-    from core.contracts import Handoff
-
-    name = str(record.get("name") or "")
-    root = store.task_dir(run_id, task_id) if task_id else store.run_dir(run_id)
-    if name and (root / f"workflow/outputs/{name}.json").is_file():
-        try:
-            raw = store.read_artifact(run_id, f"workflow/outputs/{name}.json", task_id or None)
-            if isinstance(raw, dict):
-                try:
-                    formal = Handoff.model_validate(raw)
-                    return {**record, "output": formal.outcome.output,
-                            "execution": formal.outcome.execution.model_dump(mode="json"),
-                            "assessment": formal.outcome.assessment.model_dump(mode="json")}
-                except Exception:
-                    outcome = raw.get("outcome") if isinstance(raw.get("outcome"), dict) else {}
-                    exec_info = outcome.get("execution") if isinstance(outcome.get("execution"), dict) else {}
-                    assess_info = outcome.get("assessment") if isinstance(outcome.get("assessment"), dict) else {}
-                    output_info = outcome.get("output") if isinstance(outcome.get("output"), dict) else record.get("output") or {}
-                    return {
-                        **record,
-                        "output": output_info,
-                        "execution": exec_info,
-                        "assessment": assess_info,
-                    }
-        except Exception:
-            logger.warning("读取步骤正式交接产物失败 name=%s run_id=%s task_id=%s", name, run_id, task_id, exc_info=True)
-    return record
-
-
-def _step_context(record: Any) -> dict[str, Any]:
-    """步骤上下文白名单投影；不返回工作区绝对路径与完整输入输出。"""
-    output = record.output if isinstance(record.output, dict) else {}
-    plan = output.get("change_plan") if isinstance(output.get("change_plan"), dict) else {}
-    files = output.get("changed_files") if isinstance(output.get("changed_files"), list) else []
-    return {
-        "attempt": record.attempt,
-        "status": record.status,
-        "result": record.result,
-        "changed_files": [str(item) for item in files if str(item)][:50],
-        "change_plan_scope": str(plan.get("scope") or ""),
-        "delivery_status": str(output.get("delivery_status") or ""),
-        "counts": {str(key): len(value) for key, value in output.items() if isinstance(value, list)},
-        "flags": {
-            key: bool(output[key])
-            for key in ("legacy_only", "scope_escalation_required", "approval_pending")
-            if key in output
-        },
-    }
-
-
-
-
-def _reinvestigate_task(run_id: str, task_id: str, background: BackgroundTasks) -> dict[str, Any]:
-    """为人工任务建立独立调查 Run，保留原报告、分支、回执和审批检查点。"""
-    import shutil
-
-    from core.contracts import StepRecord
-    from infrastructure.llm.config import load_config
-    from workflow.engine.routes import IDENTIFY
-    from workflow.engine.graph import build_graph, build_services
-
-    store = _store()
-    config = load_config()
-    graph = build_graph(store=store, services=build_services(config=config, source_repo=config.source_repo), config=config)
-    snapshot = graph.get_state({"configurable": {"thread_id": run_id}})
-    values = dict(snapshot.values or {})
-    original = next((item for item in values.get("tasks", []) if item.get("task_id") == task_id), None)
-    if original is None:
-        raise HTTPException(status_code=409, detail="检查点中缺少原始任务输入，无法重新调查")
-    new_id = uuid.uuid4().hex
-    task = {**original, "problem_key": str(original.get("problem_key") or task_id) + "-revision-" + new_id[:8]}
-    task.pop("repair_branch", None)
-    task["_workflow_attempt"] = 1
-    metadata = {**store.load_run(run_id), "parent_run_id": run_id, "parent_task_id": task_id,
-                "reinvestigation": True, "startup_state": "started"}
-    store.create_run(new_id, metadata)
-    artifact_dir = store.run_dir(run_id) / "artifacts"
-    if artifact_dir.is_dir():
-        shutil.copytree(artifact_dir, store.run_dir(new_id) / "artifacts")
-    for record in store.list_steps(run_id):
-        if record.name not in {"sync_source_repo", "discover_logs", "normalize_error", "deduplicate_error", "identify_carrier"}:
-            continue
-        payload = record.model_dump()
-        payload["input"] = {**payload.get("input", {}), "run_id": new_id} if "run_id" in payload.get("input", {}) else payload.get("input", {})
-        store.save(new_id, StepRecord.model_validate(payload))
-    values.update(run_id=new_id, tasks=[task], task_cursor=0, task_results=[], task_id="", task={},
-                  attempt=1, automatic_attempt=1, terminal_status="", task_summary={}, last_result="passed")
-    graph.update_state({"configurable": {"thread_id": new_id}}, values, as_node=IDENTIFY)
-    LifecycleStore(store.root).update_run(new_id, status="queued", worker_active=False, phase="reinvestigation")
-    _audit_control(new_id, task_id, "task.reinvestigate_requested", "api", f"parent_run={run_id}")
-    background.add_task(_resume_workflow_background, new_id)
-    return {"run_id": new_id, "task_id": task_id, "status": "retry_requested",
-            "message": "已创建独立调查执行；原人工报告、分支和审批记录保留。"}
-
-
-
-
-
-
-
-
-
-
-def _require_current_workflow(run_id: str) -> None:
-    from workflow.engine.routes import assert_workflow_version
-    try:
-        assert_workflow_version(_store().load_run(run_id))
-    except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
 
 __all__ = [name for name in dir() if not name.startswith("__")]

@@ -126,7 +126,9 @@ def v1_retry_task(
     workspace_archive: Path | None = None
     workspace_original: Path | None = None
     checkpoint_updated = False
+    worker_lease: tuple[str, str] | None = None
     try:
+        worker_lease = _claim_worker_lease(run_id)
         runtime_config = load_config()
         graph = build_graph(
             store=store,
@@ -247,14 +249,8 @@ def v1_retry_task(
         # status/audit I/O follows it; artifacts are cleaned best-effort below.
         graph.update_state(cfg, patch, as_node=TASK_DISPATCH)
         checkpoint_updated = True
-        for report_path in (
-            store.task_dir(run_id, task_id) / "reports" / "final.json",
-            store.run_dir(run_id) / "reports" / "final.json",
-        ):
-            try:
-                report_path.unlink(missing_ok=True)
-            except OSError:
-                logger.warning("旧终态报告清理失败 run_id=%s task_id=%s path=%s", run_id, task_id, report_path, exc_info=True)
+        from infrastructure.storage.reports import archive_retry_reports
+        archive_retry_reports(store, run_id, task_id)
         try:
             _audit_control(
                 run_id, task_id, "task.retry_requested", "api",
@@ -263,6 +259,8 @@ def v1_retry_task(
         except Exception:
             logger.exception("Task 重试已提交，但审计写入失败 run_id=%s task_id=%s", run_id, task_id)
     except Exception:
+        if worker_lease is not None:
+            _release_worker_lease(run_id, worker_lease)
         compensation_failures: list[tuple[str, OSError]] = []
         if not checkpoint_updated:
             if baseline_archive is not None and baseline_archive.exists() and baseline_original is not None:
@@ -314,7 +312,7 @@ def v1_retry_task(
             ) from compensation_failures[0][1]
         raise
 
-    background.add_task(_resume_workflow_background, run_id, lock)
+    background.add_task(_resume_workflow_background, run_id, lock, None, worker_lease)
     return {
         "run_id": run_id,
         "task_id": task_id,
@@ -422,17 +420,21 @@ def v1_run_step(
             build_services,
             continue_task_after_step,
         )
-        runtime = load_config()
-        services = build_services(config=runtime, source_repo=runtime.source_repo)
+        from infrastructure.storage.lifecycle import WorkerLeaseLost
+        lease_owner = f"{settings.service_name}:single-step:{uuid.uuid4().hex[:12]}"
+        lease_token = uuid.uuid4().hex
         lifecycle = LifecycleStore(store.root)
-        lifecycle.update_run(run_id, status="running", worker_active=True, error={}, allow_reactivate=True)
-        stop, heartbeat = _start_lifecycle_heartbeat(run_id)
+        stop, heartbeat = _start_lifecycle_heartbeat(run_id, lease_owner, lease_token)
         try:
-            previous_report = store.run_dir(run_id) / "reports/final.json"
-            if previous_report.is_file():
-                archive = previous_report.parent / "history" / ("before-step-" + uuid.uuid4().hex + ".json")
-                archive.parent.mkdir(parents=True, exist_ok=True)
-                previous_report.replace(archive)
+            runtime = load_config()
+            services = build_services(config=runtime, source_repo=runtime.source_repo)
+            services.metadata.update({
+                "worker_lease_owner": lease_owner,
+                "worker_lease_token": lease_token,
+            })
+            lifecycle.update_run(run_id, status="running", error={}, allow_reactivate=True)
+            from infrastructure.storage.reports import archive_retry_reports
+            archive_retry_reports(store, run_id, task_id)
             continue_task_after_step(store, run_id, task_id, selected.step_name, payload, runtime, services)
             parent = build_graph(store=store, services=services, config=runtime)
             cfg = {"configurable": {"thread_id": run_id}, "recursion_limit": workflow_recursion_limit(
@@ -441,15 +443,26 @@ def v1_run_step(
             final_state = dict(snapshot.values or {})
             if snapshot.next and final_state.get("task_id") == task_id:
                 final_state = parent.invoke(None, config=cfg)
+            if not lifecycle.owns_worker_lease(
+                run_id, owner_id=lease_owner, lease_token=lease_token,
+            ):
+                raise WorkerLeaseLost(f"Run lease lost before single-step continuation settlement: {run_id}")
             _write_run_report_if_terminal(store, run_id, parent, final_state=final_state)
             _complete_run_lifecycle(run_id, store)
+        except WorkerLeaseLost:
+            raise
         except Exception as error:
-            _record_background_failure(run_id, error, phase="workflow_resume")
+            if lifecycle.owns_worker_lease(
+                run_id, owner_id=lease_owner, lease_token=lease_token,
+            ):
+                _record_background_failure(run_id, error, phase="workflow_resume")
             raise
         finally:
             stop.set()
             heartbeat.join(timeout=1)
-            lifecycle.update_run(run_id, worker_active=False)
+            if _clear_worker_active(run_id, lease_owner, lease_token):
+                from infrastructure.llm.runtime import close_sessions
+                close_sessions(run_id)
 
     runner = StepRunner(store, run_status=_status, on_finish=run_lock.release, on_continue=_continue)
     try:
