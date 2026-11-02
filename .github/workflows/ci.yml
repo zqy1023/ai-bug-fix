@@ -41,7 +41,7 @@ jobs:
           version: 11.28.5
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
       - name: Install frontend dependencies
         working-directory: frontend
         run: pnpm install --frozen-lockfile
