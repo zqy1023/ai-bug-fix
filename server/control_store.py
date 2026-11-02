@@ -11,13 +11,15 @@ def _control_db():
     """Durable idempotency, stop-request and audit metadata, separate from workflow artifacts."""
     config = _config()
     runtime_dir = config.runtime_dir
-    return open_sqlite(
+    connection = open_sqlite(
         runtime_dir / "workbench-control.sqlite3",
         timeout=config.workbench_sqlite_timeout_seconds,
         busy_timeout_ms=config.workbench_sqlite_busy_timeout_ms,
         row_factory=sqlite3.Row,
         journal_mode="WAL",
     )
+    _ensure_control_schema(connection)
+    return connection
 
 
 def _ensure_control_schema(connection) -> None:
@@ -42,7 +44,6 @@ def _ensure_control_schema(connection) -> None:
 def _audit_control(run_id: str, task_id: str, action: str, actor: str, reason: str = "") -> None:
     connection = _control_db()
     try:
-        _ensure_control_schema(connection)
         connection.execute(
             "INSERT INTO control_audit(run_id,task_id,action,actor,reason,created_at) VALUES(?,?,?,?,?,?)",
             (run_id, task_id, action, actor[:160], reason[:1000], datetime.now(timezone.utc).isoformat()),
