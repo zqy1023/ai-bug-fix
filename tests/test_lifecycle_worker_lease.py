@@ -55,3 +55,21 @@ def test_current_worker_can_release_lease(tmp_path):
     assert state["worker_active"] is False
     assert state["worker_lease_token"] == ""
     assert state["worker_lease_expires_at"] is None
+
+def test_concurrent_workers_cannot_claim_same_run(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    lifecycle = LifecycleStore(tmp_path)
+    barrier = Barrier(2)
+
+    def claim(owner):
+        barrier.wait()
+        return lifecycle.claim_worker_lease(
+            "run-race", owner_id=owner, lease_token=f"token-{owner}", ttl_seconds=30,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(claim, ("a", "b")))
+
+    assert sorted(results) == [False, True]
