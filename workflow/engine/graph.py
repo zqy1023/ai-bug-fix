@@ -248,6 +248,34 @@ def _agent_node(
         task = dict(state.get("task") or {})
         started = time.perf_counter()
         try:
+            lease_token = str(services.metadata.get("worker_lease_token") or "") if services else ""
+            current_workspace = str(state.get("ai_workspace_path") or "")
+            worker_suffix = f"-worker-{lease_token[:12]}" if lease_token else ""
+            if lease_token and current_workspace and worker_suffix not in Path(current_workspace).name:
+                if services is None or services.workspaces is None:
+                    raise StepFailed("租约执行缺少工作区隔离服务，拒绝复用共享可写目录")
+                worker_key = f"{run_id}-{task_id}{worker_suffix}"
+                if kind == "unified_fixer":
+                    task_context = dict(state.get("task") or {})
+                    framework = str(
+                        state.get("framework")
+                        or (state.get("evidence") or {}).get("framework")
+                        or task_context.get("framework")
+                        or ""
+                    )
+                    isolated = services.workspaces.create_task_workspace(
+                        str(state.get("source_project_path") or ""),
+                        worker_key,
+                        baseline_dir=str(state.get("baseline_dir") or ""),
+                        carrier=str(task_context.get("carrier") or ""),
+                        framework=framework,
+                    )
+                else:
+                    isolated = services.workspaces.fork_task_workspace(
+                        current_workspace, worker_key,
+                    )
+                state = {**state, "ai_workspace_path": str(isolated)}
+                task = dict(state.get("task") or {})
             if state.get("retry_context"):
                 state = {**state, "retry_context": stage_retry_evidence(store, state)}
             if kind == "unified_fixer":
@@ -331,6 +359,7 @@ def _agent_node(
                 "retry_target": spec.name,
                 "terminal_status": "failed",
                 "attempt": int(state.get("attempt") or 1),
+                "ai_workspace_path": str(state.get("ai_workspace_path") or ""),
             }
             return apply_step_result(
                 store,
@@ -486,6 +515,7 @@ def _agent_node(
                 "retry_target": spec.name,
                 "terminal_status": "failed",
                 "attempt": int(state.get("attempt") or 1),
+                "ai_workspace_path": str(state.get("ai_workspace_path") or ""),
             }
             return apply_step_result(
                 store,
@@ -543,6 +573,7 @@ def _agent_node(
             "retry_reason": reason if failed else "",
             "retry_target": "",
             "attempt": int(state.get("attempt") or 1),
+            "ai_workspace_path": str(state.get("ai_workspace_path") or ""),
             "terminal_status": (
                 "manual"
                 if (kind == "unified_fixer" and view.status in {"MANUAL", "ANALYSIS_ONLY"})
