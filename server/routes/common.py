@@ -9,8 +9,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
-import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -37,8 +35,6 @@ from config.settings import settings
 SERVICE_NAME = settings.service_name
 SERVICE_VERSION = settings.service_version
 
-_ID_MAX_LENGTH = 160
-_ID_PATTERN = re.compile(rf"^[A-Za-z0-9_.-]{{1,{_ID_MAX_LENGTH}}}$")
 logger = logging.getLogger("server.api")
 
 
@@ -49,15 +45,6 @@ class ApprovalDecision(BaseModel):
     reason: str = ""
     # retry_target：驳回后必须明确指定的工作流阶段。
     retry_target: str | None = None
-
-
-def _authorize(authorization: str | None = Header(default=None)) -> None:
-    token = nacos_get("WORKBENCH_API_TOKEN", "").strip()
-    if not token:
-        return
-    supplied = (authorization or "").removeprefix("Bearer ").strip()
-    if not supplied or not secrets.compare_digest(supplied, token):
-        raise HTTPException(status_code=401, detail="需要有效的工作台 Bearer Token")
 
 
 def _config():
@@ -81,19 +68,6 @@ def _store() -> RecordStore:
         return _mod.__dict__["_store"]()
     config = _config()
     return RecordStore(config.runtime_dir)
-
-
-def _safe_id(value: str) -> str:
-    if not _ID_PATTERN.fullmatch(value) or value in {".", ".."}:
-        raise HTTPException(status_code=400, detail="无效的 ID")
-    return value
-
-
-def _read_json(path: Path, default: Any = None) -> Any:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return default
 
 
 def _has_pending_approval_interrupt(store: RecordStore, run_id: str) -> bool:
@@ -758,16 +732,6 @@ def _v1_run_summary(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _parse_time(value: Any) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-    except (TypeError, ValueError):
-        return None
-
-
 def _v1_detail(run_id: str) -> dict[str, Any]:
     import sys
     _mod = sys.modules.get("server.api") or sys.modules.get("server.routes")
@@ -934,6 +898,9 @@ def _checkpoint_projection(snapshot: Any) -> dict[str, Any]:
 
 
 
+
+# 基础身份校验和文件解析函数只在 server.context 维护。
+from server.context import _ID_PATTERN, _authorize, _parse_time, _read_json, _safe_id
 
 # Run 级线程锁与运行标记只在 server.context 维护，避免 API 路由和 worker
 # 各自持有一套互不知情的进程内锁表。
