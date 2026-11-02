@@ -28,7 +28,7 @@ def v1_close_task(run_id: str, task_id: str, request: CloseTaskRequest, _: None 
     from infrastructure.storage.execution_scope import execution_scope
     with execution_scope(store.root):
         lifecycle = LifecycleStore(store.root)
-        if lifecycle.read_run(run_id).get("worker_active"):
+        if _run_payload(store, run_id).get("worker_active"):
             raise HTTPException(status_code=409, detail="后台仍执行，请先停止批次再关闭任务")
         lifecycle.update_task(run_id, task_id, status="cancelled", manually_closed=True,
                               terminal_reason=request.reason.strip(), next_action="已由人工关闭，不自动恢复")

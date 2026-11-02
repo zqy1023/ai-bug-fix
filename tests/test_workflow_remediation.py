@@ -452,3 +452,18 @@ def test_single_step_continuation_keeps_same_lease_and_global_slot(tmp_path):
         runner._execute(SPEC, StepRunRequest(run_id='run', task_id='task', step_name=SPEC.name, continue_after=True), 'worker', 'token')
     assert called == [SPEC.name]
     assert not life.read_run('run')['worker_active']
+
+
+def test_manual_close_uses_expired_lease_projection_like_get(tmp_path, monkeypatch):
+    from core.contracts import StepRecord
+    from server.routes.tasks import v1_get_task, v1_close_task, CloseTaskRequest
+    monkeypatch.setenv('AI_REPAIR_RUNTIME_DIR', str(tmp_path))
+    store = RecordStore(tmp_path)
+    store.create_run('closed', {'workflow_version': WORKFLOW_VERSION})
+    store.save('closed', StepRecord(name='unified_fixer_agent', title='fix', status='running'), 'task')
+    life = LifecycleStore(tmp_path)
+    assert life.claim_worker_lease('closed', owner_id='crashed', lease_token='expired')
+    store.database('closed').update('', 'lifecycle', lambda current: {
+        **current, 'status': 'running', 'worker_lease_expires_at': '2000-01-01T00:00:00+00:00'})
+    assert v1_get_task('closed', 'task', None)['actions']['close']['enabled']
+    assert v1_close_task('closed', 'task', CloseTaskRequest(reason='人工已处理'), None)['status'] == 'cancelled'

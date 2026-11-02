@@ -1,13 +1,12 @@
 {
-  "recorded_at": "2026-11-02T08:29:33.675341+00:00",
+  "recorded_at": "2026-11-02T08:39:23.226961+00:00",
   "baseline": "aadbae9ea2ac4736a3a5aa3b2bb31e6b7dbcea9a",
   "backend": {
-    "tests": 367,
+    "tests": 369,
     "failures": 0,
     "errors": 0,
     "skipped": 0
   },
-  "post_full_run_affected_api_regression": "16 passed",
   "frontend": {
     "typecheck": "passed",
     "production_build": "passed",
@@ -28,5 +27,6 @@
     "真实本地裸 Git 远端",
     "不调用外部 ES/模型/承运商",
     "人工合并"
-  ]
+  ],
+  "ci_isolation": "测试模型名由 CI 显式注入；缓存测试私有日志/指标仅作为初始化边界桩，未绕过平台缓存实现"
 }

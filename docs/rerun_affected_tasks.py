@@ -49,7 +49,7 @@ def require_project_interpreter() -> None:
     """在任何分支或运行状态操作前拒绝错误的平台解释器。"""
     environment = ROOT / '.venv'
     expected = environment / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
-    if expected.is_file() and Path(sys.prefix).resolve() != environment.resolve():
+    if not expected.is_file() or Path(sys.prefix).resolve() != environment.resolve():
         raise RuntimeError(f'重跑必须使用项目解释器 {expected}；当前为 {sys.executable}')
 
 

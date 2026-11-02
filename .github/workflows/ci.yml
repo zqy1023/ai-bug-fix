@@ -29,6 +29,7 @@ jobs:
         env:
           NACOS_ENABLED: 'false'
           PYTHONDONTWRITEBYTECODE: '1'
+          ANTHROPIC_MODEL: fixture-model
         run: |
           python -m pytest tests -q --junitxml=pytest-results.xml
       - uses: actions/upload-artifact@v4
