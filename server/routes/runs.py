@@ -645,14 +645,22 @@ def v1_cancel_run(
         raise HTTPException(status_code=409, detail="执行当前不是可请求停止的状态")
     # 已经挂起的 interrupt 不会自行观察取消标志；恢复检查点让它进入取消收尾。
     paused_lock = None
+    cancel_lease: tuple[str, str] | None = None
     if detail["status"] == "paused":
         with _RUN_LOCKS_GUARD:
             paused_lock = _run_lock(run_id)
         if not paused_lock.acquire(blocking=False):
             raise HTTPException(status_code=409, detail="执行正在恢复或仍未完全暂停，请稍后重试")
+        try:
+            cancel_lease = _claim_worker_lease(run_id)
+        except Exception:
+            paused_lock.release()
+            raise
     try:
         connection = _control_db()
     except Exception:
+        if cancel_lease is not None:
+            _release_worker_lease(run_id, cancel_lease)
         if paused_lock is not None:
             paused_lock.release()
         raise
@@ -664,13 +672,15 @@ def v1_cancel_run(
         )
         connection.commit()
     except Exception:
+        if cancel_lease is not None:
+            _release_worker_lease(run_id, cancel_lease)
         if paused_lock is not None:
             paused_lock.release()
         raise
     finally:
         connection.close()
     if paused_lock is not None:
-        background.add_task(_resume_workflow_background, run_id, paused_lock)
+        background.add_task(_resume_workflow_background, run_id, paused_lock, None, cancel_lease)
     try:
         _audit_control(run_id, "", "run.cancel_requested", "api")
     except Exception:
