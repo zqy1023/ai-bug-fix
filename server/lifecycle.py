@@ -70,6 +70,22 @@ def _start_lifecycle_heartbeat(
     return stop, thread
 
 
+def _claim_worker_lease(run_id: str, *, ttl_seconds: int = 300) -> tuple[str, str]:
+    owner_id = f"{settings.service_name}:control:{uuid.uuid4().hex[:12]}"
+    lease_token = uuid.uuid4().hex
+    if not LifecycleStore(_store().root).claim_worker_lease(
+        run_id, owner_id=owner_id, lease_token=lease_token, ttl_seconds=ttl_seconds,
+    ):
+        raise WorkerLeaseBusy(f"Run 已由其它 worker 持有有效租约: {run_id}")
+    return owner_id, lease_token
+
+
+def _release_worker_lease(run_id: str, lease: tuple[str, str]) -> bool:
+    return LifecycleStore(_store().root).release_worker_lease(
+        run_id, owner_id=lease[0], lease_token=lease[1],
+    )
+
+
 def _owns_worker_lease(run_id: str, owner_id: str, lease_token: str) -> bool:
     return LifecycleStore(_store().root).owns_worker_lease(
         run_id, owner_id=owner_id, lease_token=lease_token,
