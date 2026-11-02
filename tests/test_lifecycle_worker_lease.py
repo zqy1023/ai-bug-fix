@@ -241,3 +241,30 @@ def test_write_guard_blocks_lease_takeover_until_persistent_write_finishes(tmp_p
     with pytest.raises(WorkerLeaseLost):
         with database.worker_lease_guard(owner_id="worker-a", lease_token="token-a"):
             pass
+
+
+def test_lifecycle_updates_are_fenced_when_store_has_worker_identity(tmp_path):
+    import pytest
+
+    from infrastructure.storage.lifecycle import WorkerLeaseLost
+
+    lifecycle = LifecycleStore(tmp_path)
+    assert lifecycle.claim_worker_lease(
+        "run-fenced", owner_id="worker-a", lease_token="token-a", ttl_seconds=30,
+    )
+    fenced = LifecycleStore(tmp_path, worker_lease=("worker-a", "token-a"))
+    fenced.update_run("run-fenced", status="running", phase="worker-a")
+
+    lifecycle._database("run-fenced").update(
+        "", "lifecycle",
+        lambda state: {
+            **state,
+            "worker_lease_expires_at": "2000-01-01T00:00:00+00:00",
+        },
+    )
+    assert lifecycle.claim_worker_lease(
+        "run-fenced", owner_id="worker-b", lease_token="token-b", ttl_seconds=30,
+    )
+    with pytest.raises(WorkerLeaseLost):
+        fenced.update_run("run-fenced", status="failed", phase="stale-worker")
+    assert lifecycle.read_run("run-fenced")["phase"] == "worker-a"

@@ -76,8 +76,11 @@ def start_worker_lease_heartbeat(
 class LifecycleStore:
     """仅从当前运行的 SQLite 读取和更新生命周期。"""
 
-    def __init__(self, runtime_dir: str | Path) -> None:
+    def __init__(
+        self, runtime_dir: str | Path, *, worker_lease: tuple[str, str] | None = None,
+    ) -> None:
         self.root = Path(runtime_dir).resolve() / "runs"
+        self.worker_lease = worker_lease
 
     def read_run(self, run_id: str) -> dict[str, Any]:
         return self._database(run_id).get("", "lifecycle") or {}
@@ -292,9 +295,13 @@ class LifecycleStore:
                     value["heartbeat_at"] = now
             return value
 
-        return self._database(run_id).update(
-            task_id, "lifecycle", transform,
-        )
+        if self.worker_lease is not None:
+            owner_id, lease_token = self.worker_lease
+            return self._database(run_id).update_with_worker_lease(
+                task_id, "lifecycle", owner_id=owner_id, lease_token=lease_token,
+                transform=transform,
+            )
+        return self._database(run_id).update(task_id, "lifecycle", transform)
 
 
 class _Unset:

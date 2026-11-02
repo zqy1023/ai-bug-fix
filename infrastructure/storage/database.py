@@ -68,6 +68,49 @@ class RecordDatabase:
                 connection.rollback()
                 raise
 
+    def update_with_worker_lease(
+        self, scope: str, name: str, *, owner_id: str, lease_token: str,
+        transform: Callable[[dict[str, Any]], dict[str, Any]],
+    ) -> dict[str, Any]:
+        """校验 Run 租约并在同一 SQLite 事务内更新状态行。"""
+        from infrastructure.storage.lifecycle import WorkerLeaseLost
+
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                lease_row = connection.execute(
+                    "SELECT body FROM state WHERE scope='' AND name='lifecycle'"
+                ).fetchone()
+                lease = json.loads(lease_row[0]) if lease_row else {}
+                try:
+                    expires = datetime.fromisoformat(
+                        str(lease.get("worker_lease_expires_at") or "")
+                    )
+                    if expires.tzinfo is None:
+                        expires = expires.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    expires = datetime.min.replace(tzinfo=timezone.utc)
+                if (
+                    lease.get("worker_lease_owner") != owner_id
+                    or lease.get("worker_lease_token") != lease_token
+                    or expires <= datetime.now(timezone.utc)
+                ):
+                    raise WorkerLeaseLost("worker lease lost before lifecycle update")
+                row = connection.execute(
+                    "SELECT body FROM state WHERE scope=? AND name=?", (scope, name),
+                ).fetchone()
+                value = transform(json.loads(row[0]) if row else {})
+                connection.execute(
+                    "INSERT INTO state(scope,name,body) VALUES(?,?,?) "
+                    "ON CONFLICT(scope,name) DO UPDATE SET body=excluded.body",
+                    (scope, name, json.dumps(value, ensure_ascii=False, default=str)),
+                )
+                connection.commit()
+                return value
+            except BaseException:
+                connection.rollback()
+                raise
+
     def get(self, scope: str, name: str) -> dict[str, Any] | None:
         """读取状态；不存在时返回空。"""
         if not self.path.is_file():

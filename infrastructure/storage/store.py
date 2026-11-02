@@ -236,7 +236,7 @@ class RecordStore:
         return self.steps_path(run_id)
 
     def _update_lifecycle(self, run_id: str, task_id: str, record: StepRecord) -> None:
-        lifecycle = LifecycleStore(self.root)
+        lifecycle = LifecycleStore(self.root, worker_lease=self._worker_lease)
         phase = record.name
         error = record.error.model_dump(mode="json") if record.error else {}
         if not task_id:
@@ -324,12 +324,13 @@ class RecordStore:
         if record is None:
             raise StepFailed("任务子图退出但缺少终态步骤记录")
         from workflow.stages.finalize.node import refresh_completed_report
-        refresh_completed_report(self, run_id, task_id)
+        with self._write_guard(run_id):
+            refresh_completed_report(self, run_id, task_id)
         self._update_lifecycle(run_id, task_id, record)
         if str(record.output.get("delivery_status") or "").upper() == "BLOCKED":
-            LifecycleStore(self.root).update_task(run_id, task_id, workspace_released=False)
+            LifecycleStore(self.root, worker_lease=self._worker_lease).update_task(run_id, task_id, workspace_released=False)
             return
-        LifecycleStore(self.root).update_task(run_id, task_id, workspace_released=True)
+        LifecycleStore(self.root, worker_lease=self._worker_lease).update_task(run_id, task_id, workspace_released=True)
         from infrastructure.workspace.workspace_gc import collect_configured_workspaces
         from infrastructure.llm.config import load_config
         from dataclasses import replace
@@ -337,7 +338,7 @@ class RecordStore:
 
     def report_progress(self, run_id: str, step: str, message: str, counts: dict[str, int]) -> None:
         """记录不含原始日志的处理进度，供轮询和事件流展示。"""
-        LifecycleStore(self.root).update_run(
+        LifecycleStore(self.root, worker_lease=self._worker_lease).update_run(
             run_id, progress={"step": step, "message": message, "counts": counts},
             progress_at=utc_now(),
         )
@@ -536,7 +537,7 @@ class RecordStore:
         with path.open("x", encoding="utf-8") as file_obj:
             json.dump(body, file_obj, ensure_ascii=False, indent=2)
 
-        LifecycleStore(self.root).update_run(
+        LifecycleStore(self.root, worker_lease=self._worker_lease).update_run(
             run_id, status="queued", phase="queued", current_step="",
             started_at=None, finished_at=None, error={}, terminal_reason="",
         )
