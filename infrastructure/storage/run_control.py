@@ -7,6 +7,8 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
+from infrastructure.storage.sqlite import open_sqlite
+
 logger = logging.getLogger(__name__)
 
 
