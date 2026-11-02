@@ -434,6 +434,9 @@ def run_stage(
     except WorkerLeaseLost:
         raise
     except GraphInterrupt:
+        # Interrupt is still a write: an expired worker must not persist a stale
+        # waiting record over the replacement worker's current step state.
+        _assert_worker_lease(services, store, run_id, spec.name)
         record.status = "waiting"
         record.artifacts = list(artifacts)
         record.finished_at = utc_now()
