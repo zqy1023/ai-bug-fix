@@ -20,7 +20,7 @@ import shutil
 import tempfile
 import time
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -88,6 +88,25 @@ class RecordStore:
         self.root = Path(root).resolve()
         (self.root / "runs").mkdir(parents=True, exist_ok=True)
         self._lock = _root_lock(self.root)
+        self._worker_lease: tuple[str, str] | None = None
+
+    def set_worker_lease(self, owner_id: str, lease_token: str) -> None:
+        """为当前执行绑定租约身份；不带租约的离线/CLI Store 保持兼容。"""
+        if not owner_id or not lease_token:
+            raise ValueError("worker lease identity is incomplete")
+        self._worker_lease = (owner_id, lease_token)
+
+    def clear_worker_lease(self) -> None:
+        """结束 worker 生命周期，避免复用 Store 时携带过期身份。"""
+        self._worker_lease = None
+
+    def _write_guard(self, run_id: str):
+        if self._worker_lease is None:
+            return nullcontext()
+        owner_id, lease_token = self._worker_lease
+        return self.database(run_id).worker_lease_guard(
+            owner_id=owner_id, lease_token=lease_token,
+        )
 
     def run_dir(self, run_id: str) -> Path:
         """一次执行的目录。"""
@@ -148,7 +167,7 @@ class RecordStore:
             )
         # 先拿跨进程锁再拿进程内锁：等另一个进程写完期间不能占着进程内锁，
         # 否则任务板的所有投影读都会被一起拖住。
-        with _process_lock(self.run_dir(run_id) / ".steps.lock"), self._lock:
+        with self._write_guard(run_id) as guard_connection, _process_lock(self.run_dir(run_id) / ".steps.lock"), self._lock:
             payload = self._read_steps(run_id)
             if task_id:
                 tasks = payload.setdefault("tasks", [])
@@ -405,6 +424,13 @@ class RecordStore:
 
     def write_artifact(self, run_id: str, relative: str, value: Any, task_id: str = "") -> str:
         """写大产物，返回相对任务/执行目录的路径。不进入 steps.json。"""
+        with self._write_guard(run_id) as guard_connection:
+            return self._write_artifact_guarded(run_id, relative, value, task_id, guard_connection)
+
+    def _write_artifact_guarded(
+        self, run_id: str, relative: str, value: Any, task_id: str = "",
+        guard_connection: Any = None,
+    ) -> str:
         _, target = self._target(run_id, relative, task_id)
         target.parent.mkdir(parents=True, exist_ok=True)
         # 建目录之后再确认一次：父目录可能本身就是指向根目录之外符号链接。
