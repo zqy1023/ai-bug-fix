@@ -52,7 +52,7 @@ from infrastructure.git.source import (
 from infrastructure.llm.config import RuntimeConfig, load_config, workflow_recursion_limit
 from infrastructure.llm.runtime import close_sessions
 from infrastructure.storage.policy import debug_artifacts
-from infrastructure.storage.lifecycle import LifecycleStore
+from infrastructure.storage.lifecycle import LifecycleStore, WorkerLeaseLost
 from infrastructure.storage.sqlite import open_sqlite
 from infrastructure.storage.redaction import public_exception
 from infrastructure.storage.run_control import cancellation_requested, pause_requested
@@ -835,12 +835,12 @@ def _guard_worker_lease(
         if not run_id or not LifecycleStore(store.root).owns_worker_lease(
             run_id, owner_id=owner_id, lease_token=lease_token,
         ):
-            raise RuntimeError(f"Run worker lease lost before node: {name}")
+            raise WorkerLeaseLost(f"Run worker lease lost before node: {name}")
         result = node(state)
         if not LifecycleStore(store.root).owns_worker_lease(
             run_id, owner_id=owner_id, lease_token=lease_token,
         ):
-            raise RuntimeError(f"Run worker lease lost after node: {name}")
+            raise WorkerLeaseLost(f"Run worker lease lost after node: {name}")
         return result
 
     guarded.__name__ = name
