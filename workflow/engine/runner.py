@@ -350,6 +350,25 @@ def reset() -> None:
 # 5. 步骤执行与节点绑定引擎 (Stage Runner & Node Binding)
 # ---------------------------------------------------------------------------
 
+class WorkerLeaseLost(RuntimeError):
+    """当前执行进程已失去 Run 租约，禁止继续写入步骤记录。"""
+
+
+def _assert_worker_lease(services: WorkflowServices, run_id: str, step_name: str) -> None:
+    owner_id = str(services.metadata.get("worker_lease_owner") or "")
+    lease_token = str(services.metadata.get("worker_lease_token") or "")
+    if not owner_id and not lease_token:
+        return
+    if not owner_id or not lease_token:
+        raise WorkerLeaseLost(f"{step_name}: worker lease identity is incomplete")
+    from infrastructure.storage.lifecycle import LifecycleStore
+
+    if not LifecycleStore(services.metadata.get("runtime_dir") or ".").owns_worker_lease(
+        run_id, owner_id=owner_id, lease_token=lease_token,
+    ):
+        raise WorkerLeaseLost(f"{step_name}: worker lease lost")
+
+
 def run_stage(
     spec: StepSpec,
     store: RecordStore,
@@ -367,6 +386,7 @@ def run_stage(
     if spec.task_level and not task_id:
         raise StepFailed(f"{spec.name} 缺少真实 task_id，拒绝生成调试身份")
 
+    _assert_worker_lease(services, run_id, spec.name)
     started = time.perf_counter()
     previous_record = store.load(run_id, spec.name, task_id)
     previous_attempt = previous_record.attempt if previous_record else 0
@@ -392,6 +412,7 @@ def run_stage(
             )
         parsed = spec.input_model.model_validate(spec.input_builder(state))
         record.input = dump_model(parsed)
+        _assert_worker_lease(services, run_id, spec.name)
         store.save(run_id, record, task_id, **_views(spec))
         run_context = RunContext(
             run_id=run_id,
@@ -410,7 +431,10 @@ def run_stage(
         )
         output = spec.runner(context, parsed)
         artifacts = context.artifacts
+        _assert_worker_lease(services, run_id, spec.name)
         checked = spec.output_model.model_validate(dump_model(output))
+    except WorkerLeaseLost:
+        raise
     except GraphInterrupt:
         record.status = "waiting"
         record.artifacts = list(artifacts)
@@ -419,14 +443,17 @@ def run_stage(
         store.save(run_id, record, task_id, **_views(spec))
         raise
     except StepFailed as error:
+        _assert_worker_lease(services, run_id, spec.name)
         return _save_fail(
             spec, store, state, record, task_id, artifacts, started, error, **_views(spec)
         )
     except (ValidationError, KeyError, ValueError) as error:
+        _assert_worker_lease(services, run_id, spec.name)
         return _save_fail(
             spec, store, state, record, task_id, artifacts, started, StepFailed(str(error)), **_views(spec)
         )
     except Exception as error:
+        _assert_worker_lease(services, run_id, spec.name)
         logger.exception("步骤 %s 执行异常", spec.name)
         reason = public_exception(error, prefix=f"步骤 {spec.name} 执行异常")
         return _save_fail(
@@ -446,6 +473,7 @@ def run_stage(
             **_views(spec),
         )
 
+    _assert_worker_lease(services, run_id, spec.name)
     output_payload = dump_model(checked)
     status, business = map_outcome(
         kind="ok",
