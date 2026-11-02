@@ -3,24 +3,27 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime, timezone
-from pathlib import Path
-
-from config.settings import settings
+from infrastructure.storage.sqlite import open_sqlite
 from server.context import _config
+
 
 def _control_db():
     """Durable idempotency, stop-request and audit metadata, separate from workflow artifacts."""
-    import sqlite3
     config = _config()
     runtime_dir = config.runtime_dir
-    runtime_dir.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(
-        str(runtime_dir / "workbench-control.sqlite3"),
+    connection = open_sqlite(
+        runtime_dir / "workbench-control.sqlite3",
         timeout=config.workbench_sqlite_timeout_seconds,
+        busy_timeout_ms=config.workbench_sqlite_busy_timeout_ms,
+        row_factory=sqlite3.Row,
+        journal_mode="WAL",
     )
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute(f"PRAGMA busy_timeout={config.workbench_sqlite_busy_timeout_ms}")
+    _ensure_control_schema(connection)
+    return connection
+
+
+def _ensure_control_schema(connection) -> None:
+    """控制库 Schema 的唯一初始化入口。"""
     connection.executescript("""
         CREATE TABLE IF NOT EXISTS idempotency_keys (
             key TEXT PRIMARY KEY, payload_hash TEXT NOT NULL, run_id TEXT NOT NULL, created_at TEXT NOT NULL
@@ -36,7 +39,7 @@ def _control_db():
         );
     """)
     connection.commit()
-    return connection
+
 
 def _audit_control(run_id: str, task_id: str, action: str, actor: str, reason: str = "") -> None:
     connection = _control_db()

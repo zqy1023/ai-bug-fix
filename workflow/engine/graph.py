@@ -52,6 +52,7 @@ from infrastructure.git.source import (
 from infrastructure.llm.config import RuntimeConfig, load_config, workflow_recursion_limit
 from infrastructure.llm.runtime import close_sessions
 from infrastructure.storage.policy import debug_artifacts
+from infrastructure.storage.sqlite import open_sqlite
 from infrastructure.storage.redaction import public_exception
 from infrastructure.storage.run_control import cancellation_requested, pause_requested
 from infrastructure.storage.store import RecordStore
@@ -135,15 +136,12 @@ def _checkpoint_saver(runtime_dir: Any) -> SqliteSaver:
     with _CHECKPOINT_LOCK:
         connection = _CHECKPOINT_CONNECTIONS.get(path)
         if connection is None:
-            runtime_dir.mkdir(parents=True, exist_ok=True)
-            connection = sqlite3.connect(
+            connection = open_sqlite(
                 path,
                 check_same_thread=False,
                 timeout=30,
-            )
-            connection.execute("PRAGMA journal_mode=WAL")
-            connection.execute(
-                "PRAGMA busy_timeout=30000"
+                busy_timeout_ms=30000,
+                journal_mode="WAL",
             )
             _CHECKPOINT_CONNECTIONS[path] = connection
         saver = _CHECKPOINT_SAVERS.get(path)

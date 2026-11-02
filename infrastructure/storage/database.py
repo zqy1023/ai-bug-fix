@@ -8,6 +8,8 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable
 
+from infrastructure.storage.sqlite import open_sqlite
+
 
 class RecordDatabase:
     """短事务读写；无数据时不会自动创建数据库。"""
@@ -16,9 +18,7 @@ class RecordDatabase:
         self.path = run_dir / "records.sqlite"
 
     def _connect(self) -> sqlite3.Connection:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.path, timeout=30)
-        connection.execute("PRAGMA busy_timeout=30000")
+        connection = open_sqlite(self.path, timeout=30, busy_timeout_ms=30000)
         connection.executescript(
             "CREATE TABLE IF NOT EXISTS state ("
             "scope TEXT NOT NULL, name TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(scope,name));"
