@@ -187,7 +187,9 @@ def _settle_task_lifecycles_after_run_failure(
             store.complete_task(run_id, task_id)
             continue
         for record in records:
-            if record.status == "running":
+            if record.status == "running" or (
+                phase == "worker_timeout" and record.status == "waiting"
+            ):
                 finished = datetime.now(timezone.utc)
                 started = _parse_time(record.started_at)
                 record.status = "failed"
