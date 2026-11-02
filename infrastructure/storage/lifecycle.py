@@ -19,6 +19,10 @@ _TERMINAL = {"succeeded", "partial_failed", "failed", "cancelled", "manual", "sk
 logger = logging.getLogger(__name__)
 
 
+class WorkerLeaseBusy(RuntimeError):
+    """Run 已由另一个 worker 持有有效执行租约。"""
+
+
 class WorkerLeaseLost(RuntimeError):
     """当前 worker 已失去 Run 执行租约，不能继续推进或清理运行资源。"""
 
@@ -258,4 +262,4 @@ class _Unset:
 _UNSET = _Unset()
 
 
-__all__ = ["LifecycleStore", "WorkerLeaseLost"]
+__all__ = ["LifecycleStore", "WorkerLeaseBusy", "WorkerLeaseLost"]
