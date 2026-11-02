@@ -1101,6 +1101,8 @@ class StepRunner:
                 code="RUN_LEASE_BUSY",
             )
         try:
+            from infrastructure.storage.reports import archive_retry_reports
+            archive_retry_reports(self._store, request.run_id, request.task_id)
             running = self._mark_running(spec, request)
             thread = threading.Thread(
                 target=self._execute,
@@ -1173,8 +1175,6 @@ class StepRunner:
                 lifecycle, request.run_id, owner_id=lease_owner, lease_token=lease_token,
                 interval_seconds=5, ttl_seconds=30,
             )
-            from infrastructure.storage.reports import archive_retry_reports
-            archive_retry_reports(self._store, request.run_id, request.task_id)
             code, record, payload = execute_once(
                 spec,
                 run_id=request.run_id,
