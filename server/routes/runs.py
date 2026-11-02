@@ -536,7 +536,7 @@ def v1_retry_run(run_id: str, background: BackgroundTasks, _: None = Depends(_au
             # final.json.retry_previous 中的上一轮任务明细。
             from infrastructure.storage.reports import archive_retry_reports
             archive_retry_reports(store, run_id)
-            LifecycleStore(store.root).update_run(
+            LifecycleStore(store.root, worker_lease=worker_lease).update_run(
                 run_id, status="retrying", phase="retry_queued", current_step="",
                 error={}, error_type="", error_message="", terminal_reason="",
                 next_action="", worker_active=True,
@@ -563,7 +563,7 @@ def v1_retry_run(run_id: str, background: BackgroundTasks, _: None = Depends(_au
             temporary.replace(run_json)
             from infrastructure.storage.reports import archive_retry_reports
             archive_retry_reports(store, run_id)
-            LifecycleStore(store.root).update_run(
+            LifecycleStore(store.root, worker_lease=worker_lease).update_run(
                 run_id, status="queued", phase="retry_queued", current_step="",
                 started_at=None, finished_at=None, error={},
                 error_type="", error_message="", terminal_reason="", next_action="",
@@ -585,11 +585,15 @@ def v1_retry_run(run_id: str, background: BackgroundTasks, _: None = Depends(_au
         _audit_control(run_id, "", "run.retry_requested", "api", f"mode={mode}")
         retry_operation.save("committed", mode=mode, run_overrides=overrides if mode != "resume" else {})
     except Exception:
-        if retry_operation is not None:
-            retry_operation.rollback()
-        if worker_lease is not None:
-            _release_worker_lease(run_id, worker_lease)
-        lock.release()
+        try:
+            if retry_operation is not None:
+                retry_operation.rollback()
+        finally:
+            try:
+                if worker_lease is not None:
+                    _release_worker_lease(run_id, worker_lease)
+            finally:
+                lock.release()
         raise
 
     try:
@@ -599,9 +603,13 @@ def v1_retry_run(run_id: str, background: BackgroundTasks, _: None = Depends(_au
             background.add_task(worker, run_id, overrides, lock, worker_lease)
         retry_operation.save("queued")
     except Exception:
-        retry_operation.save("recovery_required")
-        _release_worker_lease(run_id, worker_lease)
-        lock.release()
+        try:
+            retry_operation.save("recovery_required")
+        finally:
+            try:
+                _release_worker_lease(run_id, worker_lease)
+            finally:
+                lock.release()
         raise HTTPException(status_code=503, detail="Run 重试已持久化，入队失败，请恢复该 Run")
     return {
         "run_id": run_id,
@@ -650,11 +658,15 @@ def v1_resume_run(run_id: str, background: BackgroundTasks, _: None = Depends(_a
         finally:
             connection.close()
     except Exception:
-        if retry_operation is not None:
-            retry_operation.rollback()
-        if worker_lease is not None:
-            _release_worker_lease(run_id, worker_lease)
-        lock.release()
+        try:
+            if retry_operation is not None:
+                retry_operation.rollback()
+        finally:
+            try:
+                if worker_lease is not None:
+                    _release_worker_lease(run_id, worker_lease)
+            finally:
+                lock.release()
         raise
 
     try:
@@ -662,11 +674,15 @@ def v1_resume_run(run_id: str, background: BackgroundTasks, _: None = Depends(_a
         if retry_operation is not None:
             retry_operation.save("committed")
     except Exception:
-        if retry_operation is not None:
-            retry_operation.rollback()
-        if worker_lease is not None:
-            _release_worker_lease(run_id, worker_lease)
-        lock.release()
+        try:
+            if retry_operation is not None:
+                retry_operation.rollback()
+        finally:
+            try:
+                if worker_lease is not None:
+                    _release_worker_lease(run_id, worker_lease)
+            finally:
+                lock.release()
         logger.exception("写入恢复操作审计失败 run_id=%s", run_id)
         raise HTTPException(status_code=503, detail="恢复未提交：写入控制审计失败")
     try:
@@ -674,10 +690,14 @@ def v1_resume_run(run_id: str, background: BackgroundTasks, _: None = Depends(_a
         if retry_operation is not None:
             retry_operation.save("queued")
     except Exception:
-        if retry_operation is not None:
-            retry_operation.save("recovery_required")
-        _release_worker_lease(run_id, worker_lease)
-        lock.release()
+        try:
+            if retry_operation is not None:
+                retry_operation.save("recovery_required")
+        finally:
+            try:
+                _release_worker_lease(run_id, worker_lease)
+            finally:
+                lock.release()
         raise HTTPException(status_code=503, detail="恢复意图已保存，请再次恢复该 Run")
     return {"run_id": run_id, "status": "resume_requested", "message": "已提交检查点恢复；请观察运行状态变化"}
 
@@ -706,10 +726,20 @@ def v1_recover_retry_operation(run_id: str, background: BackgroundTasks, _: None
     try:
         lease = _claim_worker_lease(run_id)
         store.set_worker_lease(run_id, *lease)
+        intent = store.database(run_id).get("", "retry_intent") or {}
+        if intent.get("phase") not in {"preparing", "committing", "committed", "queued", "recovery_required"}:
+            raise HTTPException(status_code=409, detail="重试意图已经完成，请刷新状态")
+        if intent.get("phase") == "preparing" or intent.get("recovery_action") == "rollback":
+            from infrastructure.storage.retry import recover_retry
+            recover_retry(store, run_id, None, {})
+            _release_worker_lease(run_id, lease)
+            lock.release()
+            return {"status": "rolled_back", "message": "准备阶段已恢复，可重新发起重试"}
         if intent.get("kind") == "single_step":
             from server.routes.tasks import v1_run_step
             saved = intent["step_request"]
-            store.database(run_id).update("", "retry_intent", lambda current: {**current, "phase": "recovered"})
+            store.database(run_id).update_with_worker_lease("", "retry_intent", owner_id=lease[0], lease_token=lease[1],
+                transform=lambda current: {**current, "phase": "recovered"})
             _release_worker_lease(run_id, lease)
             lease = None
             lock.release()
@@ -719,7 +749,8 @@ def v1_recover_retry_operation(run_id: str, background: BackgroundTasks, _: None
                                    V1StepRunRequest(confirm_write=saved["confirm_write"], continue_after=saved["continue_after"]), None, None)
             except BaseException:
                 store.database(run_id).update("", "retry_intent", lambda current:
-                    {**current, "phase": intent["phase"]} if current.get("operation_id") == intent["operation_id"] else current)
+                    {**current, "phase": intent["phase"]}
+                    if current.get("operation_id") == intent["operation_id"] and current.get("phase") == "recovered" else current)
                 raise
         from infrastructure.storage.retry import recover_retry
         from infrastructure.llm.config import load_config
@@ -739,10 +770,12 @@ def v1_recover_retry_operation(run_id: str, background: BackgroundTasks, _: None
         owns_lock = False
         return {"status": "recovery_queued"}
     except BaseException:
-        if lease is not None:
-            _release_worker_lease(run_id, lease)
-        if owns_lock:
-            lock.release()
+        try:
+            if lease is not None:
+                _release_worker_lease(run_id, lease)
+        finally:
+            if owns_lock:
+                lock.release()
         raise
 
 

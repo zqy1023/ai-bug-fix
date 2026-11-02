@@ -1,8 +1,8 @@
 {
-  "recorded_at": "2026-11-02T08:39:23.226961+00:00",
+  "recorded_at": "2026-11-02T08:59:55.257534+00:00",
   "baseline": "aadbae9ea2ac4736a3a5aa3b2bb31e6b7dbcea9a",
   "backend": {
-    "tests": 369,
+    "tests": 376,
     "failures": 0,
     "errors": 0,
     "skipped": 0
@@ -28,5 +28,7 @@
     "不调用外部 ES/模型/承运商",
     "人工合并"
   ],
-  "ci_isolation": "测试模型名由 CI 显式注入；缓存测试私有日志/指标仅作为初始化边界桩，未绕过平台缓存实现"
+  "ci_isolation": "测试模型名由 CI 显式注入；缓存测试私有日志/指标仅作为初始化边界桩，未绕过平台缓存实现",
+  "acceptance_base_commit": "886248ab387ffa0a93e929317005e3b4ec1c5351",
+  "acceptance_findings": "见 docs/remediation/acceptance.md；补偿/恢复租约、失败清理、准备阶段恢复与人工关闭竞争均新增回归"
 }

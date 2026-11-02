@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
-from typing import Any
+from typing import Any, Callable
 
 from infrastructure.storage.atomic import atomic_write_text
 from infrastructure.storage.lifecycle import LifecycleStore
@@ -43,11 +43,14 @@ class RetryOperation:
         if phase:
             self.value["phase"] = phase
         self.value.update(changes)
+        self._update_state("", "retry_intent", lambda _: dict(self.value))
+
+    def _update_state(self, scope: str, name: str, transform: Callable[[dict[str, Any]], dict[str, Any]]) -> None:
         lease = self.store._worker_lease_for(self.run_id)
         if lease:
-            self.database.update_with_worker_lease("", "retry_intent", owner_id=lease[0], lease_token=lease[1], transform=lambda _: dict(self.value))
+            self.database.update_with_worker_lease(scope, name, owner_id=lease[0], lease_token=lease[1], transform=transform)
         else:
-            self.database.update("", "retry_intent", lambda _: dict(self.value))
+            self.database.update(scope, name, transform)
 
     def moving(self, source: Path, target: Path) -> None:
         self.value["moves"].append({"source": str(source), "target": str(target)})
@@ -69,13 +72,19 @@ class RetryOperation:
                     source, target = Path(move["source"]), Path(move["target"])
                     if target.exists() and not source.exists():
                         target.replace(source)
-            self.database.update("", "lifecycle", lambda current: {
+            self._update_state("", "lifecycle", lambda current: {
                 **self.value["run_lifecycle"], **{key: value for key, value in current.items()
                     if key.startswith("worker_lease_") or key in {"worker_active", "heartbeat_at"}}})
             if self.task_id:
-                self.database.update(self.task_id, "lifecycle", lambda _: dict(self.value["task_lifecycle"]))
+                self._update_state(self.task_id, "lifecycle", lambda _: dict(self.value["task_lifecycle"]))
             from infrastructure.storage.execution_scope import execution_scope
             with execution_scope(self.store.root) as connection:
+                lease = self.store._worker_lease_for(self.run_id)
+                if lease and not LifecycleStore(self.store.root).owns_worker_lease(
+                    self.run_id, owner_id=lease[0], lease_token=lease[1],
+                ):
+                    from infrastructure.storage.lifecycle import WorkerLeaseLost
+                    raise WorkerLeaseLost("重试补偿已失去执行权，禁止恢复控制标记")
                 flags = self.value.get("control_flags")
                 if flags:
                     connection.execute("INSERT INTO run_control VALUES(?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET "
@@ -85,7 +94,7 @@ class RetryOperation:
                     connection.execute("DELETE FROM run_control WHERE run_id=?", (self.run_id,))
             self.save("rolled_back")
         except BaseException as error:
-            self.save("recovery_required", recovery_error=type(error).__name__)
+            self.save("recovery_required", recovery_action="rollback", recovery_error=type(error).__name__)
             raise
 
     def checkpoint(self, graph: Any, config: dict[str, Any], patch: dict[str, Any], *, as_node: str) -> None:
@@ -114,10 +123,12 @@ def recover_retry(store: Any, run_id: str, graph: Any, config: dict[str, Any]) -
     """恢复已提交或提交回执不明的意图；op id 避免重复追加任务。"""
     database = store.database(run_id)
     intent = database.get("", "retry_intent") or {}
-    if intent.get("phase") == "preparing":
+    if intent.get("phase") == "preparing" or (
+        intent.get("phase") == "recovery_required" and intent.get("recovery_action") == "rollback"
+    ):
         operation = RetryOperation.__new__(RetryOperation)
         operation.store, operation.run_id, operation.task_id = store, run_id, intent.get("task_id", "")
-        operation.database, operation.value = database, intent
+        operation.database, operation.value = database, {**intent, "phase": "preparing"}
         operation.rollback()
         return
     if intent.get("phase") not in {"committing", "committed", "recovery_required"}:
@@ -127,8 +138,12 @@ def recover_retry(store: Any, run_id: str, graph: Any, config: dict[str, Any]) -
         saved = store.read_artifact(run_id, path)
         values = graph.get_state(config).values
         if not isinstance(values, dict) or values.get("retry_operation_id") != intent["operation_id"]:
-            graph.update_state(config, saved["patch"], as_node=saved["as_node"])
-    database.update("", "retry_intent", lambda current: {**current, "phase": "queued"})
+            with store._write_guard(run_id):
+                graph.update_state(config, saved["patch"], as_node=saved["as_node"])
+    operation = RetryOperation.__new__(RetryOperation)
+    operation.store, operation.run_id, operation.database = store, run_id, database
+    operation._update_state("", "retry_intent", lambda current: {**current, "phase": "queued"}
+                            if current.get("operation_id") == intent["operation_id"] else current)
 
 
 def finish_retry(store: Any, run_id: str, worker_lease: tuple[str, str] | None = None) -> None:

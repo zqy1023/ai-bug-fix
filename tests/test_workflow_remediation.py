@@ -467,3 +467,135 @@ def test_manual_close_uses_expired_lease_projection_like_get(tmp_path, monkeypat
         **current, 'status': 'running', 'worker_lease_expires_at': '2000-01-01T00:00:00+00:00'})
     assert v1_get_task('closed', 'task', None)['actions']['close']['enabled']
     assert v1_close_task('closed', 'task', CloseTaskRequest(reason='人工已处理'), None)['status'] == 'cancelled'
+
+
+def test_stale_retry_compensation_cannot_replace_successor_lifecycle(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from infrastructure.storage.lifecycle import WorkerLeaseLost
+    store, operation = prepared_retry(tmp_path)
+    life = LifecycleStore(tmp_path)
+    assert life.claim_worker_lease('run', owner_id='old', lease_token='old')
+    store.set_worker_lease('run', 'old', 'old')
+    original_guard = store._write_guard
+
+    @contextmanager
+    def handoff_after_file_restore(run_id):
+        with original_guard(run_id) as connection:
+            yield connection
+        store.database(run_id).update('', 'lifecycle', lambda current: {
+            **current, 'worker_lease_expires_at': '2000-01-01T00:00:00+00:00'})
+        assert life.claim_worker_lease(run_id, owner_id='new', lease_token='new')
+        LifecycleStore(tmp_path, worker_lease=('new', 'new')).update_task(
+            run_id, 'task', status='running', allow_reactivate=True, terminal_reason='successor')
+
+    monkeypatch.setattr(store, '_write_guard', handoff_after_file_restore)
+    with pytest.raises(WorkerLeaseLost):
+        operation.rollback()
+    assert life.read_task('run', 'task')['terminal_reason'] == 'successor'
+
+
+def test_stale_retry_recovery_cannot_rewrite_checkpoint(tmp_path):
+    from infrastructure.storage.lifecycle import WorkerLeaseLost
+    store, operation = prepared_retry(tmp_path)
+    saved = 'retry/checkpoint-test.json'
+    store.write_artifact('run', saved, {'patch': {'retry_operation_id': operation.value['operation_id']}, 'as_node': 'dispatch'})
+    operation.save('committing', checkpoint_patch=saved)
+    life = LifecycleStore(tmp_path)
+    assert life.claim_worker_lease('run', owner_id='old', lease_token='old')
+    store.set_worker_lease('run', 'old', 'old')
+    store.database('run').update('', 'lifecycle', lambda current: {
+        **current, 'worker_lease_expires_at': '2000-01-01T00:00:00+00:00'})
+    assert life.claim_worker_lease('run', owner_id='new', lease_token='new')
+    writes = []
+    graph = SimpleNamespace(get_state=lambda cfg: SimpleNamespace(values={}),
+                            update_state=lambda *args, **kwargs: writes.append(args))
+    with pytest.raises(WorkerLeaseLost):
+        recover_retry(store, 'run', graph, {})
+    assert writes == []
+    assert store.database('run').get('', 'retry_intent')['phase'] == 'committing'
+
+
+def test_failed_compensation_still_releases_api_lock_and_lease(tmp_path, monkeypatch):
+    import threading
+    from fastapi import BackgroundTasks
+    from server.routes import runs
+    store = RecordStore(tmp_path)
+    store.create_run('run', {'workflow_version': WORKFLOW_VERSION})
+    lock = threading.Lock()
+    operation = SimpleNamespace(rollback=lambda: (_ for _ in ()).throw(OSError('compensation failed')))
+    monkeypatch.setattr(runs, '_require_current_workflow', lambda run_id: None)
+    monkeypatch.setattr(runs, '_store', lambda: store)
+    monkeypatch.setattr(runs, '_run_lock', lambda run_id: lock)
+    monkeypatch.setattr(runs, '_v1_detail', lambda run_id: {'status': 'failed', 'checkpoint': {'resumable': True}})
+    monkeypatch.setattr(runs, '_claim_worker_lease', lambda run_id: ('owner', 'token'))
+    with patch('infrastructure.storage.retry.RetryOperation', return_value=operation), \
+         patch('infrastructure.storage.reports.archive_retry_reports', side_effect=OSError('archive failed')), \
+         patch.object(runs, '_release_worker_lease') as release:
+        with pytest.raises(OSError, match='compensation failed'):
+            runs.v1_retry_run('run', BackgroundTasks(), None)
+    release.assert_called_once_with('run', ('owner', 'token'))
+    assert lock.acquire(blocking=False)
+    lock.release()
+
+
+def test_failed_single_step_compensation_does_not_leak_global_slot(tmp_path):
+    from core.contracts import StepRecord
+    from workflow.engine.runner import StepRunner, StepRunRequest
+    store = RecordStore(tmp_path)
+    store.create_run('run', {'workflow_version': WORKFLOW_VERSION})
+    store.save('run', StepRecord(name='review_agent', title='review'), 'task')
+    runner = StepRunner(store)
+    spec = SimpleNamespace(name='review_agent', title='review', task_level=True)
+    with patch.object(runner, 'validate', return_value=spec), patch('workflow.engine.runner._archive_step_retry'), \
+         patch('threading.Thread.start', side_effect=RuntimeError('enqueue failed')), \
+         patch.object(RetryOperation, 'rollback', side_effect=OSError('compensation failed')):
+        with pytest.raises(OSError, match='compensation failed'):
+            runner.run(StepRunRequest(run_id='run', task_id='task', step_name='review_agent'))
+    assert LifecycleStore(tmp_path).claim_worker_lease('next', owner_id='next', lease_token='next')
+
+
+def test_failed_rollback_recovers_as_compensation_instead_of_dispatch(tmp_path):
+    store, operation = prepared_retry(tmp_path)
+    with patch('infrastructure.storage.retry.atomic_write_text', side_effect=OSError('restore unavailable')):
+        with pytest.raises(OSError):
+            operation.rollback()
+    intent = store.database('run').get('', 'retry_intent')
+    assert intent['recovery_action'] == 'rollback'
+    recover_retry(store, 'run', None, {})  # 补偿不允许触碰 Checkpoint 或创建新派单。
+    assert store.database('run').get('', 'retry_intent')['phase'] == 'rolled_back'
+    assert store.read_artifact('run', 'reports/final.json', 'task')['attempt'] == 1
+
+
+def test_preparing_single_step_recovery_compensates_before_reading_step_request(tmp_path, monkeypatch):
+    from fastapi import BackgroundTasks
+    from server.routes.runs import v1_recover_retry_operation
+    monkeypatch.setenv('AI_REPAIR_RUNTIME_DIR', str(tmp_path))
+    store = RecordStore(tmp_path)
+    store.create_run('run', {'workflow_version': WORKFLOW_VERSION})
+    store.write_artifact('run', 'reports/final.json', {'attempt': 1}, 'task')
+    RetryOperation(store, 'run', 'task', kind='single_step')
+    archive_retry_reports(store, 'run', 'task')
+    with patch('server.routes.tasks.v1_run_step') as execute:
+        result = v1_recover_retry_operation('run', BackgroundTasks(), None)
+    execute.assert_not_called()
+    assert result['status'] == 'rolled_back'
+    assert store.read_artifact('run', 'reports/final.json', 'task')['attempt'] == 1
+    assert not LifecycleStore(tmp_path).read_run('run')['worker_active']
+
+
+def test_task_closed_between_validation_and_lease_claim_is_not_executed(tmp_path):
+    from workflow.engine.runner import StepRunner, StepRunRequest, StepRunnerError
+    store = RecordStore(tmp_path)
+    life = LifecycleStore(tmp_path)
+    runner = StepRunner(store)
+
+    def validate(request):
+        life.update_task('run', 'task', status='cancelled', manually_closed=True)
+        return SimpleNamespace(name='review_agent', title='review', task_level=True)
+
+    with patch.object(runner, 'validate', side_effect=validate), patch('threading.Thread.start') as start:
+        with pytest.raises(StepRunnerError, match='人工关闭'):
+            runner.run(StepRunRequest(run_id='run', task_id='task', step_name='review_agent'))
+    start.assert_not_called()
+    assert life.read_task('run', 'task')['status'] == 'cancelled'
+    assert not life.read_run('run')['worker_active']

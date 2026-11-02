@@ -1,6 +1,6 @@
 # 整改执行记录
 
-基线为 `aadbae9ea2ac4736a3a5aa3b2bb31e6b7dbcea9a`，整改分支为 `codex/complete-workflow-remediation`。原方案的 81 条表格事项及表格外要求见 [逐项对照](checklist.md)，原文见 [source-plan.txt](source-plan.txt)。
+基线为 `aadbae9ea2ac4736a3a5aa3b2bb31e6b7dbcea9a`，整改分支为 `codex/complete-workflow-remediation`。原方案的 81 条表格事项及表格外要求见 [逐项对照](checklist.md)，原文见 [source-plan.txt](source-plan.txt)。本轮用户授权的合并前验收与追加修复见 [acceptance.md](acceptance.md)。
 
 本次完成代码整改、隔离故障回归、真实本地 Git/API/浏览器验证和旧分支归档清理。合并仍由人工执行。隔离验证没有调用真实承运商、线上 ES 或付费模型，不能把这些结果当作所有历史业务异常已在线恢复。
 
@@ -21,7 +21,7 @@
 
 ## 验证口径
 
-- 后端：全量 **369 项通过**，包含业务流、租约、旧框架、取消、重试、审查与交付回归。XML 见 `evidence/backend.xml`，汇总见 `evidence/verification.json`。
+- 后端：全量 **376 项通过**，包含业务流、租约、旧框架、取消、重试、审查与交付回归。XML 见 `evidence/backend.xml`，汇总见 `evidence/verification.json`。
 - 新增故障注入：Checkpoint 提交前失败、提交成功但回执丢失、准备期间移动工作区后退出、报告归档中途失败、四个关键单步节点启动线程失败。
 - 新增真实边界测试：独立进程争抢全局执行槽；本地裸 Git 远端已成功推送但回执缺失；远端被改变时拒绝覆盖；人工驳回旧 commit 的受限替换；真实 FastAPI 任务详情、审批和关闭接口。
 - 大产物：约 420KB 的日志原文无损保存在归档，`steps.json` 小于 5KB。

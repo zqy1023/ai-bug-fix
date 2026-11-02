@@ -153,12 +153,13 @@ def v1_retry_task(
     baseline_original: Path | None = None
     workspace_archive: Path | None = None
     workspace_original: Path | None = None
-    checkpoint_updated = False
     retry_operation = None
     worker_lease: tuple[str, str] | None = None
     try:
         worker_lease = _claim_worker_lease(run_id)
         store.set_worker_lease(run_id, *worker_lease)
+        if LifecycleStore(store.root).read_task(run_id, task_id).get("manually_closed"):
+            raise HTTPException(status_code=409, detail="任务已人工关闭，不能自动重试")
         runtime_config = load_config()
         graph = build_graph(
             store=store,
@@ -255,14 +256,14 @@ def v1_retry_task(
             "retry_target": "",
             "last_result": "passed",
         }
-        LifecycleStore(store.root).update_run(
+        LifecycleStore(store.root, worker_lease=worker_lease).update_run(
             run_id, status="queued", phase="task_retry_queued", current_step="",
             started_at=None, finished_at=None, error={},
             error_type="", error_message="", terminal_reason="", next_action="",
             worker_active=True,
             allow_reactivate=True,
         )
-        LifecycleStore(store.root).update_task(
+        LifecycleStore(store.root, worker_lease=worker_lease).update_task(
             run_id, task_id, status="retrying", current_step="retry_prepare",
             attempt=next_attempt, terminal_step="", terminal_reason="", next_action="",
             error={}, last_error={}, last_error_summary="",
@@ -284,7 +285,6 @@ def v1_retry_task(
         from infrastructure.storage.reports import archive_retry_reports
         archive_retry_reports(store, run_id, task_id)
         retry_operation.checkpoint(graph, cfg, patch, as_node=TASK_DISPATCH)
-        checkpoint_updated = True
         try:
             _audit_control(
                 run_id, task_id, "task.retry_requested", "api",
@@ -293,70 +293,29 @@ def v1_retry_task(
         except Exception:
             logger.exception("Task 重试已提交，但审计写入失败 run_id=%s task_id=%s", run_id, task_id)
     except Exception:
-        if retry_operation is not None:
-            checkpoint_updated = retry_operation.value["phase"] != "preparing"
-            retry_operation.rollback()
-        if worker_lease is not None:
-            _release_worker_lease(run_id, worker_lease)
-        compensation_failures: list[tuple[str, OSError]] = []
-        if not checkpoint_updated:
-            if baseline_archive is not None and baseline_archive.exists() and baseline_original is not None:
-                try:
-                    baseline_archive.replace(baseline_original)
-                except OSError as error:
-                    logger.exception(
-                        "Task 重试失败后恢复旧基线失败 run_id=%s task_id=%s path=%s",
-                        run_id, task_id, baseline_archive,
-                    )
-                    compensation_failures.append((str(baseline_archive), error))
-            if workspace_archive is not None and workspace_archive.exists() and workspace_original is not None:
-                try:
-                    workspace_archive.replace(workspace_original)
-                except OSError as error:
-                    logger.exception(
-                        "Task 重试失败后恢复旧工作区失败 run_id=%s task_id=%s path=%s",
-                        run_id, task_id, workspace_archive,
-                    )
-                    compensation_failures.append((str(workspace_archive), error))
+        try:
+            if retry_operation is not None:
+                retry_operation.rollback()
+        finally:
             try:
-                LifecycleStore(store.root).update_run(
-                    run_id, status=str(detail.get("status") or "failed"),
-                    worker_active=False,
-                )
-                LifecycleStore(store.root).update_task(
-                    run_id, task_id, status="failed",
-                    terminal_step=str((task_payload.get("lifecycle") or {}).get("terminal_step") or "finalize_execution"),
-                    terminal_reason=str((task_payload.get("lifecycle") or {}).get("terminal_reason") or "Task 重试未能提交。"),
-                    next_action="检查运行记录和源码工作区后重试。",
-                    allow_reactivate=True,
-                )
-            except Exception:
-                logger.exception("Task 重试失败后恢复生命周期状态失败 run_id=%s task_id=%s", run_id, task_id)
-        lock.release()
-        if compensation_failures:
-            # 归档回滚失败会让下一次重试读到空路径；必须显式终止并把完整
-            # 归档路径返回给调用方，而不是吞掉异常后留下不一致状态。
-            paths = "；".join(
-                f"{path}（{type(error).__name__}）"
-                for path, error in compensation_failures
-            )
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "code": "RETRY_COMPENSATION_FAILED",
-                    "message": f"Task 重试未提交且原归档未能恢复，请检查归档路径：{paths}",
-                },
-            ) from compensation_failures[0][1]
+                if worker_lease is not None:
+                    _release_worker_lease(run_id, worker_lease)
+            finally:
+                lock.release()
         raise
 
     try:
         background.add_task(_resume_workflow_background, run_id, lock, None, worker_lease)
         retry_operation.save("queued")
     except Exception:
-        retry_operation.save("recovery_required")
-        if worker_lease is not None:
-            _release_worker_lease(run_id, worker_lease)
-        lock.release()
+        try:
+            retry_operation.save("recovery_required")
+        finally:
+            try:
+                if worker_lease is not None:
+                    _release_worker_lease(run_id, worker_lease)
+            finally:
+                lock.release()
         raise HTTPException(status_code=503, detail="重试已提交但尚未入队，请恢复该 Run；已保留重试意图")
     return {
         "run_id": run_id,

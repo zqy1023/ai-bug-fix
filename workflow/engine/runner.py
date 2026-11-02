@@ -1109,6 +1109,8 @@ class StepRunner:
         thread_started = False
         try:
             self._store.set_worker_lease(request.run_id, lease_owner, lease_token)
+            if request.task_id and lifecycle.read_task(request.run_id, request.task_id).get("manually_closed"):
+                raise StepRunnerError("任务已人工关闭，不能自动重试", code="TASK_CLOSED")
             from infrastructure.storage.retry import RetryOperation
             from dataclasses import asdict
             retry_operation = RetryOperation(self._store, request.run_id, request.task_id, kind="single_step")
@@ -1126,13 +1128,15 @@ class StepRunner:
             thread.start()
             thread_started = True
         except BaseException:
-            if retry_operation is not None and not thread_started:
-                retry_operation.save("preparing")
-                retry_operation.rollback()
-            self._store.clear_worker_lease(request.run_id)
-            lifecycle.release_worker_lease(
-                request.run_id, owner_id=lease_owner, lease_token=lease_token,
-            )
+            try:
+                if retry_operation is not None and not thread_started:
+                    retry_operation.save("preparing")
+                    retry_operation.rollback()
+            finally:
+                self._store.clear_worker_lease(request.run_id)
+                lifecycle.release_worker_lease(
+                    request.run_id, owner_id=lease_owner, lease_token=lease_token,
+                )
             raise
         return {
             "run_id": request.run_id,
