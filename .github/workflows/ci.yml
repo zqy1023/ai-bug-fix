@@ -24,7 +24,7 @@ jobs:
           grep -v '^yq_common @' requirements.txt > /tmp/requirements-ci.txt
           python -m pip install -r /tmp/requirements-ci.txt pytest
       - name: Compile backend modules
-        run: python -m compileall -q server core infrastructure workflow agents
+        run: python -m compileall -q server.py server core infrastructure workflow agents
       - name: Run complete backend and fault-injection regressions
         env:
           NACOS_ENABLED: 'false'

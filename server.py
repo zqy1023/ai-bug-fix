@@ -19,7 +19,6 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from yq_common.fastapi_utils.fastapi_utils import FastAPIUtils
 
 from infrastructure.llm.config import load_config
 from infrastructure.workspace.workspace_gc import start_workspace_collector
@@ -81,6 +80,7 @@ def _build_app() -> FastAPI:
     _ensure_writable_home()
     _prepare_log_dir(PROJECT_NAME)
     try:
+        from yq_common.fastapi_utils.fastapi_utils import FastAPIUtils
         return FastAPIUtils.setup_fastapi_server(PROJECT_NAME)
     except Exception:
         logger.exception("框架初始化失败，降级为最小应用")
