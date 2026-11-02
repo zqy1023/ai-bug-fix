@@ -42,7 +42,7 @@ from core.contracts import (
 )
 from core.errors import StepFailed
 from infrastructure.llm.runtime import close_sessions
-from infrastructure.storage.lifecycle import LifecycleStore
+from infrastructure.storage.lifecycle import LifecycleStore, WorkerLeaseLost
 from infrastructure.storage.redaction import public_exception
 from infrastructure.storage.run_control import cancellation_requested, pause_requested
 from infrastructure.storage.store import RecordStore
@@ -349,10 +349,6 @@ def reset() -> None:
 # ---------------------------------------------------------------------------
 # 5. 步骤执行与节点绑定引擎 (Stage Runner & Node Binding)
 # ---------------------------------------------------------------------------
-
-class WorkerLeaseLost(RuntimeError):
-    """当前执行进程已失去 Run 租约，禁止继续写入步骤记录。"""
-
 
 def _assert_worker_lease(services: WorkflowServices, store: RecordStore, run_id: str, step_name: str) -> None:
     owner_id = str(services.metadata.get("worker_lease_owner") or "")
