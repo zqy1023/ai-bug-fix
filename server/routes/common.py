@@ -1005,11 +1005,13 @@ def _checkpoint_projection(snapshot: Any) -> dict[str, Any]:
 # Run 生命周期与后台 worker 的唯一实现位于 server.lifecycle；
 # 路由层只复用，不再维护第二套心跳、报告收敛和工作区清理逻辑。
 from server.lifecycle import (
+    _claim_worker_lease,
     _clear_worker_active,
     _complete_run_lifecycle,
     _discard_retry_archive,
     _record_background_failure,
     _reinvestigate_task,
+    _release_worker_lease,
     _resume_workflow_background,
     _run_workflow_background_v1,
     _settle_task_lifecycles_after_run_failure,
