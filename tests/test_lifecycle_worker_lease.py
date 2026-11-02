@@ -175,3 +175,21 @@ def test_graph_node_is_fenced_if_lease_expires_during_execution(tmp_path):
     )
     with pytest.raises(WorkerLeaseLost):
         guarded({"run_id": "run-1"})
+
+
+def test_recent_legacy_worker_heartbeat_blocks_rollout_claim(tmp_path):
+    from datetime import datetime, timezone
+
+    lifecycle = LifecycleStore(tmp_path)
+    lifecycle._database("run-1").update(
+        "", "lifecycle",
+        lambda state: {
+            **state,
+            "worker_active": True,
+            "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+    assert not lifecycle.claim_worker_lease(
+        "run-1", owner_id="new-worker", lease_token="new-token", ttl_seconds=30,
+    )
