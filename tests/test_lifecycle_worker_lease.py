@@ -102,3 +102,76 @@ def test_expired_worker_cannot_renew_lease(tmp_path):
     assert not lifecycle.heartbeat_worker_lease(
         "run-1", owner_id="worker-a", lease_token="token-a", ttl_seconds=30,
     )
+
+
+def test_graph_node_is_fenced_after_lease_replacement(tmp_path):
+    import pytest
+
+    from infrastructure.storage.lifecycle import WorkerLeaseLost
+    from infrastructure.storage.store import RecordStore
+    from workflow.engine.graph import _guard_worker_lease
+    from workflow.engine.runner import WorkflowServices
+
+    lifecycle = LifecycleStore(tmp_path)
+    assert lifecycle.claim_worker_lease(
+        "run-1", owner_id="worker-a", lease_token="token-a", ttl_seconds=30,
+    )
+    services = WorkflowServices(metadata={
+        "worker_lease_owner": "worker-a",
+        "worker_lease_token": "token-a",
+    })
+    called = []
+    guarded = _guard_worker_lease(
+        "test_node",
+        lambda state: called.append(True) or {"ok": True},
+        RecordStore(tmp_path),
+        services,
+    )
+
+    lifecycle._database("run-1").update(
+        "", "lifecycle",
+        lambda state: {
+            **state,
+            "worker_lease_expires_at": "2000-01-01T00:00:00+00:00",
+        },
+    )
+    assert lifecycle.claim_worker_lease(
+        "run-1", owner_id="worker-b", lease_token="token-b", ttl_seconds=30,
+    )
+    with pytest.raises(WorkerLeaseLost):
+        guarded({"run_id": "run-1"})
+    assert called == []
+
+
+def test_graph_node_is_fenced_if_lease_expires_during_execution(tmp_path):
+    import pytest
+
+    from infrastructure.storage.lifecycle import WorkerLeaseLost
+    from infrastructure.storage.store import RecordStore
+    from workflow.engine.graph import _guard_worker_lease
+    from workflow.engine.runner import WorkflowServices
+
+    lifecycle = LifecycleStore(tmp_path)
+    assert lifecycle.claim_worker_lease(
+        "run-1", owner_id="worker-a", lease_token="token-a", ttl_seconds=30,
+    )
+    services = WorkflowServices(metadata={
+        "worker_lease_owner": "worker-a",
+        "worker_lease_token": "token-a",
+    })
+
+    def expire_during_node(state):
+        lifecycle._database("run-1").update(
+            "", "lifecycle",
+            lambda value: {
+                **value,
+                "worker_lease_expires_at": "2000-01-01T00:00:00+00:00",
+            },
+        )
+        return {"ok": True}
+
+    guarded = _guard_worker_lease(
+        "test_node", expire_during_node, RecordStore(tmp_path), services,
+    )
+    with pytest.raises(WorkerLeaseLost):
+        guarded({"run_id": "run-1"})
