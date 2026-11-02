@@ -13,7 +13,9 @@ from fastapi import BackgroundTasks, HTTPException
 
 from core.contracts import StepError
 from core.policy import legacy_analysis_required
-from infrastructure.storage.lifecycle import LifecycleStore, WorkerLeaseBusy, WorkerLeaseLost
+from infrastructure.storage.lifecycle import (
+    LifecycleStore, WorkerLeaseBusy, WorkerLeaseLost, start_worker_lease_heartbeat,
+)
 from infrastructure.storage.store import RecordStore
 from infrastructure.storage.redaction import public_exception
 from core.policy import AgentPolicy
@@ -47,27 +49,10 @@ def _start_lifecycle_heartbeat(
         run_id, owner_id=owner_id, lease_token=lease_token,
     ):
         raise WorkerLeaseLost(f"预先获取的 Run 租约已过期或被替换: {run_id}")
-    stop = threading.Event()
-
-    def pulse() -> None:
-        while not stop.wait(5):
-            try:
-                if not lifecycle.heartbeat_worker_lease(
-                    run_id, owner_id=owner_id, lease_token=lease_token,
-                    ttl_seconds=30,
-                ):
-                    logger.error("Run 租约已丢失，停止续租 run_id=%s", run_id)
-                    stop.set()
-                    return
-            except Exception:
-                # 不能把存储故障当成续租成功；租约过期后其它进程可能接管。
-                logger.exception("续租失败，Run 执行所有权无法确认 run_id=%s", run_id)
-                stop.set()
-                return
-
-    thread = threading.Thread(target=pulse, name=f"run-heartbeat-{run_id}", daemon=True)
-    thread.start()
-    return stop, thread
+    return start_worker_lease_heartbeat(
+        lifecycle, run_id, owner_id=owner_id, lease_token=lease_token,
+        interval_seconds=5, ttl_seconds=30,
+    )
 
 
 def _claim_worker_lease(run_id: str, *, ttl_seconds: int = 300) -> tuple[str, str]:
