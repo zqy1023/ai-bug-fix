@@ -1,0 +1,51 @@
+name: workflow-governance-ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, refactor/workflow-governance-batch]
+
+permissions:
+  contents: read
+
+jobs:
+  backend-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          grep -v '^yq_common @' requirements.txt > /tmp/requirements-ci.txt
+          python -m pip install -r /tmp/requirements-ci.txt pytest
+      - name: Run lifecycle and execution-control regressions
+        run: |
+          pytest -q \
+            tests/test_lifecycle_worker_lease.py \
+            tests/test_step_retry_lifecycle.py \
+            tests/test_cancel_stop.py \
+            tests/test_worker_timeout_settlement.py
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.5
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+      - name: Build frontend
+        working-directory: frontend
+        run: pnpm build
